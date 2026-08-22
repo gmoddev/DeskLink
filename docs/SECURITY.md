@@ -61,6 +61,8 @@ The Windows implementation uses CNG for cryptographic randomness/SHA-256 and
 current-user DPAPI for the bounded trust store. Device-certificate private-key
 creation uses a named current-user Microsoft Software Key Storage Provider key;
 the self-signed SHA-256 certificate is stored in the current-user `MY` store.
+The private key is non-exportable. Its export policy, key name, certificate, and
+pin must not be changed to accommodate a transport provider or older platform.
 
 First-time exchange is isolated on `desklink/pair/1`. It accepts only one
 strictly bounded offer while the manual window is open, binds the offer pin to
@@ -193,7 +195,12 @@ Production transport parsing must preserve these limits before allocating large 
 
 Production session establishment must require both values to be true before any capability message is accepted.
 
-Native MsQuic is the intended transport because it supplies authenticated TLS 1.3 QUIC, reliable streams, and QUIC DATAGRAM support in one connection.
+Production transport is stock MsQuic/Schannel on Windows 11 or Windows Server
+2022 or newer because it supplies authenticated TLS 1.3 QUIC, reliable streams,
+and QUIC DATAGRAM support while using the existing non-exportable CNG identity.
+Windows 10 is explicitly unsupported rather than receiving a TLS downgrade,
+identity export/replacement, reduced-security validation mode, or automatic
+OpenSSL fallback.
 
 Recommended production defaults:
 
@@ -205,6 +212,8 @@ Recommended production defaults:
 - no Internet/NAT traversal mode in V1
 - connection rate limits before expensive pairing work
 - datagram receive explicitly enabled only after authenticated session setup
+- no session admission before peer certificate-pin validation succeeds
+- no provider fallback after credential, certificate, authentication, or transport failure
 
 ---
 
@@ -286,6 +295,15 @@ Production CI should include:
 - signed Windows executables/installers
 - a documented rapid-update path for high/critical transport vulnerabilities
 
+The investigated Windows 10 path is not approved implementation work. If it is
+reconsidered, MsQuic 2.6.x plus OpenSSL 3.5 LTS and an opaque CNG signing
+provider must be treated as a new security-sensitive project. Separate approval
+is required before code is written. The provider must never export private key
+material, and rejection, timeout, exception, missing-certificate, malformed-DER,
+and wrong-pin cases must remain fail-closed before `CONNECTED`, stream
+acceptance, or DeskLink session admission. See
+[`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
+
 ---
 
 ## 13. Security invariants to keep in tests
@@ -304,3 +322,5 @@ The following must remain regression-tested:
 10. older/duplicate pointer datagrams are rejected within an epoch
 11. stale FocusReady transaction IDs cannot acquire authority
 12. pointer/audio datagram semantics do not require retransmission
+13. certificate rejection cannot reach `CONNECTED` or session admission
+14. the device key remains non-exportable and identity pin remains unchanged

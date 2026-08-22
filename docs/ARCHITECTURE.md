@@ -19,7 +19,7 @@ PC1 / Host                                      PC2 / Agent
              │                                            │
              └──────── DeskLink.Core / Protocol ──────────┘
                               │
-                         Native MsQuic
+                    Native MsQuic / Schannel
                    authenticated TLS 1.3 QUIC
 ```
 
@@ -110,6 +110,12 @@ Authenticated peer
 
 ## 4. Transport architecture
 
+The production transport baseline is Windows 11/Server 2022 or newer using the
+stock MsQuic Schannel provider. The persistent device identity is the existing
+non-exportable current-user CNG key and its pinned self-signed certificate.
+Provider selection must not export or replace that identity, weaken peer
+validation, or downgrade TLS. Windows 10 is outside the production architecture.
+
 A single logical peer connection carries several lanes:
 
 ```text
@@ -136,6 +142,11 @@ Datagrams include:
 - PCM audio frames
 
 The current implementation provides `ITransportEndpoint` plus a deterministic in-memory implementation. The production adapter should use native MsQuic.
+
+The runtime-selection layer is retained as an integrity and diagnostics
+boundary. Production packages ship only Schannel. The previously investigated
+Windows 10 OpenSSL path is future R&D, not an alternate production trust model;
+its constraints are recorded in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---
 

@@ -35,6 +35,8 @@ The current build proves the core invariants independently of Windows networking
 | Peer certificate pinning | Done | Stored machine ID and SHA-256 certificate pin required by sessions |
 | Windows trust provider | Done | CNG randomness/hash + current-user DPAPI atomic trust store |
 | MsQuic endpoint adapter | Done | Optional v2.5.8 stream framing/datagram adapter for established connections |
+| Production platform baseline | Done | Windows 11/Server 2022+ with stock Schannel; Windows 10 unsupported |
+| MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, fail-closed unavailable provider |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
 | Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
@@ -90,17 +92,19 @@ Build/test result in the creation environment:
 
 ### P0 — required before using DeskLink across real PCs
 
-- two-PC LAN pairing, cable-removal, and reconnect validation
+- two-PC Windows 11 LAN pairing, cable-removal, and reconnect validation
 - current-user IPC
 
 ### P1 — required for useful KM roaming
 
+- input state reconciliation snapshot implementation
+- physical emergency-chord and high-poll-rate timing validation
 - monitor enumeration/identity
+- stable display-ID mapping
 - edge graph
 - coordinate transform
 - edge hysteresis
-- input state reconciliation snapshot implementation
-- physical emergency-chord and high-poll-rate timing validation
+- mouse-wheel transport
 - foreground profile engine
 - GAME capture teardown/reinstall lifecycle
 
@@ -144,8 +148,8 @@ Each one significantly expands the attack surface and is unnecessary for the fir
 ## Recommended next implementation slice
 
 The pairing, focus, and opt-in capture controls now implement the first complete
-input path. The next slice should validate two real Windows 11 PCs and add input
-state reconciliation while performing this exact sequence:
+input path. The next slice is input-state snapshot reconciliation, followed by
+validation on two real Windows 11 PCs using this exact sequence:
 
 ```text
 1. manually pair
@@ -161,3 +165,17 @@ state reconciliation while performing this exact sequence:
 ```
 
 Do **not** add edge roaming until this manual focus switch survives failure injection reliably.
+
+After snapshot reconciliation and the physical failure matrix pass, the roadmap
+continues with stable multi-monitor mapping and then mouse-wheel transport. See
+[`ROADMAP.md`](ROADMAP.md).
+
+## Closed compatibility work
+
+Windows 10 transport compatibility is closed for the current roadmap. The
+production architecture remains stock MsQuic/Schannel with the existing
+non-exportable CNG identity on Windows 11/Server 2022 or newer. A future Windows
+10 investigation may consider MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG
+provider integration, but that is a new security-sensitive project requiring
+separate approval and the fail-closed acceptance criteria in
+[`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
