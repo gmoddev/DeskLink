@@ -372,11 +372,16 @@ void secure_session_end_to_end() {
     HostCoordinator host_core(nonce);
 
     AgentSession agent(pair.b, agent_core, agent_trust, nonce);
-    HostSession host(pair.a, host_core, host_trust, nonce);
+    bool FocusReadyNotified = false;
+    HostSession host(pair.a, host_core, host_trust, nonce, [&] {
+        FocusReadyNotified = true;
+    });
     CHECK(agent.start());
     CHECK(host.start());
     CHECK(host.focus_remote(750));
     CHECK(host_core.remote_focused());
+    CHECK(host.RemoteFocused());
+    CHECK(FocusReadyNotified);
     CHECK(host.send_key(KeyEventMessage{0x20, false, true}));
     CHECK(host.send_pointer(PointerPositionMessage{0, 30000, 31000}));
     CHECK(injector.keys.size() == 1);

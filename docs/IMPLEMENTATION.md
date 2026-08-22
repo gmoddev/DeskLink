@@ -370,8 +370,9 @@ Do not persist an active focus lease across process restart.
 
 The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
 session-nonce negotiation, and explicit Windows pairing control are now
-implemented. The next highest-value change is manual focus switching across two
-physical Windows 11 PCs.
+implemented. The manual serve/focus control now proves the trusted lease path.
+The next highest-value change is Windows Raw Input capture with the minimal
+low-level suppression gate across two physical Windows 11 PCs.
 
 Acceptance criteria:
 

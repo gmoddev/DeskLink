@@ -101,6 +101,11 @@ permission to inject input on the PC where that flag is supplied; it is omitted
 by default. Trust is stored under the current user's local application-data
 directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
+After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
+On the other PC, `desklink_pair.exe focus 192.168.1.25 43821` manually acquires
+and renews a remote-focus lease until Enter is pressed. This proves the trusted
+focus control path; raw input capture and local suppression are not enabled yet.
+
 ## Repository layout
 
 ```text

@@ -133,6 +133,13 @@ Private or Domain network profile.
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
 
+After pairing with `--grant-input` on the receiving PC, run
+`desklink_pair.exe serve 43821` there and
+`desklink_pair.exe focus <receiver-ip> 43821` on the other PC. Verify that the
+focus command reports an active lease, remains active for at least five seconds,
+and releases cleanly when Enter is pressed. This does not validate raw input
+capture or local suppression.
+
 ---
 
 ## Limitations of this validation
