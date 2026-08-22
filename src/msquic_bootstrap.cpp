@@ -76,8 +76,11 @@ struct BootstrapConnectionState {
 };
 
 struct RuntimeCleanup {
-    explicit RuntimeCleanup(Win32DeviceCertificate OwnedCertificate)
-        : Certificate(std::move(OwnedCertificate)) {}
+    RuntimeCleanup(Win32DeviceCertificate OwnedCertificate,
+                   std::unique_ptr<MsQuicRuntime> OwnedRuntime)
+        : Certificate(std::move(OwnedCertificate)),
+          Runtime(std::move(OwnedRuntime)),
+          Api(Runtime ? Runtime->Api() : nullptr) {}
 
     void Run() noexcept {
         if (Listener) Api->ListenerClose(Listener);
@@ -86,10 +89,11 @@ struct RuntimeCleanup {
         if (SessionClientConfiguration) Api->ConfigurationClose(SessionClientConfiguration);
         if (SessionServerConfiguration) Api->ConfigurationClose(SessionServerConfiguration);
         if (Registration) Api->RegistrationClose(Registration);
-        if (Api) MsQuicClose(Api);
+        Runtime.reset();
     }
 
     Win32DeviceCertificate Certificate;
+    std::unique_ptr<MsQuicRuntime> Runtime;
     const QUIC_API_TABLE* Api{};
     HQUIC Registration{};
     HQUIC SessionServerConfiguration{};
@@ -164,19 +168,22 @@ struct MsQuicBootstrap::State {
           IPairingCrypto& OwnedCrypto,
           PairingCoordinator& OwnedPairing,
           IClock& OwnedClock,
+          MsQuicRuntimeConfig OwnedRuntimeConfig,
           MsQuicBootstrapHandlers OwnedHandlers)
         : Certificate(std::move(OwnedCertificate)),
           TrustStore(OwnedTrustStore),
           Crypto(OwnedCrypto),
           Pairing(OwnedPairing),
           Clock(OwnedClock),
+          RuntimeConfig(std::move(OwnedRuntimeConfig)),
           Handlers(std::move(OwnedHandlers)),
           ConnectionLimiter(Clock, 20, std::chrono::seconds(10)),
           PairingLimiter(Clock, 4, std::chrono::minutes(1)) {}
 
     ~State() {
-        auto Cleanup = std::make_unique<RuntimeCleanup>(std::move(Certificate));
-        Cleanup->Api = std::exchange(Api, nullptr);
+        auto Cleanup = std::make_unique<RuntimeCleanup>(
+            std::move(Certificate), std::move(Runtime));
+        Api = nullptr;
         Cleanup->Registration = std::exchange(Registration, nullptr);
         Cleanup->SessionServerConfiguration =
             std::exchange(SessionServerConfiguration, nullptr);
@@ -201,9 +208,11 @@ struct MsQuicBootstrap::State {
     IPairingCrypto& Crypto;
     PairingCoordinator& Pairing;
     IClock& Clock;
+    MsQuicRuntimeConfig RuntimeConfig;
     MsQuicBootstrapHandlers Handlers;
     AttemptRateLimiter ConnectionLimiter;
     AttemptRateLimiter PairingLimiter;
+    std::unique_ptr<MsQuicRuntime> Runtime;
     const QUIC_API_TABLE* Api{};
     HQUIC Registration{};
     HQUIC SessionServerConfiguration{};
@@ -919,13 +928,13 @@ bool OpenConfiguration(MsQuicBootstrap::State& State,
 
 bool OpenRuntime(const std::shared_ptr<MsQuicBootstrap::State>& State) {
     std::string Failure;
-    const auto OpenStatus = MsQuicOpenVersion(
-        QUIC_API_VERSION_2, reinterpret_cast<const void**>(&State->Api));
-    if (QUIC_FAILED(OpenStatus)) {
-        ReportFailure(State, "MsQuicOpenVersion failed with status " +
-                              std::to_string(OpenStatus));
+    MsQuicRuntimeFailure RuntimeFailure;
+    State->Runtime = MsQuicRuntime::Load(State->RuntimeConfig, RuntimeFailure);
+    if (!State->Runtime) {
+        ReportFailure(State, std::move(RuntimeFailure.Message));
         return false;
     }
+    State->Api = State->Runtime->Api();
     const QUIC_REGISTRATION_CONFIG RegistrationConfig{
         "DeskLink", QUIC_EXECUTION_PROFILE_LOW_LATENCY};
     const auto RegistrationStatus = State->Api->RegistrationOpen(
@@ -1042,8 +1051,21 @@ std::shared_ptr<MsQuicBootstrap> MsQuicBootstrap::Create(
     PairingCoordinator& Pairing,
     IClock& Clock,
     MsQuicBootstrapHandlers Handlers) {
+    return Create(std::move(Certificate), TrustStore, Crypto, Pairing, Clock,
+                  MsQuicRuntimeConfig{}, std::move(Handlers));
+}
+
+std::shared_ptr<MsQuicBootstrap> MsQuicBootstrap::Create(
+    Win32DeviceCertificate Certificate,
+    ITrustStore& TrustStore,
+    IPairingCrypto& Crypto,
+    PairingCoordinator& Pairing,
+    IClock& Clock,
+    MsQuicRuntimeConfig RuntimeConfig,
+    MsQuicBootstrapHandlers Handlers) {
     auto SharedState = std::make_shared<State>(
-        std::move(Certificate), TrustStore, Crypto, Pairing, Clock, std::move(Handlers));
+        std::move(Certificate), TrustStore, Crypto, Pairing, Clock,
+        std::move(RuntimeConfig), std::move(Handlers));
     if (!OpenRuntime(SharedState)) return {};
     return std::shared_ptr<MsQuicBootstrap>(
         new MsQuicBootstrap(std::move(SharedState)));
@@ -1121,6 +1143,19 @@ bool MsQuicBootstrap::ConnectForPairing(std::string ServerName,
                                         std::uint16_t Port) {
     return Connect(State_, std::move(ServerName), Port,
                    ConnectionPurpose::Pairing, std::nullopt);
+}
+
+TlsBackend MsQuicBootstrap::Backend() const noexcept {
+    return State_->Runtime ? State_->Runtime->Backend() : TlsBackend::Auto;
+}
+
+std::string MsQuicBootstrap::RuntimeVersion() const {
+    return State_->Runtime ? State_->Runtime->Version() : std::string{};
+}
+
+WindowsVersionInfo MsQuicBootstrap::WindowsVersion() const noexcept {
+    return State_->Runtime
+        ? State_->Runtime->WindowsVersion() : WindowsVersionInfo{};
 }
 
 void MsQuicBootstrap::Close() noexcept {

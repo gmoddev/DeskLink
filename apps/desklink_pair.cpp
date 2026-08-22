@@ -46,6 +46,7 @@ struct CommandLine {
     std::uint16_t Port{kDefaultPort};
     bool GrantInput{};
     bool CaptureInput{};
+    desklink::TlsBackend TlsBackend{desklink::TlsBackend::Auto};
 };
 
 struct PairingResult {
@@ -113,7 +114,8 @@ void PrintUsage() {
         << L"  desklink_pair serve [port]\n"
         << L"  desklink_pair focus <host-or-ip> [port] [--capture]\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
-        << L"--capture forwards physical input and suppresses it locally until release.\n";
+        << L"--capture forwards physical input and suppresses it locally until release.\n"
+        << L"--tls-provider auto|schannel|openssl selects the packaged TLS runtime.\n";
 }
 
 std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Arguments) {
@@ -144,6 +146,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     }
 
     bool PortSeen = false;
+    bool ProviderSeen = false;
     for (; Index < ArgumentCount; ++Index) {
         const std::wstring_view Argument(Arguments[Index]);
         if (Argument == L"--grant-input") {
@@ -154,6 +157,21 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--capture") {
             if (Result.CaptureInput) return std::nullopt;
             Result.CaptureInput = true;
+            continue;
+        }
+        if (Argument == L"--tls-provider") {
+            if (ProviderSeen || Index + 1 >= ArgumentCount) return std::nullopt;
+            ProviderSeen = true;
+            const std::wstring_view Provider(Arguments[++Index]);
+            if (Provider == L"auto") {
+                Result.TlsBackend = desklink::TlsBackend::Auto;
+            } else if (Provider == L"schannel") {
+                Result.TlsBackend = desklink::TlsBackend::Schannel;
+            } else if (Provider == L"openssl") {
+                Result.TlsBackend = desklink::TlsBackend::OpenSsl;
+            } else {
+                return std::nullopt;
+            }
             continue;
         }
         if (PortSeen) return std::nullopt;
@@ -168,6 +186,20 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         return std::nullopt;
     }
     if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    return Result;
+}
+
+void PrintTransportDiagnostics(const desklink::MsQuicBootstrap& Bootstrap) {
+    const auto Version = Bootstrap.WindowsVersion();
+    std::cout << "[Transport:MsQuic] version=" << Bootstrap.RuntimeVersion()
+              << " tls_provider=" << desklink::TlsBackendName(Bootstrap.Backend())
+              << " os_build=" << Version.Build << '\n';
+}
+
+desklink::MsQuicRuntimeConfig GetRuntimeConfig(
+    desklink::TlsBackend Backend) {
+    desklink::MsQuicRuntimeConfig Result;
+    Result.Backend = Backend;
     return Result;
 }
 
@@ -372,11 +404,12 @@ int RunTrusted(const CommandLine& Command,
 
     auto Bootstrap = desklink::MsQuicBootstrap::Create(
         std::move(Certificate), TrustStore, Crypto, Pairing, Clock,
-        std::move(Handlers));
+        GetRuntimeConfig(Command.TlsBackend), std::move(Handlers));
     if (!Bootstrap) {
         std::cerr << "[Session:Control] could not initialize MsQuic\n";
         return 1;
     }
+    PrintTransportDiagnostics(*Bootstrap);
 
     if (Command.Mode == Operation::Serve) {
         if (!Bootstrap->StartListener(Command.Port)) {
@@ -632,7 +665,8 @@ int Run(const CommandLine& Command) {
     };
 
     auto Bootstrap = desklink::MsQuicBootstrap::Create(
-        std::move(*Certificate), TrustStore, Crypto, Pairing, Clock, std::move(Handlers));
+        std::move(*Certificate), TrustStore, Crypto, Pairing, Clock,
+        GetRuntimeConfig(Command.TlsBackend), std::move(Handlers));
     if (!Bootstrap) {
         std::scoped_lock Lock(Result->Mutex);
         std::cerr << "[Pairing:Control] "
@@ -642,6 +676,7 @@ int Run(const CommandLine& Command) {
                   << '\n';
         return 1;
     }
+    PrintTransportDiagnostics(*Bootstrap);
 
     if (Command.Mode == Operation::PairListen) {
         if (!Bootstrap->StartListener(Command.Port)) {

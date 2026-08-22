@@ -102,6 +102,13 @@ permission to inject input on the PC where that flag is supplied; it is omitted
 by default. Trust is stored under the current user's local application-data
 directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
+`--tls-provider auto|schannel|openssl` controls the packaged MsQuic TLS runtime.
+`auto` is the default. The loader resolves `runtime/<provider>/msquic.dll`
+relative to the executable, verifies its build-pinned SHA-256 and MsQuic 2.5.8
+provider/version metadata, and never uses the current directory or `PATH`.
+The OpenSSL runtime and credential strategy are the next compatibility slice;
+an explicit OpenSSL request currently fails closed when that runtime is absent.
+
 After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
 On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires
 and renews a remote-focus lease, forwards Raw Input, and suppresses corresponding

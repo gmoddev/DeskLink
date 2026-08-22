@@ -1,5 +1,6 @@
 #pragma once
 
+#include "desklink/msquic_runtime.hpp"
 #include "desklink/msquic_transport.hpp"
 #include "desklink/pairing_wire.hpp"
 #include "desklink/win32_device_certificate.hpp"
@@ -55,6 +56,14 @@ public:
         PairingCoordinator& Pairing,
         IClock& Clock,
         MsQuicBootstrapHandlers Handlers = {});
+    static std::shared_ptr<MsQuicBootstrap> Create(
+        Win32DeviceCertificate Certificate,
+        ITrustStore& TrustStore,
+        IPairingCrypto& Crypto,
+        PairingCoordinator& Pairing,
+        IClock& Clock,
+        MsQuicRuntimeConfig RuntimeConfig,
+        MsQuicBootstrapHandlers Handlers = {});
 
     ~MsQuicBootstrap();
 
@@ -66,6 +75,9 @@ public:
         std::optional<MachineId> ExpectedMachine = std::nullopt);
     [[nodiscard]] bool ConnectForPairing(std::string ServerName,
                                          std::uint16_t Port);
+    [[nodiscard]] TlsBackend Backend() const noexcept;
+    [[nodiscard]] std::string RuntimeVersion() const;
+    [[nodiscard]] WindowsVersionInfo WindowsVersion() const noexcept;
     void Close() noexcept;
 
 private:
