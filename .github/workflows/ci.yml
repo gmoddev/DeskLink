@@ -125,7 +125,8 @@ jobs:
       - name: Build pinned OpenSSL 3.5.7
         shell: cmd
         run: |
-          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          where nmake
           cd /d "%GITHUB_WORKSPACE%\external\openssl"
           perl Configure VC-WIN64A no-asm no-tests --prefix="%GITHUB_WORKSPACE%\external\openssl-install" --openssldir="%GITHUB_WORKSPACE%\external\openssl-install\ssl"
           nmake
@@ -134,5 +135,6 @@ jobs:
       - name: Build and test opaque CNG prototype
         shell: cmd
         run: |
-          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          where nmake
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Windows10Compat.ps1 -MsQuicSource external\msquic -OpenSslRoot external\openssl-install -SchannelRoot external\Microsoft.Native.Quic.MsQuic.Schannel
