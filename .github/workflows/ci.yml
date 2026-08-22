@@ -66,18 +66,26 @@ jobs:
       - name: Checkout DeskLink
         uses: actions/checkout@v7
 
-      - name: Checkout pinned MsQuic headers
-        uses: actions/checkout@v7
-        with:
-          repository: microsoft/msquic
-          ref: v2.5.8
-          path: external/msquic
+      - name: Install pinned MsQuic package
+        run: >-
+          nuget install Microsoft.Native.Quic.MsQuic.Schannel
+          -Version 2.5.8
+          -OutputDirectory external
+          -ExcludeVersion
+          -NonInteractive
 
       - name: Configure
         run: >-
           cmake -S . -B build-msquic
           -DDESKLINK_BUILD_MSQUIC=ON
-          -DDESKLINK_MSQUIC_ROOT=${{ github.workspace }}/external/msquic
+          -DDESKLINK_MSQUIC_ROOT=${{ github.workspace }}/external/Microsoft.Native.Quic.MsQuic.Schannel
 
-      - name: Build adapter
-        run: cmake --build build-msquic --config Release --target desklink_msquic --parallel 2
+      - name: Build adapter and native loopback
+        run: >-
+          cmake --build build-msquic --config Release
+          --target desklink_msquic_loopback_tests --parallel 2
+
+      - name: Run native MsQuic loopback
+        run: >-
+          ctest --test-dir build-msquic -C Release
+          -R desklink_msquic_loopback_tests --output-on-failure

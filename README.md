@@ -25,6 +25,9 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Stored peer certificate-pin enforcement for every operational session
 - Windows CNG randomness/SHA-256 and user-scoped DPAPI trust store
 - Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.5.8
+- Current-user CNG device key and self-signed certificate lifecycle
+- MsQuic listener/client bootstrap with mutually pinned certificate validation
+- Dedicated bounded pairing ALPN and per-address attempt limits
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
@@ -35,8 +38,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 
 The following are intentionally kept behind interfaces and are the next production layers:
 
-- MsQuic listener/client bootstrap and device-certificate provisioning
-- Pairing offer wire exchange and confirmation UI
+- Pairing confirmation UI
+- Two-PC MsQuic failure-injection and reconnect validation
 - LAN discovery/mDNS
 - Windows Raw Input capture and minimal low-level suppression hooks
 - Monitor graph and edge roaming
@@ -45,7 +48,6 @@ The following are intentionally kept behind interfaces and are the next producti
 - Named-pipe local control API
 - Profile/foreground-window engine
 - UI and Stream Deck plugin
-- Persistent trust store using Windows CNG/DPAPI
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 
@@ -69,6 +71,11 @@ cmake -S . -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
+
+The official Schannel MsQuic runtime requires Windows 11 or Windows Server 2022
+or newer. Windows 10 can cross-build the adapter, but cannot run Schannel's
+QUIC/TLS 1.3 path; supporting it would require the separate OpenSSL package and
+credential model.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 

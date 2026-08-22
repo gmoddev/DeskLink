@@ -59,7 +59,14 @@ Discovery/mDNS only locates candidates. It must never create trust.
 
 The Windows implementation uses CNG for cryptographic randomness/SHA-256 and
 current-user DPAPI for the bounded trust store. Device-certificate private-key
-creation remains to be implemented and should use a non-exportable CNG key.
+creation uses a named current-user Microsoft Software Key Storage Provider key;
+the self-signed SHA-256 certificate is stored in the current-user `MY` store.
+
+First-time exchange is isolated on `desklink/pair/1`. It accepts only one
+strictly bounded offer while the manual window is open, binds the offer pin to
+the TLS leaf, and never exposes an operational transport endpoint. Confirmed
+peers reconnect on `desklink/session/1`, where both certificates must match the
+stored pins.
 
 Operational `HostSession` and `AgentSession` startup independently checks the
 stored machine ID and certificate pin after the transport reports TLS

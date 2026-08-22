@@ -368,9 +368,10 @@ Do not persist an active focus lease across process restart.
 
 ## 10. Recommended next code change
 
-The endpoint adapter and pairing/trust foundation are implemented. The next
-highest-value change is the MsQuic listener/client bootstrap, CNG-backed device
-certificate creation, and the pairing-offer exchange that joins those pieces.
+The endpoint, device identity, pairing wire lane, and MsQuic bootstrap are now
+implemented. The next highest-value change is a minimal current-user control
+surface for explicit pairing confirmation and manual focus switching across two
+physical Windows 11 PCs.
 
 Acceptance criteria:
 

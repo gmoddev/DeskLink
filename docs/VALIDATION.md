@@ -113,10 +113,14 @@ host mode after emergency=1
 This validation does not prove:
 
 - Windows `SendInput` source compiles on every supported MSVC/SDK combination
-- end-to-end MsQuic listener/client behavior; the adapter currently consumes an established connection
 - Raw Input/hook timing behavior
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
 - two-PC user-confirmed pairing and reconnect behavior
+
+The Windows CI job additionally runs a native MsQuic 2.5.8 Schannel loopback:
+two current-user CNG identities exchange bounded offers, confirm the same code,
+reconnect with mutual pins, and transfer a reliable DeskLink packet. The test
+deletes both temporary identities on success or failure.
 
 Those are explicitly production integration stages rather than silently assumed complete features.

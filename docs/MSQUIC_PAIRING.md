@@ -54,6 +54,32 @@ certificate-received callback and defer built-in validation so DeskLink can
 complete validation from its pin. Servers must require client authentication.
 Privileged messages must not use 0-RTT.
 
+`MsQuicBootstrap` copies the bounded DER leaf during the callback, returns
+`QUIC_STATUS_PENDING`, validates on a separate worker, and completes the
+handshake with `ConnectionCertificateValidationComplete()`. Trusted sessions
+are promoted to `MsQuicTransportEndpoint` only after the stored pin matches.
+
+## Bootstrap and pairing lanes
+
+The bootstrap owns the MsQuic API table, registration, four client/server
+configurations, listener, and outgoing connections. It uses separate ALPNs:
+
+```text
+desklink/pair/1     one provisional, bounded PairingOffer exchange
+desklink/session/1  mutually pinned operational DeskLink session
+```
+
+The pairing lane is available only while the local manual window is open. It
+accepts one bidirectional stream, one frame no larger than 153 bytes, valid
+UTF-8 display names, and no 0-RTT. The offer's certificate pin must match the
+exact TLS leaf presented on that connection before the UI callback receives
+the six-digit candidate. Dropping or rejecting the callback closes the
+connection. Confirmation persists trust and also closes the provisional
+connection; the peer must reconnect on the operational ALPN.
+
+Inbound connection attempts are limited per source address. Pairing has a
+separate stricter limiter, and both limiter key tables are bounded.
+
 ## Adapter behavior
 
 The optional `desklink_msquic` target maps:
@@ -85,24 +111,24 @@ cmake -S . -B build-msquic `
 cmake --build build-msquic --config Release --target desklink_msquic
 ```
 
-`DESKLINK_MSQUIC_ROOT` must contain either `include/msquic.h` or
-`src/inc/msquic.h`. If a prebuilt `msquic` library is present under `lib` or
-`bin`, CMake links it; otherwise the static adapter target still compiles for an
-application that supplies the MsQuic API table separately.
+`DESKLINK_MSQUIC_ROOT` may point to a source checkout or the official
+`Microsoft.Native.Quic.MsQuic.Schannel` NuGet package. If a prebuilt library is
+present, CMake also builds the native pairing/session loopback test and copies
+`msquic.dll` beside it.
 
-## Remaining connection bootstrap
+The Schannel package requires Windows 11 or Windows Server 2022 or newer for
+QUIC/TLS 1.3. Windows 10 remains useful as a cross-build worker but cannot run
+the Schannel loopback.
 
-This slice deliberately does not yet provide the executable listener/client
-bootstrap. The next transport change must add:
+## Remaining physical integration
 
-- device-certificate creation and private-key storage through Windows CNG
-- MsQuic registration/configuration ownership
-- server listener and client connection factories
-- the bounded wire exchange for `PairingOffer`
-- deferred certificate-validation completion in the connection callback
-- connection-attempt and pairing-attempt rate limits
-- a two-PC LAN integration test including cable removal and reconnect
+- pairing confirmation UI and current-user control surface
+- two-PC LAN test on supported Windows versions
+- firewall-scoped listener deployment for Private/Domain profiles
+- cable removal while input is held, lease cleanup, and reconnect
+- automatic lease renewal and fresh session-nonce verification after reconnect
 
-Until those are implemented, the adapter consumes an already-established
-MsQuic connection and optional reliable stream; it does not independently open
-or listen for connections.
+The automated native loopback proves device-certificate reload, provisional
+pairing, user-code confirmation, mutual pin validation, reconnect, and a real
+reliable DeskLink packet over MsQuic. It does not substitute for physical-link
+failure injection.
