@@ -108,6 +108,30 @@ host mode after emergency=1
 
 ---
 
+## Physical pairing-control check
+
+On two Windows 11 or Windows Server 2022-or-newer PCs on the same trusted LAN,
+build `desklink_pair` against the pinned Schannel package. Start the listener on
+the PC that should accept remote input:
+
+```powershell
+desklink_pair.exe listen 43821 --grant-input
+```
+
+Then connect from the other PC:
+
+```powershell
+desklink_pair.exe pair <listener-ip> 43821
+```
+
+Verify that both prompts show the same six-digit code and the intended
+capability consequence before selecting Yes. Repeat after restarting both tools
+to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
+exception, if needed, must be created manually and limited to the appropriate
+Private or Domain network profile.
+
+---
+
 ## Limitations of this validation
 
 This validation does not prove:

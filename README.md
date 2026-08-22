@@ -28,6 +28,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Current-user CNG device key and self-signed certificate lifecycle
 - MsQuic listener/client bootstrap with mutually pinned certificate validation
 - Dedicated bounded pairing ALPN and per-address attempt limits
+- Native Windows pairing control with explicit two-PC code confirmation
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
@@ -38,7 +39,6 @@ This repository is a **reference foundation implementation**, not a finished pro
 
 The following are intentionally kept behind interfaces and are the next production layers:
 
-- Pairing confirmation UI
 - Two-PC MsQuic failure-injection and reconnect validation
 - LAN discovery/mDNS
 - Windows Raw Input capture and minimal low-level suppression hooks
@@ -78,6 +78,27 @@ QUIC/TLS 1.3 path; supporting it would require the separate OpenSSL package and
 credential model.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
+
+### Pair two Windows PCs
+
+Build with the pinned MsQuic package, then open the same Private/Domain-profile
+UDP port on both PCs as appropriate for the local network. On the receiving PC:
+
+```powershell
+desklink_pair.exe listen 43821 --grant-input
+```
+
+On the initiating PC:
+
+```powershell
+desklink_pair.exe pair 192.168.1.25 43821
+```
+
+Both PCs show a native confirmation prompt. Accept only when the same six-digit
+code appears on both machines. `--grant-input` grants the newly paired remote PC
+permission to inject input on the PC where that flag is supplied; it is omitted
+by default. Trust is stored under the current user's local application-data
+directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
 ## Repository layout
 

@@ -122,7 +122,6 @@ the Schannel loopback.
 
 ## Remaining physical integration
 
-- pairing confirmation UI and current-user control surface
 - two-PC LAN test on supported Windows versions
 - firewall-scoped listener deployment for Private/Domain profiles
 - cable removal while input is held, lease cleanup, and reconnect
@@ -132,3 +131,24 @@ The automated native loopback proves device-certificate reload, provisional
 pairing, user-code confirmation, mutual pin validation, reconnect, and a real
 reliable DeskLink packet over MsQuic. It does not substitute for physical-link
 failure injection.
+
+## Windows pairing control
+
+The optional `desklink_pair` executable is the first current-user control
+surface. It loads or creates the persistent CNG device identity, opens the
+DPAPI-protected trust store in `%LOCALAPPDATA%\DeskLink`, and runs one explicit
+five-minute pairing operation over `desklink/pair/1`.
+
+```powershell
+# PC that will accept the connection and grant remote input injection
+desklink_pair.exe listen 43821 --grant-input
+
+# Other PC; no capability is granted locally unless the flag is also supplied
+desklink_pair.exe pair 192.168.1.25 43821
+```
+
+Each side independently displays the remote display name, the transcript-derived
+six-digit code, and the exact input capability consequence. The default button
+is No. Confirmation never occurs automatically, and dismissing either prompt
+rejects the provisional connection. The tool does not create a firewall rule or
+listen beyond the bounded pairing operation.
