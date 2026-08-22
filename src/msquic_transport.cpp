@@ -93,6 +93,7 @@ void HandleReliableBytes(const StateHolder& SharedState, ByteSpan Bytes) {
         } else {
             SharedState->ReliableBuffer.insert(
                 SharedState->ReliableBuffer.end(), Bytes.begin(), Bytes.end());
+            if (!SharedState->ReliableHandler) return;
             while (SharedState->ReliableBuffer.size() >= 12) {
                 const auto PayloadSize = ReadPayloadSize(SharedState->ReliableBuffer);
                 if (PayloadSize > kMaxReliablePayload) {
@@ -254,9 +255,11 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
     const QUIC_API_TABLE* Api,
     HQUIC Connection,
     HQUIC ReliableStream,
-    TransportPeerInfo Peer) {
+    TransportPeerInfo Peer,
+    ByteBuffer InitialReliableBytes) {
     if (!Api || !Connection || !Peer.authenticated || !Peer.encrypted ||
-        !ParseFingerprint(Peer.identity.public_key_fingerprint)) {
+        !ParseFingerprint(Peer.identity.public_key_fingerprint) ||
+        InitialReliableBytes.size() > kEnvelopeSize + kMaxReliablePayload) {
         return {};
     }
 
@@ -265,6 +268,7 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
     SharedState->Connection = Connection;
     SharedState->ReliableStream = ReliableStream;
     SharedState->Peer = std::move(Peer);
+    SharedState->ReliableBuffer = std::move(InitialReliableBytes);
     SharedState->SelfHold = SharedState;
     Api->SetCallbackHandler(
         Connection, reinterpret_cast<void*>(ConnectionCallback), SharedState.get());
@@ -359,8 +363,15 @@ bool MsQuicTransportEndpoint::send_datagram(ByteBuffer Packet) {
 }
 
 void MsQuicTransportEndpoint::set_reliable_handler(ReceiveHandler Handler) {
-    std::scoped_lock Lock(State_->Mutex);
-    if (!State_->Closed) State_->ReliableHandler = std::move(Handler);
+    bool ProcessBuffered = false;
+    {
+        std::scoped_lock Lock(State_->Mutex);
+        if (!State_->Closed) {
+            State_->ReliableHandler = std::move(Handler);
+            ProcessBuffered = State_->ReliableHandler && !State_->ReliableBuffer.empty();
+        }
+    }
+    if (ProcessBuffered) HandleReliableBytes(State_, {});
 }
 
 void MsQuicTransportEndpoint::set_datagram_handler(ReceiveHandler Handler) {

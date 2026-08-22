@@ -19,6 +19,10 @@ constexpr QUIC_UINT62 kBootstrapError = 0x444C1001u;
 constexpr QUIC_UINT62 kPairingRejectedError = 0x444C1002u;
 constexpr std::size_t kMaximumCertificateSize = 16u * 1024u;
 constexpr std::size_t kMaximumServerNameSize = 253;
+constexpr std::size_t kSessionPrefaceSize = 16;
+constexpr std::size_t kMaximumSessionBuffered =
+    kSessionPrefaceSize + 36u + kMaxReliablePayload;
+constexpr std::array<std::uint8_t, 4> kSessionPrefaceMagic{'D', 'L', 'S', 'N'};
 
 enum class ConnectionPurpose {
     Trusted,
@@ -43,16 +47,21 @@ struct BootstrapConnectionState {
     std::shared_ptr<BootstrapConnectionState> SelfHold;
     HQUIC Connection{};
     HQUIC PairingStream{};
+    HQUIC SessionStream{};
     ConnectionPurpose Purpose{ConnectionPurpose::Trusted};
     std::optional<MachineId> ExpectedMachine;
     std::optional<Sha256Digest> PresentedPin;
     std::optional<TransportPeerInfo> TrustedPeer;
     PairingFrameDecoder Decoder;
+    std::array<std::uint8_t, kSessionPrefaceSize> SessionPreface{};
+    ByteBuffer SessionBuffer;
     std::mutex Mutex;
     bool Outgoing{};
     bool ValidationStarted{};
     bool OfferSent{};
     bool OfferDelivered{};
+    bool SessionSendPending{};
+    bool EndpointDelivered{};
     bool Closed{};
 };
 
@@ -133,6 +142,8 @@ void ShutdownConnection(const ConnectionHolder& State,
 QUIC_STATUS QUIC_API BootstrapConnectionCallback(
     HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event);
 QUIC_STATUS QUIC_API PairingStreamCallback(
+    HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event);
+QUIC_STATUS QUIC_API SessionStreamCallback(
     HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event);
 
 } // namespace
@@ -460,16 +471,37 @@ void HandleCertificateEvent(const ConnectionHolder& State,
     }
 }
 
-void DeliverTrustedEndpoint(const ConnectionHolder& State) {
+std::uint64_t ReadSessionNonce(ByteSpan Bytes) noexcept {
+    std::uint64_t Result = 0;
+    for (std::size_t Index = 8; Index < kSessionPrefaceSize; ++Index) {
+        Result = (Result << 8u) | Bytes[Index];
+    }
+    return Result;
+}
+
+bool IsValidSessionPreface(ByteSpan Bytes) noexcept {
+    return Bytes.size() >= kSessionPrefaceSize &&
+           std::equal(kSessionPrefaceMagic.begin(), kSessionPrefaceMagic.end(),
+                      Bytes.begin()) &&
+           Bytes[4] == 1u && Bytes[5] == 0u && Bytes[6] == 0u && Bytes[7] == 0u &&
+           ReadSessionNonce(Bytes) != 0;
+}
+
+void DeliverTrustedEndpoint(const ConnectionHolder& State,
+                            HQUIC Stream,
+                            std::uint64_t SessionNonce,
+                            ByteBuffer InitialReliableBytes) {
     HQUIC Connection{};
     bool Outgoing = false;
     TransportPeerInfo Peer;
     bool MissingPeer = false;
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || !State->Connection || !State->TrustedPeer) {
+        if (State->Closed || State->EndpointDelivered || !State->Connection ||
+            !State->TrustedPeer || !Stream || SessionNonce == 0) {
             MissingPeer = true;
         } else {
+            State->EndpointDelivered = true;
             Connection = State->Connection;
             Outgoing = State->Outgoing;
             Peer = *State->TrustedPeer;
@@ -480,7 +512,8 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State) {
         return;
     }
     auto Endpoint = MsQuicTransportEndpoint::Adopt(
-        State->Owner->Api, Connection, nullptr, std::move(Peer));
+        State->Owner->Api, Connection, Stream, std::move(Peer),
+        std::move(InitialReliableBytes));
     if (!Endpoint) {
         ShutdownConnection(State);
         return;
@@ -488,16 +521,12 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State) {
     {
         std::scoped_lock Lock(State->Mutex);
         State->Connection = nullptr;
+        State->SessionStream = nullptr;
         State->Closed = true;
         State->SelfHold.reset();
     }
-    if (Outgoing && !Endpoint->OpenReliableStream()) {
-        Endpoint->close();
-        ReportFailure(State->Owner, "failed to open the DeskLink reliable stream");
-        return;
-    }
 
-    std::function<void(std::shared_ptr<MsQuicTransportEndpoint>)> Handler;
+    std::function<void(MsQuicBootstrapHandlers::TrustedSession)> Handler;
     {
         std::scoped_lock Lock(State->Owner->Mutex);
         Handler = State->Owner->Handlers.Connected;
@@ -507,9 +536,164 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State) {
         return;
     }
     try {
-        Handler(Endpoint);
+        Handler(MsQuicBootstrapHandlers::TrustedSession{
+            std::move(Endpoint), SessionNonce, Outgoing});
     } catch (...) {
-        Endpoint->close();
+        // The moved endpoint is destroyed and closes the connection.
+    }
+}
+
+bool OpenSessionStream(const ConnectionHolder& State) {
+    std::array<std::uint8_t, 8> Random{};
+    if (!State->Owner->Crypto.FillRandom(Random)) return false;
+    std::uint64_t SessionNonce = 0;
+    for (const auto Byte : Random) SessionNonce = (SessionNonce << 8u) | Byte;
+    if (SessionNonce == 0) return false;
+
+    HQUIC Connection{};
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->SessionStream) return false;
+        Connection = State->Connection;
+        std::copy(kSessionPrefaceMagic.begin(), kSessionPrefaceMagic.end(),
+                  State->SessionPreface.begin());
+        State->SessionPreface[4] = 1u;
+        for (std::size_t Index = 0; Index < Random.size(); ++Index) {
+            State->SessionPreface[8 + Index] = Random[Index];
+        }
+    }
+
+    HQUIC Stream{};
+    if (QUIC_FAILED(State->Owner->Api->StreamOpen(
+            Connection, QUIC_STREAM_OPEN_FLAG_NONE, SessionStreamCallback,
+            State.get(), &Stream))) {
+        return false;
+    }
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->SessionStream) {
+            State->Owner->Api->StreamClose(Stream);
+            return false;
+        }
+        State->SessionStream = Stream;
+    }
+    if (QUIC_FAILED(State->Owner->Api->StreamStart(
+            Stream, QUIC_STREAM_START_FLAG_IMMEDIATE))) {
+        std::scoped_lock Lock(State->Mutex);
+        State->SessionStream = nullptr;
+        State->Owner->Api->StreamClose(Stream);
+        return false;
+    }
+
+    QUIC_BUFFER Buffer{
+        static_cast<std::uint32_t>(State->SessionPreface.size()),
+        State->SessionPreface.data()};
+    {
+        std::scoped_lock Lock(State->Mutex);
+        State->SessionSendPending = true;
+    }
+    if (QUIC_FAILED(State->Owner->Api->StreamSend(
+            Stream, &Buffer, 1, QUIC_SEND_FLAG_NONE, nullptr))) {
+        std::scoped_lock Lock(State->Mutex);
+        State->SessionSendPending = false;
+        return false;
+    }
+    return true;
+}
+
+void HandleSessionBytes(const ConnectionHolder& State, ByteSpan Bytes) {
+    bool Deliver = false;
+    bool Invalid = false;
+    std::uint64_t SessionNonce = 0;
+    HQUIC Stream{};
+    ByteBuffer InitialReliableBytes;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->EndpointDelivered ||
+            Bytes.size() > kMaximumSessionBuffered ||
+            State->SessionBuffer.size() > kMaximumSessionBuffered - Bytes.size()) {
+            Invalid = !State->Closed && !State->EndpointDelivered;
+        } else {
+            State->SessionBuffer.insert(
+                State->SessionBuffer.end(), Bytes.begin(), Bytes.end());
+            if (!State->Outgoing &&
+                State->SessionBuffer.size() >= kSessionPrefaceSize) {
+                if (IsValidSessionPreface(State->SessionBuffer)) {
+                    SessionNonce = ReadSessionNonce(State->SessionBuffer);
+                    Stream = State->SessionStream;
+                    InitialReliableBytes.assign(
+                        State->SessionBuffer.begin() +
+                            static_cast<std::ptrdiff_t>(kSessionPrefaceSize),
+                        State->SessionBuffer.end());
+                    Deliver = true;
+                } else {
+                    Invalid = true;
+                }
+            }
+        }
+    }
+    if (Deliver) {
+        DeliverTrustedEndpoint(
+            State, Stream, SessionNonce, std::move(InitialReliableBytes));
+    } else if (Invalid) {
+        ShutdownConnection(State);
+    }
+}
+
+QUIC_STATUS QUIC_API SessionStreamCallback(
+    HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event) {
+    const auto State = HoldConnection(Context);
+    if (!State) return QUIC_STATUS_SUCCESS;
+    switch (Event->Type) {
+    case QUIC_STREAM_EVENT_RECEIVE:
+        if ((Event->RECEIVE.Flags & QUIC_RECEIVE_FLAG_0_RTT) != 0) {
+            ShutdownConnection(State);
+            return QUIC_STATUS_SUCCESS;
+        }
+        {
+            ByteBuffer Bytes;
+            std::size_t Total = 0;
+            for (std::uint32_t Index = 0; Index < Event->RECEIVE.BufferCount; ++Index) {
+                Total += Event->RECEIVE.Buffers[Index].Length;
+            }
+            if (Total > kMaximumSessionBuffered) {
+                ShutdownConnection(State);
+                return QUIC_STATUS_SUCCESS;
+            }
+            Bytes.reserve(Total);
+            for (std::uint32_t Index = 0; Index < Event->RECEIVE.BufferCount; ++Index) {
+                const auto& Buffer = Event->RECEIVE.Buffers[Index];
+                Bytes.insert(Bytes.end(), Buffer.Buffer, Buffer.Buffer + Buffer.Length);
+            }
+            HandleSessionBytes(State, Bytes);
+        }
+        return QUIC_STATUS_SUCCESS;
+    case QUIC_STREAM_EVENT_SEND_COMPLETE:
+        if (State->Outgoing && Event->SEND_COMPLETE.ClientContext == nullptr) {
+            std::uint64_t SessionNonce = 0;
+            ByteBuffer InitialReliableBytes;
+            {
+                std::scoped_lock Lock(State->Mutex);
+                if (!State->SessionSendPending || State->Closed) {
+                    return QUIC_STATUS_SUCCESS;
+                }
+                State->SessionSendPending = false;
+                SessionNonce = ReadSessionNonce(State->SessionPreface);
+                InitialReliableBytes = std::move(State->SessionBuffer);
+            }
+            DeliverTrustedEndpoint(
+                State, Stream, SessionNonce, std::move(InitialReliableBytes));
+        }
+        return QUIC_STATUS_SUCCESS;
+    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
+        {
+            std::scoped_lock Lock(State->Mutex);
+            if (State->SessionStream == Stream) State->SessionStream = nullptr;
+        }
+        State->Owner->Api->StreamClose(Stream);
+        return QUIC_STATUS_SUCCESS;
+    default:
+        return QUIC_STATUS_SUCCESS;
     }
 }
 
@@ -528,7 +712,10 @@ QUIC_STATUS QUIC_API BootstrapConnectionCallback(
         return QUIC_STATUS_PENDING;
     case QUIC_CONNECTION_EVENT_CONNECTED:
         if (State->Purpose == ConnectionPurpose::Trusted) {
-            DeliverTrustedEndpoint(State);
+            if (State->Outgoing && !OpenSessionStream(State)) {
+                ReportFailure(State->Owner, "failed to negotiate a fresh session nonce");
+                ShutdownConnection(State);
+            }
         } else if (State->Outgoing && !OpenPairingStream(State)) {
             ShutdownConnection(State);
         }
@@ -538,21 +725,33 @@ QUIC_STATUS QUIC_API BootstrapConnectionCallback(
             bool Accept = false;
             {
                 std::scoped_lock Lock(State->Mutex);
-                if (!State->Closed && State->Purpose == ConnectionPurpose::Pairing &&
-                    !State->PairingStream &&
+                if (!State->Closed && !State->Outgoing &&
                     (Event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_0_RTT) == 0) {
-                    State->PairingStream = Event->PEER_STREAM_STARTED.Stream;
-                    Accept = true;
+                    if (State->Purpose == ConnectionPurpose::Pairing &&
+                        !State->PairingStream) {
+                        State->PairingStream = Event->PEER_STREAM_STARTED.Stream;
+                        Accept = true;
+                    } else if (State->Purpose == ConnectionPurpose::Trusted &&
+                               !State->SessionStream) {
+                        State->SessionStream = Event->PEER_STREAM_STARTED.Stream;
+                        Accept = true;
+                    }
                 }
             }
             if (!Accept) {
                 RejectStream(State, Event->PEER_STREAM_STARTED.Stream);
                 return QUIC_STATUS_SUCCESS;
             }
-            State->Owner->Api->SetCallbackHandler(
-                Event->PEER_STREAM_STARTED.Stream,
-                reinterpret_cast<void*>(PairingStreamCallback), State.get());
-            if (!SendPairingOffer(State)) ShutdownConnection(State);
+            if (State->Purpose == ConnectionPurpose::Pairing) {
+                State->Owner->Api->SetCallbackHandler(
+                    Event->PEER_STREAM_STARTED.Stream,
+                    reinterpret_cast<void*>(PairingStreamCallback), State.get());
+                if (!SendPairingOffer(State)) ShutdownConnection(State);
+            } else {
+                State->Owner->Api->SetCallbackHandler(
+                    Event->PEER_STREAM_STARTED.Stream,
+                    reinterpret_cast<void*>(SessionStreamCallback), State.get());
+            }
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:

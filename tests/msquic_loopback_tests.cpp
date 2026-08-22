@@ -31,7 +31,7 @@ struct Results {
     std::mutex Mutex;
     std::condition_variable Changed;
     std::vector<std::shared_ptr<desklink::MsQuicPairingSession>> PairingSessions;
-    std::vector<std::shared_ptr<desklink::MsQuicTransportEndpoint>> Endpoints;
+    std::vector<desklink::MsQuicBootstrapHandlers::TrustedSession> TrustedSessions;
     std::vector<std::string> Failures;
 };
 
@@ -42,7 +42,7 @@ bool WaitFor(Results& Shared,
     std::unique_lock Lock(Shared.Mutex);
     return Shared.Changed.wait_for(Lock, Timeout, [&] {
         return Shared.PairingSessions.size() >= PairingCount &&
-               Shared.Endpoints.size() >= EndpointCount;
+               Shared.TrustedSessions.size() >= EndpointCount;
     });
 }
 
@@ -55,10 +55,10 @@ desklink::MsQuicBootstrapHandlers MakeHandlers(Results& Shared) {
         }
         Shared.Changed.notify_all();
     };
-    Handlers.Connected = [&](std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint) {
+    Handlers.Connected = [&](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         {
             std::scoped_lock Lock(Shared.Mutex);
-            Shared.Endpoints.push_back(std::move(Endpoint));
+            Shared.TrustedSessions.push_back(std::move(Session));
         }
         Shared.Changed.notify_all();
     };
@@ -153,21 +153,34 @@ void RunLoopback(const std::wstring& FirstKeyName,
 
     std::shared_ptr<MsQuicTransportEndpoint> FirstEndpoint;
     std::shared_ptr<MsQuicTransportEndpoint> SecondEndpoint;
+    std::uint64_t SessionNonce = 0;
+    bool SawInitiator = false;
+    bool SawAcceptor = false;
     {
         std::scoped_lock Lock(Shared.Mutex);
-        for (const auto& Endpoint : Shared.Endpoints) {
-            const auto Peer = Endpoint->peer_info();
+        CHECK(Shared.TrustedSessions.size() == 2);
+        for (const auto& Session : Shared.TrustedSessions) {
+            CHECK(Session.SessionNonce != 0);
+            if (SessionNonce == 0) SessionNonce = Session.SessionNonce;
+            CHECK(Session.SessionNonce == SessionNonce);
+            SawInitiator = SawInitiator || Session.Initiator;
+            SawAcceptor = SawAcceptor || !Session.Initiator;
+            const auto Peer = Session.Endpoint->peer_info();
             CHECK(Peer.authenticated && Peer.encrypted);
             if (Peer.identity.machine_id == SecondIdentity.machine_id) {
-                FirstEndpoint = Endpoint;
+                CHECK(!Session.Initiator);
+                FirstEndpoint = Session.Endpoint;
             } else if (Peer.identity.machine_id == FirstIdentity.machine_id) {
-                SecondEndpoint = Endpoint;
+                CHECK(Session.Initiator);
+                SecondEndpoint = Session.Endpoint;
             }
         }
         CHECK(Shared.Failures.empty());
     }
     CHECK(FirstEndpoint);
     CHECK(SecondEndpoint);
+    CHECK(SawInitiator);
+    CHECK(SawAcceptor);
 
     std::mutex ReceiveMutex;
     std::condition_variable ReceiveChanged;
@@ -182,7 +195,7 @@ void RunLoopback(const std::wstring& FirstKeyName,
         ReceiveChanged.notify_all();
     });
     EnvelopeHeader Header;
-    Header.session_nonce = 0x1234;
+    Header.session_nonce = SessionNonce;
     Header.epoch = 1;
     Header.sequence = 1;
     CHECK(SecondEndpoint->send_reliable(
@@ -195,6 +208,26 @@ void RunLoopback(const std::wstring& FirstKeyName,
 
     FirstEndpoint->close();
     SecondEndpoint->close();
+    {
+        std::scoped_lock Lock(Shared.Mutex);
+        Shared.TrustedSessions.clear();
+    }
+
+    CHECK(Second->ConnectTrusted(
+        "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id));
+    CHECK(WaitFor(Shared, 0, 2, std::chrono::seconds(10)));
+    {
+        std::scoped_lock Lock(Shared.Mutex);
+        CHECK(Shared.TrustedSessions.size() == 2);
+        const auto ReconnectNonce = Shared.TrustedSessions.front().SessionNonce;
+        CHECK(ReconnectNonce != 0);
+        CHECK(ReconnectNonce != SessionNonce);
+        for (const auto& Session : Shared.TrustedSessions) {
+            CHECK(Session.SessionNonce == ReconnectNonce);
+            Session.Endpoint->close();
+        }
+        Shared.TrustedSessions.clear();
+    }
     First->Close();
     Second->Close();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));

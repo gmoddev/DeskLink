@@ -130,6 +130,9 @@ to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
 exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
+The native MsQuic loopback additionally verifies that both trusted endpoints
+receive the same nonzero session nonce and that reconnecting rotates it.
+
 ---
 
 ## Limitations of this validation

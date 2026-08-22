@@ -27,6 +27,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.5.8
 - Current-user CNG device key and self-signed certificate lifecycle
 - MsQuic listener/client bootstrap with mutually pinned certificate validation
+- Fresh per-connection session nonce negotiation inside pinned TLS
 - Dedicated bounded pairing ALPN and per-address attempt limits
 - Native Windows pairing control with explicit two-PC code confirmation
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
