@@ -51,6 +51,29 @@ No AddressSanitizer or UndefinedBehaviorSanitizer failure was reported by the te
 
 ---
 
+## Independent remote revalidation
+
+The public repository was cloned and rebuilt on 2026-08-21 using Docker Desktop
+on a separate Windows PC. The source was mounted read-only into disposable Linux
+containers.
+
+Release validation passed with both toolchains:
+
+| Toolchain | CMake | Result |
+|---|---:|---|
+| GCC 15.2.0 | 4.2.3 | Build, tests, and simulation passed |
+| Clang 22.1.3 | 4.2.3 | Build and tests passed |
+
+The GCC build was repeated with AddressSanitizer and UndefinedBehaviorSanitizer.
+All tests passed with no sanitizer failure reported.
+
+The remote Windows host did not have CMake or the Visual Studio C++ workload
+installed. GitHub Actions subsequently built and tested the project with MSVC
+on `windows-latest`, including compilation of the native `desklink_windows`
+target.
+
+---
+
 ## Simulation output
 
 The simulation demonstrates:
