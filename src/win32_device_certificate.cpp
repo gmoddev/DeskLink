@@ -116,6 +116,11 @@ NCRYPT_KEY_HANDLE OpenOrCreateKey(NCRYPT_PROV_HANDLE Provider,
         NCryptDeleteKey(Key, 0);
         return 0;
     }
+    NCryptFreeObject(Key);
+    Key = 0;
+    if (NCryptOpenKey(Provider, &Key, KeyName.c_str(), 0, 0) != ERROR_SUCCESS) {
+        return 0;
+    }
     return Key;
 }
 
@@ -132,9 +137,15 @@ PCCERT_CONTEXT CreateCertificate(NCRYPT_KEY_HANDLE Key,
     KeyInfo.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
     CRYPT_ALGORITHM_IDENTIFIER Signature{};
     Signature.pszObjId = const_cast<char*>(szOID_RSA_SHA256RSA);
-    return CertCreateSelfSignCertificate(
+    auto* Certificate = CertCreateSelfSignCertificate(
         static_cast<HCRYPTPROV_OR_NCRYPT_KEY_HANDLE>(Key), &Subject, 0,
         &KeyInfo, &Signature, nullptr, nullptr, nullptr);
+    if (Certificate && !CertSetCertificateContextProperty(
+            Certificate, CERT_KEY_PROV_INFO_PROP_ID, 0, &KeyInfo)) {
+        CertFreeCertificateContext(Certificate);
+        return nullptr;
+    }
+    return Certificate;
 }
 
 } // namespace
@@ -158,9 +169,14 @@ std::optional<Win32DeviceCertificate> Win32DeviceCertificate::LoadOrCreate(
         NCRYPT_KEY_HANDLE Key = OpenOrCreateKey(Provider, KeyName, CreatedKey);
         PCCERT_CONTEXT Generated = Key ? CreateCertificate(Key, KeyName) : nullptr;
         PCCERT_CONTEXT Stored = nullptr;
-        const bool Added = Generated && CertAddCertificateContextToStore(
+        bool Added = Generated && CertAddCertificateContextToStore(
             Store, Generated, CERT_STORE_ADD_REPLACE_EXISTING, &Stored);
         if (Generated) CertFreeCertificateContext(Generated);
+        if (Added && !HasUsablePrivateKey(Stored)) {
+            CertDeleteCertificateFromStore(Stored);
+            Stored = nullptr;
+            Added = false;
+        }
         if (!Added && CreatedKey && Key) {
             NCryptDeleteKey(Key, 0);
             Key = 0;
