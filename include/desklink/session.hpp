@@ -2,6 +2,7 @@
 
 #include "desklink/agent.hpp"
 #include "desklink/host.hpp"
+#include "desklink/pairing.hpp"
 #include "desklink/transport.hpp"
 
 #include <cstdint>
@@ -21,6 +22,7 @@ class AgentSession {
 public:
     AgentSession(std::shared_ptr<ITransportEndpoint> transport,
                  AgentCoordinator& coordinator,
+                 const ITrustStore& TrustStore,
                  std::uint64_t session_nonce) noexcept;
     ~AgentSession();
 
@@ -37,6 +39,7 @@ private:
 
     std::shared_ptr<ITransportEndpoint> transport_;
     AgentCoordinator& coordinator_;
+    const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
     std::uint64_t response_sequence_{1};
     SessionStats stats_;
@@ -47,6 +50,7 @@ class HostSession {
 public:
     HostSession(std::shared_ptr<ITransportEndpoint> transport,
                 HostCoordinator& coordinator,
+                const ITrustStore& TrustStore,
                 std::uint64_t session_nonce) noexcept;
     ~HostSession();
 
@@ -67,6 +71,7 @@ private:
 
     std::shared_ptr<ITransportEndpoint> transport_;
     HostCoordinator& coordinator_;
+    const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
     SessionStats stats_;
     bool started_{};
