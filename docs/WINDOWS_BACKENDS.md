@@ -1,5 +1,14 @@
 # DeskLink Windows Backend Plan
 
+## Platform baseline
+
+Production Windows backends target Windows 11 or Windows Server 2022 or newer.
+The production transport is stock MsQuic/Schannel using DeskLink's existing
+non-exportable current-user CNG identity. Windows 10 is unsupported and receives
+no OpenSSL, identity-export, or reduced-security fallback. The complete support
+decision and future R&D boundary are recorded in
+[`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
+
 ## 1. Current Windows implementation
 
 The repository includes `Win32InputInjector` and the opt-in
@@ -38,9 +47,10 @@ Raw input should feed a bounded in-process queue.
 
 The current adapter registers keyboard/mouse `RIDEV_INPUTSINK` devices against
 a message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
-positions, and disables routing on overflow. Mouse wheel transport and stable
-display-ID mapping remain future protocol work; wheel events continue locally
-rather than being swallowed.
+positions, and disables routing on overflow. After snapshot reconciliation and
+the real two-PC failure matrix pass, stable display-ID mapping and mouse-wheel
+transport are the next input milestones. Until wheel transport is implemented,
+wheel events continue locally rather than being swallowed.
 
 ### Low-level hooks
 

@@ -266,6 +266,8 @@ Transport callbacks must hand already-bounded receive chunks to the session laye
 Recommended MsQuic configuration:
 
 - TLS 1.3
+- stock Schannel on Windows 11/Server 2022 or newer
+- existing non-exportable current-user CNG identity
 - peer certificate/public-key pinning after pairing
 - datagram receive enabled
 - 0-RTT disabled for privileged actions initially
@@ -373,8 +375,9 @@ The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
 session-nonce negotiation, and explicit Windows pairing control are now
 implemented. The manual serve/focus control now proves the trusted lease path.
 The opt-in Raw Input and suppression backend now supplies the physical input
-path. The next highest-value change is two-PC failure injection plus periodic
-input-state reconciliation.
+path. The next highest-value change is periodic input-state reconciliation,
+followed by two-PC failure injection on real Windows 11 systems. Stable
+multi-monitor mapping and mouse-wheel transport follow those gates.
 
 Acceptance criteria:
 

@@ -25,6 +25,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Stored peer certificate-pin enforcement for every operational session
 - Windows CNG randomness/SHA-256 and user-scoped DPAPI trust store
 - Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.5.8
+- Integrity-checked MsQuic runtime selection with Schannel as the production provider
 - Current-user CNG device key and self-signed certificate lifecycle
 - MsQuic listener/client bootstrap with mutually pinned certificate validation
 - Fresh per-connection session nonce negotiation inside pinned TLS
@@ -42,7 +43,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 
 The following are intentionally kept behind interfaces and are the next production layers:
 
-- Two-PC MsQuic failure-injection and reconnect validation
+- Input-state snapshot reconciliation
+- Two-PC Windows 11 MsQuic failure-injection and reconnect validation
+- Stable multi-monitor mapping
+- Mouse-wheel transport
 - LAN discovery/mDNS
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend
@@ -74,10 +78,12 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The official Schannel MsQuic runtime requires Windows 11 or Windows Server 2022
-or newer. Windows 10 can cross-build the adapter, but cannot run Schannel's
-QUIC/TLS 1.3 path; supporting it would require the separate OpenSSL package and
-credential model.
+DeskLink's production baseline is Windows 11 or Windows Server 2022 or newer.
+Production transport uses the stock MsQuic Schannel runtime and the existing
+non-exportable current-user CNG device identity. Windows 10 is explicitly
+unsupported; DeskLink does not replace or export the identity, downgrade TLS,
+or install an OpenSSL fallback to make that platform work. See
+[`docs/PLATFORM_SUPPORT.md`](docs/PLATFORM_SUPPORT.md).
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 
@@ -106,8 +112,9 @@ directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 `auto` is the default. The loader resolves `runtime/<provider>/msquic.dll`
 relative to the executable, verifies its build-pinned SHA-256 and MsQuic 2.5.8
 provider/version metadata, and never uses the current directory or `PATH`.
-The OpenSSL runtime and credential strategy are the next compatibility slice;
-an explicit OpenSSL request currently fails closed when that runtime is absent.
+Production packages include only the Schannel runtime. The OpenSSL selector is
+retained for diagnostics and separately approved future R&D; no OpenSSL runtime
+or credential fallback is implemented, so requests for it fail closed.
 
 After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
 On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires
@@ -154,6 +161,8 @@ docs/
     SECURITY.md
     PROTOCOL.md
     WINDOWS_BACKENDS.md
+    PLATFORM_SUPPORT.md
+    ROADMAP.md
     IMPLEMENTATION_STATUS.md
     VALIDATION.md
     REFERENCES.md

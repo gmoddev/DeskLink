@@ -130,6 +130,9 @@ to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
 exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
+Windows 10 is not a compatibility-validation target. It is explicitly
+unsupported rather than receiving an OpenSSL or reduced-security fallback.
+
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
 
@@ -151,6 +154,7 @@ This validation does not prove:
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
 - two-PC user-confirmed pairing and reconnect behavior
+- input-state snapshot recovery after a lost key/button transition
 
 The Windows CI job additionally runs a native MsQuic 2.5.8 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

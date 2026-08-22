@@ -117,20 +117,36 @@ integrity and native pairing/session loopback tests, and stages the pinned DLL
 under each target's `runtime/schannel` directory.
 
 The Schannel package requires Windows 11 or Windows Server 2022 or newer for
-QUIC/TLS 1.3. Windows 10 remains useful as a cross-build worker but cannot run
-the Schannel loopback.
+QUIC/TLS 1.3. These versions are DeskLink's production baseline. Windows 10 may
+remain useful as an isolated cross-build worker, but it is not a supported
+DeskLink transport target.
 
 DeskLink loads MsQuic from the application-owned
 `runtime/<provider>/msquic.dll` directory instead of relying on normal DLL
 search order. The binary is checked against its build-pinned SHA-256 before
 loading, then queried for MsQuic version and TLS provider. `auto` selects
-Schannel on Windows 11/Server 2022-or-newer and OpenSSL on older Windows. Until
-the OpenSSL credential slice is installed, that selection fails closed as an
-unavailable provider.
+Schannel on Windows 11/Server 2022-or-newer. The loader's OpenSSL selector is
+retained only for diagnostics and separately approved future R&D. Production
+packages do not include that runtime; Windows 10 and explicit OpenSSL requests
+therefore fail closed as unavailable rather than changing the CNG identity or
+certificate-validation policy.
+
+## Production platform decision
+
+Stock Schannel plus the existing non-exportable CNG device identity is the only
+production transport/security architecture. The Windows 10 compatibility path
+is closed for the current roadmap. DeskLink will not implement the MsQuic fork
+or OpenSSL CNG provider investigated for that platform at this stage.
+
+If Windows 10 is reconsidered, the preserved R&D direction is a new project
+based on MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG provider that delegates
+signing without exporting the key. It requires separate approval and must prove
+fail-closed peer validation before `CONNECTED`, stream acceptance, and session
+admission. See [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## Remaining physical integration
 
-- two-PC LAN test on supported Windows versions
+- two-PC LAN test on Windows 11/Server 2022-or-newer systems
 - firewall-scoped listener deployment for Private/Domain profiles
 - cable removal while input is held, lease cleanup, and reconnect
 - automatic lease renewal and fresh session-nonce verification after reconnect
