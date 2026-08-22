@@ -162,11 +162,22 @@ Pointer position is absolute and represents the latest desired position. This is
 ### InputStateSnapshot — type 23
 
 ```text
-key_bitmap              32 bytes
+key_bitmap_normal       32 bytes
+key_bitmap_extended     32 bytes
 mouse_button_bitmap      1 byte
 ```
 
-Reserved for periodic state reconciliation.
+Each key bitmap represents scan codes 0..255; scan code zero is reserved and
+must remain clear. The two bitmaps distinguish ordinary and Windows extended
+scan-code events. Mouse-button bits 0..4 represent Left, Right, Middle, X1, and
+X2; bits 5..7 are reserved and must remain zero.
+
+The Host sends this message periodically on the reliable lane under the current
+focus epoch. It is the authoritative state for DeskLink-routed input. The Agent
+first releases DeskLink-owned holds absent from the snapshot, then presses
+missing holds. Capability, session, active-lease, and epoch validation must
+succeed before reconciliation. A snapshot never adopts or releases input that
+DeskLink does not own.
 
 ### SetAudioGain — type 30
 

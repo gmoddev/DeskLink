@@ -24,6 +24,7 @@ public:
     [[nodiscard]] std::optional<ByteBuffer> key_event(KeyEventMessage event);
     [[nodiscard]] std::optional<ByteBuffer> mouse_button(MouseButtonMessage event);
     [[nodiscard]] std::optional<ByteBuffer> pointer_position(PointerPositionMessage event);
+    [[nodiscard]] std::optional<ByteBuffer> InputStateSnapshot();
 
     void emergency_fail_local() noexcept;
 
@@ -37,6 +38,7 @@ private:
     std::uint64_t next_focus_request_id_{1};
     std::uint64_t pending_focus_request_id_{};
     DeskMode desired_mode_{DeskMode::Roam};
+    InputStateSnapshotMessage InputState_{};
 };
 
 } // namespace desklink

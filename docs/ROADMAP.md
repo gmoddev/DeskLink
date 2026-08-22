@@ -7,19 +7,18 @@
 - mutually pinned MsQuic/Schannel pairing and operational sessions
 - integrity-checked runtime-selection foundation from PR #9 / `10147fe`
 - opt-in Raw Input capture, fail-local suppression, and `SendInput` injection
+- periodic reliable input-state reconciliation with owned-state convergence
 
 ## Current roadmap
 
 Work proceeds in this order:
 
-1. Implement periodic input-state snapshot reconciliation so lost or interrupted
-   key/button transitions converge to the authoritative Host state.
-2. Validate the complete input path on two real Windows 11 or Windows Server
+1. Validate the complete input path on two real Windows 11 or Windows Server
    2022-or-newer PCs, including cable removal, client termination, lease expiry,
    reconnect nonce rotation, stale epoch rejection, and Ctrl+Alt+Pause fail-local.
-3. Implement stable multi-monitor enumeration, identity, rectangle mapping, and
+2. Implement stable multi-monitor enumeration, identity, rectangle mapping, and
    topology-change invalidation before edge roaming.
-4. Implement bounded mouse-wheel transport without suppressing wheel input when
+3. Implement bounded mouse-wheel transport without suppressing wheel input when
    it cannot be forwarded safely.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC

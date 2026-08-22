@@ -19,6 +19,7 @@ endif()
 
 add_library(desklink_core
     src/protocol.cpp
+    src/input.cpp
     src/focus.cpp
     src/host.cpp
     src/session.cpp

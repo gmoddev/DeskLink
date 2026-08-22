@@ -5,7 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include <array>
+#include <type_traits>
 
 namespace desklink {
 namespace {
@@ -32,6 +32,7 @@ DWORD xbutton_data(MouseButtonId button) {
 } // namespace
 
 bool Win32InputInjector::inject_key(const KeyEventMessage& event) {
+    if (event.scan_code == 0 || event.scan_code > 255) return false;
     INPUT input{};
     input.type = INPUT_KEYBOARD;
     input.ki.wScan = event.scan_code;
@@ -41,10 +42,7 @@ bool Win32InputInjector::inject_key(const KeyEventMessage& event) {
 
     if (!send_one(input)) return false;
 
-    KeyState state{event.scan_code, event.extended};
-    if (event.down) owned_keys_.insert(state);
-    else owned_keys_.erase(state);
-    return true;
+    return SetInputSnapshotKey(OwnedState_, event.scan_code, event.extended, event.down);
 }
 
 bool Win32InputInjector::inject_button(const MouseButtonMessage& event) {
@@ -59,9 +57,7 @@ bool Win32InputInjector::inject_button(const MouseButtonMessage& event) {
     }
     if (!send_one(input)) return false;
 
-    if (event.down) owned_buttons_.insert(event.button);
-    else owned_buttons_.erase(event.button);
-    return true;
+    return SetInputSnapshotButton(OwnedState_, event.button, event.down);
 }
 
 bool Win32InputInjector::inject_pointer(const PointerPositionMessage& event) {
@@ -73,27 +69,51 @@ bool Win32InputInjector::inject_pointer(const PointerPositionMessage& event) {
     return send_one(input);
 }
 
-void Win32InputInjector::release_owned_state() noexcept {
-    for (const auto& key : owned_keys_) {
-        INPUT input{};
-        input.type = INPUT_KEYBOARD;
-        input.ki.wScan = key.scan_code;
-        input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-        if (key.extended) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
-        (void)send_one(input);
-    }
-    owned_keys_.clear();
-
-    for (const auto button : owned_buttons_) {
-        INPUT input{};
-        input.type = INPUT_MOUSE;
-        input.mi.dwFlags = button_flag(button, false);
-        if (button == MouseButtonId::X1 || button == MouseButtonId::X2) {
-            input.mi.mouseData = xbutton_data(button);
+bool Win32InputInjector::ReconcileState(const InputStateSnapshotMessage& Snapshot) {
+    try {
+        for (const auto& Transition : BuildInputStateTransitions(OwnedState_, Snapshot)) {
+            const bool Applied = std::visit([this](const auto& Event) {
+                using EventType = std::decay_t<decltype(Event)>;
+                if constexpr (std::is_same_v<EventType, KeyEventMessage>) {
+                    return inject_key(Event);
+                } else {
+                    return inject_button(Event);
+                }
+            }, Transition);
+            if (!Applied) return false;
         }
-        (void)send_one(input);
+        return true;
+    } catch (...) {
+        return false;
     }
-    owned_buttons_.clear();
+}
+
+void Win32InputInjector::release_owned_state() noexcept {
+    for (std::uint16_t ScanCode = 1; ScanCode <= 255; ++ScanCode) {
+        for (const bool Extended : {false, true}) {
+            if (!InputSnapshotKeyDown(OwnedState_, ScanCode, Extended)) continue;
+            INPUT Input{};
+            Input.type = INPUT_KEYBOARD;
+            Input.ki.wScan = ScanCode;
+            Input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+            if (Extended) Input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+            (void)send_one(Input);
+        }
+    }
+
+    for (std::uint8_t Raw = static_cast<std::uint8_t>(MouseButtonId::Left);
+         Raw <= static_cast<std::uint8_t>(MouseButtonId::X2); ++Raw) {
+        const auto Button = static_cast<MouseButtonId>(Raw);
+        if (!InputSnapshotButtonDown(OwnedState_, Button)) continue;
+        INPUT Input{};
+        Input.type = INPUT_MOUSE;
+        Input.mi.dwFlags = button_flag(Button, false);
+        if (Button == MouseButtonId::X1 || Button == MouseButtonId::X2) {
+            Input.mi.mouseData = xbutton_data(Button);
+        }
+        (void)send_one(Input);
+    }
+    OwnedState_ = {};
 }
 
 } // namespace desklink

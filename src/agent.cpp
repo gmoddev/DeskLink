@@ -35,6 +35,7 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         const auto& request = std::get<FocusRequestMessage>(packet.message);
+        if (focus_.focus() == FocusLocation::Remote) injector_.release_owned_state();
         const auto new_epoch = focus_.begin_remote_focus(clamp_lease(request.requested_lease_ms));
         if (new_epoch != 0) last_pointer_sequence_ = 0;
         return new_epoch == 0 ? AgentDecision::RejectedLease : AgentDecision::Accepted;
@@ -80,9 +81,9 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
                 last_pointer_sequence_ = packet.header.sequence;
                 return AgentDecision::Accepted;
             case MessageType::InputStateSnapshot:
-                // Reserved for receiver-side reconciliation. The foundation validates and authorizes it,
-                // but reconciliation is implemented by the concrete input backend.
-                return AgentDecision::Accepted;
+                return injector_.ReconcileState(
+                    std::get<InputStateSnapshotMessage>(packet.message))
+                    ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
             default:
                 break;
         }

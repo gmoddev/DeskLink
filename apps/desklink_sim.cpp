@@ -35,6 +35,10 @@ public:
                   << " x=" << event.normalized_x << " y=" << event.normalized_y << '\n';
         return true;
     }
+    bool ReconcileState(const desklink::InputStateSnapshotMessage&) override {
+        std::cout << "agent: reconcile DeskLink-owned key/button state\n";
+        return true;
+    }
     void release_owned_state() noexcept override {
         std::cout << "agent: release DeskLink-owned key/button state\n";
     }

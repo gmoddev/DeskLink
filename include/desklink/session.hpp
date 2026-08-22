@@ -67,6 +67,7 @@ public:
     [[nodiscard]] bool send_key(KeyEventMessage event);
     [[nodiscard]] bool send_button(MouseButtonMessage event);
     [[nodiscard]] bool send_pointer(PointerPositionMessage event);
+    [[nodiscard]] bool SendInputStateSnapshot();
     [[nodiscard]] bool RemoteFocused() const noexcept;
 
     [[nodiscard]] SessionStats stats() const noexcept;

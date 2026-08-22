@@ -154,7 +154,7 @@ This validation does not prove:
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
 - two-PC user-confirmed pairing and reconnect behavior
-- input-state snapshot recovery after a lost key/button transition
+- physical input-state snapshot recovery after an interrupted key/button transition
 
 The Windows CI job additionally runs a native MsQuic 2.5.8 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

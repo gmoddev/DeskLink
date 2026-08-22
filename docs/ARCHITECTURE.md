@@ -136,6 +136,15 @@ Reliable traffic includes:
 - mouse button down/up
 - reconciliation snapshots
 
+The Host records authoritative routed key/button state as events are accepted
+for transmission. A snapshot travels on the ordered reliable lane every 500 ms
+alongside lease renewal and distinguishes normal from extended Windows scan
+codes. The Agent validates capability, session, focus epoch, and lease before
+converging only its DeskLink-owned injected state. It releases stale holds
+before applying missing presses; local physical state is outside that ownership
+boundary. Snapshot-send failure uses the same fail-local path as lease-renewal
+failure.
+
 Datagrams include:
 
 - current pointer position
