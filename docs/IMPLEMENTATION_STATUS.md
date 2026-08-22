@@ -38,6 +38,7 @@ The current build proves the core invariants independently of Windows networking
 | Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
 | Connection rate limits | Done | Bounded per-address connection and pairing windows |
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
+| Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |

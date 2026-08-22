@@ -132,6 +132,18 @@ pairing, user-code confirmation, mutual pin validation, reconnect, and a real
 reliable DeskLink packet over MsQuic. It does not substitute for physical-link
 failure injection.
 
+## Trusted session preface
+
+After mutual certificate-pin validation under `desklink/session/1`, the
+initiator opens the single reliable stream and sends a bounded 16-byte `DLSN`
+version-1 preface containing a cryptographically random, nonzero 64-bit session
+nonce. The acceptor validates the preface before the transport endpoint is
+delivered. Both endpoint callbacks receive the same nonce and whether they
+initiated the connection, so `HostSession` and `AgentSession` can reject packets
+from previous connections. The preface and reliable stream reject 0-RTT data;
+early post-preface packets remain bounded and buffered until a receive handler
+is installed. Every reconnect negotiates a different nonce.
+
 ## Windows pairing control
 
 The optional `desklink_pair` executable is the first current-user control

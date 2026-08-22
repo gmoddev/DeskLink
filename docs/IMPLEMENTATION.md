@@ -368,10 +368,10 @@ Do not persist an active focus lease across process restart.
 
 ## 10. Recommended next code change
 
-The endpoint, device identity, pairing wire lane, MsQuic bootstrap, and explicit
-Windows pairing control are now implemented. The next highest-value change is
-fresh session-nonce negotiation and manual focus switching across two physical
-Windows 11 PCs.
+The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
+session-nonce negotiation, and explicit Windows pairing control are now
+implemented. The next highest-value change is manual focus switching across two
+physical Windows 11 PCs.
 
 Acceptance criteria:
 

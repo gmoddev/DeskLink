@@ -5,6 +5,7 @@
 #include "desklink/win32_device_certificate.hpp"
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,7 +33,13 @@ private:
 };
 
 struct MsQuicBootstrapHandlers {
-    std::function<void(std::shared_ptr<MsQuicTransportEndpoint>)> Connected;
+    struct TrustedSession {
+        std::shared_ptr<MsQuicTransportEndpoint> Endpoint;
+        std::uint64_t SessionNonce{};
+        bool Initiator{};
+    };
+
+    std::function<void(TrustedSession)> Connected;
     std::function<void(std::shared_ptr<MsQuicPairingSession>)> PairingOffered;
     std::function<void(std::string)> Failed;
 };

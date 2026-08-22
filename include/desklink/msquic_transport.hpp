@@ -21,7 +21,8 @@ public:
         const QUIC_API_TABLE* Api,
         HQUIC Connection,
         HQUIC ReliableStream,
-        TransportPeerInfo Peer);
+        TransportPeerInfo Peer,
+        ByteBuffer InitialReliableBytes = {});
 
     ~MsQuicTransportEndpoint() override;
 

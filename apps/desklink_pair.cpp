@@ -256,8 +256,8 @@ int Run(const CommandLine& Command) {
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         HandlePairingOffer(Result, std::move(Session), GrantInput);
     };
-    Handlers.Connected = [](std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint) {
-        Endpoint->close();
+    Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
+        Session.Endpoint->close();
     };
     Handlers.Failed = [Result](std::string Message) {
         {
