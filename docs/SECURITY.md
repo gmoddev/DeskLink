@@ -43,13 +43,13 @@ If a peer with `input.inject` is itself compromised, an attacker controlling tha
 
 ## 3. Pairing and identity
 
-Production pairing should use a persistent asymmetric device identity and an interactive verification step.
+The pairing core now requires a persistent certificate identity and an interactive verification step.
 
 Recommended flow:
 
-1. User explicitly opens a short pairing window on both PCs.
-2. Peers exchange ephemeral handshake material.
-3. Both derive a short authentication string from the handshake transcript.
+1. User explicitly opens a pairing window of no more than five minutes on both PCs.
+2. Peers exchange machine IDs, display names, certificate SHA-256 pins, and fresh 32-byte nonces.
+3. Both derive a six-digit authentication string from the canonical SHA-256 transcript.
 4. Both display the same code/words.
 5. User confirms the match.
 6. Each stores the peer's public identity/fingerprint.
@@ -57,7 +57,13 @@ Recommended flow:
 
 Discovery/mDNS only locates candidates. It must never create trust.
 
-Private identity material should use Windows CNG non-exportable keys where practical. Other secret/trust material can use current-user ACLs and user-scoped DPAPI.
+The Windows implementation uses CNG for cryptographic randomness/SHA-256 and
+current-user DPAPI for the bounded trust store. Device-certificate private-key
+creation remains to be implemented and should use a non-exportable CNG key.
+
+Operational `HostSession` and `AgentSession` startup independently checks the
+stored machine ID and certificate pin after the transport reports TLS
+authentication and encryption. A TLS-authenticated but unpaired peer is refused.
 
 ---
 

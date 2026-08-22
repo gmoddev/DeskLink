@@ -113,10 +113,10 @@ host mode after emergency=1
 This validation does not prove:
 
 - Windows `SendInput` source compiles on every supported MSVC/SDK combination
-- MsQuic behavior, because the MsQuic adapter is not yet implemented
+- end-to-end MsQuic listener/client behavior; the adapter currently consumes an established connection
 - Raw Input/hook timing behavior
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
-- pairing cryptography
+- two-PC user-confirmed pairing and reconnect behavior
 
 Those are explicitly production integration stages rather than silently assumed complete features.

@@ -8,12 +8,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(DESKLINK_BUILD_TESTS "Build DeskLink tests" ON)
 option(DESKLINK_BUILD_SIM "Build DeskLink simulation CLI" ON)
 option(DESKLINK_BUILD_WINDOWS_BACKENDS "Build Win32 backend adapters" ON)
+option(DESKLINK_BUILD_MSQUIC "Build the native MsQuic transport adapter" OFF)
+set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.5.8 distribution")
 
 add_library(desklink_core
     src/protocol.cpp
     src/focus.cpp
     src/host.cpp
     src/session.cpp
+    src/pairing.cpp
     src/agent.cpp
     src/audio.cpp
     src/in_memory_transport.cpp
@@ -29,12 +32,39 @@ else()
     target_compile_options(desklink_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
 endif()
 
+if(WIN32 AND DESKLINK_BUILD_MSQUIC)
+    find_path(DESKLINK_MSQUIC_INCLUDE_DIR msquic.h
+        HINTS
+            "${DESKLINK_MSQUIC_ROOT}/include"
+            "${DESKLINK_MSQUIC_ROOT}/src/inc"
+        REQUIRED)
+    find_library(DESKLINK_MSQUIC_LIBRARY NAMES msquic
+        HINTS
+            "${DESKLINK_MSQUIC_ROOT}/lib"
+            "${DESKLINK_MSQUIC_ROOT}/bin")
+
+    add_library(desklink_msquic src/msquic_transport.cpp)
+    target_include_directories(desklink_msquic
+        PUBLIC include "${DESKLINK_MSQUIC_INCLUDE_DIR}")
+    target_link_libraries(desklink_msquic
+        PUBLIC desklink_core
+        PRIVATE crypt32)
+    if(DESKLINK_MSQUIC_LIBRARY)
+        target_link_libraries(desklink_msquic PRIVATE "${DESKLINK_MSQUIC_LIBRARY}")
+    endif()
+    target_compile_definitions(desklink_msquic PRIVATE DESKLINK_MSQUIC_VERSION="2.5.8")
+    if(MSVC)
+        target_compile_options(desklink_msquic PRIVATE /W4 /permissive-)
+    endif()
+endif()
+
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
         src/win32_input.cpp
+        src/win32_pairing.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 bcrypt crypt32)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     endif()
@@ -49,5 +79,8 @@ if(DESKLINK_BUILD_TESTS)
     enable_testing()
     add_executable(desklink_tests tests/core_tests.cpp)
     target_link_libraries(desklink_tests PRIVATE desklink_core)
+    if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
+        target_link_libraries(desklink_tests PRIVATE desklink_windows)
+    endif()
     add_test(NAME desklink_tests COMMAND desklink_tests)
 endif()

@@ -21,6 +21,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded reorder/jitter buffer with silence concealment
 - Abstract transport interface
 - Authenticated/encrypted session gate and session-nonce binding
+- Manual pairing transcript with short authentication code confirmation
+- Stored peer certificate-pin enforcement for every operational session
+- Windows CNG randomness/SHA-256 and user-scoped DPAPI trust store
+- Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.5.8
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
@@ -31,7 +35,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 
 The following are intentionally kept behind interfaces and are the next production layers:
 
-- Native MsQuic transport adapter and certificate/pinned-key pairing
+- MsQuic listener/client bootstrap and device-certificate provisioning
+- Pairing offer wire exchange and confirmation UI
 - LAN discovery/mDNS
 - Windows Raw Input capture and minimal low-level suppression hooks
 - Monitor graph and edge roaming

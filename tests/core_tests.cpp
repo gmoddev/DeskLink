@@ -3,14 +3,19 @@
 #include "desklink/capabilities.hpp"
 #include "desklink/host.hpp"
 #include "desklink/input.hpp"
+#include "desklink/pairing.hpp"
 #include "desklink/protocol.hpp"
 #include "desklink/session.hpp"
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
+#ifdef _WIN32
+#include "desklink/win32_pairing.hpp"
+#endif
 
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -48,6 +53,63 @@ public:
     std::vector<desklink::PointerPositionMessage> pointers;
     int release_calls{};
 };
+
+class DeterministicPairingCrypto final : public desklink::IPairingCrypto {
+public:
+    explicit DeterministicPairingCrypto(std::uint8_t Seed) : Seed_(Seed) {}
+
+    bool FillRandom(std::span<std::uint8_t> Bytes) override {
+        for (auto& Byte : Bytes) Byte = Seed_++;
+        return true;
+    }
+
+    std::optional<desklink::Sha256Digest> HashSha256(desklink::ByteSpan Bytes) const override {
+        desklink::Sha256Digest Digest{};
+        std::uint32_t State = 2166136261u;
+        for (const auto Byte : Bytes) {
+            State ^= Byte;
+            State *= 16777619u;
+            Digest[State % Digest.size()] ^= static_cast<std::uint8_t>(State >> 16u);
+        }
+        for (std::size_t Index = 0; Index < Digest.size(); ++Index) {
+            State = State * 1664525u + 1013904223u;
+            Digest[Index] ^= static_cast<std::uint8_t>(State >> 24u);
+        }
+        return Digest;
+    }
+
+private:
+    std::uint8_t Seed_;
+};
+
+desklink::MachineId MakeMachineId(std::uint8_t Marker) {
+    desklink::MachineId Result{};
+    Result[0] = Marker;
+    Result[15] = static_cast<std::uint8_t>(Marker ^ 0xA5u);
+    return Result;
+}
+
+desklink::Sha256Digest MakeDigest(std::uint8_t Marker) {
+    desklink::Sha256Digest Result{};
+    for (std::size_t Index = 0; Index < Result.size(); ++Index) {
+        Result[Index] = static_cast<std::uint8_t>(Marker + Index);
+    }
+    return Result;
+}
+
+desklink::PeerIdentity MakeIdentity(std::uint8_t Marker, std::string Name) {
+    desklink::PeerIdentity Result;
+    Result.machine_id = MakeMachineId(Marker);
+    Result.display_name = std::move(Name);
+    Result.public_key_fingerprint = desklink::FormatFingerprint(MakeDigest(Marker));
+    return Result;
+}
+
+void SaveTrustedPeer(desklink::InMemoryTrustStore& Store,
+                     const desklink::PeerIdentity& Identity,
+                     desklink::CapabilitySet Capabilities = {}) {
+    CHECK(Store.SavePeer(desklink::TrustedPeer{Identity, Capabilities}));
+}
 
 void protocol_round_trip() {
     using namespace desklink;
@@ -289,11 +351,11 @@ void secure_session_end_to_end() {
     TransportPeerInfo host_view;
     host_view.authenticated = true;
     host_view.encrypted = true;
-    host_view.identity.display_name = "PC2";
+    host_view.identity = MakeIdentity(2, "PC2");
     TransportPeerInfo agent_view;
     agent_view.authenticated = true;
     agent_view.encrypted = true;
-    agent_view.identity.display_name = "PC1";
+    agent_view.identity = MakeIdentity(1, "PC1");
     auto pair = make_in_memory_transport_pair(host_view, agent_view);
 
     ManualClock clock;
@@ -301,11 +363,14 @@ void secure_session_end_to_end() {
     AgentCoordinator agent_core(clock, injector);
     CapabilitySet caps;
     caps.grant(Capability::InputInject);
-    agent_core.set_peer_capabilities(caps);
+    InMemoryTrustStore host_trust;
+    InMemoryTrustStore agent_trust;
+    SaveTrustedPeer(host_trust, host_view.identity);
+    SaveTrustedPeer(agent_trust, agent_view.identity, caps);
     HostCoordinator host_core(nonce);
 
-    AgentSession agent(pair.b, agent_core, nonce);
-    HostSession host(pair.a, host_core, nonce);
+    AgentSession agent(pair.b, agent_core, agent_trust, nonce);
+    HostSession host(pair.a, host_core, host_trust, nonce);
     CHECK(agent.start());
     CHECK(host.start());
     CHECK(host.focus_remote(750));
@@ -328,16 +393,191 @@ void insecure_transport_refused() {
     TransportPeerInfo insecure;
     insecure.authenticated = false;
     insecure.encrypted = true;
+    insecure.identity = MakeIdentity(3, "Untrusted transport");
     auto pair = make_in_memory_transport_pair(insecure, insecure);
     ManualClock clock;
     RecordingInjector injector;
     AgentCoordinator agent_core(clock, injector);
     HostCoordinator host_core(7);
-    AgentSession agent(pair.b, agent_core, 7);
-    HostSession host(pair.a, host_core, 7);
+    InMemoryTrustStore trust;
+    SaveTrustedPeer(trust, insecure.identity);
+    AgentSession agent(pair.b, agent_core, trust, 7);
+    HostSession host(pair.a, host_core, trust, 7);
     CHECK(!agent.start());
     CHECK(!host.start());
 }
+
+void UnpairedTransportIsRefused() {
+    using namespace desklink;
+    TransportPeerInfo peer;
+    peer.authenticated = true;
+    peer.encrypted = true;
+    peer.identity = MakeIdentity(4, "Unknown PC");
+    auto pair = make_in_memory_transport_pair(peer, peer);
+    ManualClock clock;
+    RecordingInjector injector;
+    AgentCoordinator agent_core(clock, injector);
+    HostCoordinator host_core(11);
+    InMemoryTrustStore empty_trust;
+    AgentSession agent(pair.b, agent_core, empty_trust, 11);
+    HostSession host(pair.a, host_core, empty_trust, 11);
+    CHECK(!agent.start());
+    CHECK(!host.start());
+}
+
+void PinnedIdentityMismatchIsRefused() {
+    using namespace desklink;
+    TransportPeerInfo presented;
+    presented.authenticated = true;
+    presented.encrypted = true;
+    presented.identity = MakeIdentity(5, "PC5");
+    auto pair = make_in_memory_transport_pair(presented, presented);
+
+    auto pinned = presented.identity;
+    pinned.public_key_fingerprint = FormatFingerprint(MakeDigest(99));
+    InMemoryTrustStore trust;
+    SaveTrustedPeer(trust, pinned);
+
+    ManualClock clock;
+    RecordingInjector injector;
+    AgentCoordinator agent_core(clock, injector);
+    AgentSession agent(pair.b, agent_core, trust, 12);
+    CHECK(!agent.start());
+}
+
+void PairingRequiresMatchingUserVerification() {
+    using namespace desklink;
+    ManualClock clock;
+    DeterministicPairingCrypto first_crypto(10);
+    DeterministicPairingCrypto second_crypto(80);
+    InMemoryTrustStore first_trust;
+    InMemoryTrustStore second_trust;
+    PairingCoordinator first(
+        MakeIdentity(1, "PC1"), MakeDigest(1), clock, first_crypto, first_trust);
+    PairingCoordinator second(
+        MakeIdentity(2, "PC2"), MakeDigest(2), clock, second_crypto, second_trust);
+
+    CHECK(first.BeginPairing(std::chrono::seconds(60)));
+    CHECK(second.BeginPairing(std::chrono::seconds(60)));
+    const auto first_offer = first.CreateOffer();
+    const auto second_offer = second.CreateOffer();
+    CHECK(first_offer.has_value());
+    CHECK(second_offer.has_value());
+
+    const auto first_candidate = first.InspectOffer(*second_offer);
+    const auto second_candidate = second.InspectOffer(*first_offer);
+    CHECK(first_candidate.Status == PairingStatus::Ready);
+    CHECK(second_candidate.Status == PairingStatus::Ready);
+    CHECK(first_candidate.VerificationCode == second_candidate.VerificationCode);
+    CHECK(first_candidate.VerificationCode.size() == 6);
+    CHECK(!first.ConfirmOffer(*second_offer, "000000", CapabilitySet{}));
+
+    CapabilitySet grant_to_second;
+    grant_to_second.grant(Capability::InputInject);
+    CHECK(first.ConfirmOffer(
+        *second_offer, first_candidate.VerificationCode, grant_to_second));
+    CHECK(second.ConfirmOffer(
+        *first_offer, second_candidate.VerificationCode, CapabilitySet{}));
+    CHECK(IsTrustedPeer(first_trust, first_candidate.Identity));
+    CHECK(IsTrustedPeer(second_trust, second_candidate.Identity));
+    CHECK(first_trust.GetPeer(second_offer->Machine)->Capabilities.contains(Capability::InputInject));
+    CHECK(!first.IsPairingOpen());
+    CHECK(!second.IsPairingOpen());
+}
+
+void PairingTranscriptDetectsPinTamperingAndExpiry() {
+    using namespace desklink;
+    ManualClock clock;
+    DeterministicPairingCrypto first_crypto(1);
+    DeterministicPairingCrypto second_crypto(2);
+    InMemoryTrustStore first_trust;
+    InMemoryTrustStore second_trust;
+    PairingCoordinator first(
+        MakeIdentity(20, "First"), MakeDigest(20), clock, first_crypto, first_trust);
+    PairingCoordinator second(
+        MakeIdentity(21, "Second"), MakeDigest(21), clock, second_crypto, second_trust);
+    CHECK(first.BeginPairing(std::chrono::seconds(5)));
+    CHECK(second.BeginPairing(std::chrono::seconds(5)));
+    const auto first_offer = first.CreateOffer();
+    const auto second_offer = second.CreateOffer();
+    CHECK(first_offer.has_value() && second_offer.has_value());
+
+    auto tampered_offer = *second_offer;
+    tampered_offer.CertificatePin[0] ^= 0x5Au;
+    const auto tampered_code = first.InspectOffer(tampered_offer).VerificationCode;
+    const auto genuine_code = second.InspectOffer(*first_offer).VerificationCode;
+    CHECK(tampered_code != genuine_code);
+
+    clock.advance(std::chrono::milliseconds(5001));
+    CHECK(!first.IsPairingOpen());
+    CHECK(first.InspectOffer(*second_offer).Status == PairingStatus::WindowClosed);
+    CHECK(!first.ConfirmOffer(*second_offer, genuine_code, CapabilitySet{}));
+}
+
+void CertificatePinsMatchOnlyTheStoredPeer() {
+    using namespace desklink;
+    DeterministicPairingCrypto crypto(7);
+    const ByteBuffer certificate{1, 3, 3, 7, 9, 11};
+    const auto digest = crypto.HashSha256(certificate);
+    CHECK(digest.has_value());
+
+    auto identity = MakeIdentity(60, "Pinned peer");
+    identity.public_key_fingerprint = FormatFingerprint(*digest);
+    InMemoryTrustStore trust;
+    SaveTrustedPeer(trust, identity);
+
+    const auto matched = MatchPeerCertificate(
+        trust, crypto, certificate, &identity.machine_id);
+    CHECK(matched.has_value());
+    CHECK(matched->Identity == identity);
+
+    auto tampered = certificate;
+    tampered[0] ^= 0xFFu;
+    CHECK(!MatchPeerCertificate(trust, crypto, tampered, &identity.machine_id));
+
+    auto duplicate_identity = MakeIdentity(61, "Duplicate pin");
+    duplicate_identity.public_key_fingerprint = identity.public_key_fingerprint;
+    CHECK(!trust.SavePeer(TrustedPeer{duplicate_identity, CapabilitySet{}}));
+}
+
+#ifdef _WIN32
+void WindowsCryptoAndDpapiTrustStoreWork() {
+    using namespace desklink;
+    BCryptPairingCrypto crypto;
+    const std::string abc = "abc";
+    const auto digest = crypto.HashSha256(ByteSpan{
+        reinterpret_cast<const std::uint8_t*>(abc.data()), abc.size()});
+    CHECK(digest.has_value());
+    CHECK(FormatFingerprint(*digest) ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    PairingNonce random{};
+    CHECK(crypto.FillRandom(random));
+    CHECK(random != PairingNonce{});
+
+    const auto path = std::filesystem::temp_directory_path() /
+        ("desklink-trust-test-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + ".bin");
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+
+    DpapiTrustStore first(path);
+    CHECK(first.Load());
+    CapabilitySet capabilities;
+    capabilities.grant(Capability::InputInject);
+    const auto identity = MakeIdentity(42, "DPAPI peer");
+    CHECK(first.SavePeer(TrustedPeer{identity, capabilities}));
+
+    DpapiTrustStore second(path);
+    CHECK(second.Load());
+    const auto restored = second.GetPeer(identity.machine_id);
+    CHECK(restored.has_value());
+    CHECK(restored->Identity == identity);
+    CHECK(restored->Capabilities.contains(Capability::InputInject));
+    CHECK(second.RemovePeer(identity.machine_id));
+    std::filesystem::remove(path, ignored);
+}
+#endif
 
 void in_memory_transport_preserves_security_metadata() {
     using namespace desklink;
@@ -376,6 +616,14 @@ int main() {
     stale_focus_ready_cannot_win_new_transaction();
     secure_session_end_to_end();
     insecure_transport_refused();
+    UnpairedTransportIsRefused();
+    PinnedIdentityMismatchIsRefused();
+    PairingRequiresMatchingUserVerification();
+    PairingTranscriptDetectsPinTamperingAndExpiry();
+    CertificatePinsMatchOnlyTheStoredPeer();
+#ifdef _WIN32
+    WindowsCryptoAndDpapiTrustStoreWork();
+#endif
     in_memory_transport_preserves_security_metadata();
     std::cout << "All DeskLink foundation tests passed.\n";
     return 0;

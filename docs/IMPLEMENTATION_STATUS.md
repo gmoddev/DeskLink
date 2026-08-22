@@ -29,6 +29,10 @@ The current build proves the core invariants independently of Windows networking
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
+| Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
+| Peer certificate pinning | Done | Stored machine ID and SHA-256 certificate pin required by sessions |
+| Windows trust provider | Done | CNG randomness/hash + current-user DPAPI atomic trust store |
+| MsQuic endpoint adapter | Done | Optional v2.5.8 stream framing/datagram adapter for established connections |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -70,8 +74,10 @@ Build/test result in the creation environment:
 
 ### P0 — required before using DeskLink across real PCs
 
-- native MsQuic transport
-- authenticated pairing and pinned peer identity
+- MsQuic registration, listener, and client connection factories
+- CNG device-certificate creation and private-key lifecycle
+- bounded pairing-offer exchange and confirmation UI
+- deferred MsQuic certificate-validation callback plumbing
 - session nonce enforcement at connection/session layer
 - persistent capability/trust store
 - Windows Raw Input capture

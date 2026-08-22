@@ -89,7 +89,9 @@ It also:
 - converts an accepted `FocusRequest` into `FocusReady`
 - records decode/session/authorization rejection counters
 
-The in-memory adapter proves these semantics. Native MsQuic should replace it without changing Host/Agent policy code.
+The in-memory adapter proves these semantics. The optional MsQuic endpoint now
+maps an established pinned connection into the same contract without changing
+Host/Agent policy code.
 
 ### `input.hpp`
 
@@ -366,7 +368,9 @@ Do not persist an active focus lease across process restart.
 
 ## 10. Recommended next code change
 
-The highest-value next implementation is `MsQuicTransportEndpoint` plus a very small pairing/trust store.
+The endpoint adapter and pairing/trust foundation are implemented. The next
+highest-value change is the MsQuic listener/client bootstrap, CNG-backed device
+certificate creation, and the pairing-offer exchange that joins those pieces.
 
 Acceptance criteria:
 
