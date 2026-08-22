@@ -68,8 +68,9 @@ The GCC build was repeated with AddressSanitizer and UndefinedBehaviorSanitizer.
 All tests passed with no sanitizer failure reported.
 
 The remote Windows host did not have CMake or the Visual Studio C++ workload
-installed, so native compilation of `desklink_windows` remains a CI validation
-target rather than a completed local result.
+installed. GitHub Actions subsequently built and tested the project with MSVC
+on `windows-latest`, including compilation of the native `desklink_windows`
+target.
 
 ---
 
