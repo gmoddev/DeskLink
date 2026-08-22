@@ -3,6 +3,7 @@
 #include <ncrypt.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cwchar>
 #include <utility>
@@ -94,6 +95,19 @@ bool EncodeSubject(std::vector<std::uint8_t>& Subject) {
                           nullptr, Subject.data(), &Size, nullptr) != FALSE;
 }
 
+bool EncodeExtension(const char* Type,
+                     const void* Value,
+                     std::vector<std::uint8_t>& Encoded) {
+    DWORD Size = 0;
+    if (!CryptEncodeObjectEx(X509_ASN_ENCODING, Type, Value, 0,
+                             nullptr, nullptr, &Size) || Size == 0) {
+        return false;
+    }
+    Encoded.resize(Size);
+    return CryptEncodeObjectEx(X509_ASN_ENCODING, Type, Value, 0,
+                               nullptr, Encoded.data(), &Size) != FALSE;
+}
+
 NCRYPT_KEY_HANDLE OpenOrCreateKey(NCRYPT_PROV_HANDLE Provider,
                                   const std::wstring& KeyName,
                                   bool& Created) {
@@ -137,9 +151,45 @@ PCCERT_CONTEXT CreateCertificate(NCRYPT_KEY_HANDLE Key,
     KeyInfo.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
     CRYPT_ALGORITHM_IDENTIFIER Signature{};
     Signature.pszObjId = const_cast<char*>(szOID_RSA_SHA256RSA);
+
+    std::uint8_t KeyUsageByte = CERT_DIGITAL_SIGNATURE_KEY_USAGE;
+    CRYPT_BIT_BLOB KeyUsage{
+        1, &KeyUsageByte, 0};
+    std::vector<std::uint8_t> EncodedKeyUsage;
+    std::array<char*, 2> EnhancedUsageOids{
+        const_cast<char*>(szOID_PKIX_KP_SERVER_AUTH),
+        const_cast<char*>(szOID_PKIX_KP_CLIENT_AUTH)};
+    CERT_ENHKEY_USAGE EnhancedUsage{
+        static_cast<DWORD>(EnhancedUsageOids.size()), EnhancedUsageOids.data()};
+    std::vector<std::uint8_t> EncodedEnhancedUsage;
+    CERT_ALT_NAME_ENTRY AlternativeName{};
+    AlternativeName.dwAltNameChoice = CERT_ALT_NAME_DNS_NAME;
+    AlternativeName.pwszDNSName = const_cast<wchar_t*>(L"localhost");
+    CERT_ALT_NAME_INFO AlternativeNames{1, &AlternativeName};
+    std::vector<std::uint8_t> EncodedAlternativeNames;
+    if (!EncodeExtension(X509_KEY_USAGE, &KeyUsage, EncodedKeyUsage) ||
+        !EncodeExtension(X509_ENHANCED_KEY_USAGE, &EnhancedUsage, EncodedEnhancedUsage) ||
+        !EncodeExtension(X509_ALTERNATE_NAME, &AlternativeNames, EncodedAlternativeNames)) {
+        return nullptr;
+    }
+    std::array<CERT_EXTENSION, 3> CertificateExtensions{};
+    CertificateExtensions[0] = CERT_EXTENSION{
+        const_cast<char*>(szOID_KEY_USAGE), TRUE,
+        CRYPT_OBJID_BLOB{static_cast<DWORD>(EncodedKeyUsage.size()),
+                         EncodedKeyUsage.data()}};
+    CertificateExtensions[1] = CERT_EXTENSION{
+        const_cast<char*>(szOID_ENHANCED_KEY_USAGE), FALSE,
+        CRYPT_OBJID_BLOB{static_cast<DWORD>(EncodedEnhancedUsage.size()),
+                         EncodedEnhancedUsage.data()}};
+    CertificateExtensions[2] = CERT_EXTENSION{
+        const_cast<char*>(szOID_SUBJECT_ALT_NAME2), FALSE,
+        CRYPT_OBJID_BLOB{static_cast<DWORD>(EncodedAlternativeNames.size()),
+                         EncodedAlternativeNames.data()}};
+    CERT_EXTENSIONS Extensions{
+        static_cast<DWORD>(CertificateExtensions.size()), CertificateExtensions.data()};
     auto* Certificate = CertCreateSelfSignCertificate(
         static_cast<HCRYPTPROV_OR_NCRYPT_KEY_HANDLE>(Key), &Subject, 0,
-        &KeyInfo, &Signature, nullptr, nullptr, nullptr);
+        &KeyInfo, &Signature, nullptr, nullptr, &Extensions);
     if (Certificate && !CertSetCertificateContextProperty(
             Certificate, CERT_KEY_PROV_INFO_PROP_ID, 0, &KeyInfo)) {
         CertFreeCertificateContext(Certificate);
