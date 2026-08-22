@@ -299,8 +299,13 @@ Production CI should include:
 
 The Windows 10 path is approved only as a staged security-sensitive R&D
 project: MsQuic 2.6.x plus OpenSSL 3.5 LTS and an opaque CNG signing provider.
-Each stage requires its own clean review and gates. The provider must never
-export private key material, and rejection, timeout, exception,
+Stage 2's prototype explicitly selects the provider, rejects nonzero CNG export
+policy and certificate/key mismatch, exposes only public RSA parameters, and
+delegates RSA-PSS signing to `NCryptSignHash`. It retains its private OpenSSL
+library context for the MsQuic runtime's process lifetime so worker-thread DRBG
+cleanup never observes a freed context. Each stage requires its own clean
+review and gates. The provider must never export private key material, and
+rejection, timeout, exception,
 missing-certificate, malformed-DER, and wrong-pin cases must remain fail-closed
 before `CONNECTED`, stream acceptance, or DeskLink session admission. Windows
 10 remains unsupported until every security and physical gate passes. See
@@ -326,3 +331,5 @@ The following must remain regression-tested:
 12. pointer/audio datagram semantics do not require retransmission
 13. certificate rejection cannot reach `CONNECTED` or session admission
 14. the device key remains non-exportable and identity pin remains unchanged
+15. OpenSSL runtime components fail integrity before loading when modified
+16. exportable or certificate-mismatched CNG credentials fail before networking

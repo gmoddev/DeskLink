@@ -40,9 +40,10 @@ MsQuic/Schannel with the existing non-exportable CNG identity. Windows 10 stays
 unsupported while an approved equal-security R&D path proceeds through
 independent gates:
 
-1. upgrade and validate the shared MsQuic foundation on stable 2.6.x
-2. prototype the explicit opaque CNG/OpenSSL provider boundary
-3. prove fail-closed validation and application admission
+1. **Complete:** upgrade and validate the shared MsQuic foundation on stable 2.6.x
+2. **Prototype complete; review gate pending:** implement the explicit opaque
+   CNG/OpenSSL provider boundary
+3. **Next:** prove fail-closed validation and application admission
 4. prove device-identity invariance and absence of private-key export paths
 5. run guarded Windows 11 Schannel to Windows 10 OpenSSL physical validation
 

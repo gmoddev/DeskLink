@@ -12,6 +12,12 @@ option(DESKLINK_BUILD_MSQUIC "Build the native MsQuic transport adapter" OFF)
 set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.6.0 distribution")
 set(DESKLINK_MSQUIC_SCHANNEL_ROOT "${DESKLINK_MSQUIC_ROOT}" CACHE PATH
     "Path to the pinned MsQuic 2.6.0 Schannel distribution")
+set(DESKLINK_MSQUIC_OPENSSL_ROOT "" CACHE PATH
+    "Path to the patched MsQuic 2.6.0 OpenSSL distribution")
+set(DESKLINK_OPENSSL_ROOT "${DESKLINK_MSQUIC_OPENSSL_ROOT}" CACHE PATH
+    "Path to the pinned OpenSSL 3.5 runtime distribution")
+set(DESKLINK_MSQUIC_INCLUDE_ROOT "" CACHE PATH
+    "Path to MsQuic headers; the OpenSSL prototype requires the patched header")
 
 if(DESKLINK_BUILD_TESTS)
     enable_testing()
@@ -43,17 +49,50 @@ endif()
 if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     find_path(DESKLINK_MSQUIC_INCLUDE_DIR msquic.h
         HINTS
+            "${DESKLINK_MSQUIC_INCLUDE_ROOT}/include"
+            "${DESKLINK_MSQUIC_INCLUDE_ROOT}/src/inc"
+            "${DESKLINK_MSQUIC_INCLUDE_ROOT}/build/native/include"
             "${DESKLINK_MSQUIC_SCHANNEL_ROOT}/include"
             "${DESKLINK_MSQUIC_SCHANNEL_ROOT}/src/inc"
             "${DESKLINK_MSQUIC_SCHANNEL_ROOT}/build/native/include"
+        NO_DEFAULT_PATH
         REQUIRED)
     find_file(DESKLINK_MSQUIC_SCHANNEL_DLL NAMES msquic.dll
         HINTS
             "${DESKLINK_MSQUIC_SCHANNEL_ROOT}/bin"
             "${DESKLINK_MSQUIC_SCHANNEL_ROOT}/build/native/bin/x64"
+        NO_DEFAULT_PATH
         REQUIRED)
     file(SHA256 "${DESKLINK_MSQUIC_SCHANNEL_DLL}"
          DESKLINK_MSQUIC_SCHANNEL_SHA256)
+
+    if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+        find_file(DESKLINK_MSQUIC_OPENSSL_DLL NAMES msquic.dll
+            HINTS
+                "${DESKLINK_MSQUIC_OPENSSL_ROOT}/bin"
+                "${DESKLINK_MSQUIC_OPENSSL_ROOT}/bin/Release"
+                "${DESKLINK_MSQUIC_OPENSSL_ROOT}/build/native/bin/x64"
+            NO_DEFAULT_PATH
+            REQUIRED)
+        find_file(DESKLINK_OPENSSL_CRYPTO_DLL NAMES libcrypto-3-x64.dll
+            HINTS
+                "${DESKLINK_OPENSSL_ROOT}/bin"
+                "${DESKLINK_OPENSSL_ROOT}/bin/Release"
+            NO_DEFAULT_PATH
+            REQUIRED)
+        find_file(DESKLINK_OPENSSL_SSL_DLL NAMES libssl-3-x64.dll
+            HINTS
+                "${DESKLINK_OPENSSL_ROOT}/bin"
+                "${DESKLINK_OPENSSL_ROOT}/bin/Release"
+            NO_DEFAULT_PATH
+            REQUIRED)
+        file(SHA256 "${DESKLINK_MSQUIC_OPENSSL_DLL}"
+             DESKLINK_MSQUIC_OPENSSL_SHA256)
+        file(SHA256 "${DESKLINK_OPENSSL_CRYPTO_DLL}"
+             DESKLINK_OPENSSL_CRYPTO_SHA256)
+        file(SHA256 "${DESKLINK_OPENSSL_SSL_DLL}"
+             DESKLINK_OPENSSL_SSL_SHA256)
+    endif()
 
     if(NOT DESKLINK_BUILD_WINDOWS_BACKENDS)
         message(FATAL_ERROR "DESKLINK_BUILD_MSQUIC requires DESKLINK_BUILD_WINDOWS_BACKENDS")
@@ -72,6 +111,12 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     target_compile_definitions(desklink_msquic PRIVATE
         DESKLINK_MSQUIC_VERSION="2.6.0"
         DESKLINK_MSQUIC_SCHANNEL_SHA256="${DESKLINK_MSQUIC_SCHANNEL_SHA256}")
+    if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+        target_compile_definitions(desklink_msquic PRIVATE
+            DESKLINK_MSQUIC_OPENSSL_SHA256="${DESKLINK_MSQUIC_OPENSSL_SHA256}"
+            DESKLINK_OPENSSL_CRYPTO_SHA256="${DESKLINK_OPENSSL_CRYPTO_SHA256}"
+            DESKLINK_OPENSSL_SSL_SHA256="${DESKLINK_OPENSSL_SSL_SHA256}")
+    endif()
     if(MSVC)
         target_compile_options(desklink_msquic PRIVATE /W4 /permissive-)
     else()
@@ -88,6 +133,23 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
                 "$<TARGET_FILE_DIR:${Target}>/runtime/schannel/msquic.dll")
     endfunction()
 
+    function(DeskLinkStageOpenSslRuntime Target)
+        if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+            add_custom_command(TARGET ${Target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:${Target}>/runtime/openssl"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DESKLINK_MSQUIC_OPENSSL_DLL}"
+                    "$<TARGET_FILE_DIR:${Target}>/runtime/openssl/msquic.dll"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DESKLINK_OPENSSL_CRYPTO_DLL}"
+                    "$<TARGET_FILE_DIR:${Target}>/runtime/openssl/libcrypto-3-x64.dll"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DESKLINK_OPENSSL_SSL_DLL}"
+                    "$<TARGET_FILE_DIR:${Target}>/runtime/openssl/libssl-3-x64.dll")
+        endif()
+    endfunction()
+
     if(DESKLINK_BUILD_TESTS)
         add_executable(desklink_msquic_runtime_tests tests/msquic_runtime_tests.cpp)
         target_link_libraries(desklink_msquic_runtime_tests PRIVATE desklink_msquic)
@@ -96,6 +158,11 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
                 -static -static-libgcc -static-libstdc++)
         endif()
         DeskLinkStageSchannelRuntime(desklink_msquic_runtime_tests)
+        DeskLinkStageOpenSslRuntime(desklink_msquic_runtime_tests)
+        if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+            target_compile_definitions(desklink_msquic_runtime_tests PRIVATE
+                DESKLINK_TEST_OPENSSL_RUNTIME=1)
+        endif()
         add_test(NAME desklink_msquic_runtime_tests
                  COMMAND desklink_msquic_runtime_tests)
 
@@ -106,8 +173,13 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
                 -static -static-libgcc -static-libstdc++)
         endif()
         DeskLinkStageSchannelRuntime(desklink_msquic_loopback_tests)
+        DeskLinkStageOpenSslRuntime(desklink_msquic_loopback_tests)
         add_test(NAME desklink_msquic_loopback_tests
                  COMMAND desklink_msquic_loopback_tests)
+        if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+            add_test(NAME desklink_msquic_openssl_cng_loopback_tests
+                     COMMAND desklink_msquic_loopback_tests --openssl)
+        endif()
     endif()
 
     add_executable(desklink_pair apps/desklink_pair.cpp)
@@ -123,6 +195,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
             -municode -static -static-libgcc -static-libstdc++)
     endif()
     DeskLinkStageSchannelRuntime(desklink_pair)
+    DeskLinkStageOpenSslRuntime(desklink_pair)
 endif()
 
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)

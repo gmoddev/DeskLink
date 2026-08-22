@@ -156,9 +156,12 @@ Datagrams include:
 The current implementation provides `ITransportEndpoint` plus a deterministic in-memory implementation. The production adapter should use native MsQuic.
 
 The runtime-selection layer is retained as an integrity and diagnostics
-boundary. Stage 1 production packages ship only Schannel. The Windows 10
-OpenSSL path is an active, separately gated R&D project, not an alternate trust
-model; its constraints are recorded in
+boundary. Production packages ship only Schannel. Stage 2 research builds add
+an explicitly selected, hash-pinned OpenSSL runtime and a built-in provider
+that holds only public RSA parameters and an opaque reference to the same CNG
+key. Both providers deliver the exact leaf DER into the same asynchronous pin
+validator. The Windows 10 path is not an alternate trust model and remains
+non-admissible until later gates pass; its constraints are recorded in
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---

@@ -138,6 +138,14 @@ receives an OpenSSL reduced-security fallback.
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
 
+Stage 2 CI builds the pinned OpenSSL 3.5.7 source, applies the reviewable patch
+to the exact MsQuic 2.6.0 commit, and runs both provider loopbacks. Its OpenSSL
+gate verifies pairing, trusted reconnect, fresh nonce, reliable traffic,
+exportable-key rejection, certificate/key mismatch rejection, and pinned hash
+rejection for MsQuic, libcrypto, and libssl. It also rejects the patch if it
+mentions private-key export APIs, ENGINE, or `RSA_METHOD`. These are prototype
+gates; they do not replace Stage 3's complete fail-closed validation matrix.
+
 After pairing with `--grant-input` on the receiving PC, run
 `desklink_pair.exe serve 43821` there and
 `desklink_pair.exe focus <receiver-ip> 43821 --capture` on the other PC. Verify

@@ -26,6 +26,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Windows CNG randomness/SHA-256 and user-scoped DPAPI trust store
 - Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.6.0
 - Integrity-checked MsQuic runtime selection with Schannel as the production provider
+- Experimental, explicitly selected OpenSSL 3.5/CNG credential prototype for Windows 10 R&D
 - Current-user CNG device key and self-signed certificate lifecycle
 - MsQuic listener/client bootstrap with mutually pinned certificate validation
 - Fresh per-connection session nonce negotiation inside pinned TLS
@@ -45,6 +46,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 The following are intentionally kept behind interfaces and are the next production layers:
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
+- Fail-closed OpenSSL peer-validation and identity-invariance gates
+- Physical Windows 11 Schannel to Windows 10 OpenSSL compatibility validation
 - Stable multi-monitor mapping
 - Mouse-wheel transport
 - LAN discovery/mDNS
@@ -113,9 +116,11 @@ directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 `auto` is the default. The loader resolves `runtime/<provider>/msquic.dll`
 relative to the executable, verifies its build-pinned SHA-256 and MsQuic 2.6.0
 provider/version metadata, and never uses the current directory or `PATH`.
-Production packages include only the Schannel runtime. The OpenSSL selector is
-retained for the separately gated compatibility R&D; Stage 1 includes no
-OpenSSL runtime or credential fallback, so requests for it fail closed.
+Production packages include only the Schannel runtime. Research builds may add
+the pinned, patched OpenSSL runtime explicitly; they verify `msquic.dll`,
+`libcrypto`, and `libssl` before loading. No runtime or credential failure can
+fall back to a different provider. See
+[`third_party/msquic/README.md`](third_party/msquic/README.md).
 
 After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
 On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires

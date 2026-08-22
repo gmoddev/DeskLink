@@ -2,6 +2,8 @@
 #include "desklink/protocol.hpp"
 #include "desklink/win32_pairing.hpp"
 
+#include <ncrypt.h>
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -10,6 +12,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -35,6 +38,16 @@ struct Results {
     std::vector<std::string> Failures;
 };
 
+struct TestIdentityCleanup {
+    std::vector<std::wstring> KeyNames;
+
+    ~TestIdentityCleanup() {
+        for (const auto& KeyName : KeyNames) {
+            desklink::Win32DeviceCertificate::Remove(KeyName);
+        }
+    }
+};
+
 bool WaitFor(Results& Shared,
              std::size_t PairingCount,
              std::size_t EndpointCount,
@@ -44,6 +57,115 @@ bool WaitFor(Results& Shared,
         return Shared.PairingSessions.size() >= PairingCount &&
                Shared.TrustedSessions.size() >= EndpointCount;
     });
+}
+
+bool CreatePersistedTestKey(NCRYPT_PROV_HANDLE Provider,
+                            const std::wstring& KeyName,
+                            bool Exportable,
+                            NCRYPT_KEY_HANDLE& Key) {
+    if (NCryptCreatePersistedKey(
+            Provider, &Key, NCRYPT_RSA_ALGORITHM, KeyName.c_str(), 0, 0) !=
+        ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD Length = 2048;
+    DWORD Usage = NCRYPT_ALLOW_SIGNING_FLAG;
+    DWORD ExportPolicy = NCRYPT_ALLOW_EXPORT_FLAG;
+    if (NCryptSetProperty(
+            Key, NCRYPT_LENGTH_PROPERTY, reinterpret_cast<PBYTE>(&Length),
+            sizeof(Length), 0) != ERROR_SUCCESS ||
+        NCryptSetProperty(
+            Key, NCRYPT_KEY_USAGE_PROPERTY, reinterpret_cast<PBYTE>(&Usage),
+            sizeof(Usage), 0) != ERROR_SUCCESS ||
+        (Exportable && NCryptSetProperty(
+            Key, NCRYPT_EXPORT_POLICY_PROPERTY,
+            reinterpret_cast<PBYTE>(&ExportPolicy), sizeof(ExportPolicy), 0) !=
+            ERROR_SUCCESS) ||
+        NCryptFinalizeKey(Key, 0) != ERROR_SUCCESS) {
+        NCryptDeleteKey(Key, 0);
+        Key = 0;
+        return false;
+    }
+    return true;
+}
+
+bool InstallTestIdentity(const std::wstring& CertificateKeyName,
+                         const std::wstring& CredentialKeyName,
+                         bool Exportable) {
+    NCRYPT_PROV_HANDLE Provider{};
+    NCRYPT_KEY_HANDLE CertificateKey{};
+    NCRYPT_KEY_HANDLE CredentialKey{};
+    PCCERT_CONTEXT Certificate{};
+    HCERTSTORE Store{};
+    bool Success = false;
+    std::vector<std::uint8_t> SubjectBytes;
+    DWORD SubjectSize = 0;
+    if (NCryptOpenStorageProvider(
+            &Provider, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS ||
+        !CreatePersistedTestKey(
+            Provider, CertificateKeyName,
+            Exportable && CertificateKeyName == CredentialKeyName,
+            CertificateKey)) {
+        goto Exit;
+    }
+    if (CredentialKeyName != CertificateKeyName &&
+        !CreatePersistedTestKey(
+            Provider, CredentialKeyName, Exportable, CredentialKey)) {
+        goto Exit;
+    }
+    if (!CertStrToNameW(
+            X509_ASN_ENCODING, L"CN=DeskLink Credential Test",
+            CERT_X500_NAME_STR, nullptr, nullptr, &SubjectSize, nullptr) ||
+        SubjectSize == 0) {
+        goto Exit;
+    }
+    SubjectBytes.resize(SubjectSize);
+    if (!CertStrToNameW(
+            X509_ASN_ENCODING, L"CN=DeskLink Credential Test",
+            CERT_X500_NAME_STR, nullptr, SubjectBytes.data(), &SubjectSize,
+            nullptr)) {
+        goto Exit;
+    }
+    {
+        CERT_NAME_BLOB Subject{SubjectSize, SubjectBytes.data()};
+        CRYPT_KEY_PROV_INFO CertificateKeyInfo{};
+        CertificateKeyInfo.pwszContainerName =
+            const_cast<wchar_t*>(CertificateKeyName.c_str());
+        CertificateKeyInfo.pwszProvName =
+            const_cast<wchar_t*>(MS_KEY_STORAGE_PROVIDER);
+        CertificateKeyInfo.dwFlags = NCRYPT_SILENT_FLAG;
+        CertificateKeyInfo.dwKeySpec = AT_KEYEXCHANGE;
+        CRYPT_ALGORITHM_IDENTIFIER Signature{};
+        Signature.pszObjId = const_cast<char*>(szOID_RSA_SHA256RSA);
+        Certificate = CertCreateSelfSignCertificate(
+            static_cast<HCRYPTPROV_OR_NCRYPT_KEY_HANDLE>(CertificateKey),
+            &Subject, 0, &CertificateKeyInfo, &Signature, nullptr, nullptr,
+            nullptr);
+        if (!Certificate) goto Exit;
+
+        CRYPT_KEY_PROV_INFO CredentialKeyInfo = CertificateKeyInfo;
+        CredentialKeyInfo.pwszContainerName =
+            const_cast<wchar_t*>(CredentialKeyName.c_str());
+        if (!CertSetCertificateContextProperty(
+                Certificate, CERT_KEY_PROV_INFO_PROP_ID, 0,
+                &CredentialKeyInfo)) {
+            goto Exit;
+        }
+    }
+    Store = CertOpenStore(
+        CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_CURRENT_USER, L"MY");
+    if (!Store || !CertAddCertificateContextToStore(
+            Store, Certificate, CERT_STORE_ADD_REPLACE_EXISTING, nullptr)) {
+        goto Exit;
+    }
+    Success = true;
+Exit:
+    if (Store) CertCloseStore(Store, 0);
+    if (Certificate) CertFreeCertificateContext(Certificate);
+    if (CredentialKey) NCryptFreeObject(CredentialKey);
+    if (CertificateKey) NCryptFreeObject(CertificateKey);
+    if (Provider) NCryptFreeObject(Provider);
+    return Success;
 }
 
 desklink::MsQuicBootstrapHandlers MakeHandlers(Results& Shared) {
@@ -73,7 +195,8 @@ desklink::MsQuicBootstrapHandlers MakeHandlers(Results& Shared) {
 }
 
 void RunLoopback(const std::wstring& FirstKeyName,
-                 const std::wstring& SecondKeyName) {
+                 const std::wstring& SecondKeyName,
+                 desklink::TlsBackend Backend) {
     using namespace desklink;
     BCryptPairingCrypto Crypto;
     SteadyClock Clock;
@@ -98,11 +221,15 @@ void RunLoopback(const std::wstring& FirstKeyName,
     CHECK(SecondPairing.BeginPairing(std::chrono::seconds(30)));
 
     Results Shared;
+    MsQuicRuntimeConfig RuntimeConfig;
+    RuntimeConfig.Backend = Backend;
     auto First = MsQuicBootstrap::Create(
         std::move(*FirstCertificate), FirstTrust, Crypto, FirstPairing, Clock,
+        RuntimeConfig,
         MakeHandlers(Shared));
     auto Second = MsQuicBootstrap::Create(
         std::move(*SecondCertificate), SecondTrust, Crypto, SecondPairing, Clock,
+        RuntimeConfig,
         MakeHandlers(Shared));
     if (!First || !Second) {
         std::scoped_lock Lock(Shared.Mutex);
@@ -208,6 +335,8 @@ void RunLoopback(const std::wstring& FirstKeyName,
 
     FirstEndpoint->close();
     SecondEndpoint->close();
+    FirstEndpoint.reset();
+    SecondEndpoint.reset();
     {
         std::scoped_lock Lock(Shared.Mutex);
         Shared.TrustedSessions.clear();
@@ -230,12 +359,69 @@ void RunLoopback(const std::wstring& FirstKeyName,
     }
     First->Close();
     Second->Close();
+    First.reset();
+    Second.reset();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+}
+
+void CheckOpenSslCredentialRejected(const std::wstring& KeyName) {
+    using namespace desklink;
+    BCryptPairingCrypto Crypto;
+    SteadyClock Clock;
+    auto Certificate = Win32DeviceCertificate::LoadOrCreate(KeyName, Crypto);
+    CHECK(Certificate.has_value());
+    const PeerIdentity Identity{
+        MakeMachineId(9), "Rejected credential",
+        FormatFingerprint(Certificate->CertificatePin())};
+    InMemoryTrustStore Trust;
+    PairingCoordinator Pairing(
+        Identity, Certificate->CertificatePin(), Clock, Crypto, Trust);
+    Results Shared;
+    MsQuicRuntimeConfig RuntimeConfig;
+    RuntimeConfig.Backend = TlsBackend::OpenSsl;
+    const auto Bootstrap = MsQuicBootstrap::Create(
+        std::move(*Certificate), Trust, Crypto, Pairing, Clock,
+        RuntimeConfig, MakeHandlers(Shared));
+    CHECK(!Bootstrap);
+    {
+        std::scoped_lock Lock(Shared.Mutex);
+        CHECK(!Shared.Failures.empty());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+}
+
+void RunOpenSslCredentialRejectionTests(const std::wstring& Suffix) {
+    const auto ExportableKeyName =
+        std::wstring(L"DeskLink-Exportable-Rejected-") + Suffix;
+    {
+        TestIdentityCleanup Cleanup{{ExportableKeyName}};
+        desklink::Win32DeviceCertificate::Remove(ExportableKeyName);
+        CHECK(InstallTestIdentity(
+            ExportableKeyName, ExportableKeyName, true));
+        CheckOpenSslCredentialRejected(ExportableKeyName);
+    }
+
+    const auto CertificateKeyName =
+        std::wstring(L"DeskLink-Mismatch-Certificate-") + Suffix;
+    const auto CredentialKeyName =
+        std::wstring(L"DeskLink-Mismatch-Credential-") + Suffix;
+    {
+        TestIdentityCleanup Cleanup{{CredentialKeyName, CertificateKeyName}};
+        desklink::Win32DeviceCertificate::Remove(CredentialKeyName);
+        desklink::Win32DeviceCertificate::Remove(CertificateKeyName);
+        CHECK(InstallTestIdentity(
+            CertificateKeyName, CredentialKeyName, false));
+        CheckOpenSslCredentialRejected(CredentialKeyName);
+    }
 }
 
 } // namespace
 
-int main() {
+int main(int ArgumentCount, char** Arguments) {
+    const auto Backend = ArgumentCount == 2 &&
+                         std::string_view(Arguments[1]) == "--openssl"
+        ? desklink::TlsBackend::OpenSsl
+        : desklink::TlsBackend::Schannel;
     const auto Suffix = std::to_wstring(
         std::chrono::steady_clock::now().time_since_epoch().count());
     const auto FirstKeyName = std::wstring(L"DeskLink-Loopback-A-") + Suffix;
@@ -243,7 +429,10 @@ int main() {
     desklink::Win32DeviceCertificate::Remove(FirstKeyName);
     desklink::Win32DeviceCertificate::Remove(SecondKeyName);
     try {
-        RunLoopback(FirstKeyName, SecondKeyName);
+        RunLoopback(FirstKeyName, SecondKeyName, Backend);
+        if (Backend == desklink::TlsBackend::OpenSsl) {
+            RunOpenSslCredentialRejectionTests(Suffix);
+        }
         CHECK(desklink::Win32DeviceCertificate::Remove(FirstKeyName));
         CHECK(desklink::Win32DeviceCertificate::Remove(SecondKeyName));
         std::cout << "[Transport:MsQuic] native loopback pairing and session passed.\n";

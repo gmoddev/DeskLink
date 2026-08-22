@@ -113,6 +113,24 @@ std::optional<std::array<std::uint8_t, 32>> ExpectedSha256(
     return std::nullopt;
 }
 
+struct RuntimeDependency {
+    std::filesystem::path Name;
+    std::optional<std::array<std::uint8_t, 32>> Digest;
+};
+
+std::array<RuntimeDependency, 2> OpenSslDependencies() {
+    std::array<RuntimeDependency, 2> Result{
+        RuntimeDependency{L"libcrypto-3-x64.dll", std::nullopt},
+        RuntimeDependency{L"libssl-3-x64.dll", std::nullopt}};
+#ifdef DESKLINK_OPENSSL_CRYPTO_SHA256
+    Result[0].Digest = ParseSha256(DESKLINK_OPENSSL_CRYPTO_SHA256);
+#endif
+#ifdef DESKLINK_OPENSSL_SSL_SHA256
+    Result[1].Digest = ParseSha256(DESKLINK_OPENSSL_SSL_SHA256);
+#endif
+    return Result;
+}
+
 std::optional<std::array<std::uint8_t, 32>> HashFile(
     const std::filesystem::path& Path) {
     std::error_code Error;
@@ -190,10 +208,21 @@ QUIC_TLS_PROVIDER ExpectedProvider(TlsBackend Backend) noexcept {
 struct MsQuicRuntime::State {
     ~State() {
         if (Api && Close) Close(Api);
-        if (Module) FreeLibrary(Module);
+        if (Backend != TlsBackend::OpenSsl) {
+            if (Module) FreeLibrary(Module);
+            for (auto Dependency = Dependencies.rbegin();
+                 Dependency != Dependencies.rend(); ++Dependency) {
+                if (*Dependency) FreeLibrary(*Dependency);
+            }
+        }
+        // The DeskLink CNG provider and its private OSSL_LIB_CTX are owned by
+        // the patched OpenSSL MsQuic module for the process lifetime. Keeping
+        // these already hash-verified modules resident prevents OpenSSL thread
+        // cleanup from observing an unloaded provider or freed library context.
     }
 
     HMODULE Module{};
+    std::array<HMODULE, 2> Dependencies{};
     CloseFunction Close{};
     const QUIC_API_TABLE* Api{};
     TlsBackend Backend{TlsBackend::Auto};
@@ -263,11 +292,43 @@ std::unique_ptr<MsQuicRuntime> MsQuicRuntime::Load(
                    "MsQuic runtime is missing or failed its pinned SHA-256 check");
         return {};
     }
+    if (Backend == TlsBackend::OpenSsl) {
+        for (const auto& Dependency : OpenSslDependencies()) {
+            const auto ActualDependencyDigest = HashFile(
+                RuntimePath.parent_path() / Dependency.Name);
+            if (!Dependency.Digest || !ActualDependencyDigest ||
+                !SameDigest(*ActualDependencyDigest, *Dependency.Digest)) {
+                SetFailure(
+                    Failure,
+                    MsQuicRuntimeFailureKind::IntegrityFailure,
+                    "OpenSSL runtime dependency is missing or failed its pinned SHA-256 check");
+                return {};
+            }
+        }
+    }
 
     auto OwnedState = std::make_unique<State>();
     OwnedState->Backend = Backend;
     OwnedState->Path = RuntimePath;
     OwnedState->WindowsVersion = *Version;
+    if (Backend == TlsBackend::OpenSsl) {
+        const auto Dependencies = OpenSslDependencies();
+        for (std::size_t Index = 0; Index < Dependencies.size(); ++Index) {
+            const auto DependencyPath =
+                RuntimePath.parent_path() / Dependencies[Index].Name;
+            OwnedState->Dependencies[Index] = LoadLibraryExW(
+                DependencyPath.c_str(), nullptr,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!OwnedState->Dependencies[Index]) {
+                SetFailure(
+                    Failure,
+                    MsQuicRuntimeFailureKind::TlsProviderUnavailable,
+                    "could not load a pinned OpenSSL runtime dependency",
+                    GetLastError());
+                return {};
+            }
+        }
+    }
     OwnedState->Module = LoadLibraryExW(
         RuntimePath.c_str(), nullptr,
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);

@@ -90,3 +90,49 @@ jobs:
         run: >-
           ctest --test-dir build-msquic -C Release
           -R "desklink_msquic_(runtime|loopback)_tests" --output-on-failure
+
+  Windows10Prototype:
+    name: Windows 10 opaque CNG prototype
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout DeskLink
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned MsQuic source
+        uses: actions/checkout@v7
+        with:
+          repository: microsoft/msquic
+          ref: e7e7a114e20a55ec2d5f723cf6bdf3bfb7b0b24a
+          path: external/msquic
+          submodules: recursive
+
+      - name: Checkout pinned OpenSSL source
+        uses: actions/checkout@v7
+        with:
+          repository: openssl/openssl
+          ref: 8cf17aaeb4599f8af87fefd810b5b5fee90fe69e
+          path: external/openssl
+
+      - name: Install pinned Schannel package
+        run: >-
+          nuget install Microsoft.Native.Quic.MsQuic.Schannel
+          -Version 2.6.0
+          -OutputDirectory external
+          -ExcludeVersion
+          -NonInteractive
+
+      - name: Build pinned OpenSSL 3.5.7
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd /d "%GITHUB_WORKSPACE%\external\openssl"
+          perl Configure VC-WIN64A no-asm no-tests --prefix="%GITHUB_WORKSPACE%\external\openssl-install" --openssldir="%GITHUB_WORKSPACE%\external\openssl-install\ssl"
+          nmake
+          nmake install_sw
+
+      - name: Build and test opaque CNG prototype
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Windows10Compat.ps1 -MsQuicSource external\msquic -OpenSslRoot external\openssl-install -SchannelRoot external\Microsoft.Native.Quic.MsQuic.Schannel
