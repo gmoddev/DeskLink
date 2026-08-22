@@ -35,7 +35,7 @@ The current build proves the core invariants independently of Windows networking
 | Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
 | Peer certificate pinning | Done | Stored machine ID and SHA-256 certificate pin required by sessions |
 | Windows trust provider | Done | CNG randomness/hash + current-user DPAPI atomic trust store |
-| MsQuic endpoint adapter | Done | Optional v2.5.8 stream framing/datagram adapter for established connections |
+| MsQuic endpoint adapter | Done | Optional v2.6.0 stream framing/datagram adapter for established connections |
 | Production platform baseline | Done | Windows 11/Server 2022+ with stock Schannel; Windows 10 unsupported |
 | MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, fail-closed unavailable provider |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
@@ -174,12 +174,11 @@ After snapshot reconciliation and the physical failure matrix pass, the roadmap
 continues with stable multi-monitor mapping and then mouse-wheel transport. See
 [`ROADMAP.md`](ROADMAP.md).
 
-## Closed compatibility work
+## Experimental compatibility work
 
-Windows 10 transport compatibility is closed for the current roadmap. The
-production architecture remains stock MsQuic/Schannel with the existing
-non-exportable CNG identity on Windows 11/Server 2022 or newer. A future Windows
-10 investigation may consider MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG
-provider integration, but that is a new security-sensitive project requiring
-separate approval and the fail-closed acceptance criteria in
-[`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
+Windows 10 remains unsupported. An approved equal-security R&D project now
+tracks MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG provider integration as
+separately reviewable stages. The production architecture remains stock
+MsQuic/Schannel with the existing non-exportable CNG identity on Windows
+11/Server 2022 or newer until every security and physical acceptance criterion
+in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes.

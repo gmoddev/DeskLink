@@ -9,9 +9,9 @@ option(DESKLINK_BUILD_TESTS "Build DeskLink tests" ON)
 option(DESKLINK_BUILD_SIM "Build DeskLink simulation CLI" ON)
 option(DESKLINK_BUILD_WINDOWS_BACKENDS "Build Win32 backend adapters" ON)
 option(DESKLINK_BUILD_MSQUIC "Build the native MsQuic transport adapter" OFF)
-set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.5.8 distribution")
+set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.6.0 distribution")
 set(DESKLINK_MSQUIC_SCHANNEL_ROOT "${DESKLINK_MSQUIC_ROOT}" CACHE PATH
-    "Path to the pinned MsQuic 2.5.8 Schannel distribution")
+    "Path to the pinned MsQuic 2.6.0 Schannel distribution")
 
 if(DESKLINK_BUILD_TESTS)
     enable_testing()
@@ -70,7 +70,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         PUBLIC desklink_core desklink_windows
         PRIVATE crypt32 ncrypt ws2_32)
     target_compile_definitions(desklink_msquic PRIVATE
-        DESKLINK_MSQUIC_VERSION="2.5.8"
+        DESKLINK_MSQUIC_VERSION="2.6.0"
         DESKLINK_MSQUIC_SCHANNEL_SHA256="${DESKLINK_MSQUIC_SCHANNEL_SHA256}")
     if(MSVC)
         target_compile_options(desklink_msquic PRIVATE /W4 /permissive-)

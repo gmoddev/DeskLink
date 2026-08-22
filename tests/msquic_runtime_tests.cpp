@@ -72,7 +72,7 @@ void PackagedRuntimeIsPinnedAndProviderVerified() {
     auto Runtime = MsQuicRuntime::Load(Config, Failure);
     CHECK(Runtime);
     CHECK(Runtime->Backend() == TlsBackend::Schannel);
-    CHECK(Runtime->Version() == "2.5.8");
+    CHECK(Runtime->Version() == "2.6.0");
     Runtime.reset();
 
     Config.Backend = TlsBackend::OpenSsl;

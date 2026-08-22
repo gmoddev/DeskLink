@@ -24,7 +24,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Manual pairing transcript with short authentication code confirmation
 - Stored peer certificate-pin enforcement for every operational session
 - Windows CNG randomness/SHA-256 and user-scoped DPAPI trust store
-- Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.5.8
+- Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.6.0
 - Integrity-checked MsQuic runtime selection with Schannel as the production provider
 - Current-user CNG device key and self-signed certificate lifecycle
 - MsQuic listener/client bootstrap with mutually pinned certificate validation
@@ -81,8 +81,9 @@ ctest --test-dir build -C Release --output-on-failure
 DeskLink's production baseline is Windows 11 or Windows Server 2022 or newer.
 Production transport uses the stock MsQuic Schannel runtime and the existing
 non-exportable current-user CNG device identity. Windows 10 is explicitly
-unsupported; DeskLink does not replace or export the identity, downgrade TLS,
-or install an OpenSSL fallback to make that platform work. See
+unsupported while the separately staged equal-security compatibility project
+is incomplete. That project may not replace or export the identity, downgrade
+TLS, weaken validation, or add automatic provider fallback. See
 [`docs/PLATFORM_SUPPORT.md`](docs/PLATFORM_SUPPORT.md).
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
@@ -110,11 +111,11 @@ directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
 `--tls-provider auto|schannel|openssl` controls the packaged MsQuic TLS runtime.
 `auto` is the default. The loader resolves `runtime/<provider>/msquic.dll`
-relative to the executable, verifies its build-pinned SHA-256 and MsQuic 2.5.8
+relative to the executable, verifies its build-pinned SHA-256 and MsQuic 2.6.0
 provider/version metadata, and never uses the current directory or `PATH`.
 Production packages include only the Schannel runtime. The OpenSSL selector is
-retained for diagnostics and separately approved future R&D; no OpenSSL runtime
-or credential fallback is implemented, so requests for it fail closed.
+retained for the separately gated compatibility R&D; Stage 1 includes no
+OpenSSL runtime or credential fallback, so requests for it fail closed.
 
 After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
 On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires

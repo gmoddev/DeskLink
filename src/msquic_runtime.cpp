@@ -25,7 +25,7 @@ namespace {
 constexpr std::uint32_t kWindows11Build = 22'000;
 constexpr std::uint32_t kServer2022Build = 20'348;
 constexpr std::uint64_t kMaximumRuntimeBytes = 64u * 1024u * 1024u;
-constexpr std::array<std::uint32_t, 3> kExpectedVersion{2, 5, 8};
+constexpr std::array<std::uint32_t, 3> kExpectedVersion{2, 6, 0};
 
 using OpenVersionFunction = QUIC_STATUS(QUIC_API*)(std::uint32_t, const void**);
 using CloseFunction = void(QUIC_API*)(const QUIC_API_TABLE*);
@@ -314,7 +314,7 @@ std::unique_ptr<MsQuicRuntime> MsQuicRuntime::Load(
         !std::equal(kExpectedVersion.begin(), kExpectedVersion.end(),
                     OwnedState->Version.begin())) {
         SetFailure(Failure, MsQuicRuntimeFailureKind::VersionMismatch,
-                   "loaded MsQuic runtime is not version 2.5.8",
+                   "loaded MsQuic runtime is not version 2.6.0",
                    VersionStatus);
         return {};
     }

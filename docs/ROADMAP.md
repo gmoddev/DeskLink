@@ -33,13 +33,18 @@ failure matrix pass.
 - WASAPI capture/render, adaptive jitter, and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 
-## Closed for the current roadmap
+## Experimental Windows 10 compatibility project
 
-Windows 10 transport compatibility is closed. Production support begins with
-Windows 11/Windows Server 2022 and uses stock MsQuic/Schannel with the existing
-non-exportable CNG identity. No MsQuic/OpenSSL fork or CNG provider will be
-implemented in the current roadmap.
+Windows 11/Windows Server 2022 production support remains stock
+MsQuic/Schannel with the existing non-exportable CNG identity. Windows 10 stays
+unsupported while an approved equal-security R&D path proceeds through
+independent gates:
 
-The investigation is preserved in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
-Reconsidering it requires a new, separately approved security project based on
-a maintained MsQuic/OpenSSL baseline and all documented fail-closed gates.
+1. upgrade and validate the shared MsQuic foundation on stable 2.6.x
+2. prototype the explicit opaque CNG/OpenSSL provider boundary
+3. prove fail-closed validation and application admission
+4. prove device-identity invariance and absence of private-key export paths
+5. run guarded Windows 11 Schannel to Windows 10 OpenSSL physical validation
+
+No later stage begins before the preceding stage passes. Full constraints are
+in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).

@@ -198,9 +198,11 @@ Production session establishment must require both values to be true before any 
 Production transport is stock MsQuic/Schannel on Windows 11 or Windows Server
 2022 or newer because it supplies authenticated TLS 1.3 QUIC, reliable streams,
 and QUIC DATAGRAM support while using the existing non-exportable CNG identity.
-Windows 10 is explicitly unsupported rather than receiving a TLS downgrade,
-identity export/replacement, reduced-security validation mode, or automatic
-OpenSSL fallback.
+Windows 10 remains unsupported while the equal-security compatibility project
+is incomplete. Its explicit OpenSSL runtime may be admitted only after opaque
+CNG signing, fail-closed peer validation, identity invariance, and physical
+validation pass. A TLS downgrade, identity export/replacement, reduced-security
+validation mode, or automatic provider fallback remains prohibited.
 
 Recommended production defaults:
 
@@ -295,13 +297,13 @@ Production CI should include:
 - signed Windows executables/installers
 - a documented rapid-update path for high/critical transport vulnerabilities
 
-The investigated Windows 10 path is not approved implementation work. If it is
-reconsidered, MsQuic 2.6.x plus OpenSSL 3.5 LTS and an opaque CNG signing
-provider must be treated as a new security-sensitive project. Separate approval
-is required before code is written. The provider must never export private key
-material, and rejection, timeout, exception, missing-certificate, malformed-DER,
-and wrong-pin cases must remain fail-closed before `CONNECTED`, stream
-acceptance, or DeskLink session admission. See
+The Windows 10 path is approved only as a staged security-sensitive R&D
+project: MsQuic 2.6.x plus OpenSSL 3.5 LTS and an opaque CNG signing provider.
+Each stage requires its own clean review and gates. The provider must never
+export private key material, and rejection, timeout, exception,
+missing-certificate, malformed-DER, and wrong-pin cases must remain fail-closed
+before `CONNECTED`, stream acceptance, or DeskLink session admission. Windows
+10 remains unsupported until every security and physical gate passes. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---

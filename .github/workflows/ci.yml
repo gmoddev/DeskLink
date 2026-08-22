@@ -59,7 +59,7 @@ jobs:
         run: ctest --test-dir build-sanitizers --output-on-failure
 
   MsQuicAdapter:
-    name: MsQuic 2.5.8 adapter
+    name: MsQuic 2.6.0 adapter
     runs-on: windows-latest
 
     steps:
@@ -69,7 +69,7 @@ jobs:
       - name: Install pinned MsQuic package
         run: >-
           nuget install Microsoft.Native.Quic.MsQuic.Schannel
-          -Version 2.5.8
+          -Version 2.6.0
           -OutputDirectory external
           -ExcludeVersion
           -NonInteractive
@@ -86,7 +86,7 @@ jobs:
           --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair
           --parallel 2
 
-      - name: Run native MsQuic loopback
+      - name: Run pinned-runtime and native MsQuic loopback tests
         run: >-
           ctest --test-dir build-msquic -C Release
-          -R desklink_msquic_loopback_tests --output-on-failure
+          -R "desklink_msquic_(runtime|loopback)_tests" --output-on-failure
