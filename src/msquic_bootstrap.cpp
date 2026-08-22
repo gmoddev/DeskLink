@@ -668,10 +668,22 @@ bool OpenConfiguration(MsQuicBootstrap::State& State,
         return false;
     }
 
+    QUIC_CERTIFICATE_HASH CertificateHash{};
+    DWORD CertificateHashSize = sizeof(CertificateHash.ShaHash);
+    if (!CertGetCertificateContextProperty(
+            State.Certificate.Context(), CERT_SHA1_HASH_PROP_ID,
+            CertificateHash.ShaHash, &CertificateHashSize) ||
+        CertificateHashSize != sizeof(CertificateHash.ShaHash)) {
+        Failure = "Could not read the local certificate store thumbprint for " +
+                  std::string(Alpn) + (Client ? " client" : " server");
+        State.Api->ConfigurationClose(Configuration);
+        Configuration = nullptr;
+        return false;
+    }
+
     QUIC_CREDENTIAL_CONFIG Credentials{};
-    Credentials.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_CONTEXT;
-    Credentials.CertificateContext = reinterpret_cast<QUIC_CERTIFICATE*>(
-        const_cast<CERT_CONTEXT*>(State.Certificate.Context()));
+    Credentials.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
+    Credentials.CertificateHash = &CertificateHash;
     Credentials.Flags = static_cast<QUIC_CREDENTIAL_FLAGS>(
         QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED |
         QUIC_CREDENTIAL_FLAG_DEFER_CERTIFICATE_VALIDATION |
