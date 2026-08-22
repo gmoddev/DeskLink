@@ -46,7 +46,7 @@ bool HasMatchingKeyName(PCCERT_CONTEXT Certificate, std::wstring_view KeyName) {
     return Info->pwszContainerName && Info->pwszProvName &&
            KeyName == Info->pwszContainerName &&
            std::wcscmp(Info->pwszProvName, MS_KEY_STORAGE_PROVIDER) == 0 &&
-           Info->dwKeySpec == CERT_NCRYPT_KEY_SPEC;
+           Info->dwKeySpec == AT_KEYEXCHANGE;
 }
 
 bool HasUsablePrivateKey(PCCERT_CONTEXT Certificate) noexcept {
@@ -57,7 +57,7 @@ bool HasUsablePrivateKey(PCCERT_CONTEXT Certificate) noexcept {
             Certificate,
             CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG | CRYPT_ACQUIRE_SILENT_FLAG,
             nullptr, &Handle, &KeySpec, &MustFree) ||
-        KeySpec != CERT_NCRYPT_KEY_SPEC) {
+        (KeySpec != AT_KEYEXCHANGE && KeySpec != CERT_NCRYPT_KEY_SPEC)) {
         return false;
     }
     if (MustFree) NCryptFreeObject(static_cast<NCRYPT_HANDLE>(Handle));
@@ -148,7 +148,8 @@ PCCERT_CONTEXT CreateCertificate(NCRYPT_KEY_HANDLE Key,
     KeyInfo.pwszContainerName = const_cast<wchar_t*>(KeyName.c_str());
     KeyInfo.pwszProvName = const_cast<wchar_t*>(MS_KEY_STORAGE_PROVIDER);
     KeyInfo.dwProvType = 0;
-    KeyInfo.dwKeySpec = CERT_NCRYPT_KEY_SPEC;
+    KeyInfo.dwFlags = NCRYPT_SILENT_FLAG;
+    KeyInfo.dwKeySpec = AT_KEYEXCHANGE;
     CRYPT_ALGORITHM_IDENTIFIER Signature{};
     Signature.pszObjId = const_cast<char*>(szOID_RSA_SHA256RSA);
 
