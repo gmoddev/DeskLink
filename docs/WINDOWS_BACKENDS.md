@@ -2,7 +2,8 @@
 
 ## 1. Current Windows implementation
 
-The repository currently includes `Win32InputInjector`.
+The repository includes `Win32InputInjector` and the opt-in
+`Win32InputCapture`/`Win32SuppressionGate` path.
 
 It uses `SendInput` with:
 
@@ -20,7 +21,7 @@ The current pointer adapter treats normalized coordinates as virtual-desktop coo
 
 ## 2. Host input capture
 
-Recommended production implementation uses two mechanisms with separate responsibilities.
+The initial implementation uses two mechanisms with separate responsibilities.
 
 ### Raw Input
 
@@ -34,6 +35,12 @@ Responsibilities:
 - high polling-rate devices
 
 Raw input should feed a bounded in-process queue.
+
+The current adapter registers keyboard/mouse `RIDEV_INPUTSINK` devices against
+a message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
+positions, and disables routing on overflow. Mouse wheel transport and stable
+display-ID mapping remain future protocol work; wheel events continue locally
+rather than being swallowed.
 
 ### Low-level hooks
 
@@ -58,6 +65,11 @@ Do not perform:
 inside the hook callback.
 
 A separate worker consumes Raw Input and sends DeskLink protocol messages.
+
+The current hook gate passes injected events, reads only lock-free atomic state,
+and uses Ctrl+Alt+Pause as the physical emergency chord. The chord clears the
+route flag in the hook before notifying the control worker. Capture is never
+enabled unless the operator supplies `--capture`.
 
 ---
 

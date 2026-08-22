@@ -33,6 +33,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
+- Opt-in Windows Raw Input capture with bounded sender queue
+- Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -42,7 +44,6 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC MsQuic failure-injection and reconnect validation
 - LAN discovery/mDNS
-- Windows Raw Input capture and minimal low-level suppression hooks
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend
 - Clock-drift resampling
@@ -102,9 +103,11 @@ by default. Trust is stored under the current user's local application-data
 directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
 After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
-On the other PC, `desklink_pair.exe focus 192.168.1.25 43821` manually acquires
-and renews a remote-focus lease until Enter is pressed. This proves the trusted
-focus control path; raw input capture and local suppression are not enabled yet.
+On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires
+and renews a remote-focus lease, forwards Raw Input, and suppresses corresponding
+local keyboard/mouse events until Enter is pressed. Ctrl+Alt+Pause immediately
+disables suppression and fails local. Omitting `--capture` retains the manual
+control-plane-only check.
 
 ## Repository layout
 
@@ -120,6 +123,7 @@ include/desklink/
     audio.hpp            Audio jitter/reorder buffer
     transport.hpp        Authenticated transport abstraction
     win32_input.hpp      Windows SendInput adapter
+    win32_capture.hpp    Raw Input and fail-local suppression adapter
 
 src/
     protocol.cpp

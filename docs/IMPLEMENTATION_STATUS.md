@@ -24,6 +24,8 @@ The current build proves the core invariants independently of Windows networking
 | Emergency fail-local | Done | Explicit state transition |
 | Input cleanup contract | Done | Backend callback on failure/release |
 | Windows SendInput injector | Done | Built only on Windows |
+| Windows Raw Input capture | Done | Hidden input-sink window, bounded 1024-event queue, pointer coalescing |
+| Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause fail-local |
 | Pointer format | Done | Absolute normalized datagram |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
@@ -73,6 +75,8 @@ The current test suite verifies:
 19. bounded/expiring connection-attempt limits
 20. CNG device-certificate creation, reload, pin stability, and cleanup
 21. native MsQuic pairing-to-trusted-session loopback on supported Windows CI
+22. suppression gate pass/suppress/injected-event/emergency behavior
+23. opt-in Raw Input window and hook install/remove smoke test on the Windows worker
 
 Build/test result in the creation environment:
 
@@ -87,9 +91,6 @@ Build/test result in the creation environment:
 ### P0 — required before using DeskLink across real PCs
 
 - two-PC LAN pairing, cable-removal, and reconnect validation
-- Windows Raw Input capture
-- low-level suppression gate
-- focus-ready response plumbing through the real transport
 - current-user IPC
 
 ### P1 — required for useful KM roaming
@@ -98,9 +99,8 @@ Build/test result in the creation environment:
 - edge graph
 - coordinate transform
 - edge hysteresis
-- automatic lease renew timer
 - input state reconciliation snapshot implementation
-- physical emergency chord
+- physical emergency-chord and high-poll-rate timing validation
 - foreground profile engine
 - GAME capture teardown/reinstall lifecycle
 
@@ -143,9 +143,9 @@ Each one significantly expands the attack surface and is unnecessary for the fir
 
 ## Recommended next implementation slice
 
-The pairing and focus controls now perform the trusted focus handshake. The next
-slice should add raw input capture and make two real Windows PCs perform this
-exact sequence:
+The pairing, focus, and opt-in capture controls now implement the first complete
+input path. The next slice should validate two real Windows 11 PCs and add input
+state reconciliation while performing this exact sequence:
 
 ```text
 1. manually pair

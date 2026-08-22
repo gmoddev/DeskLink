@@ -135,10 +135,11 @@ receive the same nonzero session nonce and that reconnecting rotates it.
 
 After pairing with `--grant-input` on the receiving PC, run
 `desklink_pair.exe serve 43821` there and
-`desklink_pair.exe focus <receiver-ip> 43821` on the other PC. Verify that the
-focus command reports an active lease, remains active for at least five seconds,
-and releases cleanly when Enter is pressed. This does not validate raw input
-capture or local suppression.
+`desklink_pair.exe focus <receiver-ip> 43821 --capture` on the other PC. Verify
+that keyboard, buttons, and pointer movement reach the receiver while the sender
+stays locally suppressed. Press Ctrl+Alt+Pause and verify local input returns
+immediately, the remote lease is released, and held remote state is cleaned up.
+Repeat using Enter as the normal release path.
 
 ---
 
@@ -146,8 +147,7 @@ capture or local suppression.
 
 This validation does not prove:
 
-- Windows `SendInput` source compiles on every supported MSVC/SDK combination
-- Raw Input/hook timing behavior
+- Raw Input/high-poll-rate hook timing across physical Windows 11 PCs
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
 - two-PC user-confirmed pairing and reconnect behavior

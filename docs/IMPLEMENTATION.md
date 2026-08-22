@@ -214,7 +214,8 @@ desired mode = LOCK_PC1
 remote epoch = 0
 ```
 
-The Windows capture layer must wire the physical emergency chord directly to this behavior and stop suppressing local physical input immediately.
+The Windows capture layer wires Ctrl+Alt+Pause directly to this behavior and
+stops suppressing local physical input before notifying the control worker.
 
 ---
 
@@ -371,8 +372,9 @@ Do not persist an active focus lease across process restart.
 The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
 session-nonce negotiation, and explicit Windows pairing control are now
 implemented. The manual serve/focus control now proves the trusted lease path.
-The next highest-value change is Windows Raw Input capture with the minimal
-low-level suppression gate across two physical Windows 11 PCs.
+The opt-in Raw Input and suppression backend now supplies the physical input
+path. The next highest-value change is two-PC failure injection plus periodic
+input-state reconciliation.
 
 Acceptance criteria:
 

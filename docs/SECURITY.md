@@ -129,6 +129,11 @@ Epoch invalidation occurs on:
 
 This turns delayed network traffic into harmless stale data. Focus acquisition additionally uses a nonzero transaction `request_id`; Host accepts `FocusReady` only for its currently pending request.
 
+The Windows capture adapter uses Ctrl+Alt+Pause as its physical fail-local
+chord. The low-level hook clears the atomic routing flag before notifying the
+worker. Injected events always pass through, and capture-queue overflow clears
+routing plus queued input before the session is released.
+
 ---
 
 ## 6. Input cleanup

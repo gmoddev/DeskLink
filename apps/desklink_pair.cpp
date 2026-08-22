@@ -1,5 +1,6 @@
 #include "desklink/msquic_bootstrap.hpp"
 #include "desklink/session.hpp"
+#include "desklink/win32_capture.hpp"
 #include "desklink/win32_input.hpp"
 #include "desklink/win32_pairing.hpp"
 
@@ -44,6 +45,7 @@ struct CommandLine {
     std::string Host;
     std::uint16_t Port{kDefaultPort};
     bool GrantInput{};
+    bool CaptureInput{};
 };
 
 struct PairingResult {
@@ -109,8 +111,9 @@ void PrintUsage() {
         << L"  desklink_pair listen [port] [--grant-input]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input]\n"
         << L"  desklink_pair serve [port]\n"
-        << L"  desklink_pair focus <host-or-ip> [port]\n\n"
-        << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n";
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture]\n\n"
+        << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
+        << L"--capture forwards physical input and suppresses it locally until release.\n";
 }
 
 std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Arguments) {
@@ -148,6 +151,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.GrantInput = true;
             continue;
         }
+        if (Argument == L"--capture") {
+            if (Result.CaptureInput) return std::nullopt;
+            Result.CaptureInput = true;
+            continue;
+        }
         if (PortSeen) return std::nullopt;
         const auto Port = ParsePort(Argument);
         if (!Port) return std::nullopt;
@@ -159,6 +167,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         Result.Mode != Operation::PairConnect) {
         return std::nullopt;
     }
+    if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
     return Result;
 }
 
@@ -250,6 +259,7 @@ struct TrustedResult {
     std::mutex Mutex;
     std::condition_variable Changed;
     bool Ready{};
+    bool Emergency{};
     std::string Failure;
 };
 
@@ -288,6 +298,7 @@ int RunTrusted(const CommandLine& Command,
     std::mutex RuntimesMutex;
     std::vector<std::shared_ptr<AgentRuntime>> AgentRuntimes;
     std::shared_ptr<HostRuntime> Host;
+    int ExitCode = 0;
 
     desklink::MsQuicBootstrapHandlers Handlers;
     Handlers.PairingOffered = [](std::shared_ptr<desklink::MsQuicPairingSession> Session) {
@@ -427,25 +438,140 @@ int RunTrusted(const CommandLine& Command,
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return 1;
         }
-        std::cout << "[Session:Control] remote focus active; press Enter to release\n";
+        std::unique_ptr<desklink::Win32InputCapture> Capture;
+        std::atomic<desklink::Win32InputCapture*> ActiveCapture{};
         std::atomic_bool StopRenewal{};
-        std::thread Renewal([&] {
+        std::thread Renewal([&, Result] {
             while (!StopRenewal.load()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (!StopRenewal.load() && !ActiveHost->Session.renew_focus(750)) break;
+                if (!StopRenewal.load() && !ActiveHost->Session.renew_focus(750)) {
+                    if (auto* Current = ActiveCapture.load()) {
+                        Current->SetRemoteRouting(false);
+                    }
+                    {
+                        std::scoped_lock Lock(Result->Mutex);
+                        Result->Emergency = true;
+                        Result->Failure = "focus lease renewal failed";
+                    }
+                    Result->Changed.notify_all();
+                    break;
+                }
             }
         });
-        std::string Line;
-        (void)std::getline(std::cin, Line);
+        if (Command.CaptureInput) {
+            desklink::Win32CaptureHandlers CaptureHandlers;
+            CaptureHandlers.Key = [ActiveHost, Result, &ActiveCapture](
+                desklink::KeyEventMessage Event) {
+                if (!ActiveHost->Session.send_key(Event)) {
+                    if (auto* Current = ActiveCapture.load()) {
+                        Current->SetRemoteRouting(false);
+                    }
+                    {
+                        std::scoped_lock Lock(Result->Mutex);
+                        Result->Emergency = true;
+                        Result->Failure = "reliable keyboard forwarding failed";
+                    }
+                    Result->Changed.notify_all();
+                }
+            };
+            CaptureHandlers.Button = [ActiveHost, Result, &ActiveCapture](
+                desklink::MouseButtonMessage Event) {
+                if (!ActiveHost->Session.send_button(Event)) {
+                    if (auto* Current = ActiveCapture.load()) {
+                        Current->SetRemoteRouting(false);
+                    }
+                    {
+                        std::scoped_lock Lock(Result->Mutex);
+                        Result->Emergency = true;
+                        Result->Failure = "reliable mouse-button forwarding failed";
+                    }
+                    Result->Changed.notify_all();
+                }
+            };
+            CaptureHandlers.Pointer = [ActiveHost](desklink::PointerPositionMessage Event) {
+                (void)ActiveHost->Session.send_pointer(Event);
+            };
+            CaptureHandlers.Emergency = [Result] {
+                {
+                    std::scoped_lock Lock(Result->Mutex);
+                    Result->Emergency = true;
+                }
+                Result->Changed.notify_all();
+            };
+            CaptureHandlers.Failed = [Result](std::string Message) {
+                {
+                    std::scoped_lock Lock(Result->Mutex);
+                    Result->Emergency = true;
+                    Result->Failure = std::move(Message);
+                }
+                Result->Changed.notify_all();
+            };
+            Capture = std::make_unique<desklink::Win32InputCapture>(
+                std::move(CaptureHandlers));
+            ActiveCapture.store(Capture.get());
+            if (!Capture->Start()) {
+                ActiveCapture.store(nullptr);
+                StopRenewal.store(true);
+                Renewal.join();
+                std::cerr << "[Input:Capture] could not install Raw Input and fail-local hooks\n";
+                (void)ActiveHost->Session.release_focus();
+                ActiveHost->Session.stop();
+                Bootstrap->Close();
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                return 1;
+            }
+            bool RenewalFailed = false;
+            {
+                std::scoped_lock Lock(Result->Mutex);
+                RenewalFailed = Result->Emergency;
+            }
+            if (!RenewalFailed) {
+                Capture->SetRemoteRouting(true);
+                std::cout << "[Input:Capture] physical input is routed remotely\n"
+                          << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n";
+            }
+        }
+        std::cout << "[Session:Control] remote focus active; press Enter to release\n";
+        const auto InputHandle = GetStdHandle(STD_INPUT_HANDLE);
+        for (;;) {
+            {
+                std::scoped_lock Lock(Result->Mutex);
+                if (Result->Emergency) break;
+            }
+            if (Capture && !Capture->RemoteRouting()) break;
+            const auto WaitResult = InputHandle == INVALID_HANDLE_VALUE ||
+                    InputHandle == nullptr
+                ? WAIT_FAILED
+                : WaitForSingleObject(InputHandle, 100);
+            if (WaitResult != WAIT_TIMEOUT) {
+                std::string Line;
+                if (WaitResult == WAIT_OBJECT_0) {
+                    (void)std::getline(std::cin, Line);
+                }
+                break;
+            }
+        }
+        if (Capture) Capture->SetRemoteRouting(false);
         StopRenewal.store(true);
         Renewal.join();
+        if (Capture) {
+            Capture->Stop();
+            ActiveCapture.store(nullptr);
+        }
         (void)ActiveHost->Session.release_focus();
         ActiveHost->Session.stop();
+        {
+            std::scoped_lock Lock(Result->Mutex);
+            if (!Result->Failure.empty()) {
+                std::cerr << "[Input:Capture] " << Result->Failure << '\n';
+                ExitCode = 1;
+            }
+        }
     }
 
     Bootstrap->Close();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    return 0;
+    return ExitCode;
 }
 
 int Run(const CommandLine& Command) {
