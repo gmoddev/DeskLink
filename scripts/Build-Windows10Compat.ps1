@@ -8,10 +8,13 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $SchannelRoot,
 
-    [string] $BuildRoot = (Join-Path $PSScriptRoot '..\out\windows10-compat')
+    [string] $BuildRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
+    $BuildRoot = Join-Path $PSScriptRoot '..\out\windows10-compat'
+}
 $ExpectedMsQuicCommit = 'e7e7a114e20a55ec2d5f723cf6bdf3bfb7b0b24a'
 $ExpectedOpenSslVersion = '3.5.7'
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
