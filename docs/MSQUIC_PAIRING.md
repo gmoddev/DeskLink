@@ -144,6 +144,15 @@ from previous connections. The preface and reliable stream reject 0-RTT data;
 early post-preface packets remain bounded and buffered until a receive handler
 is installed. Every reconnect negotiates a different nonce.
 
+## Manual trusted focus
+
+Once both PCs have persisted trust and the receiving PC granted `InputInject`,
+run `desklink_pair.exe serve 43821` on that PC and
+`desklink_pair.exe focus <receiver-ip> 43821` on the other. The focus command
+requests a 750 ms lease, waits for `FocusReady`, renews every 500 ms, and sends
+an explicit release when Enter is pressed. The serving side ticks lease expiry
+every 50 ms. This control-plane proof does not capture or suppress local input.
+
 ## Windows pairing control
 
 The optional `desklink_pair` executable is the first current-user control

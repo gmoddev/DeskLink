@@ -6,7 +6,9 @@
 #include "desklink/transport.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 
 namespace desklink {
 
@@ -29,7 +31,7 @@ public:
     [[nodiscard]] bool start();
     void stop() noexcept;
     void tick() noexcept;
-    [[nodiscard]] const SessionStats& stats() const noexcept { return stats_; }
+    [[nodiscard]] SessionStats stats() const noexcept;
 
 private:
     void on_reliable(ByteBuffer packet);
@@ -43,6 +45,7 @@ private:
     std::uint64_t session_nonce_{};
     std::uint64_t response_sequence_{1};
     SessionStats stats_;
+    mutable std::recursive_mutex Mutex_;
     bool started_{};
 };
 
@@ -51,7 +54,8 @@ public:
     HostSession(std::shared_ptr<ITransportEndpoint> transport,
                 HostCoordinator& coordinator,
                 const ITrustStore& TrustStore,
-                std::uint64_t session_nonce) noexcept;
+                std::uint64_t session_nonce,
+                std::function<void()> FocusReadyHandler = {}) noexcept;
     ~HostSession();
 
     [[nodiscard]] bool start();
@@ -63,8 +67,9 @@ public:
     [[nodiscard]] bool send_key(KeyEventMessage event);
     [[nodiscard]] bool send_button(MouseButtonMessage event);
     [[nodiscard]] bool send_pointer(PointerPositionMessage event);
+    [[nodiscard]] bool RemoteFocused() const noexcept;
 
-    [[nodiscard]] const SessionStats& stats() const noexcept { return stats_; }
+    [[nodiscard]] SessionStats stats() const noexcept;
 
 private:
     void on_reliable(ByteBuffer packet);
@@ -73,7 +78,9 @@ private:
     HostCoordinator& coordinator_;
     const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
+    std::function<void()> FocusReadyHandler_;
     SessionStats stats_;
+    mutable std::recursive_mutex Mutex_;
     bool started_{};
 };
 

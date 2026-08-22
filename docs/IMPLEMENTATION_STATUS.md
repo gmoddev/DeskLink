@@ -40,6 +40,7 @@ The current build proves the core invariants independently of Windows networking
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
+| Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -142,7 +143,9 @@ Each one significantly expands the attack surface and is unnecessary for the fir
 
 ## Recommended next implementation slice
 
-The next slice should use the pairing control to make two real Windows PCs perform this exact sequence:
+The pairing and focus controls now perform the trusted focus handshake. The next
+slice should add raw input capture and make two real Windows PCs perform this
+exact sequence:
 
 ```text
 1. manually pair

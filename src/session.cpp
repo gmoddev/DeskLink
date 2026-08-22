@@ -34,6 +34,7 @@ AgentSession::AgentSession(std::shared_ptr<ITransportEndpoint> transport,
 AgentSession::~AgentSession() { stop(); }
 
 bool AgentSession::start() {
+    std::scoped_lock Lock(Mutex_);
     if (started_) return true;
     const auto Trusted = GetTrustedTransportPeer(transport_, trust_store_);
     if (!Trusted) return false;
@@ -46,13 +47,22 @@ bool AgentSession::start() {
 }
 
 void AgentSession::stop() noexcept {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return;
     coordinator_.disconnect();
     transport_->close();
     started_ = false;
 }
 
-void AgentSession::tick() noexcept { coordinator_.tick(); }
+void AgentSession::tick() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    coordinator_.tick();
+}
+
+SessionStats AgentSession::stats() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return stats_;
+}
 
 bool AgentSession::validate_session(const DecodedPacket& packet) noexcept {
     if (packet.header.session_nonce != session_nonce_) {
@@ -69,6 +79,7 @@ void AgentSession::count_decision(AgentDecision decision) noexcept {
 }
 
 void AgentSession::on_reliable(ByteBuffer packet) {
+    std::scoped_lock Lock(Mutex_);
     ++stats_.reliable_received;
     auto decoded = decode_packet(packet, false);
     if (!decoded.packet) {
@@ -94,6 +105,7 @@ void AgentSession::on_reliable(ByteBuffer packet) {
 }
 
 void AgentSession::on_datagram(ByteBuffer packet) {
+    std::scoped_lock Lock(Mutex_);
     ++stats_.datagrams_received;
     auto decoded = decode_packet(packet, true);
     if (!decoded.packet) {
@@ -107,15 +119,18 @@ void AgentSession::on_datagram(ByteBuffer packet) {
 HostSession::HostSession(std::shared_ptr<ITransportEndpoint> transport,
                          HostCoordinator& coordinator,
                          const ITrustStore& TrustStore,
-                         std::uint64_t session_nonce) noexcept
+                         std::uint64_t session_nonce,
+                         std::function<void()> FocusReadyHandler) noexcept
     : transport_(std::move(transport)),
       coordinator_(coordinator),
       trust_store_(TrustStore),
-      session_nonce_(session_nonce) {}
+      session_nonce_(session_nonce),
+      FocusReadyHandler_(std::move(FocusReadyHandler)) {}
 
 HostSession::~HostSession() { stop(); }
 
 bool HostSession::start() {
+    std::scoped_lock Lock(Mutex_);
     if (started_) return true;
     if (!GetTrustedTransportPeer(transport_, trust_store_)) return false;
     transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
@@ -124,6 +139,7 @@ bool HostSession::start() {
 }
 
 void HostSession::stop() noexcept {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return;
     coordinator_.emergency_fail_local();
     transport_->close();
@@ -131,56 +147,79 @@ void HostSession::stop() noexcept {
 }
 
 void HostSession::on_reliable(ByteBuffer packet) {
-    ++stats_.reliable_received;
-    auto decoded = decode_packet(packet, false);
-    if (!decoded.packet) {
-        ++stats_.decode_rejected;
-        return;
-    }
-    if (decoded.packet->header.session_nonce != session_nonce_) {
-        ++stats_.session_rejected;
-        return;
-    }
-    if (decoded.packet->header.type == MessageType::FocusReady) {
-        if (!coordinator_.accept_focus_ready(*decoded.packet)) {
-            ++stats_.authorization_rejected;
+    bool FocusReady = false;
+    {
+        std::scoped_lock Lock(Mutex_);
+        ++stats_.reliable_received;
+        auto decoded = decode_packet(packet, false);
+        if (!decoded.packet) {
+            ++stats_.decode_rejected;
+            return;
+        }
+        if (decoded.packet->header.session_nonce != session_nonce_) {
+            ++stats_.session_rejected;
+            return;
+        }
+        if (decoded.packet->header.type == MessageType::FocusReady) {
+            if (!coordinator_.accept_focus_ready(*decoded.packet)) {
+                ++stats_.authorization_rejected;
+            } else {
+                FocusReady = true;
+            }
         }
     }
+    if (FocusReady && FocusReadyHandler_) FocusReadyHandler_();
 }
 
 bool HostSession::focus_remote(std::uint32_t lease_ms) {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
     return transport_->send_reliable(coordinator_.request_remote_focus(lease_ms));
 }
 
 bool HostSession::renew_focus(std::uint32_t lease_ms) {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
     auto packet = coordinator_.renew_remote_focus(lease_ms);
     return packet.has_value() && transport_->send_reliable(std::move(*packet));
 }
 
 bool HostSession::release_focus() {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
     auto packet = coordinator_.release_remote_focus();
     return packet.has_value() && transport_->send_reliable(std::move(*packet));
 }
 
 bool HostSession::send_key(KeyEventMessage event) {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
     auto packet = coordinator_.key_event(event);
     return packet.has_value() && transport_->send_reliable(std::move(*packet));
 }
 
 bool HostSession::send_button(MouseButtonMessage event) {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
     auto packet = coordinator_.mouse_button(event);
     return packet.has_value() && transport_->send_reliable(std::move(*packet));
 }
 
 bool HostSession::send_pointer(PointerPositionMessage event) {
+    std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
     auto packet = coordinator_.pointer_position(event);
     return packet.has_value() && transport_->send_datagram(std::move(*packet));
+}
+
+bool HostSession::RemoteFocused() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return coordinator_.remote_focused();
+}
+
+SessionStats HostSession::stats() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return stats_;
 }
 
 } // namespace desklink
