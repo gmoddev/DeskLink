@@ -4,11 +4,13 @@
 #include "desklink/host.hpp"
 #include "desklink/input.hpp"
 #include "desklink/pairing.hpp"
+#include "desklink/pairing_wire.hpp"
 #include "desklink/protocol.hpp"
 #include "desklink/session.hpp"
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
 #ifdef _WIN32
+#include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_pairing.hpp"
 #endif
 
@@ -514,6 +516,57 @@ void PairingTranscriptDetectsPinTamperingAndExpiry() {
     CHECK(!first.ConfirmOffer(*second_offer, genuine_code, CapabilitySet{}));
 }
 
+void PairingWireIsBoundedAndFragmentSafe() {
+    using namespace desklink;
+    PairingOffer Offer{
+        MakeMachineId(31), "DeskLink peer", MakeDigest(31), {}};
+    for (std::size_t Index = 0; Index < Offer.Nonce.size(); ++Index) {
+        Offer.Nonce[Index] = static_cast<std::uint8_t>(Index + 1);
+    }
+    const auto Frame = EncodePairingOfferFrame(Offer);
+    CHECK(Frame.has_value());
+    CHECK(Frame->size() <= kMaxPairingFrameSize);
+    const auto Decoded = DecodePairingOfferFrame(*Frame);
+    CHECK(Decoded.has_value());
+    CHECK(Decoded->Machine == Offer.Machine);
+    CHECK(Decoded->DisplayName == Offer.DisplayName);
+    CHECK(Decoded->CertificatePin == Offer.CertificatePin);
+    CHECK(Decoded->Nonce == Offer.Nonce);
+
+    PairingFrameDecoder Decoder;
+    CHECK(Decoder.Push(ByteSpan{Frame->data(), 3}) == PairingWireStatus::Incomplete);
+    CHECK(Decoder.Push(ByteSpan{Frame->data() + 3, Frame->size() - 3}) ==
+          PairingWireStatus::Ready);
+    CHECK(Decoder.TakeOffer().has_value());
+
+    auto BadMagic = *Frame;
+    BadMagic[0] ^= 0xFFu;
+    CHECK(!DecodePairingOfferFrame(BadMagic));
+    auto ExtraByte = *Frame;
+    ExtraByte.push_back(0);
+    CHECK(!DecodePairingOfferFrame(ExtraByte));
+    auto InvalidUtf8 = Offer;
+    InvalidUtf8.DisplayName = std::string{"\xC0\xAF", 2};
+    CHECK(!EncodePairingOfferFrame(InvalidUtf8));
+}
+
+void AttemptRateLimiterIsBoundedAndExpires() {
+    using namespace desklink;
+    ManualClock Clock;
+    AttemptRateLimiter Limiter(Clock, 2, std::chrono::seconds(1), 2);
+    CHECK(Limiter.Allow("peer-a"));
+    CHECK(Limiter.Allow("peer-a"));
+    CHECK(!Limiter.Allow("peer-a"));
+    CHECK(Limiter.Allow("peer-b"));
+    CHECK(!Limiter.Allow("peer-c"));
+    CHECK(Limiter.TrackedKeyCount() == 2);
+    Clock.advance(std::chrono::milliseconds(1000));
+    CHECK(Limiter.Allow("peer-c"));
+    CHECK(Limiter.TrackedKeyCount() == 1);
+    CHECK(!Limiter.Allow(""));
+    CHECK(!Limiter.Allow(std::string(129, 'x')));
+}
+
 void CertificatePinsMatchOnlyTheStoredPeer() {
     using namespace desklink;
     DeterministicPairingCrypto crypto(7);
@@ -576,6 +629,21 @@ void WindowsCryptoAndDpapiTrustStoreWork() {
     CHECK(restored->Capabilities.contains(Capability::InputInject));
     CHECK(second.RemovePeer(identity.machine_id));
     std::filesystem::remove(path, ignored);
+
+    const auto KeyName = std::wstring(L"DeskLink-Test-") + std::to_wstring(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    CHECK(Win32DeviceCertificate::Remove(KeyName));
+    {
+        auto FirstCertificate = Win32DeviceCertificate::LoadOrCreate(KeyName, crypto);
+        CHECK(FirstCertificate.has_value());
+        CHECK(!FirstCertificate->Der().empty());
+        CHECK(FirstCertificate->CertificatePin() != Sha256Digest{});
+        auto ReloadedCertificate = Win32DeviceCertificate::LoadOrCreate(KeyName, crypto);
+        CHECK(ReloadedCertificate.has_value());
+        CHECK(ReloadedCertificate->CertificatePin() == FirstCertificate->CertificatePin());
+    }
+    CHECK(Win32DeviceCertificate::Remove(KeyName));
+    CHECK(!Win32DeviceCertificate::LoadOrCreate(L"invalid key name!", crypto));
 }
 #endif
 
@@ -620,6 +688,8 @@ int main() {
     PinnedIdentityMismatchIsRefused();
     PairingRequiresMatchingUserVerification();
     PairingTranscriptDetectsPinTamperingAndExpiry();
+    PairingWireIsBoundedAndFragmentSafe();
+    AttemptRateLimiterIsBoundedAndExpires();
     CertificatePinsMatchOnlyTheStoredPeer();
 #ifdef _WIN32
     WindowsCryptoAndDpapiTrustStoreWork();

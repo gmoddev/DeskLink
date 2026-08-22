@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -28,6 +29,8 @@ struct PairingOffer {
     Sha256Digest CertificatePin{};
     PairingNonce Nonce{};
 };
+
+[[nodiscard]] bool IsValidPairingOffer(const PairingOffer& Offer) noexcept;
 
 struct TrustedPeer {
     PeerIdentity Identity;
@@ -60,6 +63,7 @@ public:
     [[nodiscard]] bool RemovePeer(const MachineId& Machine) override;
 
 private:
+    mutable std::mutex Mutex_;
     std::vector<TrustedPeer> Peers_;
 };
 
@@ -85,8 +89,8 @@ public:
                        ITrustStore& TrustStore);
 
     [[nodiscard]] bool BeginPairing(std::chrono::seconds Duration);
-    void ClosePairing() noexcept;
-    [[nodiscard]] bool IsPairingOpen() const noexcept;
+    void ClosePairing();
+    [[nodiscard]] bool IsPairingOpen() const;
     [[nodiscard]] std::optional<PairingOffer> CreateOffer() const;
     [[nodiscard]] PairingCandidate InspectOffer(const PairingOffer& RemoteOffer) const;
     [[nodiscard]] bool ConfirmOffer(const PairingOffer& RemoteOffer,
@@ -102,6 +106,7 @@ private:
     ITrustStore& TrustStore_;
     IClock::time_point PairingDeadline_{};
     bool PairingOpen_{};
+    mutable std::recursive_mutex Mutex_;
 };
 
 [[nodiscard]] std::string FormatFingerprint(const Sha256Digest& Digest);

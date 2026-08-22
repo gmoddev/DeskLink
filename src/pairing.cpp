@@ -19,14 +19,6 @@ bool IsAllZero(ByteSpan Bytes) noexcept {
     return Combined == 0;
 }
 
-bool IsValidOffer(const PairingOffer& Offer) noexcept {
-    return !IsAllZero(Offer.Machine) &&
-           !Offer.DisplayName.empty() &&
-           Offer.DisplayName.size() <= kMaxPairingDisplayName &&
-           !IsAllZero(Offer.CertificatePin) &&
-           !IsAllZero(Offer.Nonce);
-}
-
 void AppendBytes(ByteBuffer& Output, ByteSpan Bytes) {
     Output.insert(Output.end(), Bytes.begin(), Bytes.end());
 }
@@ -85,7 +77,16 @@ bool ConstantTimeEqual(std::string_view Left, std::string_view Right) noexcept {
 
 } // namespace
 
+bool IsValidPairingOffer(const PairingOffer& Offer) noexcept {
+    return !IsAllZero(Offer.Machine) &&
+           !Offer.DisplayName.empty() &&
+           Offer.DisplayName.size() <= kMaxPairingDisplayName &&
+           !IsAllZero(Offer.CertificatePin) &&
+           !IsAllZero(Offer.Nonce);
+}
+
 std::optional<TrustedPeer> InMemoryTrustStore::GetPeer(const MachineId& Machine) const {
+    std::scoped_lock Lock(Mutex_);
     const auto Match = std::find_if(Peers_.begin(), Peers_.end(), [&](const TrustedPeer& Peer) {
         return Peer.Identity.machine_id == Machine;
     });
@@ -95,6 +96,7 @@ std::optional<TrustedPeer> InMemoryTrustStore::GetPeer(const MachineId& Machine)
 
 std::optional<TrustedPeer> InMemoryTrustStore::FindPeerByFingerprint(
     std::string_view Fingerprint) const {
+    std::scoped_lock Lock(Mutex_);
     const auto Parsed = ParseFingerprint(Fingerprint);
     if (!Parsed) return std::nullopt;
     const auto Canonical = FormatFingerprint(*Parsed);
@@ -106,6 +108,7 @@ std::optional<TrustedPeer> InMemoryTrustStore::FindPeerByFingerprint(
 }
 
 bool InMemoryTrustStore::SavePeer(TrustedPeer Peer) {
+    std::scoped_lock Lock(Mutex_);
     const auto Fingerprint = ParseFingerprint(Peer.Identity.public_key_fingerprint);
     if (IsAllZero(Peer.Identity.machine_id) || Peer.Identity.display_name.empty() ||
         Peer.Identity.display_name.size() > kMaxPairingDisplayName || !Fingerprint ||
@@ -135,6 +138,7 @@ bool InMemoryTrustStore::SavePeer(TrustedPeer Peer) {
 }
 
 bool InMemoryTrustStore::RemovePeer(const MachineId& Machine) {
+    std::scoped_lock Lock(Mutex_);
     const auto PreviousSize = Peers_.size();
     std::erase_if(Peers_, [&](const TrustedPeer& Peer) {
         return Peer.Identity.machine_id == Machine;
@@ -154,6 +158,7 @@ PairingCoordinator::PairingCoordinator(PeerIdentity LocalIdentity,
       TrustStore_(TrustStore) {}
 
 bool PairingCoordinator::BeginPairing(std::chrono::seconds Duration) {
+    std::scoped_lock Lock(Mutex_);
     if (Duration < kMinimumPairingWindow || Duration > kMaximumPairingWindow ||
         IsAllZero(LocalIdentity_.machine_id) || LocalIdentity_.display_name.empty() ||
         LocalIdentity_.display_name.size() > kMaxPairingDisplayName ||
@@ -168,16 +173,19 @@ bool PairingCoordinator::BeginPairing(std::chrono::seconds Duration) {
     return true;
 }
 
-void PairingCoordinator::ClosePairing() noexcept {
+void PairingCoordinator::ClosePairing() {
+    std::scoped_lock Lock(Mutex_);
     PairingOpen_ = false;
     LocalNonce_.fill(0);
 }
 
-bool PairingCoordinator::IsPairingOpen() const noexcept {
+bool PairingCoordinator::IsPairingOpen() const {
+    std::scoped_lock Lock(Mutex_);
     return PairingOpen_ && Clock_.now() < PairingDeadline_;
 }
 
 std::optional<PairingOffer> PairingCoordinator::CreateOffer() const {
+    std::scoped_lock Lock(Mutex_);
     if (!IsPairingOpen()) return std::nullopt;
     return PairingOffer{
         LocalIdentity_.machine_id,
@@ -187,8 +195,9 @@ std::optional<PairingOffer> PairingCoordinator::CreateOffer() const {
 }
 
 PairingCandidate PairingCoordinator::InspectOffer(const PairingOffer& RemoteOffer) const {
+    std::scoped_lock Lock(Mutex_);
     if (!IsPairingOpen()) return {PairingStatus::WindowClosed, {}, {}};
-    if (!IsValidOffer(RemoteOffer) || RemoteOffer.Machine == LocalIdentity_.machine_id) {
+    if (!IsValidPairingOffer(RemoteOffer) || RemoteOffer.Machine == LocalIdentity_.machine_id) {
         return {PairingStatus::InvalidOffer, {}, {}};
     }
     const auto LocalOffer = CreateOffer();
@@ -206,6 +215,7 @@ PairingCandidate PairingCoordinator::InspectOffer(const PairingOffer& RemoteOffe
 bool PairingCoordinator::ConfirmOffer(const PairingOffer& RemoteOffer,
                                       std::string_view VerificationCode,
                                       CapabilitySet Capabilities) {
+    std::scoped_lock Lock(Mutex_);
     const auto Candidate = InspectOffer(RemoteOffer);
     if (Candidate.Status != PairingStatus::Ready ||
         !ConstantTimeEqual(Candidate.VerificationCode, VerificationCode)) {

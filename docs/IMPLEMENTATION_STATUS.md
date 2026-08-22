@@ -33,6 +33,11 @@ The current build proves the core invariants independently of Windows networking
 | Peer certificate pinning | Done | Stored machine ID and SHA-256 certificate pin required by sessions |
 | Windows trust provider | Done | CNG randomness/hash + current-user DPAPI atomic trust store |
 | MsQuic endpoint adapter | Done | Optional v2.5.8 stream framing/datagram adapter for established connections |
+| Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
+| MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
+| Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
+| Connection rate limits | Done | Bounded per-address connection and pairing windows |
+| Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -61,6 +66,10 @@ The current test suite verifies:
 15. end-to-end secure HostSession/AgentSession focus and stale-input rejection
 16. out-of-order/duplicate pointer datagram rejection
 17. stale FocusReady transaction rejection
+18. fragmented and malformed pairing-offer frames
+19. bounded/expiring connection-attempt limits
+20. CNG device-certificate creation, reload, pin stability, and cleanup
+21. native MsQuic pairing-to-trusted-session loopback on supported Windows CI
 
 Build/test result in the creation environment:
 
@@ -74,17 +83,12 @@ Build/test result in the creation environment:
 
 ### P0 — required before using DeskLink across real PCs
 
-- MsQuic registration, listener, and client connection factories
-- CNG device-certificate creation and private-key lifecycle
-- bounded pairing-offer exchange and confirmation UI
-- deferred MsQuic certificate-validation callback plumbing
-- session nonce enforcement at connection/session layer
-- persistent capability/trust store
+- pairing confirmation UI
+- two-PC LAN pairing, cable-removal, and reconnect validation
 - Windows Raw Input capture
 - low-level suppression gate
 - focus-ready response plumbing through the real transport
 - current-user IPC
-- rate limiting at connection/session boundary
 
 ### P1 — required for useful KM roaming
 

@@ -11,12 +11,17 @@ option(DESKLINK_BUILD_WINDOWS_BACKENDS "Build Win32 backend adapters" ON)
 option(DESKLINK_BUILD_MSQUIC "Build the native MsQuic transport adapter" OFF)
 set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.5.8 distribution")
 
+if(DESKLINK_BUILD_TESTS)
+    enable_testing()
+endif()
+
 add_library(desklink_core
     src/protocol.cpp
     src/focus.cpp
     src/host.cpp
     src/session.cpp
     src/pairing.cpp
+    src/pairing_wire.cpp
     src/agent.cpp
     src/audio.cpp
     src/in_memory_transport.cpp
@@ -37,18 +42,30 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         HINTS
             "${DESKLINK_MSQUIC_ROOT}/include"
             "${DESKLINK_MSQUIC_ROOT}/src/inc"
+            "${DESKLINK_MSQUIC_ROOT}/build/native/include"
         REQUIRED)
     find_library(DESKLINK_MSQUIC_LIBRARY NAMES msquic
         HINTS
             "${DESKLINK_MSQUIC_ROOT}/lib"
-            "${DESKLINK_MSQUIC_ROOT}/bin")
+            "${DESKLINK_MSQUIC_ROOT}/bin"
+            "${DESKLINK_MSQUIC_ROOT}/build/native/lib/x64")
+    find_file(DESKLINK_MSQUIC_DLL NAMES msquic.dll
+        HINTS
+            "${DESKLINK_MSQUIC_ROOT}/bin"
+            "${DESKLINK_MSQUIC_ROOT}/build/native/bin/x64")
 
-    add_library(desklink_msquic src/msquic_transport.cpp)
+    if(NOT DESKLINK_BUILD_WINDOWS_BACKENDS)
+        message(FATAL_ERROR "DESKLINK_BUILD_MSQUIC requires DESKLINK_BUILD_WINDOWS_BACKENDS")
+    endif()
+
+    add_library(desklink_msquic
+        src/msquic_transport.cpp
+        src/msquic_bootstrap.cpp)
     target_include_directories(desklink_msquic
         PUBLIC include "${DESKLINK_MSQUIC_INCLUDE_DIR}")
     target_link_libraries(desklink_msquic
-        PUBLIC desklink_core
-        PRIVATE crypt32)
+        PUBLIC desklink_core desklink_windows
+        PRIVATE crypt32 ncrypt ws2_32)
     if(DESKLINK_MSQUIC_LIBRARY)
         target_link_libraries(desklink_msquic PRIVATE "${DESKLINK_MSQUIC_LIBRARY}")
     endif()
@@ -56,15 +73,33 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     if(MSVC)
         target_compile_options(desklink_msquic PRIVATE /W4 /permissive-)
     endif()
+
+    if(DESKLINK_BUILD_TESTS AND DESKLINK_MSQUIC_LIBRARY)
+        add_executable(desklink_msquic_loopback_tests tests/msquic_loopback_tests.cpp)
+        target_link_libraries(desklink_msquic_loopback_tests PRIVATE desklink_msquic)
+        if(MINGW)
+            target_link_options(desklink_msquic_loopback_tests PRIVATE
+                -static -static-libgcc -static-libstdc++)
+        endif()
+        if(DESKLINK_MSQUIC_DLL)
+            add_custom_command(TARGET desklink_msquic_loopback_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DESKLINK_MSQUIC_DLL}"
+                    "$<TARGET_FILE_DIR:desklink_msquic_loopback_tests>")
+        endif()
+        add_test(NAME desklink_msquic_loopback_tests
+                 COMMAND desklink_msquic_loopback_tests)
+    endif()
 endif()
 
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
         src/win32_input.cpp
         src/win32_pairing.cpp
+        src/win32_device_certificate.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32 bcrypt crypt32)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 bcrypt crypt32 ncrypt)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     endif()
@@ -76,11 +111,14 @@ if(DESKLINK_BUILD_SIM)
 endif()
 
 if(DESKLINK_BUILD_TESTS)
-    enable_testing()
     add_executable(desklink_tests tests/core_tests.cpp)
     target_link_libraries(desklink_tests PRIVATE desklink_core)
     if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         target_link_libraries(desklink_tests PRIVATE desklink_windows)
+    endif()
+    if(MINGW)
+        target_link_options(desklink_tests PRIVATE
+            -static -static-libgcc -static-libstdc++)
     endif()
     add_test(NAME desklink_tests COMMAND desklink_tests)
 endif()
