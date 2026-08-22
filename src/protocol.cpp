@@ -128,8 +128,9 @@ ByteBuffer encode_payload(const Message& message) {
             w.u16(value.normalized_x);
             w.u16(value.normalized_y);
         } else if constexpr (std::is_same_v<T, InputStateSnapshotMessage>) {
-            w.raw(value.key_bitmap);
-            w.u8(value.mouse_button_bitmap);
+            w.raw(value.KeyBitmap);
+            w.raw(value.ExtendedKeyBitmap);
+            w.u8(value.MouseButtonBitmap);
         } else if constexpr (std::is_same_v<T, SetAudioGainMessage>) {
             w.u16(value.gain_permyriad);
         } else if constexpr (std::is_same_v<T, AudioFrameMessage>) {
@@ -204,7 +205,9 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             KeyEventMessage m;
             std::uint8_t ext{}, down{};
             if (!r.u16(m.scan_code) || !r.u8(ext) || !r.u8(down) || r.remaining() != 0 ||
-                ext > 1 || down > 1) return std::nullopt;
+                m.scan_code == 0 || m.scan_code > 255 || ext > 1 || down > 1) {
+                return std::nullopt;
+            }
             m.extended = ext != 0;
             m.down = down != 0;
             return m;
@@ -226,7 +229,9 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
         }
         case MessageType::InputStateSnapshot: {
             InputStateSnapshotMessage m;
-            if (!r.raw(m.key_bitmap) || !r.u8(m.mouse_button_bitmap) || r.remaining() != 0) {
+            if (!r.raw(m.KeyBitmap) || !r.raw(m.ExtendedKeyBitmap) ||
+                !r.u8(m.MouseButtonBitmap) || r.remaining() != 0 ||
+                (m.MouseButtonBitmap & 0xE0u) != 0) {
                 return std::nullopt;
             }
             return m;
@@ -311,6 +316,48 @@ MessageType message_type(const Message& message) noexcept {
 
 bool is_datagram_message(MessageType type) noexcept {
     return type == MessageType::PointerPosition || type == MessageType::AudioFrame;
+}
+
+bool SetInputSnapshotKey(InputStateSnapshotMessage& Snapshot,
+                         std::uint16_t ScanCode,
+                         bool Extended,
+                         bool Down) noexcept {
+    if (ScanCode == 0 || ScanCode > 255) return false;
+    auto& Bitmap = Extended ? Snapshot.ExtendedKeyBitmap : Snapshot.KeyBitmap;
+    const auto ByteIndex = static_cast<std::size_t>(ScanCode / 8u);
+    const auto Mask = static_cast<std::uint8_t>(1u << (ScanCode % 8u));
+    if (Down) Bitmap[ByteIndex] |= Mask;
+    else Bitmap[ByteIndex] &= static_cast<std::uint8_t>(~Mask);
+    return true;
+}
+
+bool InputSnapshotKeyDown(const InputStateSnapshotMessage& Snapshot,
+                          std::uint16_t ScanCode,
+                          bool Extended) noexcept {
+    if (ScanCode == 0 || ScanCode > 255) return false;
+    const auto& Bitmap = Extended ? Snapshot.ExtendedKeyBitmap : Snapshot.KeyBitmap;
+    const auto ByteIndex = static_cast<std::size_t>(ScanCode / 8u);
+    const auto Mask = static_cast<std::uint8_t>(1u << (ScanCode % 8u));
+    return (Bitmap[ByteIndex] & Mask) != 0;
+}
+
+bool SetInputSnapshotButton(InputStateSnapshotMessage& Snapshot,
+                            MouseButtonId Button,
+                            bool Down) noexcept {
+    const auto Raw = static_cast<std::uint8_t>(Button);
+    if (!valid_button(Raw)) return false;
+    const auto Mask = static_cast<std::uint8_t>(1u << (Raw - 1u));
+    if (Down) Snapshot.MouseButtonBitmap |= Mask;
+    else Snapshot.MouseButtonBitmap &= static_cast<std::uint8_t>(~Mask);
+    return true;
+}
+
+bool InputSnapshotButtonDown(const InputStateSnapshotMessage& Snapshot,
+                             MouseButtonId Button) noexcept {
+    const auto Raw = static_cast<std::uint8_t>(Button);
+    if (!valid_button(Raw)) return false;
+    const auto Mask = static_cast<std::uint8_t>(1u << (Raw - 1u));
+    return (Snapshot.MouseButtonBitmap & Mask) != 0;
 }
 
 ByteBuffer encode_packet(const EnvelopeHeader& requested_header, const Message& message) {

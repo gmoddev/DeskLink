@@ -36,6 +36,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Windows `SendInput` injector adapter
 - Opt-in Windows Raw Input capture with bounded sender queue
 - Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
+- Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -43,7 +44,6 @@ This repository is a **reference foundation implementation**, not a finished pro
 
 The following are intentionally kept behind interfaces and are the next production layers:
 
-- Input-state snapshot reconciliation
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Stable multi-monitor mapping
 - Mouse-wheel transport

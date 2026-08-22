@@ -91,8 +91,9 @@ struct PointerPositionMessage {
 };
 
 struct InputStateSnapshotMessage {
-    std::array<std::uint8_t, 32> key_bitmap{}; // 256 scan-code slots
-    std::uint8_t mouse_button_bitmap{};
+    std::array<std::uint8_t, 32> KeyBitmap{}; // 256 non-extended scan-code slots
+    std::array<std::uint8_t, 32> ExtendedKeyBitmap{}; // 256 extended scan-code slots
+    std::uint8_t MouseButtonBitmap{};
 };
 
 struct SetAudioGainMessage {
@@ -149,6 +150,18 @@ struct DecodeResult {
 
 [[nodiscard]] MessageType message_type(const Message& message) noexcept;
 [[nodiscard]] bool is_datagram_message(MessageType type) noexcept;
+[[nodiscard]] bool SetInputSnapshotKey(InputStateSnapshotMessage& Snapshot,
+                                       std::uint16_t ScanCode,
+                                       bool Extended,
+                                       bool Down) noexcept;
+[[nodiscard]] bool InputSnapshotKeyDown(const InputStateSnapshotMessage& Snapshot,
+                                        std::uint16_t ScanCode,
+                                        bool Extended) noexcept;
+[[nodiscard]] bool SetInputSnapshotButton(InputStateSnapshotMessage& Snapshot,
+                                          MouseButtonId Button,
+                                          bool Down) noexcept;
+[[nodiscard]] bool InputSnapshotButtonDown(const InputStateSnapshotMessage& Snapshot,
+                                           MouseButtonId Button) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);
 [[nodiscard]] DecodeResult decode_packet(ByteSpan bytes, bool datagram);
 

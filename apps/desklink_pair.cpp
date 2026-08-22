@@ -471,20 +471,31 @@ int RunTrusted(const CommandLine& Command,
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return 1;
         }
+        if (!ActiveHost->Session.SendInputStateSnapshot()) {
+            std::cerr << "[Input:Reconciliation] initial state snapshot failed\n";
+            Bootstrap->Close();
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            return 1;
+        }
         std::unique_ptr<desklink::Win32InputCapture> Capture;
         std::atomic<desklink::Win32InputCapture*> ActiveCapture{};
         std::atomic_bool StopRenewal{};
         std::thread Renewal([&, Result] {
             while (!StopRenewal.load()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (!StopRenewal.load() && !ActiveHost->Session.renew_focus(750)) {
+                if (StopRenewal.load()) continue;
+                const bool Renewed = ActiveHost->Session.renew_focus(750);
+                const bool Reconciled = Renewed && ActiveHost->Session.SendInputStateSnapshot();
+                if (!Reconciled) {
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
                     {
                         std::scoped_lock Lock(Result->Mutex);
                         Result->Emergency = true;
-                        Result->Failure = "focus lease renewal failed";
+                        Result->Failure = Renewed
+                            ? "input state reconciliation failed"
+                            : "focus lease renewal failed";
                     }
                     Result->Changed.notify_all();
                     break;

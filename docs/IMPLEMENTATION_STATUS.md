@@ -26,6 +26,7 @@ The current build proves the core invariants independently of Windows networking
 | Windows SendInput injector | Done | Built only on Windows |
 | Windows Raw Input capture | Done | Hidden input-sink window, bounded 1024-event queue, pointer coalescing |
 | Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause fail-local |
+| Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
 | Pointer format | Done | Absolute normalized datagram |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
@@ -79,6 +80,9 @@ The current test suite verifies:
 21. native MsQuic pairing-to-trusted-session loopback on supported Windows CI
 22. suppression gate pass/suppress/injected-event/emergency behavior
 23. opt-in Raw Input window and hook install/remove smoke test on the Windows worker
+24. input snapshot codec validation, including extended keys and reserved bits
+25. release-before-press reconciliation ordering
+26. end-to-end snapshot authorization and expired-lease rejection
 
 Build/test result in the creation environment:
 
@@ -97,7 +101,6 @@ Build/test result in the creation environment:
 
 ### P1 — required for useful KM roaming
 
-- input state reconciliation snapshot implementation
 - physical emergency-chord and high-poll-rate timing validation
 - monitor enumeration/identity
 - stable display-ID mapping
@@ -147,9 +150,9 @@ Each one significantly expands the attack surface and is unnecessary for the fir
 
 ## Recommended next implementation slice
 
-The pairing, focus, and opt-in capture controls now implement the first complete
-input path. The next slice is input-state snapshot reconciliation, followed by
-validation on two real Windows 11 PCs using this exact sequence:
+The pairing, focus, opt-in capture controls, and periodic state reconciliation
+now implement the first complete input path. The next slice is validation on
+two real Windows 11 PCs using this exact sequence:
 
 ```text
 1. manually pair
@@ -159,6 +162,7 @@ validation on two real Windows 11 PCs using this exact sequence:
 5. PC1 sends keyboard/mouse events
 6. PC2 injects them with SendInput
 7. Host renews lease periodically
+   and sends the authoritative key/button snapshot
 8. hotkey returns focus to PC1
 9. unplug Ethernet while Ctrl is held
 10. both machines recover safely without stuck state

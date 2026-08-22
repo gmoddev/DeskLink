@@ -49,11 +49,16 @@ public:
     bool inject_pointer(const desklink::PointerPositionMessage& event) override {
         pointers.push_back(event); return true;
     }
+    bool ReconcileState(const desklink::InputStateSnapshotMessage& Snapshot) override {
+        snapshots.push_back(Snapshot); return ReconcileSucceeds;
+    }
     void release_owned_state() noexcept override { ++release_calls; }
 
     std::vector<desklink::KeyEventMessage> keys;
     std::vector<desklink::MouseButtonMessage> buttons;
     std::vector<desklink::PointerPositionMessage> pointers;
+    std::vector<desklink::InputStateSnapshotMessage> snapshots;
+    bool ReconcileSucceeds{true};
     int release_calls{};
 };
 
@@ -132,6 +137,56 @@ void protocol_round_trip() {
     CHECK(got.display_id == 3);
     CHECK(got.normalized_x == 12345);
     CHECK(got.normalized_y == 54321);
+}
+
+void InputStateSnapshotRoundTripAndValidation() {
+    using namespace desklink;
+    InputStateSnapshotMessage Snapshot;
+    CHECK(SetInputSnapshotKey(Snapshot, 0x1E, false, true));
+    CHECK(SetInputSnapshotKey(Snapshot, 0x1D, true, true));
+    CHECK(SetInputSnapshotButton(Snapshot, MouseButtonId::X2, true));
+    CHECK(!SetInputSnapshotKey(Snapshot, 0, false, true));
+    CHECK(!SetInputSnapshotKey(Snapshot, 256, false, true));
+
+    EnvelopeHeader Header;
+    auto Bytes = encode_packet(Header, Snapshot);
+    auto Decoded = decode_packet(Bytes, false);
+    CHECK(Decoded.packet.has_value());
+    const auto& Restored = std::get<InputStateSnapshotMessage>(Decoded.packet->message);
+    CHECK(InputSnapshotKeyDown(Restored, 0x1E, false));
+    CHECK(!InputSnapshotKeyDown(Restored, 0x1E, true));
+    CHECK(InputSnapshotKeyDown(Restored, 0x1D, true));
+    CHECK(InputSnapshotButtonDown(Restored, MouseButtonId::X2));
+
+    Bytes.back() |= 0x80u;
+    auto ReservedBits = decode_packet(Bytes, false);
+    CHECK(!ReservedBits.packet.has_value());
+    CHECK(ReservedBits.error == DecodeError::InvalidPayload);
+
+    auto InvalidKey = encode_packet(Header, KeyEventMessage{256, false, true});
+    CHECK(!decode_packet(InvalidKey, false).packet.has_value());
+}
+
+void InputStateTransitionsReleaseBeforePress() {
+    using namespace desklink;
+    InputStateSnapshotMessage Current;
+    InputStateSnapshotMessage Desired;
+    CHECK(SetInputSnapshotKey(Current, 0x1E, false, true));
+    CHECK(SetInputSnapshotButton(Current, MouseButtonId::Right, true));
+    CHECK(SetInputSnapshotKey(Desired, 0x1D, true, true));
+    CHECK(SetInputSnapshotButton(Desired, MouseButtonId::Left, true));
+
+    const auto Transitions = BuildInputStateTransitions(Current, Desired);
+    CHECK(Transitions.size() == 4);
+    CHECK(std::holds_alternative<KeyEventMessage>(Transitions[0]));
+    CHECK(!std::get<KeyEventMessage>(Transitions[0]).down);
+    CHECK(std::holds_alternative<MouseButtonMessage>(Transitions[1]));
+    CHECK(!std::get<MouseButtonMessage>(Transitions[1]).down);
+    CHECK(std::holds_alternative<KeyEventMessage>(Transitions[2]));
+    CHECK(std::get<KeyEventMessage>(Transitions[2]).extended);
+    CHECK(std::get<KeyEventMessage>(Transitions[2]).down);
+    CHECK(std::holds_alternative<MouseButtonMessage>(Transitions[3]));
+    CHECK(std::get<MouseButtonMessage>(Transitions[3]).down);
 }
 
 void rejects_wrong_lane_and_oversize() {
@@ -384,15 +439,25 @@ void secure_session_end_to_end() {
     CHECK(host.RemoteFocused());
     CHECK(FocusReadyNotified);
     CHECK(host.send_key(KeyEventMessage{0x20, false, true}));
+    CHECK(host.send_key(KeyEventMessage{0x1D, true, true}));
+    CHECK(host.send_button(MouseButtonMessage{MouseButtonId::X1, true}));
+    CHECK(host.SendInputStateSnapshot());
     CHECK(host.send_pointer(PointerPositionMessage{0, 30000, 31000}));
-    CHECK(injector.keys.size() == 1);
+    CHECK(injector.keys.size() == 2);
+    CHECK(injector.buttons.size() == 1);
+    CHECK(injector.snapshots.size() == 1);
+    CHECK(InputSnapshotKeyDown(injector.snapshots.back(), 0x20, false));
+    CHECK(InputSnapshotKeyDown(injector.snapshots.back(), 0x1D, true));
+    CHECK(InputSnapshotButtonDown(injector.snapshots.back(), MouseButtonId::X1));
     CHECK(injector.pointers.size() == 1);
 
     clock.advance(std::chrono::milliseconds(800));
     agent.tick();
     CHECK(injector.release_calls == 1);
     CHECK(host.send_key(KeyEventMessage{0x20, false, false}));
-    CHECK(injector.keys.size() == 1); // stale epoch was rejected
+    CHECK(injector.keys.size() == 2); // stale epoch was rejected
+    CHECK(host.SendInputStateSnapshot());
+    CHECK(injector.snapshots.size() == 1); // expired lease rejects reconciliation too
     CHECK(agent.stats().authorization_rejected >= 1);
 }
 
@@ -712,6 +777,8 @@ void in_memory_transport_preserves_security_metadata() {
 
 int main() {
     protocol_round_trip();
+    InputStateSnapshotRoundTripAndValidation();
+    InputStateTransitionsReleaseBeforePress();
     rejects_wrong_lane_and_oversize();
     capability_and_lease_gate_input();
     stale_epoch_rejected_after_refocus();
