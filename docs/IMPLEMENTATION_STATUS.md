@@ -38,6 +38,7 @@ The current build proves the core invariants independently of Windows networking
 | MsQuic endpoint adapter | Done | Optional v2.6.0 stream framing/datagram adapter for established connections |
 | Production platform baseline | Done | Windows 11/Server 2022+ with stock Schannel; Windows 10 unsupported |
 | MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, fail-closed unavailable provider |
+| Windows 10 opaque CNG prototype | R&D Stage 2 | Explicit built-in OpenSSL 3.5 provider; exportable and mismatched credentials rejected; not production-admitted |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
 | Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
@@ -83,6 +84,9 @@ The current test suite verifies:
 24. input snapshot codec validation, including extended keys and reserved bits
 25. release-before-press reconciliation ordering
 26. end-to-end snapshot authorization and expired-lease rejection
+27. OpenSSL/CNG pairing, trusted reconnect, nonce rotation, and reliable traffic
+28. exportable CNG credential and certificate/key mismatch rejection
+29. pinned OpenSSL MsQuic, libcrypto, and libssl tamper rejection
 
 Build/test result in the creation environment:
 
@@ -181,4 +185,5 @@ tracks MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG provider integration as
 separately reviewable stages. The production architecture remains stock
 MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 11/Server 2022 or newer until every security and physical acceptance criterion
-in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes.
+in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 and 2 are
+implemented; fail-closed validation and admission testing is the next gate.

@@ -127,10 +127,15 @@ DeskLink loads MsQuic from the application-owned
 search order. The binary is checked against its build-pinned SHA-256 before
 loading, then queried for MsQuic version and TLS provider. `auto` selects
 Schannel on Windows 11/Server 2022-or-newer. The loader's OpenSSL selector is
-retained for the explicitly staged compatibility R&D. Stage 1 packages still do
-not include that runtime; Windows 10 and explicit OpenSSL requests therefore
-fail closed as unavailable rather than changing the CNG identity or
-certificate-validation policy.
+retained for the explicitly staged compatibility R&D. Stage 2 research builds
+also pin and verify `libcrypto-3-x64.dll` and `libssl-3-x64.dll`, then load the
+explicit opaque CNG credential type. Production packages omit those binaries;
+explicit OpenSSL requests therefore fail closed as unavailable.
+
+On OpenSSL, MsQuic's portable-certificate flag supplies the bounded leaf DER to
+the same DeskLink time and SHA-256 pin validator used by Schannel. The prototype
+does not treat an OpenSSL `X509*` as a Windows certificate context and does not
+admit a stream or session before deferred validation completes.
 
 ## Production platform decision
 

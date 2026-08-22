@@ -472,14 +472,37 @@ void HandleCertificateEvent(const ConnectionHolder& State,
                             const QUIC_CONNECTION_EVENT& Event) {
     ByteBuffer CertificateDer;
     bool TimeValid = false;
-    const auto* Certificate = reinterpret_cast<const CERT_CONTEXT*>(
-        Event.PEER_CERTIFICATE_RECEIVED.Certificate);
-    if (Certificate && Certificate->pbCertEncoded && Certificate->cbCertEncoded > 0 &&
-        Certificate->cbCertEncoded <= kMaximumCertificateSize) {
-        CertificateDer.assign(
-            Certificate->pbCertEncoded,
-            Certificate->pbCertEncoded + Certificate->cbCertEncoded);
-        TimeValid = CertVerifyTimeValidity(nullptr, Certificate->pCertInfo) == 0;
+    if (State->Owner->Runtime->Backend() == TlsBackend::OpenSsl) {
+        const auto* PortableCertificate = reinterpret_cast<const QUIC_BUFFER*>(
+            Event.PEER_CERTIFICATE_RECEIVED.Certificate);
+        if (PortableCertificate && PortableCertificate->Buffer &&
+            PortableCertificate->Length > 0 &&
+            PortableCertificate->Length <= kMaximumCertificateSize) {
+            CertificateDer.assign(
+                PortableCertificate->Buffer,
+                PortableCertificate->Buffer + PortableCertificate->Length);
+            const auto Certificate = CertCreateCertificateContext(
+                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                CertificateDer.data(),
+                static_cast<DWORD>(CertificateDer.size()));
+            if (Certificate) {
+                TimeValid =
+                    CertVerifyTimeValidity(nullptr, Certificate->pCertInfo) == 0;
+                CertFreeCertificateContext(Certificate);
+            }
+        }
+    } else {
+        const auto* Certificate = reinterpret_cast<const CERT_CONTEXT*>(
+            Event.PEER_CERTIFICATE_RECEIVED.Certificate);
+        if (Certificate && Certificate->pbCertEncoded &&
+            Certificate->cbCertEncoded > 0 &&
+            Certificate->cbCertEncoded <= kMaximumCertificateSize) {
+            CertificateDer.assign(
+                Certificate->pbCertEncoded,
+                Certificate->pbCertEncoded + Certificate->cbCertEncoded);
+            TimeValid =
+                CertVerifyTimeValidity(nullptr, Certificate->pCertInfo) == 0;
+        }
     }
     try {
         std::thread([State, CertificateDer = std::move(CertificateDer), TimeValid]() mutable {
@@ -684,9 +707,9 @@ QUIC_STATUS QUIC_API SessionStreamCallback(
         return QUIC_STATUS_SUCCESS;
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
         if (State->Outgoing) {
-            std::unique_ptr<SessionSendContext> Context(
+            std::unique_ptr<SessionSendContext> SendContext(
                 static_cast<SessionSendContext*>(Event->SEND_COMPLETE.ClientContext));
-            if (!Context || Event->SEND_COMPLETE.Canceled) {
+            if (!SendContext || Event->SEND_COMPLETE.Canceled) {
                 ReportFailure(State->Owner, "session nonce preface send was canceled");
                 ShutdownConnection(State);
                 return QUIC_STATUS_SUCCESS;
@@ -698,7 +721,7 @@ QUIC_STATUS QUIC_API SessionStreamCallback(
                 InitialReliableBytes = std::move(State->SessionBuffer);
             }
             DeliverTrustedEndpoint(
-                State, Stream, Context->Nonce, std::move(InitialReliableBytes));
+                State, Stream, SendContext->Nonce, std::move(InitialReliableBytes));
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
@@ -892,25 +915,40 @@ bool OpenConfiguration(MsQuicBootstrap::State& State,
         return false;
     }
 
+    QUIC_CREDENTIAL_CONFIG Credentials{};
     QUIC_CERTIFICATE_HASH CertificateHash{};
-    DWORD CertificateHashSize = sizeof(CertificateHash.ShaHash);
-    if (!CertGetCertificateContextProperty(
-            State.Certificate.Context(), CERT_SHA1_HASH_PROP_ID,
-            CertificateHash.ShaHash, &CertificateHashSize) ||
-        CertificateHashSize != sizeof(CertificateHash.ShaHash)) {
-        Failure = "Could not read the local certificate store thumbprint for " +
-                  std::string(Alpn) + (Client ? " client" : " server");
+    if (State.Runtime->Backend() == TlsBackend::OpenSsl) {
+#ifdef QUIC_CREDENTIAL_TYPE_DESKLINK_CNG_AVAILABLE
+        Credentials.Type = QUIC_CREDENTIAL_TYPE_DESKLINK_CNG;
+        Credentials.CertificateContext = reinterpret_cast<QUIC_CERTIFICATE*>(
+            const_cast<CERT_CONTEXT*>(State.Certificate.Context()));
+#else
+        Failure = "The OpenSSL runtime header lacks the explicit DeskLink CNG credential path";
         State.Api->ConfigurationClose(Configuration);
         Configuration = nullptr;
         return false;
+#endif
+    } else {
+        DWORD CertificateHashSize = sizeof(CertificateHash.ShaHash);
+        if (!CertGetCertificateContextProperty(
+                State.Certificate.Context(), CERT_SHA1_HASH_PROP_ID,
+                CertificateHash.ShaHash, &CertificateHashSize) ||
+            CertificateHashSize != sizeof(CertificateHash.ShaHash)) {
+            Failure = "Could not read the local certificate store thumbprint for " +
+                      std::string(Alpn) + (Client ? " client" : " server");
+            State.Api->ConfigurationClose(Configuration);
+            Configuration = nullptr;
+            return false;
+        }
+        Credentials.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
+        Credentials.CertificateHash = &CertificateHash;
     }
-
-    QUIC_CREDENTIAL_CONFIG Credentials{};
-    Credentials.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
-    Credentials.CertificateHash = &CertificateHash;
     Credentials.Flags = static_cast<QUIC_CREDENTIAL_FLAGS>(
         QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED |
         QUIC_CREDENTIAL_FLAG_DEFER_CERTIFICATE_VALIDATION |
+        (State.Runtime->Backend() == TlsBackend::OpenSsl
+             ? QUIC_CREDENTIAL_FLAG_USE_PORTABLE_CERTIFICATES
+             : QUIC_CREDENTIAL_FLAG_NONE) |
         (Client ? QUIC_CREDENTIAL_FLAG_CLIENT
                 : QUIC_CREDENTIAL_FLAG_REQUIRE_CLIENT_AUTHENTICATION));
     const auto CredentialStatus = State.Api->ConfigurationLoadCredential(
@@ -931,6 +969,10 @@ bool OpenRuntime(const std::shared_ptr<MsQuicBootstrap::State>& State) {
     MsQuicRuntimeFailure RuntimeFailure;
     State->Runtime = MsQuicRuntime::Load(State->RuntimeConfig, RuntimeFailure);
     if (!State->Runtime) {
+        if (RuntimeFailure.Status != 0) {
+            RuntimeFailure.Message += " (status " +
+                std::to_string(RuntimeFailure.Status) + ")";
+        }
         ReportFailure(State, std::move(RuntimeFailure.Message));
         return false;
     }

@@ -37,7 +37,7 @@ DeskLink Stage 1 package and tests still stage Schannel only; no CNG/OpenSSL
 credential code is introduced by the foundation upgrade.
 
 The `openssl` selector remains available only for the approved, separately
-gated research. It is not a support promise. With no admitted OpenSSL runtime,
+gated research. It is not a support promise. Production packages omit it, so
 selection fails closed before networking starts.
 
 ## Active Windows 10 R&D design
@@ -61,6 +61,17 @@ This is a new security-sensitive project, not a continuation of PR #9. Each
 stage requires a clean review before the next begins. A standalone provider
 loaded through environment or generic module search is not acceptable, and
 deprecated OpenSSL ENGINE/RSA method hooks are prohibited.
+
+Stage 2 now has a reviewable prototype based on OpenSSL 3.5.7 and the pinned
+MsQuic 2.6.0 source. It adds an explicit credential type, a built-in KEYMGMT and
+RSA-PSS SIGNATURE provider, exact certificate/key proof, export-policy
+rejection, and `NCryptSignHash` delegation. Research builds hash-pin all three
+runtime DLLs. The normal Schannel path is unchanged. The patch and reproduction
+instructions are in [`../third_party/msquic/README.md`](../third_party/msquic/README.md).
+
+This prototype passing its local positive and credential-rejection tests does
+not admit Windows 10 sessions to production. Stage 3 fail-closed peer and
+application-admission validation is still required.
 
 ## Mandatory future acceptance criteria
 

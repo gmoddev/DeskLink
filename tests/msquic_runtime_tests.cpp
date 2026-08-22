@@ -38,6 +38,9 @@ struct TemporaryDirectory {
         CHECK(std::filesystem::create_directories(
             Path / L"schannel", Error));
         CHECK(!Error);
+        CHECK(std::filesystem::create_directories(
+            Path / L"openssl", Error));
+        CHECK(!Error);
     }
 
     ~TemporaryDirectory() {
@@ -77,8 +80,14 @@ void PackagedRuntimeIsPinnedAndProviderVerified() {
 
     Config.Backend = TlsBackend::OpenSsl;
     Runtime = MsQuicRuntime::Load(Config, Failure);
+#ifdef DESKLINK_TEST_OPENSSL_RUNTIME
+    CHECK(Runtime);
+    CHECK(Runtime->Backend() == TlsBackend::OpenSsl);
+    CHECK(Runtime->Version() == "2.6.0");
+#else
     CHECK(!Runtime);
     CHECK(Failure.Kind == MsQuicRuntimeFailureKind::TlsProviderUnavailable);
+#endif
 }
 
 void ModifiedRuntimeFailsIntegrityBeforeLoading() {
@@ -111,6 +120,50 @@ void ModifiedRuntimeFailsIntegrityBeforeLoading() {
     CHECK(Failure.Kind == MsQuicRuntimeFailureKind::IntegrityFailure);
 }
 
+#ifdef DESKLINK_TEST_OPENSSL_RUNTIME
+void ModifiedOpenSslComponentsFailIntegrityBeforeLoading() {
+    using namespace desklink;
+    const auto ApplicationDirectory = GetApplicationDirectory();
+    constexpr std::array Components{
+        L"msquic.dll",
+        L"libcrypto-3-x64.dll",
+        L"libssl-3-x64.dll"};
+    for (std::size_t ModifiedIndex = 0;
+         ModifiedIndex < Components.size(); ++ModifiedIndex) {
+        TemporaryDirectory Temporary(
+            std::filesystem::temp_directory_path() /
+            (L"DeskLinkOpenSslRuntimeTest-" +
+             std::to_wstring(GetCurrentProcessId()) + L"-" +
+             std::to_wstring(ModifiedIndex)));
+        for (const auto* Component : Components) {
+            std::error_code Error;
+            CHECK(std::filesystem::copy_file(
+                ApplicationDirectory / L"runtime" / L"openssl" / Component,
+                Temporary.Path / L"openssl" / Component,
+                std::filesystem::copy_options::overwrite_existing,
+                Error));
+            CHECK(!Error);
+        }
+        {
+            std::ofstream Output(
+                Temporary.Path / L"openssl" / Components[ModifiedIndex],
+                std::ios::binary | std::ios::app);
+            CHECK(Output.good());
+            Output.put('\0');
+            CHECK(Output.good());
+        }
+
+        MsQuicRuntimeConfig Config;
+        Config.Backend = TlsBackend::OpenSsl;
+        Config.RuntimeRoot = Temporary.Path;
+        MsQuicRuntimeFailure Failure;
+        const auto Runtime = MsQuicRuntime::Load(Config, Failure);
+        CHECK(!Runtime);
+        CHECK(Failure.Kind == MsQuicRuntimeFailureKind::IntegrityFailure);
+    }
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -118,6 +171,9 @@ int main() {
         RuntimePolicySelectsOnlySupportedDefaults();
         PackagedRuntimeIsPinnedAndProviderVerified();
         ModifiedRuntimeFailsIntegrityBeforeLoading();
+#ifdef DESKLINK_TEST_OPENSSL_RUNTIME
+        ModifiedOpenSslComponentsFailIntegrityBeforeLoading();
+#endif
         std::cout << "[Transport:MsQuic] runtime loader tests passed.\n";
         return 0;
     } catch (const std::exception& Error) {
