@@ -1,0 +1,149 @@
+# DeskLink Implementation Status
+
+## Status summary
+
+This repository is a **tested foundation / vertical slice of the security-critical core**, not yet an end-user KM/audio application.
+
+The current build proves the core invariants independently of Windows networking and device APIs.
+
+---
+
+## Implemented and validated
+
+| Component | Status | Notes |
+|---|---|---|
+| C++20 core | Done | Portable |
+| Protocol envelope | Done | 36-byte bounded envelope |
+| Typed binary codec | Done | Big-endian, strict validation |
+| Reliable/datagram separation | Done | Wrong-lane messages rejected |
+| Capabilities | Done | Explicit bitset grants |
+| Host focus coordinator | Done | Request/ready/renew/release packet generation |
+| Agent authorization | Done | Capability + epoch + lease gating |
+| Focus epochs | Done | Stale authority rejected |
+| Focus leases | Done | Expiry returns local |
+| Emergency fail-local | Done | Explicit state transition |
+| Input cleanup contract | Done | Backend callback on failure/release |
+| Windows SendInput injector | Done | Built only on Windows |
+| Pointer format | Done | Absolute normalized datagram |
+| PCM audio frame | Done | Bounded wire representation |
+| Audio jitter buffer | Done | Reorder + bounded silence concealment |
+| Transport abstraction | Done | Authentication/encryption metadata contract |
+| Secure session binding | Done | Refuses insecure transport; binds session nonce |
+| End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
+| In-memory transport | Done | Deterministic test adapter |
+| Simulation CLI | Done | Host -> Agent focus/injection flow |
+| Core regression tests | Done | Passing in supplied build environment |
+
+---
+
+## Current automated tests
+
+The current test suite verifies:
+
+1. pointer protocol round trip
+2. wrong-lane packet rejection
+3. oversized datagram rejection
+4. missing capability blocks focus/injection
+5. valid capability + lease permits input
+6. lease expiry invokes cleanup
+7. packets from expired epoch are rejected
+8. refocus creates a new epoch
+9. stale old-epoch key event is rejected
+10. Host/Agent focus handshake semantics
+11. emergency Host fail-local
+12. audio reordering and missing-frame concealment
+13. transport peer security metadata propagation
+14. insecure transport refusal
+15. end-to-end secure HostSession/AgentSession focus and stale-input rejection
+16. out-of-order/duplicate pointer datagram rejection
+17. stale FocusReady transaction rejection
+
+Build/test result in the creation environment:
+
+```text
+100% tests passed, 0 tests failed
+```
+
+---
+
+## Production blockers
+
+### P0 — required before using DeskLink across real PCs
+
+- native MsQuic transport
+- authenticated pairing and pinned peer identity
+- session nonce enforcement at connection/session layer
+- persistent capability/trust store
+- Windows Raw Input capture
+- low-level suppression gate
+- focus-ready response plumbing through the real transport
+- current-user IPC
+- rate limiting at connection/session boundary
+
+### P1 — required for useful KM roaming
+
+- monitor enumeration/identity
+- edge graph
+- coordinate transform
+- edge hysteresis
+- automatic lease renew timer
+- input state reconciliation snapshot implementation
+- physical emergency chord
+- foreground profile engine
+- GAME capture teardown/reinstall lifecycle
+
+### P1 — required for useful audio
+
+- WASAPI loopback capture
+- format conversion
+- WASAPI render
+- adaptive jitter target
+- clock drift resampler
+- endpoint-loss/recovery handling
+- gain/mute state
+
+### P2 — product surface
+
+- UI
+- Stream Deck plugin
+- installer/update flow
+- diagnostics/telemetry that never logs input content
+
+---
+
+## What should not be added prematurely
+
+Do not add these to solve early implementation friction:
+
+- generic remote shell
+- arbitrary command execution API
+- SYSTEM service owning the whole application
+- permanent elevation
+- virtual HID driver
+- virtual audio driver
+- cloud relay
+- UPnP port forwarding
+- dynamic in-process plugin loading from untrusted directories
+
+Each one significantly expands the attack surface and is unnecessary for the first complete desk-to-desk implementation.
+
+---
+
+## Recommended next implementation slice
+
+The next slice should make two real Windows PCs perform this exact sequence:
+
+```text
+1. manually pair
+2. authenticated MsQuic connection
+3. PC1 presses a local focus hotkey
+4. Agent grants a 750 ms focus lease
+5. PC1 sends keyboard/mouse events
+6. PC2 injects them with SendInput
+7. Host renews lease periodically
+8. hotkey returns focus to PC1
+9. unplug Ethernet while Ctrl is held
+10. both machines recover safely without stuck state
+```
+
+Do **not** add edge roaming until this manual focus switch survives failure injection reliably.

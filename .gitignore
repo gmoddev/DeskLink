@@ -1,0 +1,41 @@
+# CMake build trees and generated files
+/build/
+/out/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+
+# Visual Studio and MSBuild output
+/.vs/
+*.sln
+*.vcxproj*
+*.user
+*.suo
+*.pdb
+*.ilk
+*.obj
+*.exe
+*.dll
+*.lib
+/Debug/
+/Release/
+/x64/
+/x86/
+
+# Editors and operating systems
+/.vscode/
+/.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
