@@ -10,6 +10,7 @@
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
 #ifdef _WIN32
+#include "desklink/win32_capture.hpp"
 #include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_pairing.hpp"
 #endif
@@ -599,6 +600,37 @@ void CertificatePinsMatchOnlyTheStoredPeer() {
 }
 
 #ifdef _WIN32
+void WindowsSuppressionGateFailsLocal() {
+    using namespace desklink;
+    constexpr std::uint32_t LeftControl = 0xA2u;
+    constexpr std::uint32_t LeftAlt = 0xA4u;
+    constexpr std::uint32_t Pause = 0x13u;
+
+    Win32SuppressionGate Gate;
+    CHECK(Gate.HandleKeyboard(LeftControl, true, false) ==
+          Win32HookDecision::Pass);
+    Gate.SetRemoteRouting(true);
+    CHECK(Gate.HandleMouse(false) == Win32HookDecision::Suppress);
+    CHECK(Gate.HandleMouse(true) == Win32HookDecision::Pass);
+    CHECK(Gate.HandleKeyboard(0x20u, true, true) == Win32HookDecision::Pass);
+    CHECK(Gate.HandleKeyboard(LeftControl, true, false) ==
+          Win32HookDecision::Suppress);
+    CHECK(Gate.HandleKeyboard(LeftAlt, true, false) ==
+          Win32HookDecision::Suppress);
+    CHECK(Gate.HandleKeyboard(Pause, true, false) ==
+          Win32HookDecision::Emergency);
+    CHECK(!Gate.RemoteRouting());
+    CHECK(Gate.HandleMouse(false) == Win32HookDecision::Pass);
+}
+
+void WindowsCaptureSmokeIfRequested() {
+    if (std::getenv("DESKLINK_CAPTURE_SMOKE") == nullptr) return;
+    desklink::Win32InputCapture Capture({});
+    CHECK(Capture.Start());
+    CHECK(!Capture.RemoteRouting());
+    Capture.Stop();
+}
+
 void WindowsCryptoAndDpapiTrustStoreWork() {
     using namespace desklink;
     BCryptPairingCrypto crypto;
@@ -697,6 +729,8 @@ int main() {
     AttemptRateLimiterIsBoundedAndExpires();
     CertificatePinsMatchOnlyTheStoredPeer();
 #ifdef _WIN32
+    WindowsSuppressionGateFailsLocal();
+    WindowsCaptureSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
 #endif
     in_memory_transport_preserves_security_metadata();

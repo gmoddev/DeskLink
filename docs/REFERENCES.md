@@ -6,6 +6,7 @@ These references informed the production-backend recommendations. They are not d
 - MsQuic QUIC settings / DatagramReceiveEnabled: https://github.com/microsoft/msquic/blob/main/docs/api/QUIC_SETTINGS.md
 - Microsoft Learn — SendInput: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput
 - Microsoft Learn — Raw Input: https://learn.microsoft.com/windows/win32/inputdev/raw-input
+- Microsoft Learn — WM_INPUT: https://learn.microsoft.com/windows/win32/inputdev/wm-input
 - Microsoft Learn — LowLevelKeyboardProc: https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc
 - Microsoft Learn — LowLevelMouseProc: https://learn.microsoft.com/windows/win32/winmsg/lowlevelmouseproc
 - Microsoft Learn — WASAPI loopback recording: https://learn.microsoft.com/windows/win32/coreaudio/loopback-recording

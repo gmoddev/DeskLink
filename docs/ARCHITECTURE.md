@@ -43,7 +43,9 @@ Owns mechanisms shared by all modules:
 - sequence/epoch metadata
 - health/statistics interfaces
 
-Core does **not** contain Windows keyboard hooks or WASAPI implementation details.
+The portable core contains neither hooks nor WASAPI details. The optional
+`desklink_windows` adapter contains Raw Input, minimal low-level suppression
+hooks, and `SendInput`; WASAPI remains unimplemented.
 
 ### DeskLink.Host
 

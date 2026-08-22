@@ -117,6 +117,7 @@ endif()
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
         src/win32_input.cpp
+        src/win32_capture.cpp
         src/win32_pairing.cpp
         src/win32_device_certificate.cpp
     )
@@ -124,6 +125,9 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     target_link_libraries(desklink_windows PUBLIC desklink_core user32 bcrypt crypt32 ncrypt)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(desklink_windows PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
     endif()
 endif()
 
