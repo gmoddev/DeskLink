@@ -3,6 +3,9 @@
 #include "desklink/pairing.hpp"
 #include "desklink/transport.hpp"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <msquic.h>
 
 #include <memory>
