@@ -38,6 +38,7 @@ The current build proves the core invariants independently of Windows networking
 | Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
 | Connection rate limits | Done | Bounded per-address connection and pairing windows |
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
+| Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -83,7 +84,6 @@ Build/test result in the creation environment:
 
 ### P0 — required before using DeskLink across real PCs
 
-- pairing confirmation UI
 - two-PC LAN pairing, cable-removal, and reconnect validation
 - Windows Raw Input capture
 - low-level suppression gate
@@ -141,7 +141,7 @@ Each one significantly expands the attack surface and is unnecessary for the fir
 
 ## Recommended next implementation slice
 
-The next slice should make two real Windows PCs perform this exact sequence:
+The next slice should use the pairing control to make two real Windows PCs perform this exact sequence:
 
 ```text
 1. manually pair

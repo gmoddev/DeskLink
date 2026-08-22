@@ -80,10 +80,10 @@ jobs:
           -DDESKLINK_BUILD_MSQUIC=ON
           -DDESKLINK_MSQUIC_ROOT=${{ github.workspace }}/external/Microsoft.Native.Quic.MsQuic.Schannel
 
-      - name: Build adapter and native loopback
+      - name: Build adapter, pairing control, and native loopback
         run: >-
           cmake --build build-msquic --config Release
-          --target desklink_msquic_loopback_tests --parallel 2
+          --target desklink_msquic_loopback_tests desklink_pair --parallel 2
 
       - name: Run native MsQuic loopback
         run: >-

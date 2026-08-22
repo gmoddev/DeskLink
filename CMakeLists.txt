@@ -61,8 +61,9 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     add_library(desklink_msquic
         src/msquic_transport.cpp
         src/msquic_bootstrap.cpp)
-    target_include_directories(desklink_msquic
-        PUBLIC include "${DESKLINK_MSQUIC_INCLUDE_DIR}")
+    target_include_directories(desklink_msquic PUBLIC include)
+    target_include_directories(desklink_msquic SYSTEM
+        PUBLIC "${DESKLINK_MSQUIC_INCLUDE_DIR}")
     target_link_libraries(desklink_msquic
         PUBLIC desklink_core desklink_windows
         PRIVATE crypt32 ncrypt ws2_32)
@@ -89,6 +90,27 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         endif()
         add_test(NAME desklink_msquic_loopback_tests
                  COMMAND desklink_msquic_loopback_tests)
+    endif()
+
+    if(DESKLINK_MSQUIC_LIBRARY)
+        add_executable(desklink_pair apps/desklink_pair.cpp)
+        target_link_libraries(desklink_pair PRIVATE desklink_msquic shell32 ole32)
+        if(MSVC)
+            target_compile_options(desklink_pair PRIVATE /W4 /permissive-)
+        else()
+            target_compile_options(desklink_pair PRIVATE
+                -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+        endif()
+        if(MINGW)
+            target_link_options(desklink_pair PRIVATE
+                -municode -static -static-libgcc -static-libstdc++)
+        endif()
+        if(DESKLINK_MSQUIC_DLL)
+            add_custom_command(TARGET desklink_pair POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DESKLINK_MSQUIC_DLL}"
+                    "$<TARGET_FILE_DIR:desklink_pair>")
+        endif()
     endif()
 endif()
 
