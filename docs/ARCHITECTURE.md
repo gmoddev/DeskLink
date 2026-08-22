@@ -115,6 +115,9 @@ stock MsQuic Schannel provider. The persistent device identity is the existing
 non-exportable current-user CNG key and its pinned self-signed certificate.
 Provider selection must not export or replace that identity, weaken peer
 validation, or downgrade TLS. Windows 10 is outside the production architecture.
+Its experimental compatibility architecture is an explicit MsQuic/OpenSSL
+runtime with opaque CNG-backed signing; it cannot become admissible until all
+security and physical gates pass.
 
 A single logical peer connection carries several lanes:
 
@@ -153,9 +156,10 @@ Datagrams include:
 The current implementation provides `ITransportEndpoint` plus a deterministic in-memory implementation. The production adapter should use native MsQuic.
 
 The runtime-selection layer is retained as an integrity and diagnostics
-boundary. Production packages ship only Schannel. The previously investigated
-Windows 10 OpenSSL path is future R&D, not an alternate production trust model;
-its constraints are recorded in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
+boundary. Stage 1 production packages ship only Schannel. The Windows 10
+OpenSSL path is an active, separately gated R&D project, not an alternate trust
+model; its constraints are recorded in
+[`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---
 

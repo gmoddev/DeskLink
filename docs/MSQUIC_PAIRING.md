@@ -102,12 +102,13 @@ The adapter:
 ## Build
 
 MsQuic is an optional Windows target. The repository pins compatibility testing
-to MsQuic `v2.5.8`.
+to MsQuic `v2.6.0` at verified upstream commit
+`e7e7a114e20a55ec2d5f723cf6bdf3bfb7b0b24a`.
 
 ```powershell
 cmake -S . -B build-msquic `
   -DDESKLINK_BUILD_MSQUIC=ON `
-  -DDESKLINK_MSQUIC_ROOT=C:\deps\msquic-2.5.8
+  -DDESKLINK_MSQUIC_ROOT=C:\deps\msquic-2.6.0
 cmake --build build-msquic --config Release --target desklink_msquic
 ```
 
@@ -118,31 +119,28 @@ under each target's `runtime/schannel` directory.
 
 The Schannel package requires Windows 11 or Windows Server 2022 or newer for
 QUIC/TLS 1.3. These versions are DeskLink's production baseline. Windows 10 may
-remain useful as an isolated cross-build worker, but it is not a supported
-DeskLink transport target.
+be used only as the guarded target of the approved equal-security compatibility
+R&D project; it is not yet a supported DeskLink transport target.
 
 DeskLink loads MsQuic from the application-owned
 `runtime/<provider>/msquic.dll` directory instead of relying on normal DLL
 search order. The binary is checked against its build-pinned SHA-256 before
 loading, then queried for MsQuic version and TLS provider. `auto` selects
 Schannel on Windows 11/Server 2022-or-newer. The loader's OpenSSL selector is
-retained only for diagnostics and separately approved future R&D. Production
-packages do not include that runtime; Windows 10 and explicit OpenSSL requests
-therefore fail closed as unavailable rather than changing the CNG identity or
+retained for the explicitly staged compatibility R&D. Stage 1 packages still do
+not include that runtime; Windows 10 and explicit OpenSSL requests therefore
+fail closed as unavailable rather than changing the CNG identity or
 certificate-validation policy.
 
 ## Production platform decision
 
 Stock Schannel plus the existing non-exportable CNG device identity is the only
-production transport/security architecture. The Windows 10 compatibility path
-is closed for the current roadmap. DeskLink will not implement the MsQuic fork
-or OpenSSL CNG provider investigated for that platform at this stage.
-
-If Windows 10 is reconsidered, the preserved R&D direction is a new project
-based on MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG provider that delegates
-signing without exporting the key. It requires separate approval and must prove
-fail-closed peer validation before `CONNECTED`, stream acceptance, and session
-admission. See [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
+production transport/security architecture on Windows 11/Server 2022+. The
+approved Windows 10 R&D direction uses MsQuic 2.6.x, OpenSSL 3.5 LTS, and an
+explicit opaque CNG provider that delegates signing without exporting the key.
+It must prove fail-closed peer validation before `CONNECTED`, stream acceptance,
+and session admission. Windows 10 remains unsupported until all gates pass. See
+[`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## Remaining physical integration
 

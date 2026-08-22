@@ -4,9 +4,10 @@
 
 Production Windows backends target Windows 11 or Windows Server 2022 or newer.
 The production transport is stock MsQuic/Schannel using DeskLink's existing
-non-exportable current-user CNG identity. Windows 10 is unsupported and receives
-no OpenSSL, identity-export, or reduced-security fallback. The complete support
-decision and future R&D boundary are recorded in
+non-exportable current-user CNG identity. Windows 10 remains unsupported while
+an approved, separately gated equal-security MsQuic/OpenSSL R&D path is built.
+It receives no identity-export or reduced-security fallback. The complete
+support decision and R&D boundary are recorded in
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## 1. Current Windows implementation

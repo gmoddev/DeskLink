@@ -130,8 +130,10 @@ to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
 exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
-Windows 10 is not a compatibility-validation target. It is explicitly
-unsupported rather than receiving an OpenSSL or reduced-security fallback.
+Windows 10 remains unsupported. It becomes a physical compatibility-validation
+target only after the MsQuic 2.6.x foundation, opaque CNG/OpenSSL provider,
+fail-closed admission tests, and identity-invariance gates all pass. It never
+receives an OpenSSL reduced-security fallback.
 
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
@@ -156,7 +158,7 @@ This validation does not prove:
 - two-PC user-confirmed pairing and reconnect behavior
 - physical input-state snapshot recovery after an interrupted key/button transition
 
-The Windows CI job additionally runs a native MsQuic 2.5.8 Schannel loopback:
+The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,
 reconnect with mutual pins, and transfer a reliable DeskLink packet. The test
 deletes both temporary identities on success or failure.
