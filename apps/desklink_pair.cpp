@@ -47,6 +47,7 @@ struct CommandLine {
     std::uint16_t Port{kDefaultPort};
     bool GrantInput{};
     bool CaptureInput{};
+    bool ConsoleConfirm{};
     desklink::TlsBackend TlsBackend{desklink::TlsBackend::Auto};
 };
 
@@ -117,6 +118,7 @@ void PrintUsage() {
         << L"  desklink_pair focus <host-or-ip> [port] [--capture]\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
+        << L"--console-confirm requires typing yes after comparing the pairing code.\n"
         << L"--tls-provider auto|schannel|openssl selects the packaged TLS runtime.\n";
 }
 
@@ -164,6 +166,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.CaptureInput = true;
             continue;
         }
+        if (Argument == L"--console-confirm") {
+            if (Result.ConsoleConfirm) return std::nullopt;
+            Result.ConsoleConfirm = true;
+            continue;
+        }
         if (Argument == L"--tls-provider") {
             if (ProviderSeen || Index + 1 >= ArgumentCount) return std::nullopt;
             ProviderSeen = true;
@@ -191,6 +198,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         return std::nullopt;
     }
     if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    if (Result.ConsoleConfirm &&
+        Result.Mode != Operation::PairListen &&
+        Result.Mode != Operation::PairConnect) {
+        return std::nullopt;
+    }
     return Result;
 }
 
@@ -276,7 +288,8 @@ desklink::MachineId GetMachineId(const desklink::Sha256Digest& CertificatePin) {
 }
 
 bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
-                    bool GrantInput) {
+                    bool GrantInput,
+                    bool ConsoleConfirm) {
     const auto& Candidate = Session.Candidate();
     const auto RemoteName = ToWide(Candidate.Identity.display_name);
     if (!RemoteName || Candidate.Status != desklink::PairingStatus::Ready) return false;
@@ -294,6 +307,17 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
         : L"No input-injection capability will be granted on this PC.";
     Text += L"\n\nSelect Yes only if the code matches on both PCs.";
 
+    if (ConsoleConfirm) {
+        std::wcout << L"[Pairing:Confirmation] verification_code=" << *Code << L'\n'
+                   << L"[Pairing:Confirmation] remote_pc=" << *RemoteName << L'\n'
+                   << L"[Pairing:Confirmation] grant_input="
+                   << (GrantInput ? L"yes" : L"no") << L'\n'
+                   << L"[Pairing:Confirmation] type yes only after comparing both PCs: "
+                   << std::flush;
+        std::wstring Answer;
+        return std::getline(std::wcin, Answer) && Answer == L"yes";
+    }
+
     return MessageBoxW(
         nullptr, Text.c_str(), L"DeskLink pairing confirmation",
         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST) == IDYES;
@@ -301,7 +325,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
 
 void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
                         std::shared_ptr<desklink::MsQuicPairingSession> Session,
-                        bool GrantInput) {
+                        bool GrantInput,
+                        bool ConsoleConfirm) {
     {
         std::scoped_lock Lock(Result->Mutex);
         if (Result->PromptActive || Result->Completed) {
@@ -311,7 +336,8 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
         Result->PromptActive = true;
     }
 
-    const bool UserConfirmed = ConfirmPairing(*Session, GrantInput);
+    const bool UserConfirmed = ConfirmPairing(
+        *Session, GrantInput, ConsoleConfirm);
     desklink::CapabilitySet Capabilities;
     if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
     const bool Accepted = UserConfirmed &&
@@ -393,6 +419,8 @@ int RunTrusted(const CommandLine& Command,
                 Trusted.Endpoint->close();
                 return;
             }
+            std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
+                      << " role=acceptor\n";
             auto Runtime = std::make_shared<AgentRuntime>(
                 Clock, TrustStore, std::move(Trusted));
             if (!Runtime->Session.start()) {
@@ -413,6 +441,8 @@ int RunTrusted(const CommandLine& Command,
                 Trusted.Endpoint->close();
                 return;
             }
+            std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
+                      << " role=initiator\n";
             auto Runtime = std::make_shared<HostRuntime>(
                 TrustStore, std::move(Trusted), [Result] {
                     {
@@ -707,9 +737,12 @@ int Run(const CommandLine& Command) {
 
     const auto Result = std::make_shared<PairingResult>();
     desklink::MsQuicBootstrapHandlers Handlers;
-    Handlers.PairingOffered = [Result, GrantInput = Command.GrantInput](
+    Handlers.PairingOffered = [Result,
+                               GrantInput = Command.GrantInput,
+                               ConsoleConfirm = Command.ConsoleConfirm](
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
-        HandlePairingOffer(Result, std::move(Session), GrantInput);
+        HandlePairingOffer(
+            Result, std::move(Session), GrantInput, ConsoleConfirm);
     };
     Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         Session.Endpoint->close();

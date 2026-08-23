@@ -130,6 +130,12 @@ to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
 exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
+For SSH-driven compatibility validation where Windows session isolation hides
+message boxes, add `--console-confirm` to both pairing commands. Each side prints
+the same six-digit code and waits for the exact input `yes`; no confirmation is
+automatic. Trusted connections also log their shared session nonce so reconnect
+rotation can be recorded without exposing identity or trust secrets.
+
 Windows 10 remains unsupported. The MsQuic 2.6.x foundation, opaque CNG/OpenSSL
 provider, fail-closed admission matrix, identity-invariance comparison, and
 private-key-export source gates now pass. It is now eligible for the guarded
