@@ -407,10 +407,18 @@ int RunTrusted(const CommandLine& Command,
     Handlers.PairingOffered = [](std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         Session->Reject();
     };
-    Handlers.Failed = [Result](std::string Message) {
+    Handlers.Failed = [Result, ReportImmediately = Command.Mode == Operation::Serve](
+                          std::string Message) {
+        std::string Report;
         {
             std::scoped_lock Lock(Result->Mutex);
-            if (Result->Failure.empty()) Result->Failure = std::move(Message);
+            if (Result->Failure.empty()) {
+                Result->Failure = std::move(Message);
+                if (ReportImmediately) Report = Result->Failure;
+            }
+        }
+        if (!Report.empty()) {
+            std::cerr << "[Session:Control] " << Report << '\n';
         }
         Result->Changed.notify_all();
     };
