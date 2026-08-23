@@ -10,6 +10,21 @@ It receives no identity-export or reduced-security fallback. The complete
 support decision and R&D boundary are recorded in
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
+## Native link-local discovery
+
+`Win32MdnsAdvertiser` and `Win32MdnsBrowser` use Windows 10-or-newer
+`DnsServiceRegister`, `DnsServiceBrowse`, and `DnsServiceResolve` with interface
+index zero (all local interfaces), `_desklink._udp.local`, and mDNS rather than
+unicast DNS. `listen` advertises an open manual-pairing window; `serve`
+advertises a closed window. Registration failure is non-fatal because manual
+host/IP operation remains available.
+
+`discover` is a one-shot bounded observer. It resolves at most 64 names, rejects
+malformed metadata through the portable discovery codec, groups duplicate
+multi-interface results deterministically, and prints candidates without any
+transport or trust-store action. No Windows service, firewall rule, network
+profile, router setting, or persistent background browser is created.
+
 ## 1. Current Windows implementation
 
 The repository includes `Win32InputInjector` and the opt-in

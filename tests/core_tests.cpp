@@ -3,6 +3,7 @@
 #include "desklink/capabilities.hpp"
 #include "desklink/control.hpp"
 #include "desklink/display_topology.hpp"
+#include "desklink/discovery.hpp"
 #include "desklink/host.hpp"
 #include "desklink/input.hpp"
 #include "desklink/pairing.hpp"
@@ -48,6 +49,29 @@ public:
 private:
     time_point current_{};
 };
+
+desklink::DiscoveryAdvertisement MakeDiscoveryAdvertisement(
+    std::uint8_t Marker = 1) {
+    desklink::DiscoveryAdvertisement Result;
+    Result.Machine[0] = Marker;
+    Result.DisplayName = "DeskLink test PC";
+    Result.Port = 4433;
+    Result.CapabilityHints = 4;
+    Result.PairingAvailable = true;
+    return Result;
+}
+
+desklink::DiscoveryEndpoint MakeDiscoveryEndpoint(
+    std::uint8_t Marker = 1,
+    std::string HostName = "desklink-test.local",
+    std::uint32_t InterfaceIndex = 7) {
+    desklink::DiscoveryEndpoint Result;
+    Result.Advertisement = MakeDiscoveryAdvertisement(Marker);
+    Result.InstanceName = "DeskLink test PC._desklink._udp.local";
+    Result.HostName = std::move(HostName);
+    Result.InterfaceIndex = InterfaceIndex;
+    return Result;
+}
 
 class RecordingInjector final : public desklink::IInputInjector {
 public:
@@ -1157,6 +1181,137 @@ void WindowsCryptoAndDpapiTrustStoreWork() {
 }
 #endif
 
+void DiscoveryPropertiesAreStrictAndRoundTrip() {
+    using namespace desklink;
+    const auto Advertisement = MakeDiscoveryAdvertisement();
+    const auto Properties = EncodeDiscoveryProperties(Advertisement);
+    CHECK(Properties.has_value());
+    CHECK(Properties->size() == 6);
+
+    const auto Decoded = DecodeDiscoveryProperties(
+        *Properties, "DeskLink test PC._desklink._udp.local.",
+        "desklink-test.local.", Advertisement.Port, 7);
+    CHECK(Decoded.has_value());
+    CHECK(Decoded->Advertisement.Machine == Advertisement.Machine);
+    CHECK(Decoded->Advertisement.DisplayName == Advertisement.DisplayName);
+    CHECK(Decoded->Advertisement.CapabilityHints ==
+          Advertisement.CapabilityHints);
+    CHECK(Decoded->Advertisement.PairingAvailable);
+    CHECK(Decoded->InstanceName ==
+          "DeskLink test PC._desklink._udp.local");
+    CHECK(Decoded->HostName == "desklink-test.local");
+
+    auto WithUnknown = *Properties;
+    WithUnknown.emplace_back("future-key", "future-value");
+    CHECK(DecodeDiscoveryProperties(
+              WithUnknown, "DeskLink test PC._desklink._udp.local",
+              "desklink-test.local", Advertisement.Port, 7)
+              .has_value());
+
+    auto Duplicate = *Properties;
+    Duplicate.emplace_back("name", "spoofed");
+    CHECK(!DecodeDiscoveryProperties(
+               Duplicate, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    auto WrongVersion = *Properties;
+    WrongVersion[1].second = "2";
+    CHECK(!DecodeDiscoveryProperties(
+               WrongVersion, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    auto InvalidMachine = *Properties;
+    InvalidMachine[2].second = std::string(32, '0');
+    CHECK(!DecodeDiscoveryProperties(
+               InvalidMachine, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    auto NonCanonicalMachine = *Properties;
+    NonCanonicalMachine[2].second[0] = 'A';
+    CHECK(!DecodeDiscoveryProperties(
+               NonCanonicalMachine,
+               "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    auto NonCanonicalCapabilities = *Properties;
+    NonCanonicalCapabilities[4].second[15] = 'A';
+    CHECK(!DecodeDiscoveryProperties(
+               NonCanonicalCapabilities,
+               "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    auto InvalidName = *Properties;
+    InvalidName[3].second = "bad\nname";
+    CHECK(!DecodeDiscoveryProperties(
+               InvalidName, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    auto Oversized = *Properties;
+    Oversized.emplace_back("extra", std::string(256, 'x'));
+    CHECK(!DecodeDiscoveryProperties(
+               Oversized, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+
+    CHECK(!DecodeDiscoveryProperties(
+               *Properties, "not-desklink._other._udp.local",
+               "desklink-test.local", Advertisement.Port, 7)
+               .has_value());
+    CHECK(!DecodeDiscoveryProperties(
+               *Properties, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.example", Advertisement.Port, 7)
+               .has_value());
+    CHECK(!DecodeDiscoveryProperties(
+               *Properties, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", 0, 7)
+               .has_value());
+    CHECK(!DecodeDiscoveryProperties(
+               *Properties, "DeskLink test PC._desklink._udp.local",
+               "desklink-test.local", Advertisement.Port, 0)
+               .has_value());
+}
+
+void DiscoveryCacheExpiresAndFlagsConflicts() {
+    using namespace desklink;
+    ManualClock Clock;
+    DiscoveryCache Cache(Clock);
+
+    auto First = MakeDiscoveryEndpoint(1, "z-host.local", 9);
+    auto Second = MakeDiscoveryEndpoint(1, "a-host.local", 3);
+    CHECK(Cache.Observe(First, std::chrono::seconds(30)));
+    CHECK(Cache.Observe(Second, std::chrono::seconds(30)));
+    auto Snapshot = Cache.Snapshot();
+    CHECK(Snapshot.size() == 1);
+    CHECK(Snapshot[0].EndpointCount == 2);
+    CHECK(!Snapshot[0].Ambiguous);
+    CHECK(Snapshot[0].Endpoint.HostName == "a-host.local");
+
+    auto Conflict = MakeDiscoveryEndpoint(1, "b-host.local", 4);
+    Conflict.Advertisement.DisplayName = "Conflicting name";
+    CHECK(Cache.Observe(Conflict, std::chrono::seconds(30)));
+    Snapshot = Cache.Snapshot();
+    CHECK(Snapshot.size() == 1);
+    CHECK(Snapshot[0].EndpointCount == 3);
+    CHECK(Snapshot[0].Ambiguous);
+
+    Cache.Remove(Conflict.InstanceName + ".", Conflict.InterfaceIndex);
+    Snapshot = Cache.Snapshot();
+    CHECK(Snapshot.size() == 1);
+    CHECK(Snapshot[0].EndpointCount == 2);
+    CHECK(!Snapshot[0].Ambiguous);
+
+    Clock.advance(std::chrono::seconds(31));
+    CHECK(Cache.Snapshot().empty());
+    CHECK(!Cache.Observe(MakeDiscoveryEndpoint(),
+                         std::chrono::milliseconds(0)));
+}
+
 void in_memory_transport_preserves_security_metadata() {
     using namespace desklink;
     TransportPeerInfo a_sees_b;
@@ -1184,6 +1339,8 @@ void in_memory_transport_preserves_security_metadata() {
 } // namespace
 
 int main() {
+    DiscoveryPropertiesAreStrictAndRoundTrip();
+    DiscoveryCacheExpiresAndFlagsConflicts();
     protocol_round_trip();
     ControlProtocolRoundTripAndValidation();
     MouseWheelRoundTripAndValidation();

@@ -55,7 +55,16 @@ Recommended flow:
 6. Each stores the peer's public identity/fingerprint.
 7. Future QUIC sessions must authenticate as the pinned identity.
 
-Discovery/mDNS only locates candidates. It must never create trust.
+Discovery/mDNS only locates candidates. It must never create trust. The native
+Windows browser accepts at most 64 service names per bounded run and enforces
+strict TXT key/value/count/aggregate-size limits, canonical machine IDs and
+capability fields, printable UTF-8 display names, `.local` hostnames, nonzero
+interface/port values, and the exact supported protocol version. Unknown valid
+TXT keys are ignored for forward compatibility; duplicate keys are rejected.
+Conflicting advertisements for one machine ID are marked ambiguous and are
+never acted on automatically. Untrusted display names are escaped for terminal
+output. Discovery cannot open pairing, persist a peer, connect, select/fallback
+a TLS provider, grant a capability, request focus, or admit a session.
 
 The Windows implementation uses CNG for cryptographic randomness/SHA-256 and
 current-user DPAPI for the bounded trust store. Device-certificate private-key
