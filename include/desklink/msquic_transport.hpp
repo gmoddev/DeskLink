@@ -13,6 +13,10 @@
 
 namespace desklink {
 
+enum class MsQuicPeerValidation {
+    PeerValidated,
+};
+
 class MsQuicTransportEndpoint final : public ITransportEndpoint {
 public:
     struct State;
@@ -22,6 +26,7 @@ public:
         HQUIC Connection,
         HQUIC ReliableStream,
         TransportPeerInfo Peer,
+        MsQuicPeerValidation PeerValidation,
         ByteBuffer InitialReliableBytes = {});
 
     ~MsQuicTransportEndpoint() override;

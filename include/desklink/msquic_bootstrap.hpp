@@ -16,6 +16,17 @@ namespace desklink {
 inline constexpr std::string_view kMsQuicSessionAlpn = "desklink/session/1";
 inline constexpr std::string_view kMsQuicPairingAlpn = "desklink/pair/1";
 
+enum class MsQuicPeerCertificateStatus {
+    Valid,
+    Missing,
+    Malformed,
+    NotYetValid,
+    Expired,
+};
+
+[[nodiscard]] MsQuicPeerCertificateStatus InspectMsQuicPeerCertificateDer(
+    ByteSpan CertificateDer) noexcept;
+
 class MsQuicPairingSession final {
 public:
     struct State;

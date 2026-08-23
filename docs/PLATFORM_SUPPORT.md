@@ -69,9 +69,26 @@ rejection, and `NCryptSignHash` delegation. Research builds hash-pin all three
 runtime DLLs. The normal Schannel path is unchanged. The patch and reproduction
 instructions are in [`../third_party/msquic/README.md`](../third_party/msquic/README.md).
 
-This prototype passing its local positive and credential-rejection tests does
-not admit Windows 10 sessions to production. Stage 3 fail-closed peer and
-application-admission validation is still required.
+Stage 3 adds an explicit connection state machine: `NotStarted`, `Pending`,
+`Completing`, `PeerValidated`, and `Rejected`. `CONNECTED` can be observed while
+validation is pending, but it has no application effect until the successful
+deferred-validation completion returns and the state becomes `PeerValidated`.
+The bootstrap and adopted endpoint independently gate peer streams, datagrams,
+pairing offers, trusted-session delivery, reliable traffic, focus traffic, and
+all later application handlers on that state. A four-second watchdog rejects a
+stalled validator before the five-second TLS handshake timeout, and validator
+exceptions are contained and rejected.
+
+The OpenSSL/CNG loopback matrix now rejects wrong pins, unknown peers, missing
+or malformed certificate DER, expired and not-yet-valid certificates,
+validator failure, exception and timeout, RSA-PSS signing failure, credential
+key mismatch, and reconnect with a changed identity. None produces a pairing
+or trusted session. 0-RTT streams/datagrams are rejected and server resumption
+remains disabled.
+
+Passing Stage 3 does not admit Windows 10 sessions to production. Identity
+invariance and prohibited-export checks remain Stage 4, followed by the guarded
+physical two-PC matrix in Stage 5.
 
 ## Mandatory future acceptance criteria
 

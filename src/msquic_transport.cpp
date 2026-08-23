@@ -49,6 +49,7 @@ struct MsQuicTransportEndpoint::State {
     ByteBuffer ReliableBuffer;
     std::shared_ptr<State> SelfHold;
     std::mutex Mutex;
+    bool PeerValidated{};
     bool DatagramEnabled{};
     std::uint16_t MaximumDatagramLength{};
     bool Closed{};
@@ -85,29 +86,34 @@ void HandleReliableBytes(const StateHolder& SharedState, ByteSpan Bytes) {
     bool Invalid = false;
     {
         std::scoped_lock Lock(SharedState->Mutex);
-        if (SharedState->Closed) return;
-        const auto MaximumBuffered = kEnvelopeSize + kMaxReliablePayload;
-        if (Bytes.size() > MaximumBuffered ||
-            SharedState->ReliableBuffer.size() > MaximumBuffered - Bytes.size()) {
-            Invalid = true;
+        if (SharedState->Closed || !SharedState->PeerValidated) {
+            Invalid = !SharedState->Closed;
         } else {
-            SharedState->ReliableBuffer.insert(
-                SharedState->ReliableBuffer.end(), Bytes.begin(), Bytes.end());
-            if (!SharedState->ReliableHandler) return;
-            while (SharedState->ReliableBuffer.size() >= 12) {
-                const auto PayloadSize = ReadPayloadSize(SharedState->ReliableBuffer);
-                if (PayloadSize > kMaxReliablePayload) {
-                    Invalid = true;
-                    break;
+            const auto MaximumBuffered = kEnvelopeSize + kMaxReliablePayload;
+            if (Bytes.size() > MaximumBuffered ||
+                SharedState->ReliableBuffer.size() > MaximumBuffered - Bytes.size()) {
+                Invalid = true;
+            } else {
+                SharedState->ReliableBuffer.insert(
+                    SharedState->ReliableBuffer.end(), Bytes.begin(), Bytes.end());
+                if (!SharedState->ReliableHandler) return;
+                while (SharedState->ReliableBuffer.size() >= 12) {
+                    const auto PayloadSize = ReadPayloadSize(SharedState->ReliableBuffer);
+                    if (PayloadSize > kMaxReliablePayload) {
+                        Invalid = true;
+                        break;
+                    }
+                    const auto PacketSize = kEnvelopeSize + static_cast<std::size_t>(PayloadSize);
+                    if (SharedState->ReliableBuffer.size() < PacketSize) break;
+                    Packets.emplace_back(
+                        SharedState->ReliableBuffer.begin(),
+                        SharedState->ReliableBuffer.begin() +
+                            static_cast<std::ptrdiff_t>(PacketSize));
+                    SharedState->ReliableBuffer.erase(
+                        SharedState->ReliableBuffer.begin(),
+                        SharedState->ReliableBuffer.begin() +
+                            static_cast<std::ptrdiff_t>(PacketSize));
                 }
-                const auto PacketSize = kEnvelopeSize + static_cast<std::size_t>(PayloadSize);
-                if (SharedState->ReliableBuffer.size() < PacketSize) break;
-                Packets.emplace_back(
-                    SharedState->ReliableBuffer.begin(),
-                    SharedState->ReliableBuffer.begin() + static_cast<std::ptrdiff_t>(PacketSize));
-                SharedState->ReliableBuffer.erase(
-                    SharedState->ReliableBuffer.begin(),
-                    SharedState->ReliableBuffer.begin() + static_cast<std::ptrdiff_t>(PacketSize));
             }
         }
     }
@@ -138,6 +144,17 @@ QUIC_STATUS QUIC_API StreamCallback(HQUIC Stream, void* Context, QUIC_STREAM_EVE
     if (!SharedState) return QUIC_STATUS_SUCCESS;
     switch (Event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE:
+        {
+            bool PeerValidated = false;
+            {
+                std::scoped_lock Lock(SharedState->Mutex);
+                PeerValidated = SharedState->PeerValidated;
+            }
+            if (!PeerValidated) {
+                ShutdownConnection(SharedState);
+                return QUIC_STATUS_SUCCESS;
+            }
+        }
         if ((Event->RECEIVE.Flags & QUIC_RECEIVE_FLAG_0_RTT) != 0) {
             ShutdownConnection(SharedState);
             return QUIC_STATUS_SUCCESS;
@@ -173,7 +190,8 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
             bool Accept = false;
             {
                 std::scoped_lock Lock(SharedState->Mutex);
-                if (!SharedState->Closed && !SharedState->ReliableStream &&
+                if (!SharedState->Closed && SharedState->PeerValidated &&
+                    !SharedState->ReliableStream &&
                     (Event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_0_RTT) == 0) {
                     SharedState->ReliableStream = Event->PEER_STREAM_STARTED.Stream;
                     Accept = true;
@@ -191,27 +209,38 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
                 (void)SharedState->Api->StreamShutdown(
                     Event->PEER_STREAM_STARTED.Stream,
                     QUIC_STREAM_SHUTDOWN_FLAG_ABORT, kProtocolError);
+                ShutdownConnection(SharedState);
             }
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
         {
             std::scoped_lock Lock(SharedState->Mutex);
-            SharedState->DatagramEnabled = Event->DATAGRAM_STATE_CHANGED.SendEnabled != FALSE;
+            SharedState->DatagramEnabled = SharedState->PeerValidated &&
+                                           Event->DATAGRAM_STATE_CHANGED.SendEnabled != FALSE;
             SharedState->MaximumDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
         {
-            if ((Event->DATAGRAM_RECEIVED.Flags & QUIC_RECEIVE_FLAG_0_RTT) != 0 ||
-                Event->DATAGRAM_RECEIVED.Buffer->Length > kMaxDatagramPayload) {
+            if ((Event->DATAGRAM_RECEIVED.Flags & QUIC_RECEIVE_FLAG_0_RTT) != 0) {
+                ShutdownConnection(SharedState);
+                return QUIC_STATUS_SUCCESS;
+            }
+            if (Event->DATAGRAM_RECEIVED.Buffer->Length > kMaxDatagramPayload) {
                 return QUIC_STATUS_SUCCESS;
             }
             ITransportEndpoint::ReceiveHandler Handler;
+            bool PeerValidated = false;
             {
                 std::scoped_lock Lock(SharedState->Mutex);
                 if (SharedState->Closed) return QUIC_STATUS_SUCCESS;
-                Handler = SharedState->DatagramHandler;
+                PeerValidated = SharedState->PeerValidated;
+                if (PeerValidated) Handler = SharedState->DatagramHandler;
+            }
+            if (!PeerValidated) {
+                ShutdownConnection(SharedState);
+                return QUIC_STATUS_SUCCESS;
             }
             if (Handler) {
                 const auto& Buffer = *Event->DATAGRAM_RECEIVED.Buffer;
@@ -256,8 +285,11 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
     HQUIC Connection,
     HQUIC ReliableStream,
     TransportPeerInfo Peer,
+    MsQuicPeerValidation PeerValidation,
     ByteBuffer InitialReliableBytes) {
-    if (!Api || !Connection || !Peer.authenticated || !Peer.encrypted ||
+    if (!Api || !Connection ||
+        PeerValidation != MsQuicPeerValidation::PeerValidated ||
+        !Peer.authenticated || !Peer.encrypted ||
         !ParseFingerprint(Peer.identity.public_key_fingerprint) ||
         InitialReliableBytes.size() > kEnvelopeSize + kMaxReliablePayload) {
         return {};
@@ -268,6 +300,7 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
     SharedState->Connection = Connection;
     SharedState->ReliableStream = ReliableStream;
     SharedState->Peer = std::move(Peer);
+    SharedState->PeerValidated = true;
     SharedState->ReliableBuffer = std::move(InitialReliableBytes);
     SharedState->SelfHold = SharedState;
     Api->SetCallbackHandler(
@@ -289,7 +322,7 @@ bool MsQuicTransportEndpoint::OpenReliableStream() {
     HQUIC Connection{};
     {
         std::scoped_lock Lock(State_->Mutex);
-        if (State_->Closed) return false;
+        if (State_->Closed || !State_->PeerValidated) return false;
         if (State_->ReliableStream) return true;
         Connection = State_->Connection;
     }
@@ -325,7 +358,7 @@ bool MsQuicTransportEndpoint::send_reliable(ByteBuffer Packet) {
     HQUIC Stream{};
     {
         std::scoped_lock Lock(State_->Mutex);
-        if (State_->Closed) return false;
+        if (State_->Closed || !State_->PeerValidated) return false;
         Stream = State_->ReliableStream;
     }
     if (!Stream) return false;
@@ -346,7 +379,7 @@ bool MsQuicTransportEndpoint::send_datagram(ByteBuffer Packet) {
     HQUIC Connection{};
     {
         std::scoped_lock Lock(State_->Mutex);
-        if (State_->Closed || !State_->DatagramEnabled ||
+        if (State_->Closed || !State_->PeerValidated || !State_->DatagramEnabled ||
             Packet.size() > State_->MaximumDatagramLength) {
             return false;
         }
@@ -366,7 +399,7 @@ void MsQuicTransportEndpoint::set_reliable_handler(ReceiveHandler Handler) {
     bool ProcessBuffered = false;
     {
         std::scoped_lock Lock(State_->Mutex);
-        if (!State_->Closed) {
+        if (!State_->Closed && State_->PeerValidated) {
             State_->ReliableHandler = std::move(Handler);
             ProcessBuffered = State_->ReliableHandler && !State_->ReliableBuffer.empty();
         }
@@ -376,7 +409,9 @@ void MsQuicTransportEndpoint::set_reliable_handler(ReceiveHandler Handler) {
 
 void MsQuicTransportEndpoint::set_datagram_handler(ReceiveHandler Handler) {
     std::scoped_lock Lock(State_->Mutex);
-    if (!State_->Closed) State_->DatagramHandler = std::move(Handler);
+    if (!State_->Closed && State_->PeerValidated) {
+        State_->DatagramHandler = std::move(Handler);
+    }
 }
 
 TransportPeerInfo MsQuicTransportEndpoint::peer_info() const {

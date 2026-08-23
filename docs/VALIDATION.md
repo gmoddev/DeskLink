@@ -130,10 +130,11 @@ to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
 exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
-Windows 10 remains unsupported. It becomes a physical compatibility-validation
-target only after the MsQuic 2.6.x foundation, opaque CNG/OpenSSL provider,
-fail-closed admission tests, and identity-invariance gates all pass. It never
-receives an OpenSSL reduced-security fallback.
+Windows 10 remains unsupported. The MsQuic 2.6.x foundation, opaque CNG/OpenSSL
+provider, and fail-closed admission matrix now pass. It becomes a physical
+compatibility-validation target only after the identity-invariance and
+private-key-export gates also pass. It never receives an OpenSSL
+reduced-security fallback.
 
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
@@ -144,7 +145,10 @@ gate verifies pairing, trusted reconnect, fresh nonce, reliable traffic,
 exportable-key rejection, certificate/key mismatch rejection, and pinned hash
 rejection for MsQuic, libcrypto, and libssl. It also rejects the patch if it
 mentions private-key export APIs, ENGINE, or `RSA_METHOD`. These are prototype
-gates; they do not replace Stage 3's complete fail-closed validation matrix.
+gates. Stage 3 adds missing/malformed/time-invalid DER classification, wrong
+pin, unknown peer, validator failure/exception/timeout, signing failure, and
+changed-identity rejection. Every network case asserts that no pairing or
+trusted application session was delivered.
 
 After pairing with `--grant-input` on the receiving PC, run
 `desklink_pair.exe serve 43821` there and

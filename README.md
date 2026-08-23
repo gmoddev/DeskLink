@@ -29,6 +29,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Experimental, explicitly selected OpenSSL 3.5/CNG credential prototype for Windows 10 R&D
 - Current-user CNG device key and self-signed certificate lifecycle
 - MsQuic listener/client bootstrap with mutually pinned certificate validation
+- Explicit `PeerValidated` gate for CONNECTED, streams, datagrams, pairing, and sessions
+- Bounded fail-closed certificate-validation worker with rejection/timeout handling
 - Fresh per-connection session nonce negotiation inside pinned TLS
 - Dedicated bounded pairing ALPN and per-address attempt limits
 - Native Windows pairing control with explicit two-PC code confirmation
@@ -46,7 +48,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 The following are intentionally kept behind interfaces and are the next production layers:
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
-- Fail-closed OpenSSL peer-validation and identity-invariance gates
+- Windows 10 identity-invariance and private-key-export build gates
 - Physical Windows 11 Schannel to Windows 10 OpenSSL compatibility validation
 - Stable multi-monitor mapping
 - Mouse-wheel transport
