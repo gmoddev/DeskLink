@@ -130,11 +130,74 @@ to verify that `%LOCALAPPDATA%\DeskLink\trust.db` remains readable. A firewall
 exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
+For SSH-driven compatibility validation where Windows session isolation hides
+message boxes, add `--console-confirm` to both pairing commands. Each side prints
+the same six-digit code and waits for the exact input `yes`; no confirmation is
+automatic. A local confirmation is exchanged on the peer-validated pairing
+stream, and neither side reports success or persists new trust until both
+confirmations arrive. Trusted connections also log their shared session nonce so
+reconnect rotation can be recorded without exposing identity or trust secrets.
+
 Windows 10 remains unsupported. The MsQuic 2.6.x foundation, opaque CNG/OpenSSL
 provider, fail-closed admission matrix, identity-invariance comparison, and
-private-key-export source gates now pass. It is now eligible for the guarded
-physical compatibility-validation matrix, but remains unsupported until that
-matrix passes. It never receives an OpenSSL reduced-security fallback.
+private-key-export source gates now pass. The guarded physical compatibility
+matrix also passes. Windows 10 remains experimental/unsupported pending a
+separate production-admission and release-integration review. It never receives
+an OpenSSL reduced-security fallback.
+
+The guarded physical Windows 11 Schannel to Windows 10 OpenSSL run has passed
+manual same-code pairing, bilateral trust persistence, trusted reconnect, two
+matching cross-provider session nonces, nonce rotation on the second reconnect,
+and focus without capture. The before/after identity snapshots were identical
+on both PCs and retained export policy zero. Physical keyboard, button, and
+pointer forwarding plus interactive `SendInput` observation also passed. The
+completed R&D matrix is not by itself a Windows 10 production-support claim.
+
+On 2026-08-23, the same guarded pair passed input-state reconciliation over a
+fresh Windows 11 Schannel to Windows 10 OpenSSL connection. The opt-in
+`desklink_pair_validation.exe` receiver deliberately acknowledged but omitted
+one key release and one X2-button release after their corresponding downs.
+The next reliable 500 ms authoritative snapshot repaired both states. Receiver
+diagnostics recorded both `validation fault injected` events followed by both
+matching `validation fault recovered` events. The sender did not enable
+physical capture for this deterministic probe. The normal `desklink_pair.exe`
+does not accept these validation options, and the validation control is built
+only when `DESKLINK_BUILD_PHYSICAL_VALIDATION=ON` is explicitly selected.
+
+The guarded pair also passed abrupt held-input process termination. The
+validation sender transmitted one held key and one held auxiliary mouse button,
+then terminated with no focus release and without running C++ destructors. The
+Windows 10 agent stopped receiving 750 ms lease renewals, observed both
+DeskLink-owned states held at expiry, and released both successfully. A
+subsequent cleanup observed neither state held.
+
+A subsequent reconnect rotated the shared session nonce again. The sender
+delivered one valid validation key down/up pair, then wrote one authenticated
+packet carrying the prior connection's nonce and one carrying an old focus
+epoch directly to the reliable lane. The Windows 10 receiver recorded
+`accepted_probe_deliveries=2`, `stale_epoch_deliveries=0`, and
+`stale_session_deliveries=0`.
+
+The guarded pair then passed the approved network-interruption case without
+changing adapters, routers, Docker workloads, or persistent firewall policy.
+After a trusted session reached focus-active with nonce
+`11952655969917357047`, the Windows 10 target applied inbound and outbound block
+rules for four seconds, scoped to the validation executable, Windows 11 address,
+UDP, and local port 43821. The sender failed local when focus-lease renewal
+failed. Independent cleanup and a watchdog removed both exact rules, and a
+readback found zero remaining rules. A fresh receiver accepted a reconnect with
+new nonce `6118348576609549568`; it recorded
+`accepted_probe_deliveries=2`, `stale_epoch_deliveries=0`, and
+`stale_session_deliveries=0` when probed with the interrupted nonce and an old
+focus epoch. This completed the Stage 5 physical matrix.
+
+Final post-test identity snapshots remained byte-for-byte equal to the earlier
+snapshots on both PCs: key name `DeskLink-Device-Identity-v1`, Microsoft
+Software Key Storage Provider, RSA, export policy zero, identical public-key
+DER, identical certificate DER hashes, and identical DeskLink pins. The local
+pin remained `52f3f6ebc9e35b96a6b668890b7a0e24f77bac5d9be602a00e02cb971282f50b`;
+the Windows 10 pin remained
+`95dfabcf017751cbb6f863c147c638e7ae678d7c88462eaa757fee494e1f8108`.
 
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
@@ -174,13 +237,11 @@ Repeat using Enter as the normal release path.
 
 ## Limitations of this validation
 
-This validation does not prove:
+This validation does not yet prove:
 
-- Raw Input/high-poll-rate hook timing across physical Windows 11 PCs
+- sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
-- two-PC user-confirmed pairing and reconnect behavior
-- physical input-state snapshot recovery after an interrupted key/button transition
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

@@ -374,12 +374,12 @@ Do not persist an active focus lease across process restart.
 The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
 session-nonce negotiation, and explicit Windows pairing control are now
 implemented. The manual serve/focus control now proves the trusted lease path.
-The opt-in Raw Input and suppression backend now supplies the physical input
-path. Periodic reliable input-state snapshots now converge DeskLink-owned
-normal/extended scan-code and mouse-button holds under the active lease and
-epoch. The next highest-value work is two-PC failure injection on real Windows
-11 systems. Stable multi-monitor mapping and mouse-wheel transport follow that
-gate.
+The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
+supplies the physical input path. Periodic reliable input-state snapshots now
+converge DeskLink-owned normal/extended scan-code and mouse-button holds under
+the active lease and epoch. The next highest-value work is two-PC failure
+injection on real Windows 11 systems. Stable multi-monitor mapping and
+mouse-wheel transport follow that gate.
 
 Acceptance criteria:
 

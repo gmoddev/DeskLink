@@ -23,20 +23,30 @@ PC1                                              PC2
  |                                                |
  | BeginPairing(60 s)                             | BeginPairing(60 s)
  | CreateOffer(machine, cert pin, nonce)          | CreateOffer(...)
- |---------------- unauthenticated exchange ----->|
- |<--------------- unauthenticated exchange ------|
+ |--------- peer-validated pairing TLS offer ----->|
+ |<-------- peer-validated pairing TLS offer ------|
  |                                                |
  | display six-digit transcript code              | display same code
  | user confirms physical match                   | user confirms physical match
- | ConfirmOffer() -> persist PC2 pin               | ConfirmOffer() -> persist PC1 pin
+ |---------------- confirmation ----------------->|
+ |<--------------- confirmation ------------------|
+ | persist PC2 pin                                 | persist PC1 pin
 ```
 
-The exchange can be observed or modified by the LAN. Modification produces a
-different verification code on each PC. The UI must require the user to compare
-and confirm both codes; it must not confirm automatically.
+The TLS peers are certificate-valid and their exact leaf DER pins are bound to
+the provisional offers, but they are not trusted DeskLink peers yet.
+Modification or substitution produces a different verification code on each
+PC. The UI must require the user to compare and confirm both codes; it must not
+confirm automatically. Each side sends a bounded confirmation frame only after
+local confirmation. Trust persistence begins only after both confirmation
+frames have arrived on the peer-validated stream. Pairing never admits an
+application session; successful pairing closes the connection and requires a
+fresh trusted reconnect.
 
-Pairing confirmation closes the local window and clears its nonce. A window may
-be open for at most five minutes.
+Mutual pairing confirmation closes the local window and clears its nonce. A
+window may be open for at most five minutes. An established pairing connection
+has a separate bounded two-minute idle timeout so a human can compare both
+prompts without extending operational-session timeouts.
 
 ## Certificate pin definition
 
@@ -148,8 +158,13 @@ production transport/security architecture on Windows 11/Server 2022+. The
 approved Windows 10 R&D direction uses MsQuic 2.6.x, OpenSSL 3.5 LTS, and an
 explicit opaque CNG provider that delegates signing without exporting the key.
 It has proved the Stage 3 fail-closed peer-validation and application-admission
-matrix. Identity invariance and physical validation still remain, so Windows 10
-is unsupported until all gates pass. See
+matrix, Stage 4 identity invariance, and the Stage 5 guarded physical matrix.
+That matrix includes mixed-provider manual pairing, trusted reconnect, fresh
+nonce rotation, focus/capture, physical input forwarding, interactive
+`SendInput`, reconciliation, emergency release, held-input process termination,
+scoped network interruption, and stale epoch/session rejection. Windows 10
+remains experimental/unsupported pending separate production admission and
+release integration. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## Remaining physical integration
@@ -203,5 +218,7 @@ desklink_pair.exe pair 192.168.1.25 43821
 Each side independently displays the remote display name, the transcript-derived
 six-digit code, and the exact input capability consequence. The default button
 is No. Confirmation never occurs automatically, and dismissing either prompt
-rejects the provisional connection. The tool does not create a firewall rule or
-listen beyond the bounded pairing operation.
+rejects the provisional connection. A local Yes sends a bounded mutual-
+confirmation frame; neither side reports success or persists new trust until it
+also receives the peer's confirmation. The tool does not create a firewall rule
+or listen beyond the bounded pairing operation.

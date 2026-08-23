@@ -44,8 +44,9 @@ Owns mechanisms shared by all modules:
 - health/statistics interfaces
 
 The portable core contains neither hooks nor WASAPI details. The optional
-`desklink_windows` adapter contains Raw Input, minimal low-level suppression
-hooks, and `SendInput`; WASAPI remains unimplemented.
+`desklink_windows` adapter contains low-level physical keyboard capture,
+Raw Input mouse capture, fail-local suppression hooks, and `SendInput`; WASAPI
+remains unimplemented.
 
 ### DeskLink.Host
 
@@ -116,8 +117,9 @@ non-exportable current-user CNG key and its pinned self-signed certificate.
 Provider selection must not export or replace that identity, weaken peer
 validation, or downgrade TLS. Windows 10 is outside the production architecture.
 Its experimental compatibility architecture is an explicit MsQuic/OpenSSL
-runtime with opaque CNG-backed signing; it cannot become admissible until all
-security and physical gates pass.
+runtime with opaque CNG-backed signing. Its security and guarded physical gates
+pass, but making it production-admissible requires a separately reviewed
+release-integration decision.
 
 A single logical peer connection carries several lanes:
 

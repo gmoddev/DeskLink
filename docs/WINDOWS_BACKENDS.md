@@ -33,34 +33,40 @@ The current pointer adapter treats normalized coordinates as virtual-desktop coo
 
 The initial implementation uses two mechanisms with separate responsibilities.
 
-### Raw Input
+### Raw Input mouse capture
 
-Use Raw Input as the authoritative high-rate physical event source.
+Use Raw Input as the authoritative high-rate physical mouse event source.
 
 Responsibilities:
 
 - physical mouse movement
-- keyboard scan-code data
+- physical mouse buttons
 - device identity if required later
 - high polling-rate devices
 
 Raw input should feed a bounded in-process queue.
 
-The current adapter registers keyboard/mouse `RIDEV_INPUTSINK` devices against
-a message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
-positions, and disables routing on overflow. After snapshot reconciliation and
-the real two-PC failure matrix pass, stable display-ID mapping and mouse-wheel
-transport are the next input milestones. Until wheel transport is implemented,
+The current adapter registers the mouse `RIDEV_INPUTSINK` device against a
+message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
+positions, and disables routing on overflow. After the remaining real two-PC
+failure matrix passes, stable display-ID mapping and mouse-wheel transport are
+the next input milestones. Until wheel transport is implemented,
 wheel events continue locally rather than being swallowed.
 
-### Low-level hooks
+### Low-level keyboard capture and suppression
 
-Use `WH_KEYBOARD_LL` and `WH_MOUSE_LL` only as a suppression gate while routing input remote.
+`WH_KEYBOARD_LL` is the authoritative keyboard scan-code source and the
+keyboard suppression gate while routing input remotely. This avoids losing
+keyboard packets on systems where suppressing the event prevents the hidden
+window from receiving the corresponding `WM_INPUT`. `WH_MOUSE_LL` remains only
+the mouse suppression gate; Raw Input supplies mouse movement and buttons.
 
 The hook callback must be minimal:
 
 ```text
 read current routing flag
+reject injected events
+enqueue the hardware scan code without waiting
 if remote -> suppress
 else -> CallNextHookEx
 ```
@@ -71,16 +77,19 @@ Do not perform:
 - disk logging
 - heap-heavy serialization
 - profile evaluation
-- blocking locks
+- blocking locks or waits
 
 inside the hook callback.
 
-A separate worker consumes Raw Input and sends DeskLink protocol messages.
+A separate worker consumes the bounded capture queue and sends DeskLink
+protocol messages. If the keyboard hook sees an invalid scan code or cannot
+enqueue immediately, it disables routing and fails local.
 
-The current hook gate passes injected events, reads only lock-free atomic state,
-and uses Ctrl+Alt+Pause as the physical emergency chord. The chord clears the
-route flag in the hook before notifying the control worker. Capture is never
-enabled unless the operator supplies `--capture`.
+The current hook gate passes injected events and uses Ctrl+Alt+Pause as the
+physical emergency chord. It accepts both `VK_PAUSE` and Windows' Ctrl+Break
+`VK_CANCEL` representation. The chord clears the route flag in the hook before
+notifying the control worker. Capture is never enabled unless the operator
+supplies `--capture`.
 
 ---
 

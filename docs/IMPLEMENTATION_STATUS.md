@@ -24,8 +24,8 @@ The current build proves the core invariants independently of Windows networking
 | Emergency fail-local | Done | Explicit state transition |
 | Input cleanup contract | Done | Backend callback on failure/release |
 | Windows SendInput injector | Done | Built only on Windows |
-| Windows Raw Input capture | Done | Hidden input-sink window, bounded 1024-event queue, pointer coalescing |
-| Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause fail-local |
+| Windows physical input capture | Done | Low-level non-injected keyboard scan codes plus Raw Input mouse, bounded 1024-event queue, pointer coalescing |
+| Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause/Break fail-local |
 | Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
 | Pointer format | Done | Absolute normalized datagram |
 | PCM audio frame | Done | Bounded wire representation |
@@ -43,12 +43,13 @@ The current build proves the core invariants independently of Windows networking
 | CNG identity invariance | R&D Stage 4 | Exact before/after snapshots cover key/provider/algorithm/export policy/public key/certificate hash/pin; build rejects private-key export APIs |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
-| Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
+| Pairing wire lane | Done | Separate ALPN, bounded offer/confirmation frames, TLS-leaf binding, mutual confirmation before persistence, no 0-RTT |
 | Connection rate limits | Done | Bounded per-address connection and pairing windows |
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
+| Windows 10 physical compatibility | R&D Stage 5 complete | Pairing, reconnect, nonce rotation, physical forwarding, `SendInput`, snapshot recovery, emergency release, process termination, scoped network interruption, and live stale epoch/session rejection passed |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -191,5 +192,15 @@ separately reviewable stages. The production architecture remains stock
 MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 11/Server 2022 or newer until every security and physical acceptance criterion
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 4 are
-implemented; the guarded physical Windows 11/Windows 10 matrix is the next
-gate.
+implemented. Stage 5 has passed mixed-provider manual pairing, trusted reconnect,
+fresh nonce rotation, focus without capture, physical keyboard/Raw Input mouse
+forwarding, interactive `SendInput` observation, emergency release, and
+deterministic key/button snapshot reconciliation on the guarded Windows
+11/Windows 10 pair. Abrupt sender termination while a key and mouse button were
+held released both after lease expiry. A four-second, executable/IP/UDP-port
+scoped network interruption caused focus-lease renewal to fail locally; the
+temporary rules were removed automatically. A fresh reconnect rotated the
+nonce, delivered both valid probes, and rejected live prior-session-nonce and
+stale-epoch packets. Final identity snapshots were unchanged. Stage 5 is
+complete, but Windows 10 remains experimental/unsupported pending a separate
+production-admission and release-integration decision.

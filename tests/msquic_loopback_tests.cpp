@@ -36,6 +36,7 @@ struct Results {
     std::vector<std::shared_ptr<desklink::MsQuicPairingSession>> PairingSessions;
     std::vector<desklink::MsQuicBootstrapHandlers::TrustedSession> TrustedSessions;
     std::vector<std::string> Failures;
+    std::size_t PairingCompletions{};
 };
 
 struct TestIdentityCleanup {
@@ -122,6 +123,15 @@ bool WaitForFailure(Results& Shared, std::chrono::seconds Timeout) {
     std::unique_lock Lock(Shared.Mutex);
     return Shared.Changed.wait_for(Lock, Timeout, [&] {
         return !Shared.Failures.empty();
+    });
+}
+
+bool WaitForPairingCompletions(Results& Shared,
+                               std::size_t Count,
+                               std::chrono::seconds Timeout) {
+    std::unique_lock Lock(Shared.Mutex);
+    return Shared.Changed.wait_for(Lock, Timeout, [&] {
+        return Shared.PairingCompletions >= Count;
     });
 }
 
@@ -304,6 +314,13 @@ desklink::MsQuicBootstrapHandlers MakeHandlers(Results& Shared) {
         }
         Shared.Changed.notify_all();
     };
+    Handlers.PairingCompleted = [&] {
+        {
+            std::scoped_lock Lock(Shared.Mutex);
+            ++Shared.PairingCompletions;
+        }
+        Shared.Changed.notify_all();
+    };
     Handlers.Failed = [&](std::string Message) {
         {
             std::scoped_lock Lock(Shared.Mutex);
@@ -399,6 +416,7 @@ void RunLoopback(const std::wstring& FirstKeyName,
         FirstSession->Candidate().VerificationCode, FirstGrant));
     CHECK(SecondSession->Confirm(
         SecondSession->Candidate().VerificationCode, CapabilitySet{}));
+    CHECK(WaitForPairingCompletions(Shared, 2, std::chrono::seconds(10)));
     {
         std::scoped_lock Lock(Shared.Mutex);
         Shared.PairingSessions.clear();

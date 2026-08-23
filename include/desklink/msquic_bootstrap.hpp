@@ -53,6 +53,7 @@ struct MsQuicBootstrapHandlers {
 
     std::function<void(TrustedSession)> Connected;
     std::function<void(std::shared_ptr<MsQuicPairingSession>)> PairingOffered;
+    std::function<void()> PairingCompleted;
     std::function<void(std::string)> Failed;
 };
 

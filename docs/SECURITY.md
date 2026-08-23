@@ -132,9 +132,11 @@ Epoch invalidation occurs on:
 This turns delayed network traffic into harmless stale data. Focus acquisition additionally uses a nonzero transaction `request_id`; Host accepts `FocusReady` only for its currently pending request.
 
 The Windows capture adapter uses Ctrl+Alt+Pause as its physical fail-local
-chord. The low-level hook clears the atomic routing flag before notifying the
-worker. Injected events always pass through, and capture-queue overflow clears
-routing plus queued input before the session is released.
+chord, accepting both the Pause and Windows Ctrl+Break virtual-key forms. The
+low-level hook clears the atomic routing flag before notifying the worker.
+Injected events always pass through. An invalid keyboard scan code, a busy/full
+keyboard capture queue, or Raw Input queue overflow disables routing before the
+session is released.
 
 ---
 
@@ -314,8 +316,9 @@ fail-closed with no admitted application session. The provider must never
 export private key material. Stage 4 performs exact before/after comparison of
 the CNG key name, provider, algorithm, zero export policy, certificate public
 key, certificate DER hash, and DeskLink identity pin. It also makes prohibited
-private-key export API references a build and test failure. Windows 10 remains
-unsupported until every physical gate also passes. See
+private-key export API references a build and test failure. The guarded Stage 5
+physical gates also pass. Windows 10 remains experimental/unsupported pending a
+separate production-admission and release-integration review. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---
