@@ -131,10 +131,10 @@ exception, if needed, must be created manually and limited to the appropriate
 Private or Domain network profile.
 
 Windows 10 remains unsupported. The MsQuic 2.6.x foundation, opaque CNG/OpenSSL
-provider, and fail-closed admission matrix now pass. It becomes a physical
-compatibility-validation target only after the identity-invariance and
-private-key-export gates also pass. It never receives an OpenSSL
-reduced-security fallback.
+provider, fail-closed admission matrix, identity-invariance comparison, and
+private-key-export source gates now pass. It is now eligible for the guarded
+physical compatibility-validation matrix, but remains unsupported until that
+matrix passes. It never receives an OpenSSL reduced-security fallback.
 
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
@@ -149,6 +149,18 @@ gates. Stage 3 adds missing/malformed/time-invalid DER classification, wrong
 pin, unknown peer, validator failure/exception/timeout, signing failure, and
 changed-identity rejection. Every network case asserts that no pairing or
 trusted application session was delivered.
+
+Stage 4 snapshots both loopback identities before and after Schannel and
+OpenSSL/CNG handshakes. It compares the actual CNG key name, provider,
+algorithm, export policy, certificate public-key DER, certificate DER hash, and
+DeskLink identity pin byte-for-byte. A CMake build target and test reject the
+three prohibited private-key export APIs across the DeskLink credential/runtime
+boundary and downstream patch.
+
+For a physical-test record, run `desklink_pair.exe identity` on each PC before
+and after the matrix and preserve the output. The command emits the full public
+SubjectPublicKeyInfo DER plus every other invariant field; its two records must
+match exactly, and it exits unsuccessfully if the export policy is nonzero.
 
 After pairing with `--grant-input` on the receiving PC, run
 `desklink_pair.exe serve 43821` there and

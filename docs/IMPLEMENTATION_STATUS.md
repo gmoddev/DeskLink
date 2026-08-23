@@ -40,6 +40,7 @@ The current build proves the core invariants independently of Windows networking
 | MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, fail-closed unavailable provider |
 | Windows 10 opaque CNG prototype | R&D Stage 2 | Explicit built-in OpenSSL 3.5 provider; exportable and mismatched credentials rejected; not production-admitted |
 | Fail-closed peer admission | R&D Stage 3 | `PeerValidated` gates CONNECTED effects, streams, datagrams, pairing/session delivery, and endpoint traffic; four-second watchdog |
+| CNG identity invariance | R&D Stage 4 | Exact before/after snapshots cover key/provider/algorithm/export policy/public key/certificate hash/pin; build rejects private-key export APIs |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
 | Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
@@ -189,6 +190,6 @@ tracks MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG provider integration as
 separately reviewable stages. The production architecture remains stock
 MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 11/Server 2022 or newer until every security and physical acceptance criterion
-in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 3 are
-implemented; identity invariance and private-key-export build checks are the
-next gate.
+in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 4 are
+implemented; the guarded physical Windows 11/Windows 10 matrix is the next
+gate.

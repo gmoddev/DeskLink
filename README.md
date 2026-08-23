@@ -48,7 +48,6 @@ This repository is a **reference foundation implementation**, not a finished pro
 The following are intentionally kept behind interfaces and are the next production layers:
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
-- Windows 10 identity-invariance and private-key-export build gates
 - Physical Windows 11 Schannel to Windows 10 OpenSSL compatibility validation
 - Stable multi-monitor mapping
 - Mouse-wheel transport
@@ -90,6 +89,12 @@ unsupported while the separately staged equal-security compatibility project
 is incomplete. That project may not replace or export the identity, downgrade
 TLS, weaken validation, or add automatic provider fallback. See
 [`docs/PLATFORM_SUPPORT.md`](docs/PLATFORM_SUPPORT.md).
+
+Stage 4 records and compares the CNG key name, provider, algorithm, export
+policy, certificate public-key DER, certificate DER hash, and DeskLink identity
+pin before and after both Schannel and OpenSSL/CNG compatibility handshakes. A
+normal build-and-test gate also rejects private-key export API references in the
+DeskLink credential/runtime boundary and downstream provider patch.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 

@@ -46,8 +46,8 @@ independent gates:
 3. **Complete:** prove fail-closed validation and application admission with an
    explicit `PeerValidated` state, a four-second validation watchdog, and the
    required negative OpenSSL/CNG matrix
-4. **Next:** prove device-identity invariance and absence of private-key export paths
-5. run guarded Windows 11 Schannel to Windows 10 OpenSSL physical validation
+4. **Complete:** prove device-identity invariance and absence of private-key export paths
+5. **Next:** run guarded Windows 11 Schannel to Windows 10 OpenSSL physical validation
 
 No later stage begins before the preceding stage passes. Full constraints are
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).

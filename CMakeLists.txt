@@ -23,6 +23,19 @@ if(DESKLINK_BUILD_TESTS)
     enable_testing()
 endif()
 
+add_custom_target(desklink_private_key_export_check ALL
+    COMMAND ${CMAKE_COMMAND}
+        "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoPrivateKeyExport.cmake"
+    VERBATIM)
+
+if(DESKLINK_BUILD_TESTS)
+    add_test(NAME desklink_private_key_export_check
+        COMMAND ${CMAKE_COMMAND}
+            "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoPrivateKeyExport.cmake")
+endif()
+
 add_library(desklink_core
     src/protocol.cpp
     src/input.cpp

@@ -76,7 +76,16 @@ $ProviderSources = @(
     (Join-Path $MsQuicSource 'src\platform\tls_cng_provider.c'),
     (Join-Path $MsQuicSource 'src\platform\tls_cng_provider.h')
 )
-$ScannedSources = @($PatchPath) + $ProviderSources
+$DeskLinkCredentialSources = @(
+    (Join-Path $RepositoryRoot 'include\desklink\win32_device_certificate.hpp'),
+    (Join-Path $RepositoryRoot 'include\desklink\msquic_bootstrap.hpp'),
+    (Join-Path $RepositoryRoot 'include\desklink\msquic_runtime.hpp'),
+    (Join-Path $RepositoryRoot 'apps\desklink_pair.cpp'),
+    (Join-Path $RepositoryRoot 'src\win32_device_certificate.cpp'),
+    (Join-Path $RepositoryRoot 'src\msquic_bootstrap.cpp'),
+    (Join-Path $RepositoryRoot 'src\msquic_runtime.cpp')
+)
+$ScannedSources = @($PatchPath) + $ProviderSources + $DeskLinkCredentialSources
 foreach ($ForbiddenApi in $ForbiddenPrivateKeyApis) {
     if (Select-String -LiteralPath $ScannedSources `
             -SimpleMatch $ForbiddenApi -Quiet) {

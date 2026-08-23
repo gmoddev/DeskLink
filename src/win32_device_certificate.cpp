@@ -16,6 +16,12 @@ constexpr std::size_t kMaximumKeyNameSize = 128;
 constexpr DWORD kRsaKeyBits = 2048;
 constexpr wchar_t kCertificateSubject[] = L"CN=DeskLink Device";
 
+struct KeyProviderInfo {
+    std::wstring KeyName;
+    std::wstring Provider;
+    DWORD KeySpec{};
+};
+
 bool IsValidKeyName(std::wstring_view KeyName) noexcept {
     if (KeyName.empty() || KeyName.size() > kMaximumKeyNameSize) return false;
     return std::all_of(KeyName.begin(), KeyName.end(), [](wchar_t Value) {
@@ -31,22 +37,76 @@ HCERTSTORE OpenPersonalStore() noexcept {
         CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_CURRENT_USER, L"MY");
 }
 
-bool HasMatchingKeyName(PCCERT_CONTEXT Certificate, std::wstring_view KeyName) {
+std::optional<KeyProviderInfo> ReadKeyProviderInfo(PCCERT_CONTEXT Certificate) {
     DWORD Size = 0;
     if (!CertGetCertificateContextProperty(
             Certificate, CERT_KEY_PROV_INFO_PROP_ID, nullptr, &Size) || Size == 0) {
-        return false;
+        return std::nullopt;
     }
     std::vector<std::uint8_t> Storage(Size);
     if (!CertGetCertificateContextProperty(
             Certificate, CERT_KEY_PROV_INFO_PROP_ID, Storage.data(), &Size)) {
-        return false;
+        return std::nullopt;
     }
     const auto* Info = reinterpret_cast<const CRYPT_KEY_PROV_INFO*>(Storage.data());
-    return Info->pwszContainerName && Info->pwszProvName &&
-           KeyName == Info->pwszContainerName &&
-           std::wcscmp(Info->pwszProvName, MS_KEY_STORAGE_PROVIDER) == 0 &&
-           Info->dwKeySpec == AT_KEYEXCHANGE;
+    if (!Info->pwszContainerName || !Info->pwszProvName) return std::nullopt;
+    return KeyProviderInfo{
+        Info->pwszContainerName, Info->pwszProvName, Info->dwKeySpec};
+}
+
+bool HasMatchingKeyName(PCCERT_CONTEXT Certificate, std::wstring_view KeyName) {
+    const auto Info = ReadKeyProviderInfo(Certificate);
+    return Info && KeyName == Info->KeyName &&
+           Info->Provider == MS_KEY_STORAGE_PROVIDER &&
+           Info->KeySpec == AT_KEYEXCHANGE;
+}
+
+std::optional<std::wstring> ReadWideKeyProperty(NCRYPT_KEY_HANDLE Key,
+                                                LPCWSTR Property) {
+    DWORD Size = 0;
+    if (NCryptGetProperty(Key, Property, nullptr, 0, &Size, 0) != ERROR_SUCCESS ||
+        Size < sizeof(wchar_t) || Size % sizeof(wchar_t) != 0) {
+        return std::nullopt;
+    }
+    std::vector<wchar_t> Value(Size / sizeof(wchar_t));
+    if (NCryptGetProperty(Key, Property, reinterpret_cast<PBYTE>(Value.data()),
+                         Size, &Size, 0) != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    if (!Value.empty() && Value.back() == L'\0') Value.pop_back();
+    return std::wstring(Value.begin(), Value.end());
+}
+
+std::optional<DWORD> ReadDwordKeyProperty(NCRYPT_KEY_HANDLE Key,
+                                          LPCWSTR Property) {
+    DWORD Value = 0;
+    DWORD Size = 0;
+    if (NCryptGetProperty(Key, Property, reinterpret_cast<PBYTE>(&Value),
+                         sizeof(Value), &Size, 0) != ERROR_SUCCESS ||
+        Size != sizeof(Value)) {
+        return std::nullopt;
+    }
+    return Value;
+}
+
+std::optional<ByteBuffer> EncodePublicKey(PCCERT_CONTEXT Certificate) {
+    if (!Certificate || !Certificate->pCertInfo) return std::nullopt;
+    DWORD Size = 0;
+    if (!CryptEncodeObjectEx(
+            X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+            &Certificate->pCertInfo->SubjectPublicKeyInfo, 0,
+            nullptr, nullptr, &Size) || Size == 0) {
+        return std::nullopt;
+    }
+    ByteBuffer Encoded(Size);
+    if (!CryptEncodeObjectEx(
+            X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+            &Certificate->pCertInfo->SubjectPublicKeyInfo, 0,
+            nullptr, Encoded.data(), &Size)) {
+        return std::nullopt;
+    }
+    Encoded.resize(Size);
+    return Encoded;
 }
 
 bool HasUsablePrivateKey(PCCERT_CONTEXT Certificate) noexcept {
@@ -201,6 +261,24 @@ PCCERT_CONTEXT CreateCertificate(NCRYPT_KEY_HANDLE Key,
 
 } // namespace
 
+std::optional<Win32DeviceCertificate> Win32DeviceCertificate::Load(
+    std::wstring KeyName,
+    const IPairingCrypto& Crypto) {
+    if (!IsValidKeyName(KeyName)) return std::nullopt;
+    HCERTSTORE Store = OpenPersonalStore();
+    if (!Store) return std::nullopt;
+    PCCERT_CONTEXT Certificate = FindCertificate(Store, KeyName);
+    CertCloseStore(Store, 0);
+    if (!Certificate) return std::nullopt;
+
+    const auto Pin = HashCertificate(Certificate, Crypto);
+    if (!Pin) {
+        CertFreeCertificateContext(Certificate);
+        return std::nullopt;
+    }
+    return Win32DeviceCertificate(Certificate, std::move(KeyName), *Pin);
+}
+
 std::optional<Win32DeviceCertificate> Win32DeviceCertificate::LoadOrCreate(
     std::wstring KeyName,
     const IPairingCrypto& Crypto) {
@@ -320,5 +398,49 @@ const Sha256Digest& Win32DeviceCertificate::CertificatePin() const noexcept {
 }
 
 std::wstring_view Win32DeviceCertificate::KeyName() const noexcept { return KeyName_; }
+
+std::optional<Win32DeviceIdentitySnapshot>
+Win32DeviceCertificate::IdentitySnapshot(const IPairingCrypto& Crypto) const {
+    if (!Context_) return std::nullopt;
+    const auto Info = ReadKeyProviderInfo(Context_);
+    if (!Info || Info->KeyName != KeyName_ ||
+        Info->Provider != MS_KEY_STORAGE_PROVIDER ||
+        (Info->KeySpec != AT_KEYEXCHANGE &&
+         Info->KeySpec != CERT_NCRYPT_KEY_SPEC)) {
+        return std::nullopt;
+    }
+
+    HCRYPTPROV_OR_NCRYPT_KEY_HANDLE Handle{};
+    DWORD KeySpec = 0;
+    BOOL MustFree = FALSE;
+    if (!CryptAcquireCertificatePrivateKey(
+            Context_,
+            CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG | CRYPT_ACQUIRE_SILENT_FLAG,
+            nullptr, &Handle, &KeySpec, &MustFree) ||
+        (KeySpec != AT_KEYEXCHANGE && KeySpec != CERT_NCRYPT_KEY_SPEC)) {
+        return std::nullopt;
+    }
+    const auto Key = static_cast<NCRYPT_KEY_HANDLE>(Handle);
+    const auto ActualKeyName = ReadWideKeyProperty(Key, NCRYPT_NAME_PROPERTY);
+    const auto Algorithm = ReadWideKeyProperty(Key, NCRYPT_ALGORITHM_PROPERTY);
+    const auto ExportPolicy = ReadDwordKeyProperty(Key, NCRYPT_EXPORT_POLICY_PROPERTY);
+    if (MustFree) NCryptFreeObject(Key);
+
+    const auto PublicKey = EncodePublicKey(Context_);
+    const auto CertificateHash = HashCertificate(Context_, Crypto);
+    if (!ActualKeyName || *ActualKeyName != Info->KeyName ||
+        !Algorithm || !ExportPolicy || !PublicKey || !CertificateHash ||
+        *CertificateHash != CertificatePin_) {
+        return std::nullopt;
+    }
+    return Win32DeviceIdentitySnapshot{
+        *ActualKeyName,
+        Info->Provider,
+        *Algorithm,
+        *ExportPolicy,
+        *PublicKey,
+        *CertificateHash,
+        CertificatePin_};
+}
 
 } // namespace desklink

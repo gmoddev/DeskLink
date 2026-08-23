@@ -86,9 +86,16 @@ key mismatch, and reconnect with a changed identity. None produces a pairing
 or trusted session. 0-RTT streams/datagrams are rejected and server resumption
 remains disabled.
 
-Passing Stage 3 does not admit Windows 10 sessions to production. Identity
-invariance and prohibited-export checks remain Stage 4, followed by the guarded
-physical two-PC matrix in Stage 5.
+Stage 4 records the CNG key name, Microsoft Software Key Storage Provider,
+algorithm, zero export policy, certificate public-key DER, certificate DER
+hash, and DeskLink identity pin before and after Schannel and OpenSSL/CNG
+handshakes. Exact before/after comparison is mandatory. The build and test
+graph independently rejects references to `NCryptExportKey`, `CryptExportKey`,
+or `PFXExportCertStoreEx` in the DeskLink credential/runtime boundary and the
+downstream provider patch.
+
+Passing Stage 4 does not admit Windows 10 sessions to production. The guarded
+physical two-PC matrix remains Stage 5.
 
 ## Mandatory future acceptance criteria
 
