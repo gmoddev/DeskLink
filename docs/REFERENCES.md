@@ -19,6 +19,10 @@ These references informed the production-backend recommendations. They are not d
 - Microsoft Learn — WM_INPUT: https://learn.microsoft.com/windows/win32/inputdev/wm-input
 - Microsoft Learn — LowLevelKeyboardProc: https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc
 - Microsoft Learn — LowLevelMouseProc: https://learn.microsoft.com/windows/win32/winmsg/lowlevelmouseproc
+- Microsoft Learn — SetWinEventHook: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setwineventhook
+- Microsoft Learn — UnhookWinEvent: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-unhookwinevent
+- Microsoft Learn — QueryFullProcessImageNameW: https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew
+- Microsoft Learn — monitor positioning/fullscreen bounds: https://learn.microsoft.com/windows/win32/gdi/positioning-objects-on-multiple-display-monitors
 - Microsoft Learn — WASAPI loopback recording: https://learn.microsoft.com/windows/win32/coreaudio/loopback-recording
 - Microsoft Learn — Audio sessions: https://learn.microsoft.com/windows/win32/coreaudio/audio-sessions
 - Microsoft Learn — Named pipe security and access rights: https://learn.microsoft.com/windows/win32/ipc/named-pipe-security-and-access-rights

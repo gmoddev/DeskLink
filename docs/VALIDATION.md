@@ -306,6 +306,15 @@ user endpoint must fail rather than silently sharing or replacing the pipe.
 Malformed, oversized, stalled, wrong-request-ID, and unsupported commands must
 not invoke a handler or produce an application action.
 
+Foreground-profile foundation validation covers the 32-rule bound, executable
+name and UTF-8 validation, ASCII case normalization, duplicate rejection,
+fullscreen-only matching, and emergency/manual/profile/default precedence. A
+configured but missing or uninspectable foreground must select `LockPc1`. The
+Windows test installs the out-of-context foreground WinEvent hook, receives an
+initial bounded snapshot even when no inspectable foreground exists, and stops
+the monitor through same-thread unregistration. Runtime GAME capture teardown
+and recreation remain the next physical-integration gate.
+
 ---
 
 ## Limitations of this validation

@@ -386,8 +386,10 @@ stable monitor mapping, bounded wheel transport, current-user control pipe, and
 bounded native Windows DNS-SD/mDNS discovery are implemented. Discovery emits
 only untrusted candidates and cannot connect, pair, grant capabilities, or
 write trust. Because edge roaming remains gated on the deferred physical
-Windows 11 failure matrix, the next independent roadmap item is the foreground
-profile engine and GAME capture lifecycle.
+Windows 11 failure matrix, the bounded foreground profile evaluator and native
+WinEvent observation layer are now implemented. The next independent roadmap
+item is production mode integration and the GAME capture teardown/reinstall
+lifecycle.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

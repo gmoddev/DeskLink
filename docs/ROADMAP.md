@@ -38,6 +38,15 @@ Work proceeds in this order:
    expiring, deterministic candidates without connecting, pairing, granting a
    capability, or writing trust. Conflicting duplicate identities are marked
    ambiguous.
+7. **Complete foundation:** bounded foreground profile evaluation and native
+   Windows foreground observation. Rules match exact executable basenames with
+   an optional fullscreen requirement; precedence is emergency, manual,
+   profile, then default. A configured but uninspectable foreground produces a
+   fail-local decision. The WinEvent source owns its message-loop thread and
+   unhooks on that same thread.
+8. **Next:** apply profile decisions to the production Host runtime, including
+   immediate GAME focus release, complete capture-hook teardown, and safe
+   capture recreation only after a fresh focus grant when GAME exits.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -45,7 +54,7 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- foreground profile engine and GAME lifecycle
+- profile-driven runtime integration and GAME capture lifecycle
 - WASAPI capture/render, adaptive jitter, and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 

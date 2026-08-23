@@ -114,6 +114,14 @@ Revoking `InputInject` immediately:
 - invokes the owned-input cleanup callback
 - blocks later input traffic
 
+Foreground profile metadata is a local policy input, not an authorization
+input. Rules are bounded, exact executable-basename matches with no wildcards,
+regular expressions, command lines, module loading, or target-process code
+injection. Windows image lookup requests only limited query access. If profiles
+exist and the foreground window or process cannot be inspected, the policy
+returns `LockPc1` instead of assuming the system default. Manual override is
+still subordinate to the emergency fail-local state.
+
 ---
 
 ## 5. Focus lease and epoch
