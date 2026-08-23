@@ -39,6 +39,7 @@ if(DESKLINK_BUILD_TESTS)
 endif()
 
 add_library(desklink_core
+    src/display_topology.cpp
     src/protocol.cpp
     src/input.cpp
     src/focus.cpp
@@ -232,6 +233,7 @@ endif()
 
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
+        src/win32_display_topology.cpp
         src/win32_input.cpp
         src/win32_capture.cpp
         src/win32_pairing.cpp

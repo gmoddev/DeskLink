@@ -28,6 +28,7 @@ The current build proves the core invariants independently of Windows networking
 | Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause/Break fail-local |
 | Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
 | Pointer format | Done | Absolute normalized datagram |
+| Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
@@ -93,6 +94,11 @@ The current test suite verifies:
 30. missing, malformed, expired, and not-yet-valid certificate-DER rejection
 31. wrong pin, unknown peer, validator failure/exception/timeout, and changed-identity rejection with zero application sessions
 32. deterministic CNG RSA-PSS signing failure and OpenSSL credential rejection
+33. stable display IDs independent of enumeration order and friendly-name changes
+34. per-display normalized mapping across negative-origin virtual desktops
+35. topology rectangle changes invalidate stale generations
+36. duplicate identities and 16-bit display-ID collisions fail closed
+37. live Windows DisplayConfig enumeration when an active desktop is available
 
 Build/test result in the creation environment:
 
@@ -107,15 +113,13 @@ Build/test result in the creation environment:
 ### P0 — required before using DeskLink across real PCs
 
 - two-PC Windows 11 LAN pairing, cable-removal, and reconnect validation
+  (deferred until a second Windows 11 target is available)
 - current-user IPC
 
 ### P1 — required for useful KM roaming
 
 - physical emergency-chord and high-poll-rate timing validation
-- monitor enumeration/identity
-- stable display-ID mapping
 - edge graph
-- coordinate transform
 - edge hysteresis
 - mouse-wheel transport
 - foreground profile engine
@@ -180,9 +184,10 @@ two real Windows 11 PCs using this exact sequence:
 
 Do **not** add edge roaming until this manual focus switch survives failure injection reliably.
 
-After snapshot reconciliation and the physical failure matrix pass, the roadmap
-continues with stable multi-monitor mapping and then mouse-wheel transport. See
-[`ROADMAP.md`](ROADMAP.md).
+Snapshot reconciliation and stable multi-monitor mapping are complete. The real
+Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
+available. Bounded mouse-wheel transport is the next implementation milestone.
+See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work
 

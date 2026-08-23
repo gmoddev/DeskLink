@@ -157,7 +157,11 @@ normalized_x            u16
 normalized_y            u16
 ```
 
-Pointer position is absolute and represents the latest desired position. This is intentionally tolerant of datagram loss.
+Pointer position is absolute and represents the latest desired position. This
+is intentionally tolerant of datagram loss. Display ID zero preserves the
+legacy whole-virtual-desktop interpretation. A nonzero ID selects a stable
+target-display descriptor; receivers reject an unknown ID or a mapping pinned
+to a stale local topology generation.
 
 ### InputStateSnapshot — type 23
 

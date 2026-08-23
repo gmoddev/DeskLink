@@ -234,11 +234,21 @@ PointerPositionMessage {
 }
 ```
 
-`0..65535` maps to the target display coordinate range.
+`0..65535` maps to the target display coordinate range. Display ID zero is the
+legacy whole-virtual-desktop path. Nonzero IDs are derived from stable Windows
+DisplayConfig target device paths and map through the selected monitor's
+rectangle into Windows virtual-desktop absolute coordinates.
 
 This prevents permanent cursor divergence after datagram loss. If packet 101 is lost, packet 102 still expresses the newest desired location. The Agent also rejects pointer datagrams whose sequence is older than or equal to the newest accepted pointer packet within the current focus epoch, preventing reordering from jumping the cursor backward.
 
-The current Windows injector maps the normalized values to the Windows virtual desktop using `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`. Production monitor routing should first transform `display_id` into the target monitor's virtual-desktop rectangle.
+The Windows injector maps display zero directly to the virtual desktop for
+protocol compatibility. For a nonzero display ID it refreshes the active
+topology at a bounded interval, pins the first valid topology generation for
+the focus lifetime, transforms the point through that display rectangle, and
+uses `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`. An unknown display,
+ambiguous identity, ID collision, enumeration failure, or topology-generation
+change rejects injection. Releasing focus clears the generation pin so a new
+focus can select the refreshed topology.
 
 ---
 

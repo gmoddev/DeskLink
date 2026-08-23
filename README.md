@@ -41,6 +41,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
 - Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
 - Guarded two-PC reconciliation fault validation with a non-production-only control
+- Stable Windows DisplayConfig identities, deterministic display IDs, rectangle mapping,
+  and topology-generation invalidation
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -50,7 +52,6 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Stable multi-monitor mapping
 - Mouse-wheel transport
 - LAN discovery/mDNS
 - Monitor graph and edge roaming

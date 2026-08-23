@@ -1,6 +1,7 @@
 #include "desklink/agent.hpp"
 #include "desklink/audio.hpp"
 #include "desklink/capabilities.hpp"
+#include "desklink/display_topology.hpp"
 #include "desklink/host.hpp"
 #include "desklink/input.hpp"
 #include "desklink/pairing.hpp"
@@ -12,15 +13,18 @@
 #ifdef _WIN32
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_device_certificate.hpp"
+#include "desklink/win32_display_topology.hpp"
 #include "desklink/win32_pairing.hpp"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -137,6 +141,95 @@ void protocol_round_trip() {
     CHECK(got.display_id == 3);
     CHECK(got.normalized_x == 12345);
     CHECK(got.normalized_y == 54321);
+}
+
+void DisplayTopologyMappingIsStableAndInvalidates() {
+    using namespace desklink;
+
+    DisplayTopologyMap Topology;
+    std::vector<DiscoveredDisplay> Displays{
+        {"monitor-right", "Right", {0, 0, 1920, 1080}, true},
+        {"monitor-left", "Left", {-1920, 0, 0, 1080}, false},
+    };
+    CHECK(Topology.Update(Displays) == DisplayTopologyUpdate::Changed);
+    const auto FirstGeneration = Topology.Current().Generation;
+    CHECK(FirstGeneration == 1);
+    CHECK(Topology.Current().VirtualBounds == (DisplayRect{-1920, 0, 1920, 1080}));
+
+    const auto LeftId = DeriveStableDisplayId("monitor-left");
+    const auto RightId = DeriveStableDisplayId("monitor-right");
+    CHECK(LeftId != 0);
+    CHECK(RightId != 0);
+    CHECK(LeftId != RightId);
+    CHECK(Topology.Current().Find(LeftId) != nullptr);
+    CHECK(Topology.Current().Find(RightId) != nullptr);
+
+    const auto LeftStart = Topology.MapToVirtualDesktop(LeftId, FirstGeneration, 0, 0);
+    const auto LeftEnd = Topology.MapToVirtualDesktop(LeftId, FirstGeneration, 65535, 65535);
+    const auto RightStart = Topology.MapToVirtualDesktop(RightId, FirstGeneration, 0, 0);
+    const auto RightEnd = Topology.MapToVirtualDesktop(RightId, FirstGeneration, 65535, 65535);
+    CHECK(LeftStart == (NormalizedDisplayPoint{0, 0}));
+    CHECK(LeftEnd.has_value());
+    CHECK(LeftEnd->X < 32768);
+    CHECK(LeftEnd->Y == 65535);
+    CHECK(RightStart.has_value());
+    CHECK(RightStart->X > 32767);
+    CHECK(RightStart->Y == 0);
+    CHECK(RightEnd == (NormalizedDisplayPoint{65535, 65535}));
+
+    std::reverse(Displays.begin(), Displays.end());
+    for (auto& Display : Displays) {
+        if (Display.StableIdentity == "monitor-right") {
+            Display.FriendlyName = "Renamed right monitor";
+        }
+    }
+    CHECK(Topology.Update(Displays) == DisplayTopologyUpdate::Unchanged);
+    CHECK(Topology.Current().Generation == FirstGeneration);
+    CHECK(Topology.Current().Find(RightId)->FriendlyName == "Renamed right monitor");
+
+    Displays[0].Bounds.Right = 2560;
+    CHECK(Topology.Update(Displays) == DisplayTopologyUpdate::Changed);
+    const auto SecondGeneration = Topology.Current().Generation;
+    CHECK(SecondGeneration == FirstGeneration + 1);
+    CHECK(!Topology.MapToVirtualDesktop(LeftId, FirstGeneration, 0, 0));
+    CHECK(Topology.MapToVirtualDesktop(LeftId, SecondGeneration, 0, 0));
+    CHECK(!Topology.MapToVirtualDesktop(kLegacyVirtualDesktopDisplayId,
+                                        SecondGeneration, 0, 0));
+    CHECK(!Topology.MapToVirtualDesktop(65535, SecondGeneration, 0, 0));
+
+    const auto BeforeInvalid = Topology.Current().Generation;
+    CHECK(Topology.Update({{"no-primary", "Invalid", {0, 0, 100, 100}, false}}) ==
+          DisplayTopologyUpdate::Invalid);
+    CHECK(Topology.Current().Generation == BeforeInvalid);
+    CHECK(!MapDisplayPointToVirtualDesktop(
+        {0, 0, 0, 100}, {0, 0, 100, 100}, 0, 0));
+}
+
+void DisplayTopologyRejectsAmbiguousStableIds() {
+    using namespace desklink;
+
+    std::unordered_map<DisplayId, std::string> Seen;
+    std::string FirstIdentity;
+    std::string SecondIdentity;
+    for (std::uint32_t Index = 0; Index <= 65535 && FirstIdentity.empty(); ++Index) {
+        auto Identity = std::string("collision-monitor-") + std::to_string(Index);
+        const auto Id = DeriveStableDisplayId(Identity);
+        const auto [It, Inserted] = Seen.emplace(Id, Identity);
+        if (!Inserted && It->second != Identity) {
+            FirstIdentity = It->second;
+            SecondIdentity = std::move(Identity);
+        }
+    }
+    CHECK(!FirstIdentity.empty());
+    CHECK(DeriveStableDisplayId(FirstIdentity) == DeriveStableDisplayId(SecondIdentity));
+
+    DisplayTopologyMap Topology;
+    CHECK(Topology.Update({
+        {FirstIdentity, "First", {0, 0, 100, 100}, true},
+        {SecondIdentity, "Second", {100, 0, 200, 100}, false},
+    }) == DisplayTopologyUpdate::Invalid);
+    CHECK(Topology.Current().Generation == 0);
+    CHECK(Topology.Current().Displays.empty());
 }
 
 void InputStateSnapshotRoundTripAndValidation() {
@@ -692,6 +785,29 @@ void CertificatePinsMatchOnlyTheStoredPeer() {
 }
 
 #ifdef _WIN32
+void WindowsDisplayTopologyEnumeratesWhenAvailable() {
+    using namespace desklink;
+
+    const auto Displays = EnumerateWin32Displays();
+    if (!Displays) {
+        std::cout << "[Display:Topology] active Windows display topology unavailable; "
+                     "portable mapping tests still passed.\n";
+        return;
+    }
+
+    DisplayTopologyMap Topology;
+    CHECK(Topology.Update(*Displays) == DisplayTopologyUpdate::Changed);
+    CHECK(!Topology.Current().Displays.empty());
+    CHECK(Topology.Current().VirtualBounds.IsValid());
+    for (const auto& Display : Topology.Current().Displays) {
+        CHECK(Display.Id != kLegacyVirtualDesktopDisplayId);
+        CHECK(!Display.StableIdentity.empty());
+        CHECK(Display.Bounds.IsValid());
+    }
+    std::cout << "[Display:Topology] enumerated "
+              << Topology.Current().Displays.size() << " active Windows display(s).\n";
+}
+
 void WindowsSuppressionGateFailsLocal() {
     using namespace desklink;
     constexpr std::uint32_t LeftControl = 0xA2u;
@@ -828,6 +944,8 @@ void in_memory_transport_preserves_security_metadata() {
 
 int main() {
     protocol_round_trip();
+    DisplayTopologyMappingIsStableAndInvalidates();
+    DisplayTopologyRejectsAmbiguousStableIds();
     InputStateSnapshotRoundTripAndValidation();
     InputStateTransitionsReleaseBeforePress();
     rejects_wrong_lane_and_oversize();
@@ -847,6 +965,7 @@ int main() {
     AttemptRateLimiterIsBoundedAndExpires();
     CertificatePinsMatchOnlyTheStoredPeer();
 #ifdef _WIN32
+    WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();

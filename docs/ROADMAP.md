@@ -14,12 +14,15 @@
 
 Work proceeds in this order:
 
-1. Validate the complete input path on two real Windows 11 or Windows Server
+1. **Deferred by owner:** validate the complete input path on two real Windows 11 or Windows Server
    2022-or-newer PCs, including cable removal, client termination, lease expiry,
    reconnect nonce rotation, stale epoch rejection, and Ctrl+Alt+Pause fail-local.
-2. Implement stable multi-monitor enumeration, identity, rectangle mapping, and
-   topology-change invalidation before edge roaming.
-3. Implement bounded mouse-wheel transport without suppressing wheel input when
+   A second Windows 11 target is not currently available.
+2. **Complete:** stable multi-monitor enumeration, identity, rectangle mapping,
+   and topology-change invalidation before edge roaming. Active Windows
+   DisplayConfig target paths produce deterministic IDs; ambiguous/colliding
+   identities and stale generations fail closed.
+3. **Next:** implement bounded mouse-wheel transport without suppressing wheel input when
    it cannot be forwarded safely.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC

@@ -416,7 +416,18 @@ void RunLoopback(const std::wstring& FirstKeyName,
         FirstSession->Candidate().VerificationCode, FirstGrant));
     CHECK(SecondSession->Confirm(
         SecondSession->Candidate().VerificationCode, CapabilitySet{}));
-    CHECK(WaitForPairingCompletions(Shared, 2, std::chrono::seconds(10)));
+    const auto PairingCompleted = WaitForPairingCompletions(
+        Shared, 2, std::chrono::seconds(10));
+    if (!PairingCompleted) {
+        std::scoped_lock Lock(Shared.Mutex);
+        std::cerr << "[Transport:MsQuic] pairing completions="
+                  << Shared.PairingCompletions << " failures="
+                  << Shared.Failures.size() << '\n';
+        for (const auto& Failure : Shared.Failures) {
+            std::cerr << "[Transport:MsQuic] " << Failure << '\n';
+        }
+    }
+    CHECK(PairingCompleted);
     {
         std::scoped_lock Lock(Shared.Mutex);
         Shared.PairingSessions.clear();
