@@ -40,6 +40,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
 - Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
 - Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
+- Guarded two-PC reconciliation fault validation with a non-production-only control
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -95,6 +96,12 @@ policy, certificate public-key DER, certificate DER hash, and DeskLink identity
 pin before and after both Schannel and OpenSSL/CNG compatibility handshakes. A
 normal build-and-test gate also rejects private-key export API references in the
 DeskLink credential/runtime boundary and downstream provider patch.
+
+Compatibility builds may explicitly set
+`DESKLINK_BUILD_PHYSICAL_VALIDATION=ON` to produce
+`desklink_pair_validation.exe`. That separately named control is not built by
+default and is not a production artifact. It exposes only bounded Stage 5 fault
+probes; the normal `desklink_pair.exe` rejects those options.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 

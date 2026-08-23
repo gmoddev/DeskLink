@@ -49,7 +49,7 @@ The current build proves the core invariants independently of Windows networking
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
-| Windows 10 physical compatibility | R&D Stage 5 partial | Schannel/OpenSSL pairing, reconnect, nonce rotation, physical keyboard/button/pointer forwarding, and interactive `SendInput` observation passed; termination, interruption, stale-session, and held-state failure matrix remains |
+| Windows 10 physical compatibility | R&D Stage 5 partial | Pairing, reconnect, nonce rotation, physical forwarding, `SendInput`, snapshot recovery, process termination, and live stale epoch/session rejection passed; safe network interruption remains |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -194,6 +194,10 @@ MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 4 are
 implemented. Stage 5 has passed mixed-provider manual pairing, trusted reconnect,
 fresh nonce rotation, and focus without capture on the guarded Windows
-11/Windows 10 pair. Physical Raw Input, reconciliation, emergency release,
-held-input termination, network interruption, and stale epoch/session rejection
-remain. Windows 10 therefore remains experimental/unsupported.
+11/Windows 10 pair. Physical keyboard/Raw Input mouse forwarding, interactive
+`SendInput` observation, emergency release, and deterministic key/button
+snapshot reconciliation have also passed. Abrupt sender termination while a
+key and mouse button were held released both after lease expiry. Safe network
+interruption remains; live prior-session-nonce and stale-epoch packets were
+rejected without delivery. Windows 10 therefore
+remains experimental/unsupported.

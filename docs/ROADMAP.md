@@ -51,9 +51,10 @@ independent gates:
 5. **In progress:** guarded Windows 11 Schannel to Windows 10 OpenSSL physical
    validation. Manual mutual-confirmation pairing, trusted reconnect, fresh
    nonce rotation, focus without capture, physical keyboard/button/pointer
-   forwarding, and interactive `SendInput` observation pass. Complete snapshot
-   reconciliation, held-input termination, safe network interruption, and stale
-   epoch/session rejection remain.
+   forwarding, interactive `SendInput` observation, emergency release, and
+   deterministic two-PC snapshot reconciliation pass. Abrupt process termination
+   with held key/button state also passes lease cleanup, and live prior-session
+   and stale-epoch packets are rejected. Safe network interruption remains.
 
 No later stage begins before the preceding stage passes. Full constraints are
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).

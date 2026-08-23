@@ -9,6 +9,8 @@ option(DESKLINK_BUILD_TESTS "Build DeskLink tests" ON)
 option(DESKLINK_BUILD_SIM "Build DeskLink simulation CLI" ON)
 option(DESKLINK_BUILD_WINDOWS_BACKENDS "Build Win32 backend adapters" ON)
 option(DESKLINK_BUILD_MSQUIC "Build the native MsQuic transport adapter" OFF)
+option(DESKLINK_BUILD_PHYSICAL_VALIDATION
+    "Build the non-production physical failure-injection control" OFF)
 set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.6.0 distribution")
 set(DESKLINK_MSQUIC_SCHANNEL_ROOT "${DESKLINK_MSQUIC_ROOT}" CACHE PATH
     "Path to the pinned MsQuic 2.6.0 Schannel distribution")
@@ -195,20 +197,37 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         endif()
     endif()
 
+    function(DeskLinkConfigurePairTarget Target)
+        target_link_libraries(${Target} PRIVATE desklink_msquic shell32 ole32)
+        if(MSVC)
+            target_compile_options(${Target} PRIVATE /W4 /permissive-)
+        else()
+            target_compile_options(${Target} PRIVATE
+                -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+        endif()
+        if(MINGW)
+            target_link_options(${Target} PRIVATE
+                -municode -static -static-libgcc -static-libstdc++)
+        endif()
+        DeskLinkStageSchannelRuntime(${Target})
+        DeskLinkStageOpenSslRuntime(${Target})
+    endfunction()
+
     add_executable(desklink_pair apps/desklink_pair.cpp)
-    target_link_libraries(desklink_pair PRIVATE desklink_msquic shell32 ole32)
-    if(MSVC)
-        target_compile_options(desklink_pair PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(desklink_pair PRIVATE
-            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    DeskLinkConfigurePairTarget(desklink_pair)
+    if(DESKLINK_BUILD_TESTS)
+        add_test(NAME desklink_pair_rejects_validation_flags
+            COMMAND desklink_pair serve --validation-drop-next-key-release)
+        set_tests_properties(desklink_pair_rejects_validation_flags
+            PROPERTIES WILL_FAIL TRUE)
     endif()
-    if(MINGW)
-        target_link_options(desklink_pair PRIVATE
-            -municode -static -static-libgcc -static-libstdc++)
+
+    if(DESKLINK_BUILD_PHYSICAL_VALIDATION)
+        add_executable(desklink_pair_validation apps/desklink_pair.cpp)
+        target_compile_definitions(desklink_pair_validation PRIVATE
+            DESKLINK_ENABLE_VALIDATION_FAULTS=1)
+        DeskLinkConfigurePairTarget(desklink_pair_validation)
     endif()
-    DeskLinkStageSchannelRuntime(desklink_pair)
-    DeskLinkStageOpenSslRuntime(desklink_pair)
 endif()
 
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)

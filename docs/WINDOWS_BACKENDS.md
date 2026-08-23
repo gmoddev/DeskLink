@@ -48,9 +48,9 @@ Raw input should feed a bounded in-process queue.
 
 The current adapter registers the mouse `RIDEV_INPUTSINK` device against a
 message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
-positions, and disables routing on overflow. After snapshot reconciliation and
-the real two-PC failure matrix pass, stable display-ID mapping and mouse-wheel
-transport are the next input milestones. Until wheel transport is implemented,
+positions, and disables routing on overflow. After the remaining real two-PC
+failure matrix passes, stable display-ID mapping and mouse-wheel transport are
+the next input milestones. Until wheel transport is implemented,
 wheel events continue locally rather than being swallowed.
 
 ### Low-level keyboard capture and suppression

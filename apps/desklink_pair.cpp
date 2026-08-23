@@ -32,6 +32,11 @@ namespace {
 constexpr std::uint16_t kDefaultPort = 43821;
 constexpr std::chrono::seconds kPairingWindow{300};
 constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+constexpr std::uint16_t kValidationAcceptedScanCode = 0x7cu;
+constexpr std::uint16_t kValidationStaleEpochScanCode = 0x7bu;
+constexpr std::uint16_t kValidationStaleSessionScanCode = 0x7au;
+#endif
 
 enum class Operation {
     Identity,
@@ -49,6 +54,14 @@ struct CommandLine {
     bool CaptureInput{};
     bool ConsoleConfirm{};
     desklink::TlsBackend TlsBackend{desklink::TlsBackend::Auto};
+    bool ValidationDropNextKeyRelease{};
+    bool ValidationDropNextButtonRelease{};
+    bool ValidationReconciliationProbe{};
+    bool ValidationObserveCleanup{};
+    bool ValidationObserveRejections{};
+    bool ValidationTerminateHeldInput{};
+    std::uint64_t ValidationStaleSessionNonce{};
+    std::uint32_t ValidationDurationMs{};
 };
 
 struct PairingResult {
@@ -108,6 +121,33 @@ std::optional<std::uint16_t> ParsePort(std::wstring_view Value) {
     return static_cast<std::uint16_t>(Port);
 }
 
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+std::optional<std::uint32_t> ParseValidationDuration(std::wstring_view Value) {
+    if (Value.empty() || Value.size() > 5) return std::nullopt;
+    std::uint32_t Duration = 0;
+    for (const auto Character : Value) {
+        if (Character < L'0' || Character > L'9') return std::nullopt;
+        Duration = Duration * 10u + static_cast<std::uint32_t>(Character - L'0');
+    }
+    if (Duration < 1'000u || Duration > 60'000u) return std::nullopt;
+    return Duration;
+}
+
+std::optional<std::uint64_t> ParseValidationNonce(std::wstring_view Value) {
+    if (Value.empty() || Value.size() > 20) return std::nullopt;
+    std::uint64_t Nonce = 0;
+    for (const auto Character : Value) {
+        if (Character < L'0' || Character > L'9') return std::nullopt;
+        const auto Digit = static_cast<std::uint64_t>(Character - L'0');
+        if (Nonce > (std::numeric_limits<std::uint64_t>::max() - Digit) / 10u) {
+            return std::nullopt;
+        }
+        Nonce = Nonce * 10u + Digit;
+    }
+    return Nonce == 0 ? std::nullopt : std::optional<std::uint64_t>{Nonce};
+}
+#endif
+
 void PrintUsage() {
     std::wcerr
         << L"Usage:\n"
@@ -120,6 +160,18 @@ void PrintUsage() {
         << L"--capture forwards physical input and suppresses it locally until release.\n"
         << L"--console-confirm requires typing yes after comparing the pairing code.\n"
         << L"--tls-provider auto|schannel|openssl selects the packaged TLS runtime.\n";
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+    std::wcerr
+        << L"Validation-only options (not present in desklink_pair.exe):\n"
+        << L"  serve --validation-drop-next-key-release\n"
+        << L"        --validation-drop-next-button-release\n"
+        << L"        --validation-observe-cleanup\n"
+        << L"        --validation-observe-rejections\n"
+        << L"  focus --validation-reconciliation-probe\n"
+        << L"        --validation-terminate-held-input\n"
+        << L"        --validation-rejection-probe <prior-session-nonce>\n"
+        << L"  serve|focus --validation-duration-ms <1000..60000>\n";
+#endif
 }
 
 std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Arguments) {
@@ -186,6 +238,57 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             }
             continue;
         }
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+        if (Argument == L"--validation-drop-next-key-release") {
+            if (Result.ValidationDropNextKeyRelease) return std::nullopt;
+            Result.ValidationDropNextKeyRelease = true;
+            continue;
+        }
+        if (Argument == L"--validation-drop-next-button-release") {
+            if (Result.ValidationDropNextButtonRelease) return std::nullopt;
+            Result.ValidationDropNextButtonRelease = true;
+            continue;
+        }
+        if (Argument == L"--validation-reconciliation-probe") {
+            if (Result.ValidationReconciliationProbe) return std::nullopt;
+            Result.ValidationReconciliationProbe = true;
+            continue;
+        }
+        if (Argument == L"--validation-observe-cleanup") {
+            if (Result.ValidationObserveCleanup) return std::nullopt;
+            Result.ValidationObserveCleanup = true;
+            continue;
+        }
+        if (Argument == L"--validation-observe-rejections") {
+            if (Result.ValidationObserveRejections) return std::nullopt;
+            Result.ValidationObserveRejections = true;
+            continue;
+        }
+        if (Argument == L"--validation-terminate-held-input") {
+            if (Result.ValidationTerminateHeldInput) return std::nullopt;
+            Result.ValidationTerminateHeldInput = true;
+            continue;
+        }
+        if (Argument == L"--validation-rejection-probe") {
+            if (Result.ValidationStaleSessionNonce != 0 ||
+                Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            const auto Nonce = ParseValidationNonce(Arguments[++Index]);
+            if (!Nonce) return std::nullopt;
+            Result.ValidationStaleSessionNonce = *Nonce;
+            continue;
+        }
+        if (Argument == L"--validation-duration-ms") {
+            if (Result.ValidationDurationMs != 0 || Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            const auto Duration = ParseValidationDuration(Arguments[++Index]);
+            if (!Duration) return std::nullopt;
+            Result.ValidationDurationMs = *Duration;
+            continue;
+        }
+#endif
         if (PortSeen) return std::nullopt;
         const auto Port = ParsePort(Argument);
         if (!Port) return std::nullopt;
@@ -201,6 +304,37 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     if (Result.ConsoleConfirm &&
         Result.Mode != Operation::PairListen &&
         Result.Mode != Operation::PairConnect) {
+        return std::nullopt;
+    }
+    if ((Result.ValidationDropNextKeyRelease ||
+         Result.ValidationDropNextButtonRelease ||
+         Result.ValidationObserveCleanup ||
+         Result.ValidationObserveRejections) &&
+        Result.Mode != Operation::Serve) {
+        return std::nullopt;
+    }
+    if ((Result.ValidationReconciliationProbe ||
+         Result.ValidationTerminateHeldInput ||
+         Result.ValidationStaleSessionNonce != 0) &&
+        Result.Mode != Operation::Focus) {
+        return std::nullopt;
+    }
+    if (Result.ValidationReconciliationProbe &&
+        Result.ValidationTerminateHeldInput) {
+        return std::nullopt;
+    }
+    if (Result.ValidationStaleSessionNonce != 0 &&
+        (Result.ValidationReconciliationProbe ||
+         Result.ValidationTerminateHeldInput)) {
+        return std::nullopt;
+    }
+    if (Result.ValidationStaleSessionNonce != 0 &&
+        Result.ValidationDurationMs == 0) {
+        return std::nullopt;
+    }
+    if (Result.ValidationDurationMs != 0 &&
+        Result.Mode != Operation::Serve &&
+        Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
     return Result;
@@ -366,15 +500,214 @@ struct TrustedResult {
     std::string Failure;
 };
 
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+class ValidationInputInjector final : public desklink::IInputInjector {
+public:
+    ValidationInputInjector(bool DropNextKeyRelease,
+                            bool DropNextButtonRelease,
+                            bool ObserveCleanup,
+                            bool ObserveRejections) noexcept
+        : DropNextKeyRelease_(DropNextKeyRelease),
+          DropNextButtonRelease_(DropNextButtonRelease),
+          ObserveCleanup_(ObserveCleanup),
+          ObserveRejections_(ObserveRejections) {}
+
+    bool inject_key(const desklink::KeyEventMessage& Event) override {
+        if (Event.down) {
+            const bool Injected = Injector_.inject_key(Event);
+            if (Injected && DropNextKeyRelease_ && !PendingKeyRelease_) {
+                ObservedKeyDown_ = Event;
+            }
+            const bool Tracked = Injected && desklink::SetInputSnapshotKey(
+                ObservedState_, Event.scan_code, Event.extended, true);
+            if (Tracked) RecordKeyDelivery(Event);
+            return Tracked;
+        }
+        if (DropNextKeyRelease_ && ObservedKeyDown_ &&
+            ObservedKeyDown_->scan_code == Event.scan_code &&
+            ObservedKeyDown_->extended == Event.extended) {
+            PendingKeyRelease_ = Event;
+            ObservedKeyDown_.reset();
+            DropNextKeyRelease_ = false;
+            std::cout
+                << "[Input:Reconciliation] validation fault injected=key_release"
+                << std::endl;
+            return true;
+        }
+        const bool Tracked = Injector_.inject_key(Event) &&
+            desklink::SetInputSnapshotKey(
+                ObservedState_, Event.scan_code, Event.extended, false);
+        if (Tracked) RecordKeyDelivery(Event);
+        return Tracked;
+    }
+
+    bool inject_button(const desklink::MouseButtonMessage& Event) override {
+        if (Event.down) {
+            const bool Injected = Injector_.inject_button(Event);
+            if (Injected && DropNextButtonRelease_ && !PendingButtonRelease_) {
+                ObservedButtonDown_ = Event;
+            }
+            return Injected && desklink::SetInputSnapshotButton(
+                ObservedState_, Event.button, true);
+        }
+        if (DropNextButtonRelease_ && ObservedButtonDown_ &&
+            ObservedButtonDown_->button == Event.button) {
+            PendingButtonRelease_ = Event;
+            ObservedButtonDown_.reset();
+            DropNextButtonRelease_ = false;
+            std::cout
+                << "[Input:Reconciliation] validation fault injected=button_release"
+                << std::endl;
+            return true;
+        }
+        return Injector_.inject_button(Event) && desklink::SetInputSnapshotButton(
+            ObservedState_, Event.button, false);
+    }
+
+    bool inject_pointer(const desklink::PointerPositionMessage& Event) override {
+        return Injector_.inject_pointer(Event);
+    }
+
+    bool ReconcileState(
+        const desklink::InputStateSnapshotMessage& Snapshot) override {
+        if (!Injector_.ReconcileState(Snapshot)) return false;
+        if (PendingKeyRelease_ &&
+            !desklink::InputSnapshotKeyDown(
+                Snapshot, PendingKeyRelease_->scan_code,
+                PendingKeyRelease_->extended)) {
+            PendingKeyRelease_.reset();
+            std::cout
+                << "[Input:Reconciliation] validation fault recovered=key_release"
+                << std::endl;
+        }
+        if (PendingButtonRelease_ &&
+            !desklink::InputSnapshotButtonDown(
+                Snapshot, PendingButtonRelease_->button)) {
+            PendingButtonRelease_.reset();
+            std::cout
+                << "[Input:Reconciliation] validation fault recovered=button_release"
+                << std::endl;
+        }
+        ObservedState_ = Snapshot;
+        return true;
+    }
+
+    void release_owned_state() noexcept override {
+        if (ObserveCleanup_) {
+            const bool KeyHeld = AnyKeyDown();
+            const bool ButtonHeld = AnyButtonDown();
+            const bool Released = Injector_.ReconcileState({});
+            if (!Released) Injector_.release_owned_state();
+            std::cout
+                << "[Input:Cleanup] validation lease cleanup key_held="
+                << (KeyHeld ? "true" : "false")
+                << " button_held=" << (ButtonHeld ? "true" : "false")
+                << " release_succeeded=" << (Released ? "true" : "false")
+                << std::endl;
+        } else {
+            Injector_.release_owned_state();
+        }
+        if (ObserveRejections_ && !RejectionReportEmitted_) {
+            RejectionReportEmitted_ = true;
+            std::cout
+                << "[Session:Validation] accepted_probe_deliveries="
+                << AcceptedProbeDeliveries_
+                << " stale_epoch_deliveries=" << StaleEpochDeliveries_
+                << " stale_session_deliveries=" << StaleSessionDeliveries_
+                << std::endl;
+        }
+        ObservedState_ = {};
+        ObservedKeyDown_.reset();
+        PendingKeyRelease_.reset();
+        ObservedButtonDown_.reset();
+        PendingButtonRelease_.reset();
+    }
+
+private:
+    void RecordKeyDelivery(
+        const desklink::KeyEventMessage& Event) noexcept {
+        if (!ObserveRejections_) return;
+        if (Event.scan_code == kValidationAcceptedScanCode) {
+            ++AcceptedProbeDeliveries_;
+        } else if (Event.scan_code == kValidationStaleEpochScanCode) {
+            ++StaleEpochDeliveries_;
+        } else if (Event.scan_code == kValidationStaleSessionScanCode) {
+            ++StaleSessionDeliveries_;
+        }
+    }
+
+    bool AnyKeyDown() const noexcept {
+        for (std::uint16_t ScanCode = 1; ScanCode <= 255; ++ScanCode) {
+            if (desklink::InputSnapshotKeyDown(
+                    ObservedState_, ScanCode, false) ||
+                desklink::InputSnapshotKeyDown(
+                    ObservedState_, ScanCode, true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool AnyButtonDown() const noexcept {
+        for (std::uint8_t Raw =
+                 static_cast<std::uint8_t>(desklink::MouseButtonId::Left);
+             Raw <= static_cast<std::uint8_t>(desklink::MouseButtonId::X2);
+             ++Raw) {
+            if (desklink::InputSnapshotButtonDown(
+                    ObservedState_,
+                    static_cast<desklink::MouseButtonId>(Raw))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    desklink::Win32InputInjector Injector_;
+    bool DropNextKeyRelease_{};
+    bool DropNextButtonRelease_{};
+    bool ObserveCleanup_{};
+    bool ObserveRejections_{};
+    bool RejectionReportEmitted_{};
+    std::uint64_t AcceptedProbeDeliveries_{};
+    std::uint64_t StaleEpochDeliveries_{};
+    std::uint64_t StaleSessionDeliveries_{};
+    desklink::InputStateSnapshotMessage ObservedState_{};
+    std::optional<desklink::KeyEventMessage> ObservedKeyDown_;
+    std::optional<desklink::KeyEventMessage> PendingKeyRelease_;
+    std::optional<desklink::MouseButtonMessage> ObservedButtonDown_;
+    std::optional<desklink::MouseButtonMessage> PendingButtonRelease_;
+};
+using AgentInputInjector = ValidationInputInjector;
+#else
+using AgentInputInjector = desklink::Win32InputInjector;
+#endif
+
 struct AgentRuntime {
     AgentRuntime(const desklink::IClock& Clock,
                  const desklink::ITrustStore& TrustStore,
-                 desklink::MsQuicBootstrapHandlers::TrustedSession Trusted)
+                 desklink::MsQuicBootstrapHandlers::TrustedSession Trusted,
+                 bool DropNextKeyRelease,
+                 bool DropNextButtonRelease,
+                 bool ObserveCleanup,
+                 bool ObserveRejections)
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+        : Injector(DropNextKeyRelease, DropNextButtonRelease, ObserveCleanup,
+                   ObserveRejections),
+          Coordinator(Clock, Injector),
+#else
         : Coordinator(Clock, Injector),
+#endif
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
-                  Trusted.SessionNonce) {}
+                  Trusted.SessionNonce) {
+#ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
+        (void)DropNextKeyRelease;
+        (void)DropNextButtonRelease;
+        (void)ObserveCleanup;
+        (void)ObserveRejections;
+#endif
+    }
 
-    desklink::Win32InputInjector Injector;
+    AgentInputInjector Injector;
     desklink::AgentCoordinator Coordinator;
     desklink::AgentSession Session;
 };
@@ -383,10 +716,14 @@ struct HostRuntime {
     HostRuntime(const desklink::ITrustStore& TrustStore,
                 desklink::MsQuicBootstrapHandlers::TrustedSession Trusted,
                 std::function<void()> FocusReadyHandler)
-        : Coordinator(Trusted.SessionNonce),
+        : Endpoint(Trusted.Endpoint),
+          SessionNonce(Trusted.SessionNonce),
+          Coordinator(Trusted.SessionNonce),
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
                   Trusted.SessionNonce, std::move(FocusReadyHandler)) {}
 
+    std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
+    std::uint64_t SessionNonce{};
     desklink::HostCoordinator Coordinator;
     desklink::HostSession Session;
 };
@@ -432,7 +769,11 @@ int RunTrusted(const CommandLine& Command,
             std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
                       << " role=acceptor\n";
             auto Runtime = std::make_shared<AgentRuntime>(
-                Clock, TrustStore, std::move(Trusted));
+                Clock, TrustStore, std::move(Trusted),
+                Command.ValidationDropNextKeyRelease,
+                Command.ValidationDropNextButtonRelease,
+                Command.ValidationObserveCleanup,
+                Command.ValidationObserveRejections);
             if (!Runtime->Session.start()) {
                 Runtime->Session.stop();
                 return;
@@ -513,8 +854,15 @@ int RunTrusted(const CommandLine& Command,
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         });
-        std::string Line;
-        (void)std::getline(std::cin, Line);
+        if (Command.ValidationDurationMs == 0) {
+            std::string Line;
+            (void)std::getline(std::cin, Line);
+        } else {
+            std::cout
+                << "[Session:Control] validation duration active; listener will stop automatically\n";
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(Command.ValidationDurationMs));
+        }
         StopTicker.store(true);
         Ticker.join();
         {
@@ -592,6 +940,102 @@ int RunTrusted(const CommandLine& Command,
                 }
             }
         });
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+        if (Command.ValidationReconciliationProbe) {
+            constexpr std::uint16_t ValidationScanCode = 0x7eu;
+            const bool ProbeSent =
+                ActiveHost->Session.send_key(
+                    desklink::KeyEventMessage{ValidationScanCode, false, true}) &&
+                ActiveHost->Session.send_button(
+                    desklink::MouseButtonMessage{
+                        desklink::MouseButtonId::X2, true}) &&
+                ActiveHost->Session.send_key(
+                    desklink::KeyEventMessage{ValidationScanCode, false, false}) &&
+                ActiveHost->Session.send_button(
+                    desklink::MouseButtonMessage{
+                        desklink::MouseButtonId::X2, false});
+            if (!ProbeSent) {
+                {
+                    std::scoped_lock Lock(Result->Mutex);
+                    Result->Emergency = true;
+                    Result->Failure = "validation reconciliation probe failed";
+                }
+                Result->Changed.notify_all();
+            } else {
+                std::cout
+                    << "[Input:Reconciliation] validation probe transitions sent\n";
+            }
+        }
+        if (Command.ValidationTerminateHeldInput) {
+            constexpr std::uint16_t ValidationScanCode = 0x7du;
+            const bool HeldInputSent =
+                ActiveHost->Session.send_key(
+                    desklink::KeyEventMessage{ValidationScanCode, false, true}) &&
+                ActiveHost->Session.send_button(
+                    desklink::MouseButtonMessage{
+                        desklink::MouseButtonId::X1, true});
+            if (!HeldInputSent) {
+                {
+                    std::scoped_lock Lock(Result->Mutex);
+                    Result->Emergency = true;
+                    Result->Failure = "held-input termination probe failed";
+                }
+                Result->Changed.notify_all();
+            } else {
+                std::cout
+                    << "[Input:Cleanup] validation held input sent; terminating abruptly"
+                    << std::endl;
+                TerminateProcess(GetCurrentProcess(), 86u);
+            }
+        }
+        if (Command.ValidationStaleSessionNonce != 0) {
+            const auto CurrentEpoch =
+                ActiveHost->Coordinator.remote_epoch();
+            const auto StaleEpoch = CurrentEpoch > 1
+                ? CurrentEpoch - 1
+                : CurrentEpoch + 1;
+            desklink::EnvelopeHeader StaleEpochHeader;
+            StaleEpochHeader.session_nonce = ActiveHost->SessionNonce;
+            StaleEpochHeader.epoch = StaleEpoch;
+            StaleEpochHeader.sequence = 0xf001u;
+            desklink::EnvelopeHeader StaleSessionHeader;
+            StaleSessionHeader.session_nonce =
+                Command.ValidationStaleSessionNonce;
+            StaleSessionHeader.epoch = CurrentEpoch;
+            StaleSessionHeader.sequence = 0xf002u;
+            const bool ProbeSent =
+                Command.ValidationStaleSessionNonce !=
+                    ActiveHost->SessionNonce &&
+                ActiveHost->Session.send_key(
+                    desklink::KeyEventMessage{
+                        kValidationAcceptedScanCode, false, true}) &&
+                ActiveHost->Session.send_key(
+                    desklink::KeyEventMessage{
+                        kValidationAcceptedScanCode, false, false}) &&
+                ActiveHost->Endpoint->send_reliable(
+                    desklink::encode_packet(
+                        StaleEpochHeader,
+                        desklink::KeyEventMessage{
+                            kValidationStaleEpochScanCode, false, true})) &&
+                ActiveHost->Endpoint->send_reliable(
+                    desklink::encode_packet(
+                        StaleSessionHeader,
+                        desklink::KeyEventMessage{
+                            kValidationStaleSessionScanCode, false, true}));
+            if (!ProbeSent) {
+                {
+                    std::scoped_lock Lock(Result->Mutex);
+                    Result->Emergency = true;
+                    Result->Failure = "stale epoch/session probe failed";
+                }
+                Result->Changed.notify_all();
+            } else {
+                std::cout
+                    << "[Session:Validation] stale epoch/session probes sent"
+                    << std::endl;
+            }
+        }
+#endif
         if (Command.CaptureInput) {
             desklink::Win32CaptureHandlers CaptureHandlers;
             CaptureHandlers.Key = [ActiveHost, Result, &ActiveCapture,
@@ -681,6 +1125,10 @@ int RunTrusted(const CommandLine& Command,
             }
         }
         std::cout << "[Session:Control] remote focus active; press Enter to release\n";
+        const auto ValidationDeadline = Command.ValidationDurationMs == 0
+            ? std::chrono::steady_clock::time_point::max()
+            : std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(Command.ValidationDurationMs);
         const auto InputHandle = GetStdHandle(STD_INPUT_HANDLE);
         for (;;) {
             {
@@ -688,6 +1136,15 @@ int RunTrusted(const CommandLine& Command,
                 if (Result->Emergency) break;
             }
             if (Capture && !Capture->RemoteRouting()) break;
+            if (std::chrono::steady_clock::now() >= ValidationDeadline) {
+                std::cout
+                    << "[Input:Capture] validation duration elapsed; releasing locally\n";
+                break;
+            }
+            if (Command.ValidationDurationMs != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
             const auto WaitResult = InputHandle == INVALID_HANDLE_VALUE ||
                     InputHandle == nullptr
                 ? WAIT_FAILED
