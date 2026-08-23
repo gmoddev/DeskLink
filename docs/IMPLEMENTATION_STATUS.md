@@ -49,7 +49,7 @@ The current build proves the core invariants independently of Windows networking
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
-| Windows 10 physical compatibility | R&D Stage 5 partial | Pairing, reconnect, nonce rotation, physical forwarding, `SendInput`, snapshot recovery, process termination, and live stale epoch/session rejection passed; safe network interruption remains |
+| Windows 10 physical compatibility | R&D Stage 5 complete | Pairing, reconnect, nonce rotation, physical forwarding, `SendInput`, snapshot recovery, emergency release, process termination, scoped network interruption, and live stale epoch/session rejection passed |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -193,11 +193,14 @@ MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 11/Server 2022 or newer until every security and physical acceptance criterion
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 4 are
 implemented. Stage 5 has passed mixed-provider manual pairing, trusted reconnect,
-fresh nonce rotation, and focus without capture on the guarded Windows
-11/Windows 10 pair. Physical keyboard/Raw Input mouse forwarding, interactive
-`SendInput` observation, emergency release, and deterministic key/button
-snapshot reconciliation have also passed. Abrupt sender termination while a
-key and mouse button were held released both after lease expiry. Safe network
-interruption remains; live prior-session-nonce and stale-epoch packets were
-rejected without delivery. Windows 10 therefore
-remains experimental/unsupported.
+fresh nonce rotation, focus without capture, physical keyboard/Raw Input mouse
+forwarding, interactive `SendInput` observation, emergency release, and
+deterministic key/button snapshot reconciliation on the guarded Windows
+11/Windows 10 pair. Abrupt sender termination while a key and mouse button were
+held released both after lease expiry. A four-second, executable/IP/UDP-port
+scoped network interruption caused focus-lease renewal to fail locally; the
+temporary rules were removed automatically. A fresh reconnect rotated the
+nonce, delivered both valid probes, and rejected live prior-session-nonce and
+stale-epoch packets. Final identity snapshots were unchanged. Stage 5 is
+complete, but Windows 10 remains experimental/unsupported pending a separate
+production-admission and release-integration decision.

@@ -316,8 +316,9 @@ fail-closed with no admitted application session. The provider must never
 export private key material. Stage 4 performs exact before/after comparison of
 the CNG key name, provider, algorithm, zero export policy, certificate public
 key, certificate DER hash, and DeskLink identity pin. It also makes prohibited
-private-key export API references a build and test failure. Windows 10 remains
-unsupported until every physical gate also passes. See
+private-key export API references a build and test failure. The guarded Stage 5
+physical gates also pass. Windows 10 remains experimental/unsupported pending a
+separate production-admission and release-integration review. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---

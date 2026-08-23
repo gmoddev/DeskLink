@@ -49,7 +49,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 The following are intentionally kept behind interfaces and are the next production layers:
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
-- Remaining Windows 11 Schannel to Windows 10 OpenSSL failure-matrix validation
+- Windows 10 OpenSSL/CNG production admission and release integration
 - Stable multi-monitor mapping
 - Mouse-wheel transport
 - LAN discovery/mDNS

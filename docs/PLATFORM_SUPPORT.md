@@ -14,9 +14,10 @@ current-user CNG device identity. The private key remains non-exportable. The
 certificate DER, SHA-256 pin, key name, and export policy are identity state and
 must not be silently replaced or modified.
 
-Windows 10 remains deliberately unsupported until the approved equal-security
-R&D project passes every security and physical gate. DeskLink does not solve
-its lack of Schannel QUIC/TLS 1.3 support by downgrading TLS,
+The approved Windows 10 equal-security R&D project has passed its security and
+guarded physical gates, but Windows 10 remains deliberately unsupported until
+the prototype is separately admitted and integrated into production releases.
+DeskLink does not solve its lack of Schannel QUIC/TLS 1.3 support by downgrading TLS,
 exporting/replacing the device identity, disabling peer authentication,
 weakening certificate validation, or falling back after a credential,
 certificate, authentication, or general transport failure.
@@ -94,8 +95,13 @@ graph independently rejects references to `NCryptExportKey`, `CryptExportKey`,
 or `PFXExportCertStoreEx` in the DeskLink credential/runtime boundary and the
 downstream provider patch.
 
-Passing Stage 4 does not admit Windows 10 sessions to production. The guarded
-physical two-PC matrix remains Stage 5.
+Passing Stage 4 does not admit Windows 10 sessions to production. Stage 5's
+guarded physical two-PC matrix is complete: mixed-provider pairing and
+reconnect, nonce rotation, focus/capture, physical injection, reconciliation,
+emergency release, held-input process termination, scoped network interruption,
+and stale epoch/session rejection passed with unchanged identities. Completion
+of this R&D matrix does not itself turn the prototype into a supported release
+artifact; production admission and release integration require separate review.
 
 ## Mandatory future acceptance criteria
 
@@ -118,9 +124,11 @@ Any future OpenSSL implementation must prove all of the following:
 10. Mixed-provider interoperability and the complete physical failure matrix
     pass on supported test systems before production consideration.
 
-Until those criteria and the physical matrix pass, the production support
-statement remains Windows 11/Server 2022 or newer with stock Schannel and
-Windows 10 remains experimental/unsupported.
+These criteria and the physical matrix now pass for the guarded prototype. The
+production support statement nevertheless remains Windows 11/Server 2022 or
+newer with stock Schannel until the Windows 10 runtime is separately admitted
+and integrated as a release artifact. Windows 10 remains
+experimental/unsupported in the meantime.
 
 The upstream source and platform lifecycle material supporting this decision is
 listed in [`REFERENCES.md`](REFERENCES.md).

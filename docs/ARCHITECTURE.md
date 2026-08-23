@@ -117,8 +117,9 @@ non-exportable current-user CNG key and its pinned self-signed certificate.
 Provider selection must not export or replace that identity, weaken peer
 validation, or downgrade TLS. Windows 10 is outside the production architecture.
 Its experimental compatibility architecture is an explicit MsQuic/OpenSSL
-runtime with opaque CNG-backed signing; it cannot become admissible until all
-security and physical gates pass.
+runtime with opaque CNG-backed signing. Its security and guarded physical gates
+pass, but making it production-admissible requires a separately reviewed
+release-integration decision.
 
 A single logical peer connection carries several lanes:
 

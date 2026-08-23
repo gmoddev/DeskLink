@@ -158,11 +158,13 @@ production transport/security architecture on Windows 11/Server 2022+. The
 approved Windows 10 R&D direction uses MsQuic 2.6.x, OpenSSL 3.5 LTS, and an
 explicit opaque CNG provider that delegates signing without exporting the key.
 It has proved the Stage 3 fail-closed peer-validation and application-admission
-matrix plus Stage 4 identity invariance. Mixed-provider manual pairing, trusted
-reconnect, fresh nonce rotation, focus without capture, physical
-keyboard/button/pointer forwarding, and interactive `SendInput` observation
-have passed on the guarded physical pair. The complete physical failure matrix
-remains, so Windows 10 is unsupported until all gates pass. See
+matrix, Stage 4 identity invariance, and the Stage 5 guarded physical matrix.
+That matrix includes mixed-provider manual pairing, trusted reconnect, fresh
+nonce rotation, focus/capture, physical input forwarding, interactive
+`SendInput`, reconciliation, emergency release, held-input process termination,
+scoped network interruption, and stale epoch/session rejection. Windows 10
+remains experimental/unsupported pending separate production admission and
+release integration. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## Remaining physical integration
