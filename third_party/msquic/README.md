@@ -60,4 +60,6 @@ positive pairing/reconnect/session-nonce coverage plus exportable-key,
 certificate/key mismatch, and runtime-component tamper rejection.
 
 Windows 10 remains experimental/unsupported. Fail-closed peer-validation,
-identity-invariance, and physical two-PC gates remain separate later stages.
+identity-invariance, and physical two-PC gates remain separately reviewed
+stages. Stage 3 now supplies the fail-closed validation/admission state machine
+and negative matrix; identity invariance and physical validation still remain.

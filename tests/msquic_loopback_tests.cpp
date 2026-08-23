@@ -48,6 +48,65 @@ struct TestIdentityCleanup {
     }
 };
 
+enum class CertificateValidity {
+    Current,
+    Expired,
+    NotYetValid,
+};
+
+enum class CryptoFault {
+    None,
+    Failure,
+    Exception,
+    Stall,
+};
+
+class FaultingPairingCrypto final : public desklink::IPairingCrypto {
+public:
+    [[nodiscard]] bool FillRandom(std::span<std::uint8_t> Bytes) override {
+        return Inner_.FillRandom(Bytes);
+    }
+
+    [[nodiscard]] std::optional<desklink::Sha256Digest> HashSha256(
+        desklink::ByteSpan Bytes) const override {
+        CryptoFault Fault = CryptoFault::None;
+        {
+            std::unique_lock Lock(Mutex_);
+            Fault = Fault_;
+            if (Fault == CryptoFault::Stall) {
+                Released_.wait(Lock, [&] { return StallReleased_; });
+                Fault = CryptoFault::Failure;
+            }
+        }
+        if (Fault == CryptoFault::Failure) return std::nullopt;
+        if (Fault == CryptoFault::Exception) {
+            throw std::runtime_error("injected certificate validation exception");
+        }
+        return Inner_.HashSha256(Bytes);
+    }
+
+    void SetFault(CryptoFault Fault) {
+        std::scoped_lock Lock(Mutex_);
+        Fault_ = Fault;
+        StallReleased_ = false;
+    }
+
+    void ReleaseStall() {
+        {
+            std::scoped_lock Lock(Mutex_);
+            StallReleased_ = true;
+        }
+        Released_.notify_all();
+    }
+
+private:
+    desklink::BCryptPairingCrypto Inner_;
+    mutable std::mutex Mutex_;
+    mutable std::condition_variable Released_;
+    CryptoFault Fault_{CryptoFault::None};
+    mutable bool StallReleased_{};
+};
+
 bool WaitFor(Results& Shared,
              std::size_t PairingCount,
              std::size_t EndpointCount,
@@ -59,16 +118,24 @@ bool WaitFor(Results& Shared,
     });
 }
 
+bool WaitForFailure(Results& Shared, std::chrono::seconds Timeout) {
+    std::unique_lock Lock(Shared.Mutex);
+    return Shared.Changed.wait_for(Lock, Timeout, [&] {
+        return !Shared.Failures.empty();
+    });
+}
+
 bool CreatePersistedTestKey(NCRYPT_PROV_HANDLE Provider,
                             const std::wstring& KeyName,
                             bool Exportable,
+                            DWORD KeyLength,
                             NCRYPT_KEY_HANDLE& Key) {
     if (NCryptCreatePersistedKey(
             Provider, &Key, NCRYPT_RSA_ALGORITHM, KeyName.c_str(), 0, 0) !=
         ERROR_SUCCESS) {
         return false;
     }
-    DWORD Length = 2048;
+    DWORD Length = KeyLength;
     DWORD Usage = NCRYPT_ALLOW_SIGNING_FLAG;
     DWORD ExportPolicy = NCRYPT_ALLOW_EXPORT_FLAG;
     if (NCryptSetProperty(
@@ -91,7 +158,10 @@ bool CreatePersistedTestKey(NCRYPT_PROV_HANDLE Provider,
 
 bool InstallTestIdentity(const std::wstring& CertificateKeyName,
                          const std::wstring& CredentialKeyName,
-                         bool Exportable) {
+                         bool Exportable,
+                         CertificateValidity Validity = CertificateValidity::Current,
+                         desklink::ByteBuffer* CertificateDer = nullptr,
+                         DWORD KeyLength = 2048) {
     NCRYPT_PROV_HANDLE Provider{};
     NCRYPT_KEY_HANDLE CertificateKey{};
     NCRYPT_KEY_HANDLE CredentialKey{};
@@ -105,12 +175,13 @@ bool InstallTestIdentity(const std::wstring& CertificateKeyName,
         !CreatePersistedTestKey(
             Provider, CertificateKeyName,
             Exportable && CertificateKeyName == CredentialKeyName,
+            KeyLength,
             CertificateKey)) {
         goto Exit;
     }
     if (CredentialKeyName != CertificateKeyName &&
         !CreatePersistedTestKey(
-            Provider, CredentialKeyName, Exportable, CredentialKey)) {
+            Provider, CredentialKeyName, Exportable, KeyLength, CredentialKey)) {
         goto Exit;
     }
     if (!CertStrToNameW(
@@ -137,11 +208,32 @@ bool InstallTestIdentity(const std::wstring& CertificateKeyName,
         CertificateKeyInfo.dwKeySpec = AT_KEYEXCHANGE;
         CRYPT_ALGORITHM_IDENTIFIER Signature{};
         Signature.pszObjId = const_cast<char*>(szOID_RSA_SHA256RSA);
+        SYSTEMTIME StartTime{};
+        SYSTEMTIME EndTime{};
+        SYSTEMTIME* Start = nullptr;
+        SYSTEMTIME* End = nullptr;
+        if (Validity == CertificateValidity::Expired) {
+            StartTime = SYSTEMTIME{2020, 1, 0, 1, 0, 0, 0, 0};
+            EndTime = SYSTEMTIME{2021, 1, 0, 1, 0, 0, 0, 0};
+            Start = &StartTime;
+            End = &EndTime;
+        } else if (Validity == CertificateValidity::NotYetValid) {
+            StartTime = SYSTEMTIME{2098, 1, 0, 1, 0, 0, 0, 0};
+            EndTime = SYSTEMTIME{2099, 1, 0, 1, 0, 0, 0, 0};
+            Start = &StartTime;
+            End = &EndTime;
+        }
         Certificate = CertCreateSelfSignCertificate(
             static_cast<HCRYPTPROV_OR_NCRYPT_KEY_HANDLE>(CertificateKey),
-            &Subject, 0, &CertificateKeyInfo, &Signature, nullptr, nullptr,
+            &Subject, 0, &CertificateKeyInfo, &Signature, Start, End,
             nullptr);
         if (!Certificate) goto Exit;
+
+        if (CertificateDer) {
+            CertificateDer->assign(
+                Certificate->pbCertEncoded,
+                Certificate->pbCertEncoded + Certificate->cbCertEncoded);
+        }
 
         CRYPT_KEY_PROV_INFO CredentialKeyInfo = CertificateKeyInfo;
         CredentialKeyInfo.pwszContainerName =
@@ -166,6 +258,34 @@ Exit:
     if (CertificateKey) NCryptFreeObject(CertificateKey);
     if (Provider) NCryptFreeObject(Provider);
     return Success;
+}
+
+bool CngPssSigningFails(const std::wstring& KeyName) {
+    NCRYPT_PROV_HANDLE Provider{};
+    NCRYPT_KEY_HANDLE Key{};
+    SECURITY_STATUS Status = ERROR_SUCCESS;
+    std::array<std::uint8_t, 32> Digest{};
+    std::array<std::uint8_t, 64> Signature{};
+    DWORD SignatureLength = 0;
+    BCRYPT_PSS_PADDING_INFO Padding{
+        const_cast<wchar_t*>(BCRYPT_SHA256_ALGORITHM),
+        static_cast<ULONG>(Digest.size())};
+    if (NCryptOpenStorageProvider(
+            &Provider, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS ||
+        NCryptOpenKey(
+            Provider, &Key, KeyName.c_str(), 0, NCRYPT_SILENT_FLAG) !=
+            ERROR_SUCCESS) {
+        Status = NTE_BAD_KEY;
+        goto Exit;
+    }
+    Status = NCryptSignHash(
+        Key, &Padding, Digest.data(), static_cast<DWORD>(Digest.size()),
+        Signature.data(), static_cast<DWORD>(Signature.size()),
+        &SignatureLength, NCRYPT_PAD_PSS_FLAG | NCRYPT_SILENT_FLAG);
+Exit:
+    if (Key) NCryptFreeObject(Key);
+    if (Provider) NCryptFreeObject(Provider);
+    return Status != ERROR_SUCCESS;
 }
 
 desklink::MsQuicBootstrapHandlers MakeHandlers(Results& Shared) {
@@ -413,6 +533,186 @@ void RunOpenSslCredentialRejectionTests(const std::wstring& Suffix) {
             CertificateKeyName, CredentialKeyName, false));
         CheckOpenSslCredentialRejected(CredentialKeyName);
     }
+
+    const auto SigningFailureKeyName =
+        std::wstring(L"DeskLink-Signing-Failure-Rejected-") + Suffix;
+    {
+        TestIdentityCleanup Cleanup{{SigningFailureKeyName}};
+        desklink::Win32DeviceCertificate::Remove(SigningFailureKeyName);
+        CHECK(InstallTestIdentity(
+            SigningFailureKeyName, SigningFailureKeyName, false,
+            CertificateValidity::Current, nullptr, 512));
+        CHECK(CngPssSigningFails(SigningFailureKeyName));
+        CheckOpenSslCredentialRejected(SigningFailureKeyName);
+    }
+}
+
+void CheckNoApplicationAdmission(Results& Shared) {
+    std::scoped_lock Lock(Shared.Mutex);
+    CHECK(Shared.PairingSessions.empty());
+    CHECK(Shared.TrustedSessions.empty());
+}
+
+void RunCertificateDerRejectionTests(const std::wstring& Suffix) {
+    using namespace desklink;
+    CHECK(InspectMsQuicPeerCertificateDer({}) ==
+          MsQuicPeerCertificateStatus::Missing);
+    const ByteBuffer MalformedDer{0x30u, 0x03u, 0x01u, 0x01u, 0xFFu};
+    CHECK(InspectMsQuicPeerCertificateDer(MalformedDer) ==
+          MsQuicPeerCertificateStatus::Malformed);
+
+    const auto ExpiredKeyName =
+        std::wstring(L"DeskLink-Expired-Certificate-") + Suffix;
+    const auto FutureKeyName =
+        std::wstring(L"DeskLink-Future-Certificate-") + Suffix;
+    TestIdentityCleanup Cleanup{{FutureKeyName, ExpiredKeyName}};
+    Win32DeviceCertificate::Remove(ExpiredKeyName);
+    Win32DeviceCertificate::Remove(FutureKeyName);
+    ByteBuffer ExpiredDer;
+    ByteBuffer FutureDer;
+    CHECK(InstallTestIdentity(
+        ExpiredKeyName, ExpiredKeyName, false,
+        CertificateValidity::Expired, &ExpiredDer));
+    CHECK(InstallTestIdentity(
+        FutureKeyName, FutureKeyName, false,
+        CertificateValidity::NotYetValid, &FutureDer));
+    CHECK(InspectMsQuicPeerCertificateDer(ExpiredDer) ==
+          MsQuicPeerCertificateStatus::Expired);
+    CHECK(InspectMsQuicPeerCertificateDer(FutureDer) ==
+          MsQuicPeerCertificateStatus::NotYetValid);
+}
+
+void RunTrustedValidationRejection(
+    const std::wstring& FirstKeyName,
+    const std::wstring& SecondKeyName,
+    desklink::TlsBackend Backend,
+    bool SaveExpectedPeer,
+    std::optional<std::string> ExpectedFingerprint,
+    CryptoFault Fault) {
+    using namespace desklink;
+    BCryptPairingCrypto FirstCrypto;
+    FaultingPairingCrypto SecondCrypto;
+    SteadyClock Clock;
+    auto FirstCertificate = Win32DeviceCertificate::LoadOrCreate(
+        FirstKeyName, FirstCrypto);
+    auto SecondCertificate = Win32DeviceCertificate::LoadOrCreate(
+        SecondKeyName, SecondCrypto);
+    CHECK(FirstCertificate.has_value());
+    CHECK(SecondCertificate.has_value());
+
+    PeerIdentity FirstIdentity{
+        MakeMachineId(31), "Rejected server",
+        FormatFingerprint(FirstCertificate->CertificatePin())};
+    const PeerIdentity SecondIdentity{
+        MakeMachineId(32), "Rejected client",
+        FormatFingerprint(SecondCertificate->CertificatePin())};
+    InMemoryTrustStore FirstTrust;
+    InMemoryTrustStore SecondTrust;
+    CHECK(FirstTrust.SavePeer(TrustedPeer{SecondIdentity, CapabilitySet{}}));
+    if (SaveExpectedPeer) {
+        auto ExpectedIdentity = FirstIdentity;
+        if (ExpectedFingerprint) {
+            ExpectedIdentity.public_key_fingerprint = *ExpectedFingerprint;
+        }
+        CHECK(SecondTrust.SavePeer(
+            TrustedPeer{std::move(ExpectedIdentity), CapabilitySet{}}));
+    }
+
+    PairingCoordinator FirstPairing(
+        FirstIdentity, FirstCertificate->CertificatePin(), Clock,
+        FirstCrypto, FirstTrust);
+    PairingCoordinator SecondPairing(
+        SecondIdentity, SecondCertificate->CertificatePin(), Clock,
+        SecondCrypto, SecondTrust);
+    Results Shared;
+    MsQuicRuntimeConfig RuntimeConfig;
+    RuntimeConfig.Backend = Backend;
+    auto First = MsQuicBootstrap::Create(
+        std::move(*FirstCertificate), FirstTrust, FirstCrypto, FirstPairing,
+        Clock, RuntimeConfig, MakeHandlers(Shared));
+    auto Second = MsQuicBootstrap::Create(
+        std::move(*SecondCertificate), SecondTrust, SecondCrypto, SecondPairing,
+        Clock, RuntimeConfig, MakeHandlers(Shared));
+    CHECK(First);
+    CHECK(Second);
+    CHECK(First->StartListener());
+    CHECK(First->BoundPort() != 0);
+
+    SecondCrypto.SetFault(Fault);
+    CHECK(Second->ConnectTrusted(
+        "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id));
+    const auto Timeout = Fault == CryptoFault::Stall
+        ? std::chrono::seconds(7)
+        : std::chrono::seconds(5);
+    CHECK(WaitForFailure(Shared, Timeout));
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    CheckNoApplicationAdmission(Shared);
+
+    SecondCrypto.ReleaseStall();
+    First->Close();
+    Second->Close();
+    First.reset();
+    Second.reset();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+}
+
+void RunOpenSslPeerValidationRejectionTests(const std::wstring& Suffix) {
+    using namespace desklink;
+    const auto MakeName = [&](std::wstring_view Label) {
+        return std::wstring(L"DeskLink-") + std::wstring(Label) + L"-" + Suffix;
+    };
+
+    {
+        const auto FirstKey = MakeName(L"Wrong-Pin-A");
+        const auto SecondKey = MakeName(L"Wrong-Pin-B");
+        TestIdentityCleanup Cleanup{{SecondKey, FirstKey}};
+        BCryptPairingCrypto Crypto;
+        auto Certificate = Win32DeviceCertificate::LoadOrCreate(FirstKey, Crypto);
+        CHECK(Certificate.has_value());
+        auto WrongPin = Certificate->CertificatePin();
+        WrongPin[0] ^= 0x5Au;
+        Certificate.reset();
+        RunTrustedValidationRejection(
+            FirstKey, SecondKey, TlsBackend::OpenSsl, true,
+            FormatFingerprint(WrongPin), CryptoFault::None);
+    }
+
+    {
+        const auto FirstKey = MakeName(L"Unknown-A");
+        const auto SecondKey = MakeName(L"Unknown-B");
+        TestIdentityCleanup Cleanup{{SecondKey, FirstKey}};
+        RunTrustedValidationRejection(
+            FirstKey, SecondKey, TlsBackend::OpenSsl, false,
+            std::nullopt, CryptoFault::None);
+    }
+
+    for (const auto [Label, Fault] : {
+             std::pair{std::wstring_view(L"Validation-Failure"), CryptoFault::Failure},
+             std::pair{std::wstring_view(L"Validation-Exception"), CryptoFault::Exception},
+             std::pair{std::wstring_view(L"Validation-Timeout"), CryptoFault::Stall}}) {
+        const auto FirstKey = MakeName(std::wstring(Label) + L"-A");
+        const auto SecondKey = MakeName(std::wstring(Label) + L"-B");
+        TestIdentityCleanup Cleanup{{SecondKey, FirstKey}};
+        RunTrustedValidationRejection(
+            FirstKey, SecondKey, TlsBackend::OpenSsl, true,
+            std::nullopt, Fault);
+    }
+
+    {
+        const auto OldKey = MakeName(L"Changed-Identity-Old");
+        const auto FirstKey = MakeName(L"Changed-Identity-New");
+        const auto SecondKey = MakeName(L"Changed-Identity-Client");
+        TestIdentityCleanup Cleanup{{SecondKey, FirstKey, OldKey}};
+        BCryptPairingCrypto Crypto;
+        auto OldCertificate = Win32DeviceCertificate::LoadOrCreate(OldKey, Crypto);
+        CHECK(OldCertificate.has_value());
+        const auto OldFingerprint =
+            FormatFingerprint(OldCertificate->CertificatePin());
+        OldCertificate.reset();
+        RunTrustedValidationRejection(
+            FirstKey, SecondKey, TlsBackend::OpenSsl, true,
+            OldFingerprint, CryptoFault::None);
+    }
 }
 
 } // namespace
@@ -432,6 +732,8 @@ int main(int ArgumentCount, char** Arguments) {
         RunLoopback(FirstKeyName, SecondKeyName, Backend);
         if (Backend == desklink::TlsBackend::OpenSsl) {
             RunOpenSslCredentialRejectionTests(Suffix);
+            RunCertificateDerRejectionTests(Suffix);
+            RunOpenSslPeerValidationRejectionTests(Suffix);
         }
         CHECK(desklink::Win32DeviceCertificate::Remove(FirstKeyName));
         CHECK(desklink::Win32DeviceCertificate::Remove(SecondKeyName));

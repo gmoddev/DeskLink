@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -23,10 +24,19 @@ constexpr std::size_t kSessionPrefaceSize = 16;
 constexpr std::size_t kMaximumSessionBuffered =
     kSessionPrefaceSize + 36u + kMaxReliablePayload;
 constexpr std::array<std::uint8_t, 4> kSessionPrefaceMagic{'D', 'L', 'S', 'N'};
+constexpr auto kPeerValidationTimeout = std::chrono::seconds(4);
 
 enum class ConnectionPurpose {
     Trusted,
     Pairing,
+};
+
+enum class PeerValidationState {
+    NotStarted,
+    Pending,
+    Completing,
+    PeerValidated,
+    Rejected,
 };
 
 struct BootstrapConnectionState;
@@ -68,7 +78,9 @@ struct BootstrapConnectionState {
     ByteBuffer SessionBuffer;
     std::mutex Mutex;
     bool Outgoing{};
-    bool ValidationStarted{};
+    PeerValidationState PeerValidation{PeerValidationState::NotStarted};
+    bool ConnectedObserved{};
+    bool AdmissionStarted{};
     bool OfferSent{};
     bool OfferDelivered{};
     bool EndpointDelivered{};
@@ -150,7 +162,7 @@ std::string AddressKey(const QUIC_ADDR* Address) {
 }
 
 void ReportFailure(const std::shared_ptr<MsQuicBootstrap::State>& State,
-                   std::string Message);
+                   std::string_view Message) noexcept;
 void ShutdownConnection(const ConnectionHolder& State,
                         QUIC_UINT62 ErrorCode = kBootstrapError) noexcept;
 QUIC_STATUS QUIC_API BootstrapConnectionCallback(
@@ -159,6 +171,7 @@ QUIC_STATUS QUIC_API PairingStreamCallback(
     HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event);
 QUIC_STATUS QUIC_API SessionStreamCallback(
     HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event);
+void HandleValidatedConnection(const ConnectionHolder& State);
 
 } // namespace
 
@@ -238,17 +251,15 @@ struct MsQuicPairingSession::State {
 namespace {
 
 void ReportFailure(const std::shared_ptr<MsQuicBootstrap::State>& State,
-                   std::string Message) {
-    std::function<void(std::string)> Handler;
-    {
-        std::scoped_lock Lock(State->Mutex);
-        Handler = State->Handlers.Failed;
-    }
-    if (Handler) {
-        try {
-            Handler(std::move(Message));
-        } catch (...) {
+                   std::string_view Message) noexcept {
+    try {
+        std::function<void(std::string)> Handler;
+        {
+            std::scoped_lock Lock(State->Mutex);
+            Handler = State->Handlers.Failed;
         }
+        if (Handler) Handler(std::string(Message));
+    } catch (...) {
     }
 }
 
@@ -285,7 +296,9 @@ bool SendPairingOffer(const ConnectionHolder& State) {
     HQUIC Stream{};
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->OfferSent || !State->PairingStream) return false;
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->OfferSent || !State->PairingStream) return false;
         Stream = State->PairingStream;
     }
     const auto Offer = State->Owner->Pairing.CreateOffer();
@@ -306,7 +319,9 @@ bool OpenPairingStream(const ConnectionHolder& State) {
     HQUIC Connection{};
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->PairingStream) return false;
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->PairingStream) return false;
         Connection = State->Connection;
     }
     HQUIC Stream{};
@@ -338,7 +353,9 @@ void DeliverPairingOffer(const ConnectionHolder& State, PairingOffer Offer) {
     bool MissingPin = false;
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->OfferDelivered || !State->PresentedPin) {
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->OfferDelivered || !State->PresentedPin) {
             MissingPin = true;
         } else {
             PresentedPin = *State->PresentedPin;
@@ -387,7 +404,9 @@ void HandlePairingBytes(const ConnectionHolder& State, ByteSpan Bytes) {
     std::optional<PairingOffer> Offer;
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->OfferDelivered) {
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->OfferDelivered) {
             Status = PairingWireStatus::InvalidFrame;
         } else {
             Status = State->Decoder.Push(Bytes);
@@ -431,47 +450,95 @@ QUIC_STATUS QUIC_API PairingStreamCallback(
     }
 }
 
+void RejectPendingCertificateValidation(const ConnectionHolder& State,
+                                        std::string_view Failure) noexcept {
+    HQUIC Connection{};
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::Pending) return;
+        State->PeerValidation = PeerValidationState::Rejected;
+        State->PresentedPin.reset();
+        State->TrustedPeer.reset();
+        Connection = State->Connection;
+    }
+    if (Connection) {
+        (void)State->Owner->Api->ConnectionCertificateValidationComplete(
+            Connection, FALSE, QUIC_TLS_ALERT_CODE_BAD_CERTIFICATE);
+    }
+    ReportFailure(State->Owner, Failure);
+    ShutdownConnection(State, kPairingRejectedError);
+}
+
 void CompleteCertificateValidation(const ConnectionHolder& State,
-                                   ByteBuffer CertificateDer,
-                                   bool TimeValid) {
+                                   ByteBuffer CertificateDer) noexcept {
     bool Accepted = false;
     std::optional<Sha256Digest> PresentedPin;
     std::optional<TransportPeerInfo> TrustedPeer;
-    if (TimeValid && !CertificateDer.empty()) {
-        if (State->Purpose == ConnectionPurpose::Pairing) {
-            PresentedPin = State->Owner->Crypto.HashSha256(CertificateDer);
-            Accepted = PresentedPin.has_value() && State->Owner->Pairing.IsPairingOpen();
-        } else {
-            const MachineId* Expected = State->ExpectedMachine ? &*State->ExpectedMachine : nullptr;
-            const auto Match = MatchPeerCertificate(
-                State->Owner->TrustStore, State->Owner->Crypto, CertificateDer, Expected);
-            if (Match) {
-                TrustedPeer = TransportPeerInfo{Match->Identity, true, true};
-                Accepted = true;
+    try {
+        if (InspectMsQuicPeerCertificateDer(CertificateDer) ==
+            MsQuicPeerCertificateStatus::Valid) {
+            if (State->Purpose == ConnectionPurpose::Pairing) {
+                PresentedPin = State->Owner->Crypto.HashSha256(CertificateDer);
+                Accepted = PresentedPin.has_value() && State->Owner->Pairing.IsPairingOpen();
+            } else {
+                const MachineId* Expected = State->ExpectedMachine ? &*State->ExpectedMachine : nullptr;
+                const auto Match = MatchPeerCertificate(
+                    State->Owner->TrustStore, State->Owner->Crypto, CertificateDer, Expected);
+                if (Match) {
+                    TrustedPeer = TransportPeerInfo{Match->Identity, true, true};
+                    Accepted = true;
+                }
             }
         }
+    } catch (...) {
+        RejectPendingCertificateValidation(
+            State, "peer certificate validation raised an exception");
+        return;
     }
 
     HQUIC Connection{};
     {
         std::scoped_lock Lock(State->Mutex);
-        if (!State->Closed) {
-            State->PresentedPin = PresentedPin;
-            State->TrustedPeer = TrustedPeer;
-            Connection = State->Connection;
-        }
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::Pending) return;
+        State->PeerValidation = Accepted
+            ? PeerValidationState::Completing
+            : PeerValidationState::Rejected;
+        Connection = State->Connection;
     }
     if (!Connection || QUIC_FAILED(State->Owner->Api->ConnectionCertificateValidationComplete(
             Connection, Accepted ? TRUE : FALSE,
             Accepted ? QUIC_TLS_ALERT_CODE_SUCCESS : QUIC_TLS_ALERT_CODE_BAD_CERTIFICATE))) {
+        {
+            std::scoped_lock Lock(State->Mutex);
+            State->PeerValidation = PeerValidationState::Rejected;
+            State->PresentedPin.reset();
+            State->TrustedPeer.reset();
+        }
         ShutdownConnection(State, kPairingRejectedError);
+        return;
     }
+    if (!Accepted) {
+        ReportFailure(State->Owner, "peer certificate validation was rejected");
+        ShutdownConnection(State, kPairingRejectedError);
+        return;
+    }
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::Completing) return;
+        State->PresentedPin = PresentedPin;
+        State->TrustedPeer = std::move(TrustedPeer);
+        State->PeerValidation = PeerValidationState::PeerValidated;
+    }
+    HandleValidatedConnection(State);
 }
 
-void HandleCertificateEvent(const ConnectionHolder& State,
-                            const QUIC_CONNECTION_EVENT& Event) {
+bool HandleCertificateEvent(const ConnectionHolder& State,
+                            const QUIC_CONNECTION_EVENT& Event) noexcept {
     ByteBuffer CertificateDer;
-    bool TimeValid = false;
+    try {
     if (State->Owner->Runtime->Backend() == TlsBackend::OpenSsl) {
         const auto* PortableCertificate = reinterpret_cast<const QUIC_BUFFER*>(
             Event.PEER_CERTIFICATE_RECEIVED.Certificate);
@@ -481,15 +548,6 @@ void HandleCertificateEvent(const ConnectionHolder& State,
             CertificateDer.assign(
                 PortableCertificate->Buffer,
                 PortableCertificate->Buffer + PortableCertificate->Length);
-            const auto Certificate = CertCreateCertificateContext(
-                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                CertificateDer.data(),
-                static_cast<DWORD>(CertificateDer.size()));
-            if (Certificate) {
-                TimeValid =
-                    CertVerifyTimeValidity(nullptr, Certificate->pCertInfo) == 0;
-                CertFreeCertificateContext(Certificate);
-            }
         }
     } else {
         const auto* Certificate = reinterpret_cast<const CERT_CONTEXT*>(
@@ -500,17 +558,34 @@ void HandleCertificateEvent(const ConnectionHolder& State,
             CertificateDer.assign(
                 Certificate->pbCertEncoded,
                 Certificate->pbCertEncoded + Certificate->cbCertEncoded);
-            TimeValid =
-                CertVerifyTimeValidity(nullptr, Certificate->pCertInfo) == 0;
         }
     }
+    } catch (...) {
+        std::scoped_lock Lock(State->Mutex);
+        State->PeerValidation = PeerValidationState::Rejected;
+        return false;
+    }
     try {
-        std::thread([State, CertificateDer = std::move(CertificateDer), TimeValid]() mutable {
-            CompleteCertificateValidation(State, std::move(CertificateDer), TimeValid);
+        std::thread([State] {
+            std::this_thread::sleep_for(kPeerValidationTimeout);
+            RejectPendingCertificateValidation(
+                State, "peer certificate validation timed out");
         }).detach();
     } catch (...) {
-        ShutdownConnection(State, kPairingRejectedError);
+        std::scoped_lock Lock(State->Mutex);
+        State->PeerValidation = PeerValidationState::Rejected;
+        return false;
     }
+    try {
+        std::thread([State, CertificateDer = std::move(CertificateDer)]() mutable {
+            CompleteCertificateValidation(State, std::move(CertificateDer));
+        }).detach();
+    } catch (...) {
+        std::scoped_lock Lock(State->Mutex);
+        State->PeerValidation = PeerValidationState::Rejected;
+        return false;
+    }
+    return true;
 }
 
 std::uint64_t ReadSessionNonce(ByteSpan Bytes) noexcept {
@@ -539,7 +614,9 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State,
     bool MissingPeer = false;
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->EndpointDelivered || !State->Connection ||
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->EndpointDelivered || !State->Connection ||
             !State->TrustedPeer || !Stream || SessionNonce == 0) {
             MissingPeer = true;
         } else {
@@ -555,6 +632,7 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State,
     }
     auto Endpoint = MsQuicTransportEndpoint::Adopt(
         State->Owner->Api, Connection, Stream, std::move(Peer),
+        MsQuicPeerValidation::PeerValidated,
         std::move(InitialReliableBytes));
     if (!Endpoint) {
         ShutdownConnection(State);
@@ -595,7 +673,9 @@ bool OpenSessionStream(const ConnectionHolder& State) {
     HQUIC Connection{};
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->SessionStream) return false;
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->SessionStream) return false;
         Connection = State->Connection;
     }
 
@@ -645,7 +725,9 @@ void HandleSessionBytes(const ConnectionHolder& State, ByteSpan Bytes) {
     ByteBuffer InitialReliableBytes;
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->EndpointDelivered ||
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::PeerValidated ||
+            State->EndpointDelivered ||
             Bytes.size() > kMaximumSessionBuffered ||
             State->SessionBuffer.size() > kMaximumSessionBuffered - Bytes.size()) {
             Invalid = !State->Closed && !State->EndpointDelivered;
@@ -736,6 +818,34 @@ QUIC_STATUS QUIC_API SessionStreamCallback(
     }
 }
 
+void HandleValidatedConnection(const ConnectionHolder& State) {
+    bool Outgoing = false;
+    ConnectionPurpose Purpose = ConnectionPurpose::Trusted;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || !State->ConnectedObserved || State->AdmissionStarted ||
+            State->PeerValidation != PeerValidationState::PeerValidated) {
+            return;
+        }
+        State->AdmissionStarted = true;
+        Outgoing = State->Outgoing;
+        Purpose = State->Purpose;
+    }
+    if (!Outgoing) return;
+
+    const auto Opened = Purpose == ConnectionPurpose::Trusted
+        ? OpenSessionStream(State)
+        : OpenPairingStream(State);
+    if (Opened) return;
+
+    if (Purpose == ConnectionPurpose::Trusted) {
+        ReportFailure(State->Owner, "failed to negotiate a fresh session nonce");
+    } else {
+        ReportFailure(State->Owner, "failed to open a validated pairing stream");
+    }
+    ShutdownConnection(State);
+}
+
 QUIC_STATUS QUIC_API BootstrapConnectionCallback(
     HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event) {
     const auto State = HoldConnection(Context);
@@ -744,28 +854,54 @@ QUIC_STATUS QUIC_API BootstrapConnectionCallback(
     case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED:
         {
             std::scoped_lock Lock(State->Mutex);
-            if (State->ValidationStarted) return QUIC_STATUS_BAD_CERTIFICATE;
-            State->ValidationStarted = true;
+            if (State->PeerValidation != PeerValidationState::NotStarted) {
+                return QUIC_STATUS_BAD_CERTIFICATE;
+            }
+            State->PeerValidation = PeerValidationState::Pending;
         }
-        HandleCertificateEvent(State, *Event);
+        if (!HandleCertificateEvent(State, *Event)) {
+            ShutdownConnection(State, kPairingRejectedError);
+            return QUIC_STATUS_BAD_CERTIFICATE;
+        }
         return QUIC_STATUS_PENDING;
     case QUIC_CONNECTION_EVENT_CONNECTED:
-        if (State->Purpose == ConnectionPurpose::Trusted) {
-            if (State->Outgoing && !OpenSessionStream(State)) {
-                ReportFailure(State->Owner, "failed to negotiate a fresh session nonce");
-                ShutdownConnection(State);
+        {
+            bool Reject = false;
+            {
+                std::scoped_lock Lock(State->Mutex);
+                State->ConnectedObserved = true;
+                Reject = State->PeerValidation == PeerValidationState::NotStarted ||
+                         State->PeerValidation == PeerValidationState::Rejected;
             }
-        } else if (State->Outgoing && !OpenPairingStream(State)) {
-            ShutdownConnection(State);
+            if (Reject) {
+                ReportFailure(State->Owner,
+                              "connection reached CONNECTED before peer validation");
+                ShutdownConnection(State, kPairingRejectedError);
+                return QUIC_STATUS_BAD_CERTIFICATE;
+            }
         }
+        HandleValidatedConnection(State);
+        return QUIC_STATUS_SUCCESS;
+    case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
+        ReportFailure(State->Owner,
+                      "application datagram arrived before session admission");
+        ShutdownConnection(State, kPairingRejectedError);
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         {
             bool Accept = false;
+            bool ValidationFailed = false;
+            bool EarlyData = false;
             {
                 std::scoped_lock Lock(State->Mutex);
-                if (!State->Closed && !State->Outgoing &&
-                    (Event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_0_RTT) == 0) {
+                EarlyData =
+                    (Event->PEER_STREAM_STARTED.Flags &
+                     QUIC_STREAM_OPEN_FLAG_0_RTT) != 0;
+                ValidationFailed = State->PeerValidation !=
+                                       PeerValidationState::PeerValidated ||
+                                   !State->ConnectedObserved;
+                if (!State->Closed && !ValidationFailed && !State->Outgoing &&
+                    !EarlyData) {
                     if (State->Purpose == ConnectionPurpose::Pairing &&
                         !State->PairingStream) {
                         State->PairingStream = Event->PEER_STREAM_STARTED.Stream;
@@ -779,6 +915,13 @@ QUIC_STATUS QUIC_API BootstrapConnectionCallback(
             }
             if (!Accept) {
                 RejectStream(State, Event->PEER_STREAM_STARTED.Stream);
+                if (ValidationFailed || EarlyData) {
+                    ReportFailure(State->Owner,
+                                  EarlyData
+                                      ? "0-RTT peer stream was rejected"
+                                      : "peer stream arrived before peer validation");
+                    ShutdownConnection(State, kPairingRejectedError);
+                }
                 return QUIC_STATUS_SUCCESS;
             }
             if (State->Purpose == ConnectionPurpose::Pairing) {
@@ -1042,6 +1185,26 @@ bool Connect(const std::shared_ptr<MsQuicBootstrap::State>& State,
 }
 
 } // namespace
+
+MsQuicPeerCertificateStatus InspectMsQuicPeerCertificateDer(
+    ByteSpan CertificateDer) noexcept {
+    if (CertificateDer.empty()) {
+        return MsQuicPeerCertificateStatus::Missing;
+    }
+    if (CertificateDer.size() > kMaximumCertificateSize ||
+        CertificateDer.size() > std::numeric_limits<DWORD>::max()) {
+        return MsQuicPeerCertificateStatus::Malformed;
+    }
+    const auto Certificate = CertCreateCertificateContext(
+        X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+        CertificateDer.data(), static_cast<DWORD>(CertificateDer.size()));
+    if (!Certificate) return MsQuicPeerCertificateStatus::Malformed;
+    const auto TimeStatus = CertVerifyTimeValidity(nullptr, Certificate->pCertInfo);
+    CertFreeCertificateContext(Certificate);
+    if (TimeStatus < 0) return MsQuicPeerCertificateStatus::NotYetValid;
+    if (TimeStatus > 0) return MsQuicPeerCertificateStatus::Expired;
+    return MsQuicPeerCertificateStatus::Valid;
+}
 
 MsQuicPairingSession::MsQuicPairingSession(std::shared_ptr<State> SharedState)
     : State_(std::move(SharedState)) {}

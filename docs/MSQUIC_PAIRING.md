@@ -134,8 +134,12 @@ explicit OpenSSL requests therefore fail closed as unavailable.
 
 On OpenSSL, MsQuic's portable-certificate flag supplies the bounded leaf DER to
 the same DeskLink time and SHA-256 pin validator used by Schannel. The prototype
-does not treat an OpenSSL `X509*` as a Windows certificate context and does not
-admit a stream or session before deferred validation completes.
+does not treat an OpenSSL `X509*` as a Windows certificate context. Deferred
+validation has an explicit four-second watchdog and a `PeerValidated` state;
+CONNECTED effects, streams, datagrams, pairing/session delivery, focus traffic,
+and endpoint handlers remain unavailable until successful completion returns.
+Exceptions, stalls, early data, and every certificate rejection close the
+connection without provider fallback.
 
 ## Production platform decision
 
@@ -143,8 +147,9 @@ Stock Schannel plus the existing non-exportable CNG device identity is the only
 production transport/security architecture on Windows 11/Server 2022+. The
 approved Windows 10 R&D direction uses MsQuic 2.6.x, OpenSSL 3.5 LTS, and an
 explicit opaque CNG provider that delegates signing without exporting the key.
-It must prove fail-closed peer validation before `CONNECTED`, stream acceptance,
-and session admission. Windows 10 remains unsupported until all gates pass. See
+It has proved the Stage 3 fail-closed peer-validation and application-admission
+matrix. Identity invariance and physical validation still remain, so Windows 10
+is unsupported until all gates pass. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## Remaining physical integration

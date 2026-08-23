@@ -304,11 +304,15 @@ policy and certificate/key mismatch, exposes only public RSA parameters, and
 delegates RSA-PSS signing to `NCryptSignHash`. It retains its private OpenSSL
 library context for the MsQuic runtime's process lifetime so worker-thread DRBG
 cleanup never observes a freed context. Each stage requires its own clean
-review and gates. The provider must never export private key material, and
-rejection, timeout, exception,
-missing-certificate, malformed-DER, and wrong-pin cases must remain fail-closed
-before `CONNECTED`, stream acceptance, or DeskLink session admission. Windows
-10 remains unsupported until every security and physical gate passes. See
+review and gates. Stage 3 implements an explicit `PeerValidated` admission state
+and a bounded validation watchdog. CONNECTED notification alone grants no
+application access; streams, datagrams, pairing/session delivery, focus, and
+endpoint traffic all require completed peer validation. Rejection, timeout,
+exception, missing-certificate, malformed-DER, invalid-time, signing-failure,
+unknown-peer, wrong-pin, and changed-identity cases are regression-tested as
+fail-closed with no admitted application session. The provider must never
+export private key material. Windows 10 remains unsupported until identity
+invariance and every physical gate also pass. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---
@@ -328,6 +332,12 @@ The following must remain regression-tested:
 9. reliable input cannot be accepted from datagram lane
 10. older/duplicate pointer datagrams are rejected within an epoch
 11. stale FocusReady transaction IDs cannot acquire authority
+12. no CONNECTED effect, stream, datagram, pairing, focus, or session admission
+    before `PeerValidated`
+13. validator failure, exception, or timeout rejects the connection
+14. missing, malformed, expired, not-yet-valid, unknown, wrong-pin, signing, and
+    changed-identity cases admit no application session
+15. 0-RTT application streams and datagrams are rejected
 12. pointer/audio datagram semantics do not require retransmission
 13. certificate rejection cannot reach `CONNECTED` or session admission
 14. the device key remains non-exportable and identity pin remains unchanged

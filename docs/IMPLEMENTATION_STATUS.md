@@ -39,6 +39,7 @@ The current build proves the core invariants independently of Windows networking
 | Production platform baseline | Done | Windows 11/Server 2022+ with stock Schannel; Windows 10 unsupported |
 | MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, fail-closed unavailable provider |
 | Windows 10 opaque CNG prototype | R&D Stage 2 | Explicit built-in OpenSSL 3.5 provider; exportable and mismatched credentials rejected; not production-admitted |
+| Fail-closed peer admission | R&D Stage 3 | `PeerValidated` gates CONNECTED effects, streams, datagrams, pairing/session delivery, and endpoint traffic; four-second watchdog |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
 | Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
@@ -87,6 +88,9 @@ The current test suite verifies:
 27. OpenSSL/CNG pairing, trusted reconnect, nonce rotation, and reliable traffic
 28. exportable CNG credential and certificate/key mismatch rejection
 29. pinned OpenSSL MsQuic, libcrypto, and libssl tamper rejection
+30. missing, malformed, expired, and not-yet-valid certificate-DER rejection
+31. wrong pin, unknown peer, validator failure/exception/timeout, and changed-identity rejection with zero application sessions
+32. deterministic CNG RSA-PSS signing failure and OpenSSL credential rejection
 
 Build/test result in the creation environment:
 
@@ -185,5 +189,6 @@ tracks MsQuic 2.6.x, OpenSSL 3.5 LTS, and an opaque CNG provider integration as
 separately reviewable stages. The production architecture remains stock
 MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 11/Server 2022 or newer until every security and physical acceptance criterion
-in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 and 2 are
-implemented; fail-closed validation and admission testing is the next gate.
+in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 3 are
+implemented; identity invariance and private-key-export build checks are the
+next gate.
