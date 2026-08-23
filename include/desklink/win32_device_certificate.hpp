@@ -14,8 +14,23 @@
 
 namespace desklink {
 
+struct Win32DeviceIdentitySnapshot {
+    std::wstring KeyName;
+    std::wstring Provider;
+    std::wstring Algorithm;
+    DWORD ExportPolicy{};
+    ByteBuffer PublicKeyDer;
+    Sha256Digest CertificateDerHash{};
+    Sha256Digest DeskLinkIdentityPin{};
+
+    bool operator==(const Win32DeviceIdentitySnapshot&) const = default;
+};
+
 class Win32DeviceCertificate final {
 public:
+    static std::optional<Win32DeviceCertificate> Load(
+        std::wstring KeyName,
+        const IPairingCrypto& Crypto);
     static std::optional<Win32DeviceCertificate> LoadOrCreate(
         std::wstring KeyName,
         const IPairingCrypto& Crypto);
@@ -31,6 +46,8 @@ public:
     [[nodiscard]] ByteSpan Der() const noexcept;
     [[nodiscard]] const Sha256Digest& CertificatePin() const noexcept;
     [[nodiscard]] std::wstring_view KeyName() const noexcept;
+    [[nodiscard]] std::optional<Win32DeviceIdentitySnapshot> IdentitySnapshot(
+        const IPairingCrypto& Crypto) const;
 
 private:
     Win32DeviceCertificate(PCCERT_CONTEXT Context,

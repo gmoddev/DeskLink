@@ -34,6 +34,7 @@ constexpr std::chrono::seconds kPairingWindow{300};
 constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
 
 enum class Operation {
+    Identity,
     PairListen,
     PairConnect,
     Serve,
@@ -109,6 +110,7 @@ std::optional<std::uint16_t> ParsePort(std::wstring_view Value) {
 void PrintUsage() {
     std::wcerr
         << L"Usage:\n"
+        << L"  desklink_pair identity\n"
         << L"  desklink_pair listen [port] [--grant-input]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input]\n"
         << L"  desklink_pair serve [port]\n"
@@ -123,7 +125,10 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     CommandLine Result;
     int Index = 2;
     const std::wstring_view Command(Arguments[1]);
-    if (Command == L"listen") {
+    if (Command == L"identity") {
+        Result.Mode = Operation::Identity;
+        if (ArgumentCount != 2) return std::nullopt;
+    } else if (Command == L"listen") {
         Result.Mode = Operation::PairListen;
     } else if (Command == L"pair") {
         Result.Mode = Operation::PairConnect;
@@ -217,6 +222,44 @@ std::optional<std::filesystem::path> GetDataDirectory() {
     std::filesystem::create_directories(Result, Error);
     if (Error) return std::nullopt;
     return Result;
+}
+
+std::string FormatHex(desklink::ByteSpan Bytes) {
+    constexpr char Digits[] = "0123456789abcdef";
+    std::string Result(Bytes.size() * 2, '0');
+    for (std::size_t Index = 0; Index < Bytes.size(); ++Index) {
+        Result[Index * 2] = Digits[Bytes[Index] >> 4];
+        Result[Index * 2 + 1] = Digits[Bytes[Index] & 0x0fu];
+    }
+    return Result;
+}
+
+int PrintIdentitySnapshot(const desklink::Win32DeviceCertificate& Certificate,
+                          const desklink::IPairingCrypto& Crypto) {
+    const auto Snapshot = Certificate.IdentitySnapshot(Crypto);
+    if (!Snapshot) {
+        std::cerr << "[Identity:Snapshot] could not read the CNG identity metadata\n";
+        return 1;
+    }
+    const auto KeyName = ToUtf8(Snapshot->KeyName);
+    const auto Provider = ToUtf8(Snapshot->Provider);
+    const auto Algorithm = ToUtf8(Snapshot->Algorithm);
+    if (!KeyName || !Provider || !Algorithm) {
+        std::cerr << "[Identity:Snapshot] identity metadata is not valid UTF-8\n";
+        return 1;
+    }
+    std::cout
+        << "[Identity:Snapshot] key_name=" << *KeyName << '\n'
+        << "[Identity:Snapshot] provider=" << *Provider << '\n'
+        << "[Identity:Snapshot] algorithm=" << *Algorithm << '\n'
+        << "[Identity:Snapshot] export_policy=" << Snapshot->ExportPolicy << '\n'
+        << "[Identity:Snapshot] public_key_der="
+        << FormatHex(Snapshot->PublicKeyDer) << '\n'
+        << "[Identity:Snapshot] certificate_der_sha256="
+        << desklink::FormatFingerprint(Snapshot->CertificateDerHash) << '\n'
+        << "[Identity:Snapshot] desklink_identity_pin="
+        << desklink::FormatFingerprint(Snapshot->DeskLinkIdentityPin) << '\n';
+    return Snapshot->ExportPolicy == 0 ? 0 : 1;
 }
 
 std::optional<std::string> GetDisplayName() {
@@ -619,18 +662,24 @@ int RunTrusted(const CommandLine& Command,
 }
 
 int Run(const CommandLine& Command) {
+    desklink::BCryptPairingCrypto Crypto;
+    auto Certificate = Command.Mode == Operation::Identity
+        ? desklink::Win32DeviceCertificate::Load(kDeviceKeyName, Crypto)
+        : desklink::Win32DeviceCertificate::LoadOrCreate(kDeviceKeyName, Crypto);
+    if (!Certificate) {
+        std::cerr << (Command.Mode == Operation::Identity
+            ? "[Identity:Snapshot] existing device identity was not found\n"
+            : "[Pairing:Control] could not load or create the device identity\n");
+        return 1;
+    }
+    if (Command.Mode == Operation::Identity) {
+        return PrintIdentitySnapshot(*Certificate, Crypto);
+    }
+
     const auto DataDirectory = GetDataDirectory();
     const auto DisplayName = GetDisplayName();
     if (!DataDirectory || !DisplayName) {
         std::cerr << "[Pairing:Control] could not initialize current-user data paths\n";
-        return 1;
-    }
-
-    desklink::BCryptPairingCrypto Crypto;
-    auto Certificate = desklink::Win32DeviceCertificate::LoadOrCreate(
-        kDeviceKeyName, Crypto);
-    if (!Certificate) {
-        std::cerr << "[Pairing:Control] could not load or create the device identity\n";
         return 1;
     }
 

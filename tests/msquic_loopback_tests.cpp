@@ -324,6 +324,18 @@ void RunLoopback(const std::wstring& FirstKeyName,
     auto SecondCertificate = Win32DeviceCertificate::LoadOrCreate(SecondKeyName, Crypto);
     CHECK(FirstCertificate.has_value());
     CHECK(SecondCertificate.has_value());
+    const auto FirstBefore = FirstCertificate->IdentitySnapshot(Crypto);
+    const auto SecondBefore = SecondCertificate->IdentitySnapshot(Crypto);
+    CHECK(FirstBefore.has_value());
+    CHECK(SecondBefore.has_value());
+    CHECK(FirstBefore->Provider == MS_KEY_STORAGE_PROVIDER);
+    CHECK(SecondBefore->Provider == MS_KEY_STORAGE_PROVIDER);
+    CHECK(FirstBefore->Algorithm == NCRYPT_RSA_ALGORITHM);
+    CHECK(SecondBefore->Algorithm == NCRYPT_RSA_ALGORITHM);
+    CHECK(FirstBefore->ExportPolicy == 0);
+    CHECK(SecondBefore->ExportPolicy == 0);
+    CHECK(!FirstBefore->PublicKeyDer.empty());
+    CHECK(!SecondBefore->PublicKeyDer.empty());
 
     PeerIdentity FirstIdentity{
         MakeMachineId(1), "Loopback server",
@@ -482,6 +494,20 @@ void RunLoopback(const std::wstring& FirstKeyName,
     First.reset();
     Second.reset();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    auto FirstReloaded = Win32DeviceCertificate::Load(FirstKeyName, Crypto);
+    auto SecondReloaded = Win32DeviceCertificate::Load(SecondKeyName, Crypto);
+    CHECK(FirstReloaded.has_value());
+    CHECK(SecondReloaded.has_value());
+    const auto FirstAfter = FirstReloaded->IdentitySnapshot(Crypto);
+    const auto SecondAfter = SecondReloaded->IdentitySnapshot(Crypto);
+    CHECK(FirstAfter.has_value());
+    CHECK(SecondAfter.has_value());
+    CHECK(*FirstAfter == *FirstBefore);
+    CHECK(*SecondAfter == *SecondBefore);
+    std::cout << "[Identity:Invariance] "
+              << (Backend == TlsBackend::OpenSsl ? "OpenSSL" : "Schannel")
+              << " before/after CNG identity snapshots match.\n";
 }
 
 void CheckOpenSslCredentialRejected(const std::wstring& KeyName) {

@@ -311,8 +311,11 @@ endpoint traffic all require completed peer validation. Rejection, timeout,
 exception, missing-certificate, malformed-DER, invalid-time, signing-failure,
 unknown-peer, wrong-pin, and changed-identity cases are regression-tested as
 fail-closed with no admitted application session. The provider must never
-export private key material. Windows 10 remains unsupported until identity
-invariance and every physical gate also pass. See
+export private key material. Stage 4 performs exact before/after comparison of
+the CNG key name, provider, algorithm, zero export policy, certificate public
+key, certificate DER hash, and DeskLink identity pin. It also makes prohibited
+private-key export API references a build and test failure. Windows 10 remains
+unsupported until every physical gate also passes. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ---

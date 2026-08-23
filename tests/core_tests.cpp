@@ -740,11 +740,24 @@ void WindowsCryptoAndDpapiTrustStoreWork() {
         CHECK(FirstCertificate.has_value());
         CHECK(!FirstCertificate->Der().empty());
         CHECK(FirstCertificate->CertificatePin() != Sha256Digest{});
-        auto ReloadedCertificate = Win32DeviceCertificate::LoadOrCreate(KeyName, crypto);
+        const auto Before = FirstCertificate->IdentitySnapshot(crypto);
+        CHECK(Before.has_value());
+        CHECK(Before->KeyName == KeyName);
+        CHECK(Before->Provider == MS_KEY_STORAGE_PROVIDER);
+        CHECK(Before->Algorithm == NCRYPT_RSA_ALGORITHM);
+        CHECK(Before->ExportPolicy == 0);
+        CHECK(!Before->PublicKeyDer.empty());
+        CHECK(Before->CertificateDerHash == FirstCertificate->CertificatePin());
+        CHECK(Before->DeskLinkIdentityPin == FirstCertificate->CertificatePin());
+        auto ReloadedCertificate = Win32DeviceCertificate::Load(KeyName, crypto);
         CHECK(ReloadedCertificate.has_value());
         CHECK(ReloadedCertificate->CertificatePin() == FirstCertificate->CertificatePin());
+        const auto After = ReloadedCertificate->IdentitySnapshot(crypto);
+        CHECK(After.has_value());
+        CHECK(*After == *Before);
     }
     CHECK(Win32DeviceCertificate::Remove(KeyName));
+    CHECK(!Win32DeviceCertificate::Load(KeyName, crypto));
     CHECK(!Win32DeviceCertificate::LoadOrCreate(L"invalid key name!", crypto));
 }
 #endif
