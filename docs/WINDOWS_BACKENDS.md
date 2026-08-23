@@ -153,6 +153,22 @@ system default
 
 `GAME` should release remote focus and remove/disable interception components as aggressively as practical.
 
+The implemented foundation uses an out-of-context
+`EVENT_SYSTEM_FOREGROUND` WinEvent hook rather than polling. The registration
+thread owns a message loop and also performs `UnhookWinEvent`, matching the
+Win32 thread-affinity requirement. Each observation contains only a bounded
+UTF-8 executable basename, an opaque window identifier, an inspectability bit,
+and monitor-relative fullscreen state. Process access is limited to
+`PROCESS_QUERY_LIMITED_INFORMATION`; DeskLink does not inject or load code into
+the foreground process.
+
+`ForegroundProfileEngine` accepts at most 32 exact basename rules. ASCII case
+is normalized, path separators/control characters and duplicate matches are
+rejected, and rules may require fullscreen. If configured rules cannot inspect
+the current foreground, the engine selects fail-local `LockPc1`. Production
+Host application and GAME capture teardown/recreation are intentionally the
+next separate integration stage.
+
 ---
 
 ## 5. Monitor mapping

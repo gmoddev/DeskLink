@@ -32,6 +32,8 @@ The current build proves the core invariants independently of Windows networking
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode` |
 | LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
+| Foreground profile foundation | Done | At most 32 exact executable-name rules; optional fullscreen match; emergency/manual/profile/default precedence; uninspectable configured foreground fails local |
+| Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
@@ -108,6 +110,8 @@ The current test suite verifies:
 41. local desired-mode precedence over a remote attempt to weaken `Game`/`LockPc1`
 42. strict discovery TXT round trip, required/canonical fields, malformed and oversized rejection
 43. deterministic multi-interface discovery grouping, conflict marking, removal, and expiry
+44. bounded foreground rules, case normalization, fullscreen matching, duplicate rejection, and precedence
+45. native Windows foreground-hook startup, initial bounded snapshot delivery, and same-thread teardown
 
 Build/test result in the creation environment:
 
@@ -129,8 +133,8 @@ Build/test result in the creation environment:
 - physical emergency-chord and high-poll-rate timing validation
 - edge graph
 - edge hysteresis
-- foreground profile engine
 - GAME capture teardown/reinstall lifecycle
+- production CLI/profile configuration and effective-mode integration
 
 ### P1 — required for useful audio
 
@@ -194,9 +198,10 @@ Do **not** add edge roaming until this manual focus switch survives failure inje
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
 available. Bounded mouse-wheel transport, current-user IPC, and link-local
-discovery are complete. The next independent milestone is the foreground
-profile engine and GAME capture lifecycle; edge roaming remains gated on the
-deferred physical matrix.
+discovery are complete. The bounded foreground policy engine and native WinEvent
+monitor foundation are complete. The next independent milestone is production
+mode integration and the GAME capture teardown/reinstall lifecycle; edge roaming
+remains gated on the deferred physical matrix.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

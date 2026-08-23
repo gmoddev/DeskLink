@@ -42,6 +42,7 @@ add_library(desklink_core
     src/control.cpp
     src/discovery.cpp
     src/display_topology.cpp
+    src/profile.cpp
     src/protocol.cpp
     src/input.cpp
     src/focus.cpp
@@ -238,6 +239,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_control.cpp
         src/win32_display_topology.cpp
         src/win32_discovery.cpp
+        src/win32_foreground.cpp
         src/win32_input.cpp
         src/win32_capture.cpp
         src/win32_pairing.cpp

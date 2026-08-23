@@ -245,6 +245,27 @@ Examples:
 
 `InputFocusStateMachine::emergency_fail_local()` makes this explicit in the core.
 
+The foreground policy layer is deterministic and bounded independently of the
+Windows event source. It accepts at most 32 exact executable basenames, may
+require a fullscreen match, and applies this precedence:
+
+```text
+emergency fail-local
+manual override
+profile rule
+system default
+```
+
+When rules are configured but the current foreground process cannot be
+inspected, the decision is `LOCK_PC1`; missing metadata never silently matches
+or weakens a rule. The Windows adapter observes `EVENT_SYSTEM_FOREGROUND` with
+an out-of-context WinEvent hook on an owned message-loop thread. It requests
+only `PROCESS_QUERY_LIMITED_INFORMATION`, extracts a bounded executable
+basename, compares window bounds with the containing monitor for fullscreen
+state, and never loads target-process code. The policy and observer are now
+implemented; applying decisions to capture teardown/recreation is the next
+runtime stage.
+
 ---
 
 ## 7. Pointer semantics

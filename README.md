@@ -47,6 +47,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
 - Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
+- Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -59,7 +60,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend
 - Clock-drift resampling
-- Profile/foreground-window engine
+- Profile-driven runtime mode application and GAME capture teardown/reinstall
 - UI and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.

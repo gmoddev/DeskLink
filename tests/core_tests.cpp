@@ -8,6 +8,7 @@
 #include "desklink/input.hpp"
 #include "desklink/pairing.hpp"
 #include "desklink/pairing_wire.hpp"
+#include "desklink/profile.hpp"
 #include "desklink/protocol.hpp"
 #include "desklink/session.hpp"
 #include "desklink/transport.hpp"
@@ -17,6 +18,7 @@
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_display_topology.hpp"
+#include "desklink/win32_foreground.hpp"
 #include "desklink/win32_pairing.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -27,10 +29,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -998,7 +1002,109 @@ void CertificatePinsMatchOnlyTheStoredPeer() {
     CHECK(!trust.SavePeer(TrustedPeer{duplicate_identity, CapabilitySet{}}));
 }
 
+void ForegroundProfilePolicyIsBoundedAndDeterministic() {
+    using namespace desklink;
+
+    ForegroundProfileEngine Engine;
+    CHECK(Engine.SetRules({
+        ForegroundProfileRule{"game.exe", DeskMode::Game, true},
+        ForegroundProfileRule{"editor.exe", DeskMode::LockPc1, false},
+    }));
+
+    auto Decision = Engine.Decision();
+    CHECK(Decision.Mode == DeskMode::LockPc1);
+    CHECK(Decision.Source == ProfileModeSource::ForegroundUnavailable);
+
+    Engine.SetForeground(ForegroundWindowSnapshot{
+        10, "browser.exe", false, true});
+    Decision = Engine.Decision();
+    CHECK(Decision.Mode == DeskMode::Roam);
+    CHECK(Decision.Source == ProfileModeSource::SystemDefault);
+
+    Engine.SetForeground(ForegroundWindowSnapshot{
+        11, "GAME.EXE", false, true});
+    CHECK(Engine.Decision().Mode == DeskMode::Roam);
+
+    Engine.SetForeground(ForegroundWindowSnapshot{
+        11, "GAME.EXE", true, true});
+    Decision = Engine.Decision();
+    CHECK(Decision.Mode == DeskMode::Game);
+    CHECK(Decision.Source == ProfileModeSource::ProfileRule);
+    CHECK(Decision.RuleIndex == 0);
+
+    CHECK(Engine.SetManualOverride(DeskMode::Roam));
+    Decision = Engine.Decision();
+    CHECK(Decision.Mode == DeskMode::Roam);
+    CHECK(Decision.Source == ProfileModeSource::ManualOverride);
+
+    Engine.EmergencyFailLocal();
+    Decision = Engine.Decision();
+    CHECK(Decision.Mode == DeskMode::LockPc1);
+    CHECK(Decision.Source == ProfileModeSource::Emergency);
+    Engine.ClearEmergency();
+    CHECK(Engine.Decision().Source == ProfileModeSource::ManualOverride);
+    Engine.ClearManualOverride();
+    CHECK(Engine.Decision().Mode == DeskMode::Game);
+
+    Engine.SetForeground(ForegroundWindowSnapshot{
+        12, "", true, true});
+    CHECK(Engine.Decision().Source ==
+          ProfileModeSource::ForegroundUnavailable);
+
+    CHECK(!Engine.SetRules({
+        ForegroundProfileRule{"bad/path.exe", DeskMode::Game, false}}));
+    CHECK(!Engine.SetRules({
+        ForegroundProfileRule{"duplicate.exe", DeskMode::Game, false},
+        ForegroundProfileRule{"DUPLICATE.EXE", DeskMode::Roam, false}}));
+
+    std::vector<ForegroundProfileRule> TooManyRules;
+    for (std::size_t Index = 0;
+         Index <= kMaximumForegroundProfileRules; ++Index) {
+        TooManyRules.push_back(ForegroundProfileRule{
+            "game" + std::to_string(Index) + ".exe",
+            DeskMode::Game, false});
+    }
+    CHECK(!Engine.SetRules(std::move(TooManyRules)));
+}
+
 #ifdef _WIN32
+void WindowsForegroundMonitorPublishesBoundedSnapshot() {
+    using namespace desklink;
+
+    std::mutex Mutex;
+    std::condition_variable Changed;
+    std::size_t CallbackCount{};
+    bool Failed{};
+    Win32ForegroundMonitor Monitor({
+        [&](ForegroundWindowSnapshot Snapshot) {
+            CHECK(IsValidForegroundWindowSnapshot(Snapshot));
+            {
+                std::scoped_lock Lock(Mutex);
+                ++CallbackCount;
+            }
+            Changed.notify_all();
+        },
+        [&](std::string) {
+            {
+                std::scoped_lock Lock(Mutex);
+                Failed = true;
+            }
+            Changed.notify_all();
+        }});
+    CHECK(Monitor.Start());
+    {
+        std::unique_lock Lock(Mutex);
+        CHECK(Changed.wait_for(Lock, std::chrono::seconds(2), [&] {
+            return CallbackCount != 0 || Failed;
+        }));
+        CHECK(!Failed);
+        CHECK(CallbackCount != 0);
+    }
+    Monitor.Stop();
+    CHECK(Monitor.Start());
+    Monitor.Stop();
+}
+
 void WindowsCurrentUserControlPipeRoundTrip() {
     using namespace desklink;
 
@@ -1339,6 +1445,7 @@ void in_memory_transport_preserves_security_metadata() {
 } // namespace
 
 int main() {
+    ForegroundProfilePolicyIsBoundedAndDeterministic();
     DiscoveryPropertiesAreStrictAndRoundTrip();
     DiscoveryCacheExpiresAndFlagsConflicts();
     protocol_round_trip();
@@ -1366,6 +1473,7 @@ int main() {
     AttemptRateLimiterIsBoundedAndExpires();
     CertificatePinsMatchOnlyTheStoredPeer();
 #ifdef _WIN32
+    WindowsForegroundMonitorPublishesBoundedSnapshot();
     WindowsCurrentUserControlPipeRoundTrip();
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
