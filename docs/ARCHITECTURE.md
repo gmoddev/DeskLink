@@ -44,8 +44,9 @@ Owns mechanisms shared by all modules:
 - health/statistics interfaces
 
 The portable core contains neither hooks nor WASAPI details. The optional
-`desklink_windows` adapter contains Raw Input, minimal low-level suppression
-hooks, and `SendInput`; WASAPI remains unimplemented.
+`desklink_windows` adapter contains low-level physical keyboard capture,
+Raw Input mouse capture, fail-local suppression hooks, and `SendInput`; WASAPI
+remains unimplemented.
 
 ### DeskLink.Host
 

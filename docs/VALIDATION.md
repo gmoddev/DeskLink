@@ -189,9 +189,9 @@ Repeat using Enter as the normal release path.
 
 ## Limitations of this validation
 
-This validation does not prove:
+This validation does not yet prove:
 
-- Raw Input/high-poll-rate hook timing across physical Windows 11 PCs
+- sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
 - physical input-state snapshot recovery after an interrupted key/button transition

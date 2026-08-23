@@ -159,9 +159,10 @@ approved Windows 10 R&D direction uses MsQuic 2.6.x, OpenSSL 3.5 LTS, and an
 explicit opaque CNG provider that delegates signing without exporting the key.
 It has proved the Stage 3 fail-closed peer-validation and application-admission
 matrix plus Stage 4 identity invariance. Mixed-provider manual pairing, trusted
-reconnect, fresh nonce rotation, and focus without capture have passed on the
-guarded physical pair. Raw Input and physical failure validation remain, so
-Windows 10 is unsupported until all gates pass. See
+reconnect, fresh nonce rotation, focus without capture, physical
+keyboard/button/pointer forwarding, and interactive `SendInput` observation
+have passed on the guarded physical pair. The complete physical failure matrix
+remains, so Windows 10 is unsupported until all gates pass. See
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
 ## Remaining physical integration

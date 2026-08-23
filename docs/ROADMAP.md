@@ -6,7 +6,8 @@
 - persistent non-exportable CNG identity and DPAPI trust store
 - mutually pinned MsQuic/Schannel pairing and operational sessions
 - integrity-checked runtime-selection foundation from PR #9 / `10147fe`
-- opt-in Raw Input capture, fail-local suppression, and `SendInput` injection
+- opt-in low-level keyboard/Raw Input mouse capture, fail-local suppression,
+  and `SendInput` injection
 - periodic reliable input-state reconciliation with owned-state convergence
 
 ## Current roadmap
@@ -49,9 +50,10 @@ independent gates:
 4. **Complete:** prove device-identity invariance and absence of private-key export paths
 5. **In progress:** guarded Windows 11 Schannel to Windows 10 OpenSSL physical
    validation. Manual mutual-confirmation pairing, trusted reconnect, fresh
-   nonce rotation, and focus without capture pass. Physical Raw Input,
-   reconciliation, emergency release, held-input termination, safe network
-   interruption, and stale epoch/session rejection remain.
+   nonce rotation, focus without capture, physical keyboard/button/pointer
+   forwarding, and interactive `SendInput` observation pass. Complete snapshot
+   reconciliation, held-input termination, safe network interruption, and stale
+   epoch/session rejection remain.
 
 No later stage begins before the preceding stage passes. Full constraints are
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).

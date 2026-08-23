@@ -562,6 +562,13 @@ int RunTrusted(const CommandLine& Command,
         }
         std::unique_ptr<desklink::Win32InputCapture> Capture;
         std::atomic<desklink::Win32InputCapture*> ActiveCapture{};
+        std::atomic_uint64_t KeyEventsCaptured{};
+        std::atomic_uint64_t KeyEventsForwarded{};
+        std::atomic_uint64_t ButtonEventsCaptured{};
+        std::atomic_uint64_t ButtonEventsForwarded{};
+        std::atomic_uint64_t PointerEventsCaptured{};
+        std::atomic_uint64_t PointerEventsForwarded{};
+        std::atomic_bool EmergencyTriggered{};
         std::atomic_bool StopRenewal{};
         std::thread Renewal([&, Result] {
             while (!StopRenewal.load()) {
@@ -587,9 +594,13 @@ int RunTrusted(const CommandLine& Command,
         });
         if (Command.CaptureInput) {
             desklink::Win32CaptureHandlers CaptureHandlers;
-            CaptureHandlers.Key = [ActiveHost, Result, &ActiveCapture](
+            CaptureHandlers.Key = [ActiveHost, Result, &ActiveCapture,
+                                   &KeyEventsCaptured, &KeyEventsForwarded](
                 desklink::KeyEventMessage Event) {
-                if (!ActiveHost->Session.send_key(Event)) {
+                KeyEventsCaptured.fetch_add(1, std::memory_order_relaxed);
+                if (ActiveHost->Session.send_key(Event)) {
+                    KeyEventsForwarded.fetch_add(1, std::memory_order_relaxed);
+                } else {
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
@@ -601,9 +612,14 @@ int RunTrusted(const CommandLine& Command,
                     Result->Changed.notify_all();
                 }
             };
-            CaptureHandlers.Button = [ActiveHost, Result, &ActiveCapture](
+            CaptureHandlers.Button = [ActiveHost, Result, &ActiveCapture,
+                                      &ButtonEventsCaptured,
+                                      &ButtonEventsForwarded](
                 desklink::MouseButtonMessage Event) {
-                if (!ActiveHost->Session.send_button(Event)) {
+                ButtonEventsCaptured.fetch_add(1, std::memory_order_relaxed);
+                if (ActiveHost->Session.send_button(Event)) {
+                    ButtonEventsForwarded.fetch_add(1, std::memory_order_relaxed);
+                } else {
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
@@ -615,10 +631,16 @@ int RunTrusted(const CommandLine& Command,
                     Result->Changed.notify_all();
                 }
             };
-            CaptureHandlers.Pointer = [ActiveHost](desklink::PointerPositionMessage Event) {
-                (void)ActiveHost->Session.send_pointer(Event);
+            CaptureHandlers.Pointer = [ActiveHost, &PointerEventsCaptured,
+                                       &PointerEventsForwarded](
+                desklink::PointerPositionMessage Event) {
+                PointerEventsCaptured.fetch_add(1, std::memory_order_relaxed);
+                if (ActiveHost->Session.send_pointer(Event)) {
+                    PointerEventsForwarded.fetch_add(1, std::memory_order_relaxed);
+                }
             };
-            CaptureHandlers.Emergency = [Result] {
+            CaptureHandlers.Emergency = [Result, &EmergencyTriggered] {
+                EmergencyTriggered.store(true, std::memory_order_relaxed);
                 {
                     std::scoped_lock Lock(Result->Mutex);
                     Result->Emergency = true;
@@ -684,6 +706,23 @@ int RunTrusted(const CommandLine& Command,
         if (Capture) {
             Capture->Stop();
             ActiveCapture.store(nullptr);
+            std::cout << "[Input:Capture] summary"
+                      << " key_captured="
+                      << KeyEventsCaptured.load(std::memory_order_relaxed)
+                      << " key_forwarded="
+                      << KeyEventsForwarded.load(std::memory_order_relaxed)
+                      << " button_captured="
+                      << ButtonEventsCaptured.load(std::memory_order_relaxed)
+                      << " button_forwarded="
+                      << ButtonEventsForwarded.load(std::memory_order_relaxed)
+                      << " pointer_captured="
+                      << PointerEventsCaptured.load(std::memory_order_relaxed)
+                      << " pointer_forwarded="
+                      << PointerEventsForwarded.load(std::memory_order_relaxed)
+                      << " emergency_triggered="
+                      << (EmergencyTriggered.load(std::memory_order_relaxed)
+                              ? "true" : "false")
+                      << '\n';
         }
         (void)ActiveHost->Session.release_focus();
         ActiveHost->Session.stop();

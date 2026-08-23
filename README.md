@@ -37,7 +37,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
-- Opt-in Windows Raw Input capture with bounded sender queue
+- Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
 - Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
 - Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
 - Simulation CLI
@@ -48,7 +48,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 The following are intentionally kept behind interfaces and are the next production layers:
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
-- Physical Windows 11 Schannel to Windows 10 OpenSSL compatibility validation
+- Remaining Windows 11 Schannel to Windows 10 OpenSSL failure-matrix validation
 - Stable multi-monitor mapping
 - Mouse-wheel transport
 - LAN discovery/mDNS
@@ -131,10 +131,11 @@ fall back to a different provider. See
 
 After pairing, run `desklink_pair.exe serve 43821` on the input-receiving PC.
 On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires
-and renews a remote-focus lease, forwards Raw Input, and suppresses corresponding
-local keyboard/mouse events until Enter is pressed. Ctrl+Alt+Pause immediately
-disables suppression and fails local. Omitting `--capture` retains the manual
-control-plane-only check.
+and renews a remote-focus lease, forwards physical keyboard events from the
+low-level hook and mouse events from Raw Input, and suppresses corresponding
+local input until Enter is pressed. Ctrl+Alt+Pause (including Windows'
+Ctrl+Break representation) immediately disables suppression and fails local.
+Omitting `--capture` retains the manual control-plane-only check.
 
 ## Repository layout
 
@@ -150,7 +151,7 @@ include/desklink/
     audio.hpp            Audio jitter/reorder buffer
     transport.hpp        Authenticated transport abstraction
     win32_input.hpp      Windows SendInput adapter
-    win32_capture.hpp    Raw Input and fail-local suppression adapter
+    win32_capture.hpp    Physical input and fail-local suppression adapter
 
 src/
     protocol.cpp

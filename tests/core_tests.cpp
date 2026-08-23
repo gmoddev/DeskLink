@@ -697,6 +697,7 @@ void WindowsSuppressionGateFailsLocal() {
     constexpr std::uint32_t LeftControl = 0xA2u;
     constexpr std::uint32_t LeftAlt = 0xA4u;
     constexpr std::uint32_t Pause = 0x13u;
+    constexpr std::uint32_t Cancel = 0x03u;
 
     Win32SuppressionGate Gate;
     CHECK(Gate.HandleKeyboard(LeftControl, true, false) ==
@@ -713,6 +714,16 @@ void WindowsSuppressionGateFailsLocal() {
           Win32HookDecision::Emergency);
     CHECK(!Gate.RemoteRouting());
     CHECK(Gate.HandleMouse(false) == Win32HookDecision::Pass);
+
+    Win32SuppressionGate BreakGate;
+    BreakGate.SetRemoteRouting(true);
+    CHECK(BreakGate.HandleKeyboard(LeftControl, true, false) ==
+          Win32HookDecision::Suppress);
+    CHECK(BreakGate.HandleKeyboard(LeftAlt, true, false) ==
+          Win32HookDecision::Suppress);
+    CHECK(BreakGate.HandleKeyboard(Cancel, true, false) ==
+          Win32HookDecision::Emergency);
+    CHECK(!BreakGate.RemoteRouting());
 }
 
 void WindowsCaptureSmokeIfRequested() {

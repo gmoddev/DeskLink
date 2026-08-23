@@ -26,6 +26,7 @@ namespace {
 constexpr UINT kEmergencyMessage = WM_APP + 0x44u;
 constexpr UINT kStopMessage = WM_APP + 0x45u;
 constexpr UINT kQueueOverflowMessage = WM_APP + 0x46u;
+constexpr UINT kKeyboardCaptureFailureMessage = WM_APP + 0x47u;
 constexpr std::size_t kMaximumQueuedEvents = 1024;
 constexpr wchar_t kCaptureWindowClass[] = L"DeskLink.RawInputCapture.v1";
 
@@ -119,6 +120,17 @@ struct Win32InputCapture::State {
         return true;
     }
 
+    bool TryEnqueueKeyboard(KeyEventMessage Event) {
+        std::unique_lock Lock(QueueMutex, std::try_to_lock);
+        if (!Lock.owns_lock() || Queue.size() >= kMaximumQueuedEvents) {
+            return false;
+        }
+        Queue.push_back(Event);
+        Lock.unlock();
+        QueueChanged.notify_one();
+        return true;
+    }
+
     void HandleRawInput(HRAWINPUT Handle) {
         alignas(DWORD) std::array<std::byte, sizeof(RAWINPUT)> Storage{};
         UINT Size = static_cast<UINT>(Storage.size());
@@ -131,19 +143,6 @@ struct Win32InputCapture::State {
         }
         if (!Gate.RemoteRouting()) return;
         const auto* Input = reinterpret_cast<const RAWINPUT*>(Storage.data());
-        if (Input->header.dwType == RIM_TYPEKEYBOARD && Read >= sizeof(RAWINPUT)) {
-            const auto& Keyboard = Input->data.keyboard;
-            if (Keyboard.VKey == 255u || Keyboard.MakeCode == 0u) return;
-            const bool Extended =
-                (Keyboard.Flags & (RI_KEY_E0 | RI_KEY_E1)) != 0;
-            const bool Down = (Keyboard.Flags & RI_KEY_BREAK) == 0;
-            if (!Enqueue(KeyEventMessage{
-                    Keyboard.MakeCode, Extended, Down})) {
-                Gate.SetRemoteRouting(false);
-                PostThreadMessageW(CaptureThreadId, kQueueOverflowMessage, 0, 0);
-            }
-            return;
-        }
         if (Input->header.dwType != RIM_TYPEMOUSE || Read < sizeof(RAWINPUT)) return;
         const auto& Mouse = Input->data.mouse;
         const std::array Buttons{
@@ -206,7 +205,23 @@ LRESULT CALLBACK KeyboardHook(int Code, WPARAM Message, LPARAM Data) {
         PostThreadMessageW(State->CaptureThreadId, kEmergencyMessage, 0, 0);
         return CallNextHookEx(nullptr, Code, Message, Data);
     }
-    if (Decision == Win32HookDecision::Suppress) return 1;
+    if (Decision == Win32HookDecision::Suppress) {
+        if (Event->scanCode == 0 || Event->scanCode > 255u) {
+            State->Gate.SetRemoteRouting(false);
+            PostThreadMessageW(
+                State->CaptureThreadId, kKeyboardCaptureFailureMessage, 0, 0);
+            return CallNextHookEx(nullptr, Code, Message, Data);
+        }
+        const bool Extended = (Event->flags & LLKHF_EXTENDED) != 0;
+        if (!State->TryEnqueueKeyboard(KeyEventMessage{
+                static_cast<std::uint16_t>(Event->scanCode), Extended, Down})) {
+            State->Gate.SetRemoteRouting(false);
+            PostThreadMessageW(
+                State->CaptureThreadId, kKeyboardCaptureFailureMessage, 0, 0);
+            return CallNextHookEx(nullptr, Code, Message, Data);
+        }
+        return 1;
+    }
     return CallNextHookEx(nullptr, Code, Message, Data);
 }
 
@@ -264,7 +279,8 @@ Win32HookDecision Win32SuppressionGate::HandleKeyboard(
     if (Injected) return Win32HookDecision::Pass;
     UpdateModifier(ControlMask_, ModifierBit(VirtualKey, true), Down);
     UpdateModifier(AltMask_, ModifierBit(VirtualKey, false), Down);
-    if (Down && VirtualKey == VK_PAUSE && RemoteRouting() &&
+    if (Down && (VirtualKey == VK_PAUSE || VirtualKey == VK_CANCEL) &&
+        RemoteRouting() &&
         ControlMask_.load(std::memory_order_relaxed) != 0 &&
         AltMask_.load(std::memory_order_relaxed) != 0) {
         SetRemoteRouting(false);
@@ -336,8 +352,6 @@ bool Win32InputCapture::Start() {
         if (Success) {
             const std::array Devices{
                 RAWINPUTDEVICE{0x01, 0x02, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY,
-                               State->Window},
-                RAWINPUTDEVICE{0x01, 0x06, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY,
                                State->Window}};
             Success = RegisterRawInputDevices(
                 Devices.data(), static_cast<UINT>(Devices.size()),
@@ -378,6 +392,10 @@ bool Win32InputCapture::Start() {
                 if (Message.message == kEmergencyMessage) State->Emergency();
                 if (Message.message == kQueueOverflowMessage) {
                     State->Fail("bounded input queue overflowed");
+                }
+                if (Message.message == kKeyboardCaptureFailureMessage) {
+                    State->Fail(
+                        "keyboard hook scan code or capture queue was invalid");
                 }
                 TranslateMessage(&Message);
                 DispatchMessageW(&Message);

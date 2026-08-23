@@ -24,8 +24,8 @@ The current build proves the core invariants independently of Windows networking
 | Emergency fail-local | Done | Explicit state transition |
 | Input cleanup contract | Done | Backend callback on failure/release |
 | Windows SendInput injector | Done | Built only on Windows |
-| Windows Raw Input capture | Done | Hidden input-sink window, bounded 1024-event queue, pointer coalescing |
-| Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause fail-local |
+| Windows physical input capture | Done | Low-level non-injected keyboard scan codes plus Raw Input mouse, bounded 1024-event queue, pointer coalescing |
+| Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause/Break fail-local |
 | Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
 | Pointer format | Done | Absolute normalized datagram |
 | PCM audio frame | Done | Bounded wire representation |
@@ -49,7 +49,7 @@ The current build proves the core invariants independently of Windows networking
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
-| Windows 10 physical compatibility | R&D Stage 5 partial | Schannel/OpenSSL manual pairing, trusted reconnect, nonce rotation, and focus without capture passed; physical Raw Input/failure matrix remains |
+| Windows 10 physical compatibility | R&D Stage 5 partial | Schannel/OpenSSL pairing, reconnect, nonce rotation, physical keyboard/button/pointer forwarding, and interactive `SendInput` observation passed; termination, interruption, stale-session, and held-state failure matrix remains |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
