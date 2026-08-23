@@ -32,6 +32,12 @@ bool AgentCoordinator::can_inject() const noexcept {
 AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     const auto type = packet.header.type;
 
+    if (type == MessageType::SetMode) {
+        if (!can_inject()) return AgentDecision::RejectedCapability;
+        SetRemoteDesiredMode(std::get<SetModeMessage>(packet.message).mode);
+        return AgentDecision::Accepted;
+    }
+
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         const auto& request = std::get<FocusRequestMessage>(packet.message);
@@ -95,6 +101,26 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     }
 
     return AgentDecision::Ignored;
+}
+
+void AgentCoordinator::SetLocalDesiredMode(DeskMode Mode) noexcept {
+    LocalDesiredMode_ = Mode;
+    ApplyDesiredMode();
+}
+
+void AgentCoordinator::SetRemoteDesiredMode(DeskMode Mode) noexcept {
+    RemoteDesiredMode_ = Mode;
+    ApplyDesiredMode();
+}
+
+void AgentCoordinator::ApplyDesiredMode() noexcept {
+    const auto EffectiveMode = LocalDesiredMode_ == DeskMode::Roam
+        ? RemoteDesiredMode_ : LocalDesiredMode_;
+    const bool WasRemote = focus_.focus() == FocusLocation::Remote;
+    focus_.set_mode(EffectiveMode);
+    if (WasRemote && focus_.focus() == FocusLocation::Local) {
+        injector_.release_owned_state();
+    }
 }
 
 void AgentCoordinator::tick() noexcept {

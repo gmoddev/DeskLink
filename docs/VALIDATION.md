@@ -259,6 +259,25 @@ scrolling locally. Saturate or fault the bounded sender path in an instrumented
 build and verify routing disables before an unqueued wheel event is suppressed;
 that physical event must continue locally.
 
+For current-user IPC validation, leave one `serve` or `focus` process running
+and execute from a second process under the same Windows user:
+
+```powershell
+desklink_pair.exe control state
+desklink_pair.exe control mode game
+desklink_pair.exe control state
+desklink_pair.exe control mode roam
+```
+
+The state response must report the expected role, connected-peer count, focus,
+capture, and desired mode without exposing input contents or trust secrets.
+`game` and `lock` must release remote focus/capture fail-locally. On an Agent,
+send a remote `Roam` preference after selecting a restrictive local mode and
+verify the effective mode remains restrictive. A second server for the same
+user endpoint must fail rather than silently sharing or replacing the pipe.
+Malformed, oversized, stalled, wrong-request-ID, and unsupported commands must
+not invoke a handler or produce an application action.
+
 ---
 
 ## Limitations of this validation

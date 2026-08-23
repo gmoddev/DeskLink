@@ -270,21 +270,37 @@ Debug builds should follow the same rule unless a user explicitly opts into a na
 
 ## 11. Local IPC security
 
-The eventual Host control API should use a named pipe with a DACL restricted to the active DeskLink user/SID.
+The Host/Agent control API uses a versioned named pipe suffixed with the active
+DeskLink user SID. It does not rely on the default named-pipe ACL: creation
+uses a protected DACL containing exactly one allow ACE for that SID. The pipe
+sets `PIPE_REJECT_REMOTE_CLIENTS`; the server validates the connecting client
+process token SID, and the client validates the server process token SID before
+sending a request. A first-instance flag and the client-side identity check
+turn cross-user pipe squatting into a startup/availability failure rather than
+command disclosure or execution.
 
-Do not rely on default named-pipe ACLs for a sensitive control surface.
+The binary protocol limits payloads to 128 bytes, requires exact
+magic/version/type/request-ID/length framing, permits one request per
+connection, bounds I/O waits, and requires a response-consumption
+acknowledgement. Malformed, oversized, stalled, identity-mismatched, or
+unexpected responses fail closed.
 
-The API should expose high-level operations only:
+The API defines high-level operations only:
 
 ```text
-SetMode
-FocusMachine
-SetAudioGain
-ToggleMute
-GetState
+GetState             implemented
+SetDesiredMode       implemented
+FocusMachine         typed, currently unsupported
+SetAudioGain         typed, currently unsupported
+ToggleAudioMute      typed, currently unsupported
 ```
 
 It must not expose a generic transport passthrough or arbitrary input-injection primitive.
+
+Local restrictive `Game`/`LockPc1` policy takes precedence over a remote
+`Roam` request. Restrictive changes release DeskLink-owned state and disable
+capture locally. A control client never receives input contents, certificate
+private-key material, trust-store secrets, or raw transport frames.
 
 ---
 

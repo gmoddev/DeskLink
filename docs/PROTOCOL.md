@@ -292,3 +292,31 @@ Production adapters must not read an attacker-provided length and allocate arbit
 Pointer datagram sequence numbers are monotonic within a focus epoch. The Agent rejects a pointer packet whose sequence is less than or equal to the most recently accepted pointer sequence for that epoch. This prevents datagram reordering from moving the cursor backward.
 
 Audio sequence numbers are consumed by the jitter buffer, which intentionally supports limited reordering rather than strict newest-only semantics.
+
+---
+
+## 10. Local control protocol
+
+The Windows named-pipe control surface uses a separate local-only binary
+protocol implemented in `control.cpp`; it is never carried over QUIC. Its
+20-byte header contains `DLCT` magic, version `1`, request/response frame type,
+a nonzero 64-bit request ID, and an exact 32-bit payload length. Payloads are
+limited to 128 bytes and trailing data is rejected.
+
+Request command numbers are:
+
+| Value | Command | Payload | Current behavior |
+|---:|---|---|---|
+| 1 | `GetState` | empty | returns bounded typed runtime state |
+| 2 | `SetDesiredMode` | one validated `DeskMode` byte | applies through the existing focus/session state machines |
+| 3 | `FocusMachine` | one nonzero 16-byte machine ID | `Unsupported` until persistent host orchestration exists |
+| 4 | `SetAudioGain` | unsigned permyriad, `0..10000` | `Unsupported` until the audio backend exists |
+| 5 | `ToggleAudioMute` | empty | `Unsupported` until the audio backend exists |
+
+Responses contain a bounded status and an optional typed state record. A state
+record includes local/focused machine IDs, role, desired mode, peer count,
+audio gain/mute placeholders, focus, and capture state. Cross-field validation
+rejects impossible combinations such as active capture without Host remote
+focus. Each connection exchanges exactly one request/response and completes
+with a fixed acknowledgement byte so the server does not disconnect before the
+client consumes the response.

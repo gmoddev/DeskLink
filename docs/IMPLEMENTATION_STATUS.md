@@ -30,6 +30,7 @@ The current build proves the core invariants independently of Windows networking
 | Pointer format | Done | Absolute normalized datagram |
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
+| Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode` |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
@@ -101,6 +102,9 @@ The current test suite verifies:
 36. duplicate identities and 16-bit display-ID collisions fail closed
 37. live Windows DisplayConfig enumeration when an active desktop is available
 38. mouse-wheel codec round trip, wrong-lane rejection, axis/delta bounds, and end-to-end focus admission
+39. bounded local-control request/response framing, malformed/oversized rejection, and typed state validation
+40. live same-user named-pipe state/unsupported-command round trip and bounded shutdown
+41. local desired-mode precedence over a remote attempt to weaken `Game`/`LockPc1`
 
 Build/test result in the creation environment:
 
@@ -116,7 +120,6 @@ Build/test result in the creation environment:
 
 - two-PC Windows 11 LAN pairing, cable-removal, and reconnect validation
   (deferred until a second Windows 11 target is available)
-- current-user IPC
 
 ### P1 — required for useful KM roaming
 
@@ -187,7 +190,8 @@ Do **not** add edge roaming until this manual focus switch survives failure inje
 
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
-available. Bounded mouse-wheel transport is the next implementation milestone.
+available. Bounded mouse-wheel transport and current-user IPC are complete; the
+next independent implementation milestone is LAN discovery/mDNS.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

@@ -325,16 +325,24 @@ The foundation implements the bounded reorder/jitter and silence-concealment lay
 
 ## 10. Local control API
 
-The intended local control surface is a current-user-only named pipe rather than a LAN HTTP server.
+The implemented local control surface is a current-user-only named pipe rather
+than a LAN HTTP server. Its name is versioned and suffixed with the current
+user SID. The transport uses an explicit one-SID DACL, rejects remote clients,
+and verifies the opposite process token belongs to the same SID on both ends.
+
+Frames carry a fixed magic/version, nonzero request ID, exact payload length,
+and at most 128 payload bytes. Each connection carries one typed request and
+one typed response, with bounded I/O waits and a response-consumption
+acknowledgement before disconnect.
 
 Example commands:
 
 ```text
-GetState
-SetDesiredMode
-FocusMachine
-SetAudioGain
-ToggleAudioMute
+GetState             implemented
+SetDesiredMode       implemented
+FocusMachine         typed, currently unsupported
+SetAudioGain         typed, currently unsupported
+ToggleAudioMute      typed, currently unsupported
 ```
 
 The local API must not expose:
@@ -347,6 +355,11 @@ LoadArbitraryModule
 ```
 
 This keeps a compromised Stream Deck plugin from automatically gaining the entire DeskLink trust boundary.
+
+`SetDesiredMode` never bypasses the session state machine. On an Agent, a
+local `Game` or `LockPc1` choice takes precedence over a remote peer's `Roam`
+preference. Restrictive mode changes release DeskLink-owned input state and
+disable active capture fail-locally.
 
 ---
 

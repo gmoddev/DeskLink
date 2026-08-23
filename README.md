@@ -45,6 +45,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Stable Windows DisplayConfig identities, deterministic display IDs, rectangle mapping,
   and topology-generation invalidation
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
+- Current-user-only named-pipe control API with bounded typed state/mode commands
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -58,7 +59,6 @@ The following are intentionally kept behind interfaces and are the next producti
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend
 - Clock-drift resampling
-- Named-pipe local control API
 - Profile/foreground-window engine
 - UI and Stream Deck plugin
 
@@ -106,6 +106,21 @@ default and is not a production artifact. It exposes only bounded Stage 5 fault
 probes; the normal `desklink_pair.exe` rejects those options.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
+
+While `serve` or `focus` is running, the same Windows user can inspect the
+bounded runtime state or select a desired mode without opening a LAN control
+port:
+
+```powershell
+desklink_pair.exe control state
+desklink_pair.exe control mode roam
+desklink_pair.exe control mode lock
+desklink_pair.exe control mode game
+```
+
+The named pipe uses an explicit one-SID DACL, rejects remote clients, verifies
+both endpoint process-token SIDs, and does not expose raw packets, arbitrary
+input injection, command execution, or module loading.
 
 ### Pair two Windows PCs
 

@@ -31,6 +31,9 @@ public:
     [[nodiscard]] bool start();
     void stop() noexcept;
     void tick() noexcept;
+    void SetLocalDesiredMode(DeskMode Mode) noexcept;
+    [[nodiscard]] DeskMode DesiredMode() const noexcept;
+    [[nodiscard]] bool RemoteFocused() const noexcept;
     [[nodiscard]] SessionStats stats() const noexcept;
 
 private:
@@ -62,6 +65,7 @@ public:
     void stop() noexcept;
 
     [[nodiscard]] bool focus_remote(std::uint32_t lease_ms = 750);
+    [[nodiscard]] bool SetDesiredMode(DeskMode Mode);
     [[nodiscard]] bool renew_focus(std::uint32_t lease_ms = 750);
     [[nodiscard]] bool release_focus();
     [[nodiscard]] bool send_key(KeyEventMessage event);
@@ -70,6 +74,7 @@ public:
     [[nodiscard]] bool SendWheel(MouseWheelMessage Message);
     [[nodiscard]] bool SendInputStateSnapshot();
     [[nodiscard]] bool RemoteFocused() const noexcept;
+    [[nodiscard]] DeskMode DesiredMode() const noexcept;
 
     [[nodiscard]] SessionStats stats() const noexcept;
 

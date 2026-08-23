@@ -381,8 +381,11 @@ Do not persist an active focus lease across process restart.
 ## 10. Recommended next code change
 
 The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
-session-nonce negotiation, and explicit Windows pairing control are now
-implemented. The manual serve/focus control now proves the trusted lease path.
+session-nonce negotiation, explicit Windows pairing control, reconciliation,
+stable monitor mapping, bounded wheel transport, and current-user control pipe
+are implemented. Because edge roaming remains gated on the deferred physical
+Windows 11 failure matrix, the next independent roadmap item is bounded LAN
+discovery/mDNS without automatic trust or pairing.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
