@@ -568,6 +568,10 @@ public:
         return Injector_.inject_pointer(Event);
     }
 
+    bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
+        return Injector_.InjectWheel(Message);
+    }
+
     bool ReconcileState(
         const desklink::InputStateSnapshotMessage& Snapshot) override {
         if (!Injector_.ReconcileState(Snapshot)) return false;
@@ -916,6 +920,8 @@ int RunTrusted(const CommandLine& Command,
         std::atomic_uint64_t ButtonEventsForwarded{};
         std::atomic_uint64_t PointerEventsCaptured{};
         std::atomic_uint64_t PointerEventsForwarded{};
+        std::atomic_uint64_t WheelEventsCaptured{};
+        std::atomic_uint64_t WheelEventsForwarded{};
         std::atomic_bool EmergencyTriggered{};
         std::atomic_bool StopRenewal{};
         std::thread Renewal([&, Result] {
@@ -1083,6 +1089,25 @@ int RunTrusted(const CommandLine& Command,
                     PointerEventsForwarded.fetch_add(1, std::memory_order_relaxed);
                 }
             };
+            CaptureHandlers.Wheel = [ActiveHost, Result, &ActiveCapture,
+                                     &WheelEventsCaptured,
+                                     &WheelEventsForwarded](
+                desklink::MouseWheelMessage Message) {
+                WheelEventsCaptured.fetch_add(1, std::memory_order_relaxed);
+                if (ActiveHost->Session.SendWheel(Message)) {
+                    WheelEventsForwarded.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    if (auto* Current = ActiveCapture.load()) {
+                        Current->SetRemoteRouting(false);
+                    }
+                    {
+                        std::scoped_lock Lock(Result->Mutex);
+                        Result->Emergency = true;
+                        Result->Failure = "reliable mouse-wheel forwarding failed";
+                    }
+                    Result->Changed.notify_all();
+                }
+            };
             CaptureHandlers.Emergency = [Result, &EmergencyTriggered] {
                 EmergencyTriggered.store(true, std::memory_order_relaxed);
                 {
@@ -1176,6 +1201,10 @@ int RunTrusted(const CommandLine& Command,
                       << PointerEventsCaptured.load(std::memory_order_relaxed)
                       << " pointer_forwarded="
                       << PointerEventsForwarded.load(std::memory_order_relaxed)
+                      << " wheel_captured="
+                      << WheelEventsCaptured.load(std::memory_order_relaxed)
+                      << " wheel_forwarded="
+                      << WheelEventsForwarded.load(std::memory_order_relaxed)
                       << " emergency_triggered="
                       << (EmergencyTriggered.load(std::memory_order_relaxed)
                               ? "true" : "false")

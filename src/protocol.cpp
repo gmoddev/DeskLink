@@ -15,6 +15,7 @@ public:
         bytes_.push_back(static_cast<std::uint8_t>((value >> 8) & 0xffu));
         bytes_.push_back(static_cast<std::uint8_t>(value & 0xffu));
     }
+    void i16(std::int16_t value) { u16(static_cast<std::uint16_t>(value)); }
     void u32(std::uint32_t value) {
         for (int shift = 24; shift >= 0; shift -= 8) {
             bytes_.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
@@ -47,6 +48,16 @@ public:
         out = static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes_[offset_]) << 8) |
                                          static_cast<std::uint16_t>(bytes_[offset_ + 1]));
         offset_ += 2;
+        return true;
+    }
+
+    [[nodiscard]] bool i16(std::int16_t& out) {
+        std::uint16_t Raw{};
+        if (!u16(Raw)) return false;
+        const auto Signed = Raw <= 0x7fffu
+            ? static_cast<std::int32_t>(Raw)
+            : static_cast<std::int32_t>(Raw) - 0x1'0000;
+        out = static_cast<std::int16_t>(Signed);
         return true;
     }
 
@@ -131,6 +142,9 @@ ByteBuffer encode_payload(const Message& message) {
             w.raw(value.KeyBitmap);
             w.raw(value.ExtendedKeyBitmap);
             w.u8(value.MouseButtonBitmap);
+        } else if constexpr (std::is_same_v<T, MouseWheelMessage>) {
+            w.u8(static_cast<std::uint8_t>(value.Axis));
+            w.i16(value.Delta);
         } else if constexpr (std::is_same_v<T, SetAudioGainMessage>) {
             w.u16(value.gain_permyriad);
         } else if constexpr (std::is_same_v<T, AudioFrameMessage>) {
@@ -154,6 +168,11 @@ bool valid_mode(std::uint8_t value) {
 bool valid_button(std::uint8_t value) {
     return value >= static_cast<std::uint8_t>(MouseButtonId::Left) &&
            value <= static_cast<std::uint8_t>(MouseButtonId::X2);
+}
+
+bool ValidWheelAxis(std::uint8_t Value) {
+    return Value >= static_cast<std::uint8_t>(MouseWheelAxis::Vertical) &&
+           Value <= static_cast<std::uint8_t>(MouseWheelAxis::Horizontal);
 }
 
 std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
@@ -236,6 +255,17 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             }
             return m;
         }
+        case MessageType::MouseWheel: {
+            MouseWheelMessage Message;
+            std::uint8_t Axis{};
+            if (!r.u8(Axis) || !r.i16(Message.Delta) || r.remaining() != 0 ||
+                !ValidWheelAxis(Axis)) {
+                return std::nullopt;
+            }
+            Message.Axis = static_cast<MouseWheelAxis>(Axis);
+            if (!IsValidMouseWheelMessage(Message)) return std::nullopt;
+            return Message;
+        }
         case MessageType::SetAudioGain: {
             SetAudioGainMessage m;
             if (!r.u16(m.gain_permyriad) || r.remaining() != 0 || m.gain_permyriad > 10000) {
@@ -283,6 +313,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::MouseButton:
         case MessageType::PointerPosition:
         case MessageType::InputStateSnapshot:
+        case MessageType::MouseWheel:
         case MessageType::SetAudioGain:
         case MessageType::AudioFrame:
         case MessageType::Heartbeat:
@@ -308,6 +339,7 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, MouseButtonMessage>) return MessageType::MouseButton;
         else if constexpr (std::is_same_v<T, PointerPositionMessage>) return MessageType::PointerPosition;
         else if constexpr (std::is_same_v<T, InputStateSnapshotMessage>) return MessageType::InputStateSnapshot;
+        else if constexpr (std::is_same_v<T, MouseWheelMessage>) return MessageType::MouseWheel;
         else if constexpr (std::is_same_v<T, SetAudioGainMessage>) return MessageType::SetAudioGain;
         else if constexpr (std::is_same_v<T, AudioFrameMessage>) return MessageType::AudioFrame;
         else return MessageType::Heartbeat;
@@ -358,6 +390,13 @@ bool InputSnapshotButtonDown(const InputStateSnapshotMessage& Snapshot,
     if (!valid_button(Raw)) return false;
     const auto Mask = static_cast<std::uint8_t>(1u << (Raw - 1u));
     return (Snapshot.MouseButtonBitmap & Mask) != 0;
+}
+
+bool IsValidMouseWheelMessage(const MouseWheelMessage& Message) noexcept {
+    const auto Axis = static_cast<std::uint8_t>(Message.Axis);
+    return ValidWheelAxis(Axis) && Message.Delta != 0 &&
+           Message.Delta >= -kMaximumMouseWheelDelta &&
+           Message.Delta <= kMaximumMouseWheelDelta;
 }
 
 ByteBuffer encode_packet(const EnvelopeHeader& requested_header, const Message& message) {

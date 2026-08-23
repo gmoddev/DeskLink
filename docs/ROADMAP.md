@@ -22,8 +22,12 @@ Work proceeds in this order:
    and topology-change invalidation before edge roaming. Active Windows
    DisplayConfig target paths produce deterministic IDs; ambiguous/colliding
    identities and stale generations fail closed.
-3. **Next:** implement bounded mouse-wheel transport without suppressing wheel input when
-   it cannot be forwarded safely.
+3. **Complete:** bounded reliable mouse-wheel transport. The low-level hook
+   enqueues physical vertical/horizontal wheel input before suppression and
+   fails local on invalid deltas, queue contention/overflow, or forwarding
+   failure.
+4. **Blocked on item 1:** monitor edge graph, crossing hysteresis, and roaming
+   policy.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.

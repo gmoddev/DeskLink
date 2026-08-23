@@ -82,6 +82,7 @@ The simulation demonstrates:
 - epoch creation
 - keyboard event acceptance
 - absolute pointer acceptance
+- bounded vertical/horizontal mouse-wheel acceptance
 - key release
 - lease expiry cleanup
 - stale packet rejection
@@ -97,6 +98,8 @@ focus epoch=2
 agent: key scan=30 down
 agent decision=0
 agent: pointer display=0 x=42000 y=25000
+agent decision=0
+agent: mouse wheel axis=1 delta=120
 agent decision=0
 agent: key scan=30 up
 agent decision=0
@@ -250,7 +253,11 @@ After pairing with `--grant-input` on the receiving PC, run
 that keyboard, buttons, and pointer movement reach the receiver while the sender
 stays locally suppressed. Press Ctrl+Alt+Pause and verify local input returns
 immediately, the remote lease is released, and held remote state is cleaned up.
-Repeat using Enter as the normal release path.
+Repeat using Enter as the normal release path. While capture is active, verify
+both vertical and horizontal wheel input reaches the receiver without also
+scrolling locally. Saturate or fault the bounded sender path in an instrumented
+build and verify routing disables before an unqueued wheel event is suppressed;
+that physical event must continue locally.
 
 ---
 

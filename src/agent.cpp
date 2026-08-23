@@ -59,7 +59,8 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     }
 
     if (type == MessageType::KeyEvent || type == MessageType::MouseButton ||
-        type == MessageType::PointerPosition || type == MessageType::InputStateSnapshot) {
+        type == MessageType::PointerPosition || type == MessageType::InputStateSnapshot ||
+        type == MessageType::MouseWheel) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         if (!focus_.accepts_remote_input(packet.header.epoch)) return AgentDecision::RejectedLease;
@@ -83,6 +84,10 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
             case MessageType::InputStateSnapshot:
                 return injector_.ReconcileState(
                     std::get<InputStateSnapshotMessage>(packet.message))
+                    ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
+            case MessageType::MouseWheel:
+                return injector_.InjectWheel(
+                    std::get<MouseWheelMessage>(packet.message))
                     ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
             default:
                 break;

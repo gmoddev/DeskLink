@@ -53,7 +53,11 @@ It is independent of networking and Windows APIs.
 
 Implements PC1-side packet generation and remote focus tracking.
 
-Host will not generate key/button/pointer packets unless a `FocusReady` has established a nonzero remote epoch. Focus requests carry a monotonically generated nonzero transaction ID, and stale responses cannot satisfy a newer pending request.
+Host will not generate key/button/pointer/wheel packets unless a `FocusReady`
+has established a nonzero remote epoch. Wheel generation additionally rejects
+zero, unknown-axis, and out-of-range deltas before serialization. Focus
+requests carry a monotonically generated nonzero transaction ID, and stale
+responses cannot satisfy a newer pending request.
 
 ### `agent.hpp` / `agent.cpp`
 
@@ -68,6 +72,9 @@ AND unexpired lease
 ```
 
 Pointer datagrams additionally require a sequence newer than the last accepted pointer sequence for the current epoch.
+
+Reliable mouse-wheel messages pass through the same capability, session,
+epoch, and lease admission checks as keyboard and mouse-button input.
 
 Failure invokes the input-backend cleanup contract where appropriate.
 
@@ -109,7 +116,9 @@ A backend must release only state injected by DeskLink.
 
 Implements the current Windows injection backend using `SendInput`.
 
-It tracks injected keyboard and mouse-button down state and emits matching releases during cleanup.
+It tracks injected keyboard and mouse-button down state and emits matching
+releases during cleanup. Bounded vertical/horizontal wheel events map to
+`MOUSEEVENTF_WHEEL` and `MOUSEEVENTF_HWHEEL` and create no held state.
 
 ### `audio.hpp` / `audio.cpp`
 
@@ -381,8 +390,8 @@ the active lease and epoch. The remaining two-PC failure injection on real
 Windows 11 systems is deferred until a second Windows 11 target is available.
 Stable multi-monitor mapping is implemented using active DisplayConfig target
 paths, deterministic nonzero display IDs, rectangle transforms, and
-generation-based stale-topology rejection. Bounded mouse-wheel transport is the
-next implementation milestone.
+generation-based stale-topology rejection. Bounded reliable mouse-wheel
+transport is implemented with enqueue-before-suppress fail-local capture.
 
 Acceptance criteria:
 
