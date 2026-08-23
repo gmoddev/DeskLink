@@ -33,6 +33,11 @@ Work proceeds in this order:
    a remote peer.
 5. **Blocked on item 1:** monitor edge graph, crossing hysteresis, and roaming
    policy.
+6. **Complete:** bounded LAN DNS-SD/mDNS discovery. `listen` and `serve`
+   advertise `_desklink._udp.local`; `discover [1..30 seconds]` reports strict,
+   expiring, deterministic candidates without connecting, pairing, granting a
+   capability, or writing trust. Conflicting duplicate identities are marked
+   ambiguous.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -40,7 +45,6 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- LAN discovery/mDNS
 - foreground profile engine and GAME lifecycle
 - WASAPI capture/render, adaptive jitter, and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow

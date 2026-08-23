@@ -40,6 +40,7 @@ endif()
 
 add_library(desklink_core
     src/control.cpp
+    src/discovery.cpp
     src/display_topology.cpp
     src/protocol.cpp
     src/input.cpp
@@ -236,13 +237,14 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
         src/win32_control.cpp
         src/win32_display_topology.cpp
+        src/win32_discovery.cpp
         src/win32_input.cpp
         src/win32_capture.cpp
         src/win32_pairing.cpp
         src/win32_device_certificate.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32 advapi32 bcrypt crypt32 ncrypt)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 advapi32 bcrypt crypt32 ncrypt dnsapi)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     else()

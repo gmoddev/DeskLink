@@ -1,9 +1,12 @@
 #include "desklink/msquic_bootstrap.hpp"
+#include "desklink/capabilities.hpp"
+#include "desklink/discovery.hpp"
 #include "desklink/session.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_input.hpp"
 #include "desklink/win32_pairing.hpp"
+#include "desklink/win32_discovery.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -41,6 +44,7 @@ constexpr std::uint16_t kValidationStaleSessionScanCode = 0x7au;
 
 enum class Operation {
     Identity,
+    Discover,
     PairListen,
     PairConnect,
     Serve,
@@ -52,6 +56,7 @@ struct CommandLine {
     Operation Mode{Operation::PairListen};
     std::string Host;
     std::uint16_t Port{kDefaultPort};
+    std::uint32_t DiscoveryDurationMs{3'000};
     bool GrantInput{};
     bool CaptureInput{};
     bool ConsoleConfirm{};
@@ -125,6 +130,19 @@ std::optional<std::uint16_t> ParsePort(std::wstring_view Value) {
     return static_cast<std::uint16_t>(Port);
 }
 
+std::optional<std::uint32_t> ParseDiscoveryDuration(
+    std::wstring_view Value) {
+    if (Value.empty() || Value.size() > 2) return std::nullopt;
+    std::uint32_t Seconds = 0;
+    for (const auto Character : Value) {
+        if (Character < L'0' || Character > L'9') return std::nullopt;
+        Seconds = Seconds * 10u +
+                  static_cast<std::uint32_t>(Character - L'0');
+    }
+    if (Seconds < 1 || Seconds > 30) return std::nullopt;
+    return Seconds * 1'000u;
+}
+
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
 std::optional<std::uint32_t> ParseValidationDuration(std::wstring_view Value) {
     if (Value.empty() || Value.size() > 5) return std::nullopt;
@@ -156,6 +174,7 @@ void PrintUsage() {
     std::wcerr
         << L"Usage:\n"
         << L"  desklink_pair identity\n"
+        << L"  desklink_pair discover [seconds: 1..30]\n"
         << L"  desklink_pair listen [port] [--grant-input]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input]\n"
         << L"  desklink_pair serve [port]\n"
@@ -188,6 +207,16 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     if (Command == L"identity") {
         Result.Mode = Operation::Identity;
         if (ArgumentCount != 2) return std::nullopt;
+    } else if (Command == L"discover") {
+        Result.Mode = Operation::Discover;
+        if (ArgumentCount == 3) {
+            const auto Duration = ParseDiscoveryDuration(Arguments[2]);
+            if (!Duration) return std::nullopt;
+            Result.DiscoveryDurationMs = *Duration;
+        } else if (ArgumentCount != 2) {
+            return std::nullopt;
+        }
+        return Result;
     } else if (Command == L"listen") {
         Result.Mode = Operation::PairListen;
     } else if (Command == L"pair") {
@@ -376,6 +405,73 @@ void PrintTransportDiagnostics(const desklink::MsQuicBootstrap& Bootstrap) {
     std::cout << "[Transport:MsQuic] version=" << Bootstrap.RuntimeVersion()
               << " tls_provider=" << desklink::TlsBackendName(Bootstrap.Backend())
               << " os_build=" << Version.Build << '\n';
+}
+
+int RunDiscovery(const CommandLine& Command) {
+    std::cout << "[Discovery:Security] LAN advertisements are untrusted; "
+                 "pair manually and verify the code\n"
+              << "[Discovery:Browse] browsing for "
+              << Command.DiscoveryDurationMs / 1'000u << " second(s)\n";
+    const auto Result = desklink::Win32MdnsBrowser::Browse(
+        std::chrono::milliseconds(Command.DiscoveryDurationMs));
+    if (Result.StartStatus != ERROR_SUCCESS) {
+        std::cerr << "[Discovery:Browse] could not start native DNS-SD browse; "
+                  << "status=" << Result.StartStatus << '\n';
+        return 1;
+    }
+    for (const auto& Peer : Result.Peers) {
+        const auto& Endpoint = Peer.Endpoint;
+        const auto& Advertisement = Endpoint.Advertisement;
+        std::cout
+            << "[Discovery:Peer] machine="
+            << desklink::FormatDiscoveryMachineId(Advertisement.Machine)
+            << " name=";
+        for (const auto Character : Advertisement.DisplayName) {
+            const auto Byte = static_cast<unsigned char>(Character);
+            if (Byte >= 0x20u && Byte <= 0x7eu && Character != '\\') {
+                std::cout << Character;
+            } else {
+                constexpr char Digits[] = "0123456789abcdef";
+                std::cout << "\\x" << Digits[Byte >> 4u]
+                          << Digits[Byte & 0x0fu];
+            }
+        }
+        std::cout
+            << " host=" << Endpoint.HostName
+            << " port=" << Advertisement.Port
+            << " protocol=" << Advertisement.ProtocolVersion
+            << " caps=" << Advertisement.CapabilityHints
+            << " pairing="
+            << (Advertisement.PairingAvailable ? "open" : "closed")
+            << " endpoints=" << Peer.EndpointCount
+            << " ambiguous=" << (Peer.Ambiguous ? "true" : "false")
+            << '\n';
+    }
+    if (Result.Peers.empty()) {
+        std::cout << "[Discovery:Browse] no DeskLink peers observed\n";
+    }
+    if (Result.BrowseFailures || Result.ResolveFailures ||
+        Result.MalformedRecords) {
+        std::cerr << "[Discovery:Browse] ignored browse_failures="
+                  << Result.BrowseFailures
+                  << " resolve_failures=" << Result.ResolveFailures
+                  << " malformed_records=" << Result.MalformedRecords << '\n';
+    }
+    return 0;
+}
+
+desklink::DiscoveryAdvertisement GetDiscoveryAdvertisement(
+    const desklink::PeerIdentity& Identity,
+    std::uint16_t Port,
+    bool PairingAvailable) {
+    desklink::DiscoveryAdvertisement Result;
+    Result.Machine = Identity.machine_id;
+    Result.DisplayName = Identity.display_name;
+    Result.Port = Port;
+    Result.CapabilityHints = static_cast<std::uint64_t>(
+        desklink::Capability::InputInject);
+    Result.PairingAvailable = PairingAvailable;
+    return Result;
 }
 
 desklink::MsQuicRuntimeConfig GetRuntimeConfig(
@@ -839,7 +935,7 @@ int RunTrusted(const CommandLine& Command,
                desklink::BCryptPairingCrypto& Crypto,
                desklink::PairingCoordinator& Pairing,
                desklink::SteadyClock& Clock,
-               const desklink::MachineId& LocalMachine) {
+               const desklink::PeerIdentity& LocalIdentity) {
     const auto Result = std::make_shared<TrustedResult>();
     std::mutex RuntimesMutex;
     std::vector<std::shared_ptr<AgentRuntime>> AgentRuntimes;
@@ -855,7 +951,7 @@ int RunTrusted(const CommandLine& Command,
             if (std::holds_alternative<desklink::GetStateControlRequest>(
                     Request.Payload)) {
                 desklink::ControlState State;
-                State.LocalMachine = LocalMachine;
+                State.LocalMachine = LocalIdentity.machine_id;
                 State.Role = Command.Mode == Operation::Serve
                     ? desklink::ControlRole::Agent
                     : desklink::ControlRole::Host;
@@ -1057,6 +1153,17 @@ int RunTrusted(const CommandLine& Command,
         std::cout << "[Session:Control] serving trusted sessions on UDP port "
                   << Bootstrap->BoundPort() << "\n"
                   << "[Session:Control] press Enter to stop\n";
+        desklink::Win32MdnsAdvertiser Advertiser;
+        const auto Advertisement = GetDiscoveryAdvertisement(
+            LocalIdentity, Bootstrap->BoundPort(), false);
+        if (Advertiser.Start(Advertisement)) {
+            std::cout << "[Discovery:Advertise] trusted-session endpoint "
+                         "advertised on the local link\n";
+        } else {
+            std::cerr << "[Discovery:Advertise] unavailable; status="
+                      << Advertiser.LastStatus()
+                      << "; manual address connection remains active\n";
+        }
         std::atomic_bool StopTicker{};
         std::thread Ticker([&] {
             while (!StopTicker.load()) {
@@ -1083,6 +1190,7 @@ int RunTrusted(const CommandLine& Command,
             for (const auto& Runtime : AgentRuntimes) Runtime->Session.stop();
             AgentRuntimes.clear();
         }
+        Advertiser.Stop();
     } else {
         if (!Bootstrap->ConnectTrusted(Command.Host, Command.Port)) {
             std::cerr << "[Session:Control] could not connect to trusted peer "
@@ -1458,6 +1566,7 @@ int RunTrusted(const CommandLine& Command,
 
 int Run(const CommandLine& Command) {
     if (Command.Mode == Operation::Control) return RunControl(Command);
+    if (Command.Mode == Operation::Discover) return RunDiscovery(Command);
 
     desklink::BCryptPairingCrypto Crypto;
     auto Certificate = Command.Mode == Operation::Identity
@@ -1495,7 +1604,7 @@ int Run(const CommandLine& Command) {
         LocalIdentity, Certificate->CertificatePin(), Clock, Crypto, TrustStore);
     if (Command.Mode == Operation::Serve || Command.Mode == Operation::Focus) {
         return RunTrusted(Command, std::move(*Certificate), TrustStore, Crypto,
-                          Pairing, Clock, LocalIdentity.machine_id);
+                          Pairing, Clock, LocalIdentity);
     }
     if (!Pairing.BeginPairing(kPairingWindow)) {
         std::cerr << "[Pairing:Control] could not open the pairing window\n";
@@ -1546,6 +1655,7 @@ int Run(const CommandLine& Command) {
     }
     PrintTransportDiagnostics(*Bootstrap);
 
+    std::unique_ptr<desklink::Win32MdnsAdvertiser> Advertiser;
     if (Command.Mode == Operation::PairListen) {
         if (!Bootstrap->StartListener(Command.Port)) {
             std::cerr << "[Pairing:Control] could not listen on UDP port "
@@ -1554,6 +1664,17 @@ int Run(const CommandLine& Command) {
         }
         std::cout << "[Pairing:Control] pairing window open on UDP port "
                   << Bootstrap->BoundPort() << " for five minutes\n";
+        Advertiser = std::make_unique<desklink::Win32MdnsAdvertiser>();
+        const auto Advertisement = GetDiscoveryAdvertisement(
+            LocalIdentity, Bootstrap->BoundPort(), true);
+        if (Advertiser->Start(Advertisement)) {
+            std::cout << "[Discovery:Advertise] pairing endpoint advertised "
+                         "on the local link\n";
+        } else {
+            std::cerr << "[Discovery:Advertise] unavailable; status="
+                      << Advertiser->LastStatus()
+                      << "; manual address pairing remains active\n";
+        }
     } else {
         if (!Bootstrap->ConnectForPairing(Command.Host, Command.Port)) {
             std::cerr << "[Pairing:Control] could not start pairing with "
@@ -1577,6 +1698,7 @@ int Run(const CommandLine& Command) {
     }
 
     Pairing.ClosePairing();
+    if (Advertiser) Advertiser->Stop();
     Bootstrap->Close();
     std::scoped_lock Lock(Result->Mutex);
     if (Result->Accepted) {

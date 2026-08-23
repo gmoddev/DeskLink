@@ -31,6 +31,7 @@ The current build proves the core invariants independently of Windows networking
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode` |
+| LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
@@ -105,6 +106,8 @@ The current test suite verifies:
 39. bounded local-control request/response framing, malformed/oversized rejection, and typed state validation
 40. live same-user named-pipe state/unsupported-command round trip and bounded shutdown
 41. local desired-mode precedence over a remote attempt to weaken `Game`/`LockPc1`
+42. strict discovery TXT round trip, required/canonical fields, malformed and oversized rejection
+43. deterministic multi-interface discovery grouping, conflict marking, removal, and expiry
 
 Build/test result in the creation environment:
 
@@ -190,8 +193,10 @@ Do **not** add edge roaming until this manual focus switch survives failure inje
 
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
-available. Bounded mouse-wheel transport and current-user IPC are complete; the
-next independent implementation milestone is LAN discovery/mDNS.
+available. Bounded mouse-wheel transport, current-user IPC, and link-local
+discovery are complete. The next independent milestone is the foreground
+profile engine and GAME capture lifecycle; edge roaming remains gated on the
+deferred physical matrix.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

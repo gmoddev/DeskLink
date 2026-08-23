@@ -46,6 +46,7 @@ This repository is a **reference foundation implementation**, not a finished pro
   and topology-generation invalidation
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
+- Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -55,7 +56,6 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- LAN discovery/mDNS
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend
 - Clock-drift resampling
@@ -121,6 +121,25 @@ desklink_pair.exe control mode game
 The named pipe uses an explicit one-SID DACL, rejects remote clients, verifies
 both endpoint process-token SIDs, and does not expose raw packets, arbitrary
 input injection, command execution, or module loading.
+
+### Discover PCs on the local link
+
+`listen` and `serve` advertise `_desklink._udp.local` through Windows' native
+DNS-SD API. Discovery is bounded to three seconds by default and may be set to
+1–30 seconds:
+
+```powershell
+desklink_pair.exe discover
+desklink_pair.exe discover 10
+```
+
+Advertisements contain only a protocol version, machine ID, display name,
+capability hints, and whether the manual pairing window is open; host and port
+come from DNS-SD SRV resolution. They are untrusted address hints. Discovery
+never writes the trust store, opens pairing, connects, grants a capability, or
+admits a session. Duplicate machine IDs with conflicting metadata are reported
+as ambiguous, and advertisement failure leaves manual IP pairing/connection
+available. DeskLink does not alter Windows Firewall or network profiles.
 
 ### Pair two Windows PCs
 

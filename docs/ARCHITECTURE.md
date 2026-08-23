@@ -174,6 +174,23 @@ validator. The Windows 10 path is not an alternate trust model and remains
 non-admissible until later gates pass; its constraints are recorded in
 [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
 
+### Link-local discovery boundary
+
+Windows uses native DNS-SD/mDNS for `_desklink._udp.local`. A listener publishes
+an SRV host/port plus a small TXT record containing `txtvers`, `protovers`, the
+machine ID, display name, capability hints, and pairing-window state. Browsing
+is explicitly bounded; resolves are bounded separately. TXT records have fixed
+field/count/byte limits, canonical lowercase hexadecimal identities, strict
+UTF-8 text, and an exact supported protocol version.
+
+Discovery lives before and outside the transport trust boundary. Its cache
+groups multi-interface endpoints deterministically, expires observations, and
+marks conflicting metadata for one machine ID as ambiguous. No candidate can
+create a CNG identity, change the trust store, open a pairing window, select a
+TLS provider, establish a connection, grant a capability, request focus, or
+admit application traffic. Only the existing manual pairing and pinned TLS
+paths can cross that boundary.
+
 ---
 
 ## 5. Input focus model

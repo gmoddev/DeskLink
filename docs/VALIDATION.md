@@ -130,6 +130,34 @@ until focus is released.
 
 ---
 
+## LAN DNS-SD/mDNS discovery
+
+The portable tests round-trip the six required TXT properties, accept unknown
+bounded keys, and reject missing/duplicate/noncanonical/oversized fields,
+invalid UTF-8 text, wrong protocol versions, invalid service/host names, and
+zero ports/interfaces. Cache tests cover deterministic multi-interface
+selection, conflicting metadata, exact removal, and TTL expiry.
+
+On 2026-08-23, the Windows 11 build successfully registered a bounded
+`serve` advertisement. The Windows 10 Docker PC, running the same staged
+`discover 8` executable from `C:\Sandbox\Codex\Workspaces\desklink-discovery`,
+resolved it as protocol 1 on the exact UDP port with the expected machine ID,
+display name, capability hint, closed-pairing state, and no ambiguity. No trust,
+pairing, connection, focus, firewall, network-profile, or Docker-workload state
+was changed.
+
+The reverse probe used Windows 10's existing non-exportable CNG identity and
+the hash-pinned OpenSSL/CNG runtime. Registration reported success, but the
+Windows 11 PC did not observe the advertisement in either an 8-second or
+20-second browse. No firewall or network changes were authorized or attempted,
+so symmetric physical discovery remains an environment/interoperability
+follow-up. The Windows 10 identity snapshot was byte-for-byte unchanged after
+the probe (`export_policy=0`, certificate/DeskLink pin
+`95dfabcf017751cbb6f863c147c638e7ae678d7c88462eaa757fee494e1f8108`), and all
+pre-existing Docker containers remained running.
+
+---
+
 ## Physical pairing-control check
 
 On two Windows 11 or Windows Server 2022-or-newer PCs on the same trusted LAN,

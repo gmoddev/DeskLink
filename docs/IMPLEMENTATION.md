@@ -382,10 +382,12 @@ Do not persist an active focus lease across process restart.
 
 The endpoint, device identity, pairing wire lane, MsQuic bootstrap, fresh
 session-nonce negotiation, explicit Windows pairing control, reconciliation,
-stable monitor mapping, bounded wheel transport, and current-user control pipe
-are implemented. Because edge roaming remains gated on the deferred physical
-Windows 11 failure matrix, the next independent roadmap item is bounded LAN
-discovery/mDNS without automatic trust or pairing.
+stable monitor mapping, bounded wheel transport, current-user control pipe, and
+bounded native Windows DNS-SD/mDNS discovery are implemented. Discovery emits
+only untrusted candidates and cannot connect, pair, grant capabilities, or
+write trust. Because edge roaming remains gated on the deferred physical
+Windows 11 failure matrix, the next independent roadmap item is the foreground
+profile engine and GAME capture lifecycle.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
