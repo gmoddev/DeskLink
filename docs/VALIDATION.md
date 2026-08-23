@@ -108,6 +108,25 @@ host mode after emergency=1
 
 ---
 
+## Multi-monitor mapping validation
+
+The portable topology tests construct a two-monitor virtual desktop with a
+negative X origin and verify deterministic IDs regardless of enumeration order,
+friendly-name changes without generation churn, per-display corner mapping,
+material rectangle-change invalidation, stale-generation rejection, unknown-ID
+rejection, duplicate-identity rejection, and fail-closed 16-bit ID collision
+handling.
+
+On 2026-08-23, the Windows build used the production DisplayConfig enumerator on
+the local Windows 11 PC and found three active displays. Every descriptor had a
+nonzero deterministic ID, nonempty normalized target-device identity, valid
+rectangle, and a single primary display. The Windows injector retains display
+zero as the legacy whole-virtual-desktop path; a nonzero mapping is pinned to the
+current topology generation and is rejected after a material topology change
+until focus is released.
+
+---
+
 ## Physical pairing-control check
 
 On two Windows 11 or Windows Server 2022-or-newer PCs on the same trusted LAN,

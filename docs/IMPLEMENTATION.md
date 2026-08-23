@@ -377,9 +377,12 @@ implemented. The manual serve/focus control now proves the trusted lease path.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
-the active lease and epoch. The next highest-value work is two-PC failure
-injection on real Windows 11 systems. Stable multi-monitor mapping and
-mouse-wheel transport follow that gate.
+the active lease and epoch. The remaining two-PC failure injection on real
+Windows 11 systems is deferred until a second Windows 11 target is available.
+Stable multi-monitor mapping is implemented using active DisplayConfig target
+paths, deterministic nonzero display IDs, rectangle transforms, and
+generation-based stale-topology rejection. Bounded mouse-wheel transport is the
+next implementation milestone.
 
 Acceptance criteria:
 

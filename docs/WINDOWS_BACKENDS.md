@@ -25,7 +25,13 @@ It uses `SendInput` with:
 
 The injector tracks DeskLink-owned pressed keys/buttons and releases only those states during cleanup.
 
-The current pointer adapter treats normalized coordinates as virtual-desktop coordinates. Production monitor routing needs a display-ID-to-monitor-rectangle transform first.
+Display ID zero retains the whole-virtual-desktop mapping for protocol
+compatibility. Nonzero IDs use active DisplayConfig target device paths as
+stable identities, deterministic order-independent 16-bit IDs, and a
+display-rectangle-to-virtual-desktop transform. The injector pins a topology
+generation for the focus lifetime and rejects unknown IDs, ambiguous clone
+paths, hash collisions, refresh failures, and mappings invalidated by a
+material topology change. Focus release clears the generation pin.
 
 ---
 
@@ -49,8 +55,8 @@ Raw input should feed a bounded in-process queue.
 The current adapter registers the mouse `RIDEV_INPUTSINK` device against a
 message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
 positions, and disables routing on overflow. After the remaining real two-PC
-failure matrix passes, stable display-ID mapping and mouse-wheel transport are
-the next input milestones. Until wheel transport is implemented,
+failure matrix passes, mouse-wheel transport is the next input milestone.
+Until wheel transport is implemented,
 wheel events continue locally rather than being swallowed.
 
 ### Low-level keyboard capture and suppression
@@ -129,11 +135,18 @@ system default
 
 ## 5. Monitor mapping
 
-Use `EnumDisplayMonitors`, `GetMonitorInfo`, and current DPI/display APIs to produce stable runtime monitor descriptors.
+The current implementation combines active `QueryDisplayConfig` source/target
+records with `EnumDisplayMonitors` and `GetMonitorInfo` rectangles. The stable
+identity is the normalized DisplayConfig target device path; friendly names and
+transient GDI/HMONITOR ordering never determine the ID.
 
 Do not persist transient HMONITOR handles.
 
-Persist a descriptor/fingerprint based on stable display identity information and require remapping if the topology changes materially.
+The topology map derives a nonzero 16-bit ID from the stable identity and rejects
+duplicates or collisions. Rectangle, primary-display, addition, and removal
+changes advance a process-local generation. An active nonzero-display pointer
+mapping remains pinned to its original generation and fails closed after such a
+change until focus is released and reacquired.
 
 The Host UI should store edge adjacency, for example:
 

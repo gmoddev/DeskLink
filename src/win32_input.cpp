@@ -31,6 +31,10 @@ DWORD xbutton_data(MouseButtonId button) {
 
 } // namespace
 
+Win32InputInjector::Win32InputInjector() {
+    (void)DisplayTopology_.Refresh();
+}
+
 bool Win32InputInjector::inject_key(const KeyEventMessage& event) {
     if (event.scan_code == 0 || event.scan_code > 255) return false;
     INPUT input{};
@@ -61,12 +65,36 @@ bool Win32InputInjector::inject_button(const MouseButtonMessage& event) {
 }
 
 bool Win32InputInjector::inject_pointer(const PointerPositionMessage& event) {
+    auto NormalizedX = event.normalized_x;
+    auto NormalizedY = event.normalized_y;
+    if (event.display_id != kLegacyVirtualDesktopDisplayId) {
+        if (!DisplayTopology_.RefreshIfDue()) return false;
+        if (!DisplayGeneration_) {
+            const auto Generation = DisplayTopology_.Current().Generation;
+            if (Generation == 0) return false;
+            DisplayGeneration_ = Generation;
+        }
+        const auto Mapped = DisplayTopology_.MapToVirtualDesktop(
+            event.display_id, *DisplayGeneration_, event.normalized_x, event.normalized_y);
+        if (!Mapped) return false;
+        NormalizedX = Mapped->X;
+        NormalizedY = Mapped->Y;
+    }
+
     INPUT input{};
     input.type = INPUT_MOUSE;
-    input.mi.dx = static_cast<LONG>(event.normalized_x);
-    input.mi.dy = static_cast<LONG>(event.normalized_y);
+    input.mi.dx = static_cast<LONG>(NormalizedX);
+    input.mi.dy = static_cast<LONG>(NormalizedY);
     input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     return send_one(input);
+}
+
+bool Win32InputInjector::RefreshDisplayTopology() {
+    return DisplayTopology_.Refresh();
+}
+
+const DisplayTopologySnapshot& Win32InputInjector::CurrentDisplayTopology() const noexcept {
+    return DisplayTopology_.Current();
 }
 
 bool Win32InputInjector::ReconcileState(const InputStateSnapshotMessage& Snapshot) {
@@ -114,6 +142,7 @@ void Win32InputInjector::release_owned_state() noexcept {
         (void)send_one(Input);
     }
     OwnedState_ = {};
+    DisplayGeneration_.reset();
 }
 
 } // namespace desklink
