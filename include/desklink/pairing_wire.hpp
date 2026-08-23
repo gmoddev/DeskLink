@@ -21,6 +21,12 @@ inline constexpr std::size_t kMaxPairingFrameSize =
 
 [[nodiscard]] std::optional<ByteBuffer> EncodePairingOfferFrame(const PairingOffer& Offer);
 [[nodiscard]] std::optional<PairingOffer> DecodePairingOfferFrame(ByteSpan Frame);
+[[nodiscard]] ByteBuffer EncodePairingConfirmationFrame();
+
+enum class PairingWireFrameType {
+    Offer,
+    Confirmation,
+};
 
 enum class PairingWireStatus {
     Incomplete,
@@ -31,12 +37,18 @@ enum class PairingWireStatus {
 class PairingFrameDecoder final {
 public:
     [[nodiscard]] PairingWireStatus Push(ByteSpan Bytes);
+    [[nodiscard]] PairingWireStatus Status() const noexcept;
+    [[nodiscard]] std::optional<PairingWireFrameType> ReadyType() const noexcept;
     [[nodiscard]] std::optional<PairingOffer> TakeOffer();
+    [[nodiscard]] bool TakeConfirmation();
     void Reset() noexcept;
 
 private:
+    void Advance();
+
     ByteBuffer Buffer_;
     std::optional<PairingOffer> Offer_;
+    std::optional<PairingWireFrameType> ReadyType_;
     PairingWireStatus Status_{PairingWireStatus::Incomplete};
 };
 

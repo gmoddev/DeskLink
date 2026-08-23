@@ -340,17 +340,19 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
         *Session, GrantInput, ConsoleConfirm);
     desklink::CapabilitySet Capabilities;
     if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
-    const bool Accepted = UserConfirmed &&
+    const bool ConfirmationSent = UserConfirmed &&
         Session->Confirm(Session->Candidate().VerificationCode, Capabilities);
     if (!UserConfirmed) Session->Reject();
 
     {
         std::scoped_lock Lock(Result->Mutex);
         Result->PromptActive = false;
-        Result->Completed = true;
-        Result->Accepted = Accepted;
-        if (UserConfirmed && !Accepted) {
-            Result->Failure = "pairing confirmation expired or trust persistence failed";
+        if (!ConfirmationSent) {
+            Result->Completed = true;
+            Result->Accepted = false;
+        }
+        if (UserConfirmed && !ConfirmationSent) {
+            Result->Failure = "pairing confirmation could not be sent";
         }
     }
     Result->Changed.notify_all();
@@ -746,6 +748,14 @@ int Run(const CommandLine& Command) {
     };
     Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         Session.Endpoint->close();
+    };
+    Handlers.PairingCompleted = [Result] {
+        {
+            std::scoped_lock Lock(Result->Mutex);
+            Result->Completed = true;
+            Result->Accepted = true;
+        }
+        Result->Changed.notify_all();
     };
     Handlers.Failed = [Result](std::string Message) {
         {

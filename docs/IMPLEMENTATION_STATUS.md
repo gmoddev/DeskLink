@@ -43,12 +43,13 @@ The current build proves the core invariants independently of Windows networking
 | CNG identity invariance | R&D Stage 4 | Exact before/after snapshots cover key/provider/algorithm/export policy/public key/certificate hash/pin; build rejects private-key export APIs |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
-| Pairing wire lane | Done | Separate ALPN, 153-byte ceiling, TLS-leaf binding, no 0-RTT |
+| Pairing wire lane | Done | Separate ALPN, bounded offer/confirmation frames, TLS-leaf binding, mutual confirmation before persistence, no 0-RTT |
 | Connection rate limits | Done | Bounded per-address connection and pairing windows |
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
+| Windows 10 physical compatibility | R&D Stage 5 partial | Schannel/OpenSSL manual pairing, trusted reconnect, nonce rotation, and focus without capture passed; physical Raw Input/failure matrix remains |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -191,5 +192,8 @@ separately reviewable stages. The production architecture remains stock
 MsQuic/Schannel with the existing non-exportable CNG identity on Windows
 11/Server 2022 or newer until every security and physical acceptance criterion
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md) passes. Stages 1 through 4 are
-implemented; the guarded physical Windows 11/Windows 10 matrix is the next
-gate.
+implemented. Stage 5 has passed mixed-provider manual pairing, trusted reconnect,
+fresh nonce rotation, and focus without capture on the guarded Windows
+11/Windows 10 pair. Physical Raw Input, reconciliation, emergency release,
+held-input termination, network interruption, and stale epoch/session rejection
+remain. Windows 10 therefore remains experimental/unsupported.

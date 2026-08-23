@@ -47,7 +47,11 @@ independent gates:
    explicit `PeerValidated` state, a four-second validation watchdog, and the
    required negative OpenSSL/CNG matrix
 4. **Complete:** prove device-identity invariance and absence of private-key export paths
-5. **Next:** run guarded Windows 11 Schannel to Windows 10 OpenSSL physical validation
+5. **In progress:** guarded Windows 11 Schannel to Windows 10 OpenSSL physical
+   validation. Manual mutual-confirmation pairing, trusted reconnect, fresh
+   nonce rotation, and focus without capture pass. Physical Raw Input,
+   reconciliation, emergency release, held-input termination, safe network
+   interruption, and stale epoch/session rejection remain.
 
 No later stage begins before the preceding stage passes. Full constraints are
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).

@@ -133,14 +133,23 @@ Private or Domain network profile.
 For SSH-driven compatibility validation where Windows session isolation hides
 message boxes, add `--console-confirm` to both pairing commands. Each side prints
 the same six-digit code and waits for the exact input `yes`; no confirmation is
-automatic. Trusted connections also log their shared session nonce so reconnect
-rotation can be recorded without exposing identity or trust secrets.
+automatic. A local confirmation is exchanged on the peer-validated pairing
+stream, and neither side reports success or persists new trust until both
+confirmations arrive. Trusted connections also log their shared session nonce so
+reconnect rotation can be recorded without exposing identity or trust secrets.
 
 Windows 10 remains unsupported. The MsQuic 2.6.x foundation, opaque CNG/OpenSSL
 provider, fail-closed admission matrix, identity-invariance comparison, and
 private-key-export source gates now pass. It is now eligible for the guarded
 physical compatibility-validation matrix, but remains unsupported until that
 matrix passes. It never receives an OpenSSL reduced-security fallback.
+
+The guarded physical Windows 11 Schannel to Windows 10 OpenSSL run has passed
+manual same-code pairing, bilateral trust persistence, trusted reconnect, two
+matching cross-provider session nonces, nonce rotation on the second reconnect,
+and focus without capture. The before/after identity snapshots were identical
+on both PCs and retained export policy zero. Physical capture and failure tests
+below remain incomplete, so this is not a Windows 10 support claim.
 
 The native MsQuic loopback additionally verifies that both trusted endpoints
 receive the same nonzero session nonce and that reconnecting rotates it.
@@ -185,7 +194,6 @@ This validation does not prove:
 - Raw Input/high-poll-rate hook timing across physical Windows 11 PCs
 - WASAPI timing or endpoint recovery
 - real packet-loss/jitter characteristics
-- two-PC user-confirmed pairing and reconnect behavior
 - physical input-state snapshot recovery after an interrupted key/button transition
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:

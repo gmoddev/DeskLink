@@ -8,8 +8,11 @@ namespace desklink {
 namespace {
 
 constexpr std::uint8_t kOfferFrameType = 1;
+constexpr std::uint8_t kConfirmationFrameType = 2;
 constexpr std::size_t kFixedOfferBodySize =
     MachineId{}.size() + 1 + Sha256Digest{}.size() + PairingNonce{}.size();
+constexpr std::size_t kMaximumBufferedPairingBytes =
+    kMaxPairingFrameSize + kPairingFrameHeaderSize;
 constexpr std::size_t kMaximumRateLimitKeySize = 128;
 
 void AppendU16(ByteBuffer& Output, std::uint16_t Value) {
@@ -140,44 +143,103 @@ std::optional<PairingOffer> DecodePairingOfferFrame(ByteSpan Frame) {
                                       : std::nullopt;
 }
 
+ByteBuffer EncodePairingConfirmationFrame() {
+    ByteBuffer Frame;
+    Frame.reserve(kPairingFrameHeaderSize);
+    AppendU32(Frame, kPairingWireMagic);
+    Frame.push_back(kPairingWireVersion);
+    Frame.push_back(kConfirmationFrameType);
+    AppendU16(Frame, 0);
+    return Frame;
+}
+
 PairingWireStatus PairingFrameDecoder::Push(ByteSpan Bytes) {
     if (Status_ == PairingWireStatus::InvalidFrame ||
         Status_ == PairingWireStatus::Ready ||
-        Bytes.size() > kMaxPairingFrameSize ||
-        Buffer_.size() > kMaxPairingFrameSize - Bytes.size()) {
+        Bytes.size() > kMaximumBufferedPairingBytes ||
+        Buffer_.size() > kMaximumBufferedPairingBytes - Bytes.size()) {
         Status_ = PairingWireStatus::InvalidFrame;
         Offer_.reset();
+        ReadyType_.reset();
         return Status_;
     }
     Buffer_.insert(Buffer_.end(), Bytes.begin(), Bytes.end());
-    if (Buffer_.size() < kPairingFrameHeaderSize) return Status_;
-    if (ReadU32(Buffer_, 0) != kPairingWireMagic ||
-        Buffer_[4] != kPairingWireVersion || Buffer_[5] != kOfferFrameType) {
-        Status_ = PairingWireStatus::InvalidFrame;
-        return Status_;
-    }
-    const auto ExpectedSize = kPairingFrameHeaderSize +
-        static_cast<std::size_t>(ReadU16(Buffer_, 6));
-    if (ExpectedSize > kMaxPairingFrameSize || Buffer_.size() > ExpectedSize) {
-        Status_ = PairingWireStatus::InvalidFrame;
-        return Status_;
-    }
-    if (Buffer_.size() < ExpectedSize) return Status_;
-    Offer_ = DecodePairingOfferFrame(Buffer_);
-    Status_ = Offer_ ? PairingWireStatus::Ready : PairingWireStatus::InvalidFrame;
+    Advance();
     return Status_;
 }
 
+PairingWireStatus PairingFrameDecoder::Status() const noexcept {
+    return Status_;
+}
+
+std::optional<PairingWireFrameType> PairingFrameDecoder::ReadyType() const noexcept {
+    return ReadyType_;
+}
+
+void PairingFrameDecoder::Advance() {
+    Status_ = PairingWireStatus::Incomplete;
+    ReadyType_.reset();
+    Offer_.reset();
+    if (Buffer_.size() < kPairingFrameHeaderSize) return;
+    if (ReadU32(Buffer_, 0) != kPairingWireMagic ||
+        Buffer_[4] != kPairingWireVersion) {
+        Status_ = PairingWireStatus::InvalidFrame;
+        return;
+    }
+    const auto FrameType = Buffer_[5];
+    if (FrameType != kOfferFrameType && FrameType != kConfirmationFrameType) {
+        Status_ = PairingWireStatus::InvalidFrame;
+        return;
+    }
+    const auto BodySize = static_cast<std::size_t>(ReadU16(Buffer_, 6));
+    const auto ExpectedSize = kPairingFrameHeaderSize +
+        BodySize;
+    if (ExpectedSize > kMaxPairingFrameSize ||
+        (FrameType == kConfirmationFrameType && BodySize != 0)) {
+        Status_ = PairingWireStatus::InvalidFrame;
+        return;
+    }
+    if (Buffer_.size() < ExpectedSize) return;
+
+    if (FrameType == kOfferFrameType) {
+        Offer_ = DecodePairingOfferFrame(
+            ByteSpan{Buffer_.data(), ExpectedSize});
+        if (!Offer_) {
+            Status_ = PairingWireStatus::InvalidFrame;
+            return;
+        }
+        ReadyType_ = PairingWireFrameType::Offer;
+    } else {
+        ReadyType_ = PairingWireFrameType::Confirmation;
+    }
+    Buffer_.erase(Buffer_.begin(),
+                  Buffer_.begin() + static_cast<std::ptrdiff_t>(ExpectedSize));
+    Status_ = PairingWireStatus::Ready;
+}
+
 std::optional<PairingOffer> PairingFrameDecoder::TakeOffer() {
-    if (Status_ != PairingWireStatus::Ready || !Offer_) return std::nullopt;
+    if (Status_ != PairingWireStatus::Ready ||
+        ReadyType_ != PairingWireFrameType::Offer || !Offer_) {
+        return std::nullopt;
+    }
     auto Result = std::move(Offer_);
-    Reset();
+    Advance();
     return Result;
+}
+
+bool PairingFrameDecoder::TakeConfirmation() {
+    if (Status_ != PairingWireStatus::Ready ||
+        ReadyType_ != PairingWireFrameType::Confirmation) {
+        return false;
+    }
+    Advance();
+    return true;
 }
 
 void PairingFrameDecoder::Reset() noexcept {
     Buffer_.clear();
     Offer_.reset();
+    ReadyType_.reset();
     Status_ = PairingWireStatus::Incomplete;
 }
 

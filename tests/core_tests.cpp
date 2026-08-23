@@ -608,7 +608,29 @@ void PairingWireIsBoundedAndFragmentSafe() {
     CHECK(Decoder.Push(ByteSpan{Frame->data(), 3}) == PairingWireStatus::Incomplete);
     CHECK(Decoder.Push(ByteSpan{Frame->data() + 3, Frame->size() - 3}) ==
           PairingWireStatus::Ready);
+    CHECK(Decoder.ReadyType() == PairingWireFrameType::Offer);
     CHECK(Decoder.TakeOffer().has_value());
+    CHECK(Decoder.Status() == PairingWireStatus::Incomplete);
+
+    const auto Confirmation = EncodePairingConfirmationFrame();
+    CHECK(Confirmation.size() == kPairingFrameHeaderSize);
+    ByteBuffer Combined = *Frame;
+    Combined.insert(Combined.end(), Confirmation.begin(), Confirmation.end());
+    Decoder.Reset();
+    CHECK(Decoder.Push(Combined) == PairingWireStatus::Ready);
+    CHECK(Decoder.ReadyType() == PairingWireFrameType::Offer);
+    CHECK(Decoder.TakeOffer().has_value());
+    CHECK(Decoder.Status() == PairingWireStatus::Ready);
+    CHECK(Decoder.ReadyType() == PairingWireFrameType::Confirmation);
+    CHECK(Decoder.TakeConfirmation());
+    CHECK(Decoder.Status() == PairingWireStatus::Incomplete);
+
+    Decoder.Reset();
+    CHECK(Decoder.Push(ByteSpan{Confirmation.data(), 2}) ==
+          PairingWireStatus::Incomplete);
+    CHECK(Decoder.Push(ByteSpan{Confirmation.data() + 2, Confirmation.size() - 2}) ==
+          PairingWireStatus::Ready);
+    CHECK(Decoder.TakeConfirmation());
 
     auto BadMagic = *Frame;
     BadMagic[0] ^= 0xFFu;
@@ -616,6 +638,11 @@ void PairingWireIsBoundedAndFragmentSafe() {
     auto ExtraByte = *Frame;
     ExtraByte.push_back(0);
     CHECK(!DecodePairingOfferFrame(ExtraByte));
+    auto ConfirmationWithBody = Confirmation;
+    ConfirmationWithBody[7] = 1;
+    ConfirmationWithBody.push_back(0);
+    Decoder.Reset();
+    CHECK(Decoder.Push(ConfirmationWithBody) == PairingWireStatus::InvalidFrame);
     auto InvalidUtf8 = Offer;
     InvalidUtf8.DisplayName = std::string{"\xC0\xAF", 2};
     CHECK(!EncodePairingOfferFrame(InvalidUtf8));
