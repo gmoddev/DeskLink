@@ -22,6 +22,7 @@ enum class MessageType : std::uint16_t {
     MouseButton        = 21,
     PointerPosition    = 22,
     InputStateSnapshot = 23,
+    MouseWheel         = 24,
     SetAudioGain       = 30,
     AudioFrame         = 31,
     Heartbeat          = 40,
@@ -41,6 +42,13 @@ enum class MouseButtonId : std::uint8_t {
     X1 = 4,
     X2 = 5,
 };
+
+enum class MouseWheelAxis : std::uint8_t {
+    Vertical = 1,
+    Horizontal = 2,
+};
+
+inline constexpr std::int16_t kMaximumMouseWheelDelta = 1200;
 
 struct EnvelopeHeader {
     std::uint32_t magic{kWireMagic};
@@ -90,6 +98,11 @@ struct PointerPositionMessage {
     std::uint16_t normalized_y{};
 };
 
+struct MouseWheelMessage {
+    MouseWheelAxis Axis{MouseWheelAxis::Vertical};
+    std::int16_t Delta{};
+};
+
 struct InputStateSnapshotMessage {
     std::array<std::uint8_t, 32> KeyBitmap{}; // 256 non-extended scan-code slots
     std::array<std::uint8_t, 32> ExtendedKeyBitmap{}; // 256 extended scan-code slots
@@ -122,6 +135,7 @@ using Message = std::variant<
     MouseButtonMessage,
     PointerPositionMessage,
     InputStateSnapshotMessage,
+    MouseWheelMessage,
     SetAudioGainMessage,
     AudioFrameMessage,
     HeartbeatMessage>;
@@ -162,6 +176,8 @@ struct DecodeResult {
                                           bool Down) noexcept;
 [[nodiscard]] bool InputSnapshotButtonDown(const InputStateSnapshotMessage& Snapshot,
                                            MouseButtonId Button) noexcept;
+[[nodiscard]] bool IsValidMouseWheelMessage(
+    const MouseWheelMessage& Message) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);
 [[nodiscard]] DecodeResult decode_packet(ByteSpan bytes, bool datagram);
 

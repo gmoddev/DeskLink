@@ -24,6 +24,7 @@ public:
     [[nodiscard]] std::optional<ByteBuffer> key_event(KeyEventMessage event);
     [[nodiscard]] std::optional<ByteBuffer> mouse_button(MouseButtonMessage event);
     [[nodiscard]] std::optional<ByteBuffer> pointer_position(PointerPositionMessage event);
+    [[nodiscard]] std::optional<ByteBuffer> MouseWheel(MouseWheelMessage Message);
     [[nodiscard]] std::optional<ByteBuffer> InputStateSnapshot();
 
     void emergency_fail_local() noexcept;

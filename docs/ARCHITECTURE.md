@@ -139,6 +139,7 @@ Reliable traffic includes:
 - focus requests/renewals/releases
 - keyboard down/up
 - mouse button down/up
+- bounded vertical/horizontal mouse-wheel deltas
 - reconciliation snapshots
 
 The Host records authoritative routed key/button state as events are accepted
@@ -149,6 +150,13 @@ converging only its DeskLink-owned injected state. It releases stale holds
 before applying missing presses; local physical state is outside that ownership
 boundary. Snapshot-send failure uses the same fail-local path as lease-renewal
 failure.
+
+Wheel input is cumulative rather than latest-state, so it remains on the
+ordered reliable lane. Each event carries one axis and a nonzero signed delta
+bounded to `-1200..1200`. The Windows low-level mouse hook enqueues a physical
+wheel event before suppressing it. Invalid deltas, queue contention, queue
+overflow, and reliable-send failure disable remote routing; an event that
+cannot be enqueued is passed to Windows locally.
 
 Datagrams include:
 

@@ -36,6 +36,7 @@ struct Win32CaptureHandlers {
     std::function<void(KeyEventMessage)> Key;
     std::function<void(MouseButtonMessage)> Button;
     std::function<void(PointerPositionMessage)> Pointer;
+    std::function<void(MouseWheelMessage)> Wheel;
     std::function<void()> Emergency;
     std::function<void(std::string)> Failed;
 };

@@ -17,6 +17,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Fail-local emergency state
 - Owned input-state cleanup callback
 - Absolute normalized pointer messages
+- Bounded reliable vertical/horizontal mouse-wheel messages
 - PCM audio frame format
 - Bounded reorder/jitter buffer with silence concealment
 - Abstract transport interface
@@ -43,6 +44,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Guarded two-PC reconciliation fault validation with a non-production-only control
 - Stable Windows DisplayConfig identities, deterministic display IDs, rectangle mapping,
   and topology-generation invalidation
+- Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -52,7 +54,6 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Mouse-wheel transport
 - LAN discovery/mDNS
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend

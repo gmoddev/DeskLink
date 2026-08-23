@@ -89,6 +89,17 @@ bool Win32InputInjector::inject_pointer(const PointerPositionMessage& event) {
     return send_one(input);
 }
 
+bool Win32InputInjector::InjectWheel(const MouseWheelMessage& Message) {
+    if (!IsValidMouseWheelMessage(Message)) return false;
+
+    INPUT Input{};
+    Input.type = INPUT_MOUSE;
+    Input.mi.mouseData = static_cast<DWORD>(static_cast<LONG>(Message.Delta));
+    Input.mi.dwFlags = Message.Axis == MouseWheelAxis::Vertical
+        ? MOUSEEVENTF_WHEEL : MOUSEEVENTF_HWHEEL;
+    return send_one(Input);
+}
+
 bool Win32InputInjector::RefreshDisplayTopology() {
     return DisplayTopology_.Refresh();
 }

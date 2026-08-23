@@ -27,11 +27,13 @@ constexpr UINT kEmergencyMessage = WM_APP + 0x44u;
 constexpr UINT kStopMessage = WM_APP + 0x45u;
 constexpr UINT kQueueOverflowMessage = WM_APP + 0x46u;
 constexpr UINT kKeyboardCaptureFailureMessage = WM_APP + 0x47u;
+constexpr UINT kMouseWheelCaptureFailureMessage = WM_APP + 0x48u;
 constexpr std::size_t kMaximumQueuedEvents = 1024;
 constexpr wchar_t kCaptureWindowClass[] = L"DeskLink.RawInputCapture.v1";
 
 using CapturedEvent = std::variant<
-    KeyEventMessage, MouseButtonMessage, PointerPositionMessage>;
+    KeyEventMessage, MouseButtonMessage, PointerPositionMessage,
+    MouseWheelMessage>;
 
 std::atomic<Win32InputCapture::State*> ActiveState{};
 
@@ -120,12 +122,12 @@ struct Win32InputCapture::State {
         return true;
     }
 
-    bool TryEnqueueKeyboard(KeyEventMessage Event) {
+    bool TryEnqueueHookEvent(CapturedEvent Event) {
         std::unique_lock Lock(QueueMutex, std::try_to_lock);
         if (!Lock.owns_lock() || Queue.size() >= kMaximumQueuedEvents) {
             return false;
         }
-        Queue.push_back(Event);
+        Queue.push_back(std::move(Event));
         Lock.unlock();
         QueueChanged.notify_one();
         return true;
@@ -213,7 +215,7 @@ LRESULT CALLBACK KeyboardHook(int Code, WPARAM Message, LPARAM Data) {
             return CallNextHookEx(nullptr, Code, Message, Data);
         }
         const bool Extended = (Event->flags & LLKHF_EXTENDED) != 0;
-        if (!State->TryEnqueueKeyboard(KeyEventMessage{
+        if (!State->TryEnqueueHookEvent(KeyEventMessage{
                 static_cast<std::uint16_t>(Event->scanCode), Extended, Down})) {
             State->Gate.SetRemoteRouting(false);
             PostThreadMessageW(
@@ -232,7 +234,24 @@ LRESULT CALLBACK MouseHook(int Code, WPARAM Message, LPARAM Data) {
     }
     const auto* Event = reinterpret_cast<const MSLLHOOKSTRUCT*>(Data);
     if (Message == WM_MOUSEWHEEL || Message == WM_MOUSEHWHEEL) {
-        return CallNextHookEx(nullptr, Code, Message, Data);
+        if (State->Gate.HandleMouse((Event->flags & LLMHF_INJECTED) != 0) !=
+            Win32HookDecision::Suppress) {
+            return CallNextHookEx(nullptr, Code, Message, Data);
+        }
+        const auto Delta = static_cast<std::int16_t>(
+            static_cast<SHORT>(HIWORD(Event->mouseData)));
+        const MouseWheelMessage Wheel{
+            Message == WM_MOUSEWHEEL
+                ? MouseWheelAxis::Vertical : MouseWheelAxis::Horizontal,
+            Delta};
+        if (!IsValidMouseWheelMessage(Wheel) ||
+            !State->TryEnqueueHookEvent(Wheel)) {
+            State->Gate.SetRemoteRouting(false);
+            PostThreadMessageW(
+                State->CaptureThreadId, kMouseWheelCaptureFailureMessage, 0, 0);
+            return CallNextHookEx(nullptr, Code, Message, Data);
+        }
+        return 1;
     }
     if (State->Gate.HandleMouse((Event->flags & LLMHF_INJECTED) != 0) ==
         Win32HookDecision::Suppress) {
@@ -323,6 +342,8 @@ bool Win32InputCapture::Start() {
                         if (State->Handlers.Button) State->Handlers.Button(Value);
                     } else if constexpr (std::is_same_v<ValueType, PointerPositionMessage>) {
                         if (State->Handlers.Pointer) State->Handlers.Pointer(Value);
+                    } else if constexpr (std::is_same_v<ValueType, MouseWheelMessage>) {
+                        if (State->Handlers.Wheel) State->Handlers.Wheel(Value);
                     }
                 }, std::move(Event));
             } catch (...) {
@@ -396,6 +417,10 @@ bool Win32InputCapture::Start() {
                 if (Message.message == kKeyboardCaptureFailureMessage) {
                     State->Fail(
                         "keyboard hook scan code or capture queue was invalid");
+                }
+                if (Message.message == kMouseWheelCaptureFailureMessage) {
+                    State->Fail(
+                        "mouse-wheel delta or capture queue was invalid");
                 }
                 TranslateMessage(&Message);
                 DispatchMessageW(&Message);

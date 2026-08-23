@@ -135,8 +135,10 @@ The Windows capture adapter uses Ctrl+Alt+Pause as its physical fail-local
 chord, accepting both the Pause and Windows Ctrl+Break virtual-key forms. The
 low-level hook clears the atomic routing flag before notifying the worker.
 Injected events always pass through. An invalid keyboard scan code, a busy/full
-keyboard capture queue, or Raw Input queue overflow disables routing before the
-session is released.
+keyboard capture queue, Raw Input queue overflow, or an invalid/unqueueable
+physical wheel event disables routing before the session is released. Wheel
+input is suppressed only after its bounded reliable event has been accepted by
+the nonblocking capture queue; otherwise that physical event passes locally.
 
 ---
 
@@ -338,14 +340,17 @@ The following must remain regression-tested:
 9. reliable input cannot be accepted from datagram lane
 10. older/duplicate pointer datagrams are rejected within an epoch
 11. stale FocusReady transaction IDs cannot acquire authority
-12. no CONNECTED effect, stream, datagram, pairing, focus, or session admission
+12. wheel messages reject the datagram lane, unknown axes, zero deltas, and
+    deltas outside `-1200..1200`
+13. a wheel event is never suppressed unless its bounded hook enqueue succeeds
+14. no CONNECTED effect, stream, datagram, pairing, focus, or session admission
     before `PeerValidated`
-13. validator failure, exception, or timeout rejects the connection
-14. missing, malformed, expired, not-yet-valid, unknown, wrong-pin, signing, and
+15. validator failure, exception, or timeout rejects the connection
+16. missing, malformed, expired, not-yet-valid, unknown, wrong-pin, signing, and
     changed-identity cases admit no application session
-15. 0-RTT application streams and datagrams are rejected
-12. pointer/audio datagram semantics do not require retransmission
-13. certificate rejection cannot reach `CONNECTED` or session admission
-14. the device key remains non-exportable and identity pin remains unchanged
-15. OpenSSL runtime components fail integrity before loading when modified
-16. exportable or certificate-mismatched CNG credentials fail before networking
+17. 0-RTT application streams and datagrams are rejected
+18. pointer/audio datagram semantics do not require retransmission
+19. certificate rejection cannot reach `CONNECTED` or session admission
+20. the device key remains non-exportable and identity pin remains unchanged
+21. OpenSSL runtime components fail integrity before loading when modified
+22. exportable or certificate-mismatched CNG credentials fail before networking

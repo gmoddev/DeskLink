@@ -53,6 +53,9 @@ public:
     bool inject_pointer(const desklink::PointerPositionMessage& event) override {
         pointers.push_back(event); return true;
     }
+    bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
+        wheels.push_back(Message); return true;
+    }
     bool ReconcileState(const desklink::InputStateSnapshotMessage& Snapshot) override {
         snapshots.push_back(Snapshot); return ReconcileSucceeds;
     }
@@ -61,6 +64,7 @@ public:
     std::vector<desklink::KeyEventMessage> keys;
     std::vector<desklink::MouseButtonMessage> buttons;
     std::vector<desklink::PointerPositionMessage> pointers;
+    std::vector<desklink::MouseWheelMessage> wheels;
     std::vector<desklink::InputStateSnapshotMessage> snapshots;
     bool ReconcileSucceeds{true};
     int release_calls{};
@@ -141,6 +145,46 @@ void protocol_round_trip() {
     CHECK(got.display_id == 3);
     CHECK(got.normalized_x == 12345);
     CHECK(got.normalized_y == 54321);
+}
+
+void MouseWheelRoundTripAndValidation() {
+    using namespace desklink;
+    EnvelopeHeader Header;
+    Header.session_nonce = 43;
+    Header.epoch = 8;
+    Header.sequence = 100;
+
+    const auto Bytes = encode_packet(
+        Header, MouseWheelMessage{MouseWheelAxis::Horizontal, -120});
+    const auto Decoded = decode_packet(Bytes, false);
+    CHECK(Decoded.packet.has_value());
+    const auto& Wheel = std::get<MouseWheelMessage>(Decoded.packet->message);
+    CHECK(Wheel.Axis == MouseWheelAxis::Horizontal);
+    CHECK(Wheel.Delta == -120);
+
+    const auto WrongLane = decode_packet(Bytes, true);
+    CHECK(!WrongLane.packet.has_value());
+    CHECK(WrongLane.error == DecodeError::InvalidPayload);
+    CHECK(!decode_packet(
+        encode_packet(Header, MouseWheelMessage{MouseWheelAxis::Vertical, 0}),
+        false).packet.has_value());
+    CHECK(!decode_packet(
+        encode_packet(Header, MouseWheelMessage{
+            MouseWheelAxis::Vertical,
+            static_cast<std::int16_t>(kMaximumMouseWheelDelta + 1)}),
+        false).packet.has_value());
+    CHECK(!decode_packet(
+        encode_packet(Header, MouseWheelMessage{
+            static_cast<MouseWheelAxis>(3), 120}), false).packet.has_value());
+    CHECK(decode_packet(
+        encode_packet(Header, MouseWheelMessage{
+            MouseWheelAxis::Vertical, kMaximumMouseWheelDelta}),
+        false).packet.has_value());
+    CHECK(decode_packet(
+        encode_packet(Header, MouseWheelMessage{
+            MouseWheelAxis::Horizontal,
+            static_cast<std::int16_t>(-kMaximumMouseWheelDelta)}),
+        false).packet.has_value());
 }
 
 void DisplayTopologyMappingIsStableAndInvalidates() {
@@ -330,6 +374,13 @@ void capability_and_lease_gate_input() {
     CHECK(agent.handle(*key.packet) == AgentDecision::Accepted);
     CHECK(injector.keys.size() == 1);
 
+    auto WheelBytes = encode_packet(
+        key_header, MouseWheelMessage{MouseWheelAxis::Vertical, 120});
+    auto Wheel = decode_packet(WheelBytes, false);
+    CHECK(Wheel.packet.has_value());
+    CHECK(agent.handle(*Wheel.packet) == AgentDecision::Accepted);
+    CHECK(injector.wheels.size() == 1);
+
     clock.advance(std::chrono::milliseconds(751));
     agent.tick();
     CHECK(injector.release_calls == 1);
@@ -392,12 +443,26 @@ void host_agent_focus_transaction() {
     CHECK(host.accept_focus_ready(*ready.packet));
     CHECK(host.remote_focused());
 
+    CHECK(!host.MouseWheel(
+        MouseWheelMessage{MouseWheelAxis::Vertical, 0}).has_value());
+    CHECK(!host.MouseWheel(MouseWheelMessage{
+        MouseWheelAxis::Vertical,
+        static_cast<std::int16_t>(kMaximumMouseWheelDelta + 1)}).has_value());
+
     auto pointer_bytes = host.pointer_position(PointerPositionMessage{0, 100, 200});
     CHECK(pointer_bytes.has_value());
     auto pointer = decode_packet(*pointer_bytes, true);
     CHECK(pointer.packet.has_value());
     CHECK(agent.handle(*pointer.packet) == AgentDecision::Accepted);
     CHECK(injector.pointers.size() == 1);
+
+    auto WheelBytes = host.MouseWheel(
+        MouseWheelMessage{MouseWheelAxis::Vertical, 120});
+    CHECK(WheelBytes.has_value());
+    auto Wheel = decode_packet(*WheelBytes, false);
+    CHECK(Wheel.packet.has_value());
+    CHECK(agent.handle(*Wheel.packet) == AgentDecision::Accepted);
+    CHECK(injector.wheels.size() == 1);
 
     host.emergency_fail_local();
     CHECK(!host.remote_focused());
@@ -536,6 +601,7 @@ void secure_session_end_to_end() {
     CHECK(host.send_button(MouseButtonMessage{MouseButtonId::X1, true}));
     CHECK(host.SendInputStateSnapshot());
     CHECK(host.send_pointer(PointerPositionMessage{0, 30000, 31000}));
+    CHECK(host.SendWheel(MouseWheelMessage{MouseWheelAxis::Horizontal, -120}));
     CHECK(injector.keys.size() == 2);
     CHECK(injector.buttons.size() == 1);
     CHECK(injector.snapshots.size() == 1);
@@ -543,6 +609,7 @@ void secure_session_end_to_end() {
     CHECK(InputSnapshotKeyDown(injector.snapshots.back(), 0x1D, true));
     CHECK(InputSnapshotButtonDown(injector.snapshots.back(), MouseButtonId::X1));
     CHECK(injector.pointers.size() == 1);
+    CHECK(injector.wheels.size() == 1);
 
     clock.advance(std::chrono::milliseconds(800));
     agent.tick();
@@ -944,6 +1011,7 @@ void in_memory_transport_preserves_security_metadata() {
 
 int main() {
     protocol_round_trip();
+    MouseWheelRoundTripAndValidation();
     DisplayTopologyMappingIsStableAndInvalidates();
     DisplayTopologyRejectsAmbiguousStableIds();
     InputStateSnapshotRoundTripAndValidation();

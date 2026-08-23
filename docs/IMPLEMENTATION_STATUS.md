@@ -29,6 +29,7 @@ The current build proves the core invariants independently of Windows networking
 | Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
 | Pointer format | Done | Absolute normalized datagram |
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
+| Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
@@ -99,6 +100,7 @@ The current test suite verifies:
 35. topology rectangle changes invalidate stale generations
 36. duplicate identities and 16-bit display-ID collisions fail closed
 37. live Windows DisplayConfig enumeration when an active desktop is available
+38. mouse-wheel codec round trip, wrong-lane rejection, axis/delta bounds, and end-to-end focus admission
 
 Build/test result in the creation environment:
 
@@ -121,7 +123,6 @@ Build/test result in the creation environment:
 - physical emergency-chord and high-poll-rate timing validation
 - edge graph
 - edge hysteresis
-- mouse-wheel transport
 - foreground profile engine
 - GAME capture teardown/reinstall lifecycle
 

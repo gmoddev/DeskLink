@@ -43,6 +43,7 @@ FocusRelease
 KeyEvent
 MouseButton
 InputStateSnapshot
+MouseWheel
 SetAudioGain
 Heartbeat
 ```
@@ -182,6 +183,19 @@ first releases DeskLink-owned holds absent from the snapshot, then presses
 missing holds. Capability, session, active-lease, and epoch validation must
 succeed before reconciliation. A snapshot never adopts or releases input that
 DeskLink does not own.
+
+### MouseWheel — type 24
+
+```text
+axis                     u8
+delta                    i16
+```
+
+Axes are `1` for vertical and `2` for horizontal. Delta uses network byte
+order, must be nonzero, and is bounded to `-1200..1200`. Positive and negative
+values retain Windows' native vertical/horizontal wheel direction semantics.
+Wheel events use the reliable ordered lane because deltas are cumulative and
+must not be dropped or reordered like latest-state pointer positions.
 
 ### SetAudioGain — type 30
 

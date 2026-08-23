@@ -21,6 +21,7 @@ It uses `SendInput` with:
 - `KEYEVENTF_EXTENDEDKEY` when required
 - `KEYEVENTF_KEYUP` for release
 - mouse down/up flags for buttons
+- `MOUSEEVENTF_WHEEL` / `MOUSEEVENTF_HWHEEL` for bounded signed wheel deltas
 - `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK` for absolute pointer movement
 
 The injector tracks DeskLink-owned pressed keys/buttons and releases only those states during cleanup.
@@ -54,10 +55,16 @@ Raw input should feed a bounded in-process queue.
 
 The current adapter registers the mouse `RIDEV_INPUTSINK` device against a
 message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
-positions, and disables routing on overflow. After the remaining real two-PC
-failure matrix passes, mouse-wheel transport is the next input milestone.
-Until wheel transport is implemented,
-wheel events continue locally rather than being swallowed.
+positions, and disables routing on overflow.
+
+Physical wheel messages are the deliberate exception to Raw Input authority:
+the low-level mouse hook must enqueue each cumulative wheel delta before it can
+safely suppress the matching local event. It accepts vertical and horizontal
+signed deltas in `-1200..1200`, excludes zero, and forwards them on the reliable
+ordered lane. Injected wheel events always pass. If validation or the hook's
+nonblocking bounded enqueue fails, routing is cleared and that event passes to
+Windows locally. A later reliable forwarding failure also clears routing and
+releases focus through the normal fail-local control path.
 
 ### Low-level keyboard capture and suppression
 

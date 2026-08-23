@@ -35,6 +35,12 @@ public:
                   << " x=" << event.normalized_x << " y=" << event.normalized_y << '\n';
         return true;
     }
+    bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
+        std::cout << "agent: mouse wheel axis="
+                  << static_cast<int>(Message.Axis)
+                  << " delta=" << Message.Delta << '\n';
+        return true;
+    }
     bool ReconcileState(const desklink::InputStateSnapshotMessage&) override {
         std::cout << "agent: reconcile DeskLink-owned key/button state\n";
         return true;
@@ -87,11 +93,14 @@ int main() {
 
     auto key_down = host.key_event(KeyEventMessage{0x1E, false, true});
     auto pointer = host.pointer_position(PointerPositionMessage{0, 42000, 25000});
+    auto wheel = host.MouseWheel(
+        MouseWheelMessage{MouseWheelAxis::Vertical, 120});
     auto key_up = host.key_event(KeyEventMessage{0x1E, false, false});
-    if (!key_down || !pointer || !key_up) return 3;
+    if (!key_down || !pointer || !wheel || !key_up) return 3;
 
     (void)deliver_agent(agent, std::move(*key_down));
     (void)deliver_agent(agent, std::move(*pointer), true);
+    (void)deliver_agent(agent, std::move(*wheel));
     (void)deliver_agent(agent, std::move(*key_up));
 
     std::cout << "simulating network silence past lease...\n";
