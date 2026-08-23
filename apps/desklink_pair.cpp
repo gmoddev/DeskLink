@@ -1,6 +1,7 @@
 #include "desklink/msquic_bootstrap.hpp"
 #include "desklink/session.hpp"
 #include "desklink/win32_capture.hpp"
+#include "desklink/win32_control.hpp"
 #include "desklink/win32_input.hpp"
 #include "desklink/win32_pairing.hpp"
 
@@ -44,6 +45,7 @@ enum class Operation {
     PairConnect,
     Serve,
     Focus,
+    Control,
 };
 
 struct CommandLine {
@@ -54,6 +56,8 @@ struct CommandLine {
     bool CaptureInput{};
     bool ConsoleConfirm{};
     desklink::TlsBackend TlsBackend{desklink::TlsBackend::Auto};
+    desklink::ControlRequestPayload ControlPayload{
+        desklink::GetStateControlRequest{}};
     bool ValidationDropNextKeyRelease{};
     bool ValidationDropNextButtonRelease{};
     bool ValidationReconciliationProbe{};
@@ -155,7 +159,9 @@ void PrintUsage() {
         << L"  desklink_pair listen [port] [--grant-input]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input]\n"
         << L"  desklink_pair serve [port]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture]\n\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture]\n"
+        << L"  desklink_pair control state\n"
+        << L"  desklink_pair control mode roam|lock|game\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
         << L"--console-confirm requires typing yes after comparing the pairing code.\n"
@@ -200,6 +206,31 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (!Host || Host->empty()) return std::nullopt;
         Result.Host = *Host;
         Index = 3;
+    } else if (Command == L"control") {
+        Result.Mode = Operation::Control;
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"state") {
+            Result.ControlPayload = desklink::GetStateControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 4 &&
+            std::wstring_view(Arguments[2]) == L"mode") {
+            const std::wstring_view Mode(Arguments[3]);
+            if (Mode == L"roam") {
+                Result.ControlPayload = desklink::SetDesiredModeControlRequest{
+                    desklink::DeskMode::Roam};
+            } else if (Mode == L"lock") {
+                Result.ControlPayload = desklink::SetDesiredModeControlRequest{
+                    desklink::DeskMode::LockPc1};
+            } else if (Mode == L"game") {
+                Result.ControlPayload = desklink::SetDesiredModeControlRequest{
+                    desklink::DeskMode::Game};
+            } else {
+                return std::nullopt;
+            }
+            return Result;
+        }
+        return std::nullopt;
     } else {
         return std::nullopt;
     }
@@ -378,6 +409,71 @@ std::string FormatHex(desklink::ByteSpan Bytes) {
         Result[Index * 2 + 1] = Digits[Bytes[Index] & 0x0fu];
     }
     return Result;
+}
+
+std::string_view ControlRoleName(desklink::ControlRole Role) noexcept {
+    switch (Role) {
+        case desklink::ControlRole::Idle: return "idle";
+        case desklink::ControlRole::Agent: return "agent";
+        case desklink::ControlRole::Host: return "host";
+    }
+    return "invalid";
+}
+
+std::string_view DeskModeName(desklink::DeskMode Mode) noexcept {
+    switch (Mode) {
+        case desklink::DeskMode::Roam: return "roam";
+        case desklink::DeskMode::LockPc1: return "lock";
+        case desklink::DeskMode::Game: return "game";
+    }
+    return "invalid";
+}
+
+std::string_view ControlStatusName(desklink::ControlStatus Status) noexcept {
+    switch (Status) {
+        case desklink::ControlStatus::Ok: return "ok";
+        case desklink::ControlStatus::InvalidRequest: return "invalid_request";
+        case desklink::ControlStatus::Unsupported: return "unsupported";
+        case desklink::ControlStatus::NotReady: return "not_ready";
+        case desklink::ControlStatus::Failed: return "failed";
+    }
+    return "invalid";
+}
+
+int RunControl(const CommandLine& Command) {
+    auto RequestId = static_cast<std::uint64_t>(GetTickCount64()) ^
+        (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32u);
+    if (RequestId == 0) RequestId = 1;
+    const auto Response = desklink::Win32ControlPipeClient::Send(
+        desklink::ControlRequest{RequestId, Command.ControlPayload});
+    if (!Response) {
+        std::cerr << "[Control:Client] current-user DeskLink endpoint was unavailable\n";
+        return 1;
+    }
+    if (Response->Status != desklink::ControlStatus::Ok) {
+        std::cerr << "[Control:Client] request status="
+                  << ControlStatusName(Response->Status) << '\n';
+        return 1;
+    }
+    if (!Response->State) {
+        std::cout << "[Control:Client] request applied\n";
+        return 0;
+    }
+
+    const auto& State = *Response->State;
+    std::cout << "[Control:State] role=" << ControlRoleName(State.Role)
+              << " mode=" << DeskModeName(State.DesiredMode)
+              << " peers=" << State.ConnectedPeerCount
+              << " remote_focused=" << (State.RemoteFocused ? "true" : "false")
+              << " capture_active=" << (State.CaptureActive ? "true" : "false")
+              << " audio_gain=" << State.AudioGainPermyriad
+              << " audio_muted=" << (State.AudioMuted ? "true" : "false")
+              << " local_machine=" << FormatHex(State.LocalMachine);
+    if (State.RemoteFocused) {
+        std::cout << " focused_machine=" << FormatHex(State.FocusedMachine);
+    }
+    std::cout << '\n';
+    return 0;
 }
 
 int PrintIdentitySnapshot(const desklink::Win32DeviceCertificate& Certificate,
@@ -695,11 +791,13 @@ struct AgentRuntime {
                  bool ObserveCleanup,
                  bool ObserveRejections)
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
-        : Injector(DropNextKeyRelease, DropNextButtonRelease, ObserveCleanup,
+        : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          Injector(DropNextKeyRelease, DropNextButtonRelease, ObserveCleanup,
                    ObserveRejections),
           Coordinator(Clock, Injector),
 #else
-        : Coordinator(Clock, Injector),
+        : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          Coordinator(Clock, Injector),
 #endif
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
                   Trusted.SessionNonce) {
@@ -711,6 +809,7 @@ struct AgentRuntime {
 #endif
     }
 
+    desklink::MachineId PeerMachine{};
     AgentInputInjector Injector;
     desklink::AgentCoordinator Coordinator;
     desklink::AgentSession Session;
@@ -720,12 +819,14 @@ struct HostRuntime {
     HostRuntime(const desklink::ITrustStore& TrustStore,
                 desklink::MsQuicBootstrapHandlers::TrustedSession Trusted,
                 std::function<void()> FocusReadyHandler)
-        : Endpoint(Trusted.Endpoint),
+        : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          Endpoint(Trusted.Endpoint),
           SessionNonce(Trusted.SessionNonce),
           Coordinator(Trusted.SessionNonce),
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
                   Trusted.SessionNonce, std::move(FocusReadyHandler)) {}
 
+    desklink::MachineId PeerMachine{};
     std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
     std::uint64_t SessionNonce{};
     desklink::HostCoordinator Coordinator;
@@ -737,12 +838,119 @@ int RunTrusted(const CommandLine& Command,
                desklink::DpapiTrustStore& TrustStore,
                desklink::BCryptPairingCrypto& Crypto,
                desklink::PairingCoordinator& Pairing,
-               desklink::SteadyClock& Clock) {
+               desklink::SteadyClock& Clock,
+               const desklink::MachineId& LocalMachine) {
     const auto Result = std::make_shared<TrustedResult>();
     std::mutex RuntimesMutex;
     std::vector<std::shared_ptr<AgentRuntime>> AgentRuntimes;
     std::shared_ptr<HostRuntime> Host;
     int ExitCode = 0;
+    std::atomic<desklink::Win32InputCapture*> ActiveCapture{};
+    std::mutex CaptureLifetimeMutex;
+    std::atomic_bool CaptureActive{};
+    std::atomic<desklink::DeskMode> DesiredMode{desklink::DeskMode::Roam};
+
+    desklink::Win32ControlPipeServer ControlServer(
+        [&](const desklink::ControlRequest& Request) {
+            if (std::holds_alternative<desklink::GetStateControlRequest>(
+                    Request.Payload)) {
+                desklink::ControlState State;
+                State.LocalMachine = LocalMachine;
+                State.Role = Command.Mode == Operation::Serve
+                    ? desklink::ControlRole::Agent
+                    : desklink::ControlRole::Host;
+                State.DesiredMode = DesiredMode.load();
+                State.CaptureActive = CaptureActive.load();
+
+                std::vector<std::shared_ptr<AgentRuntime>> Agents;
+                std::shared_ptr<HostRuntime> ActiveHost;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    Agents = AgentRuntimes;
+                    ActiveHost = Host;
+                }
+                if (Command.Mode == Operation::Serve) {
+                    State.ConnectedPeerCount = static_cast<std::uint16_t>(
+                        std::min<std::size_t>(Agents.size(),
+                            std::numeric_limits<std::uint16_t>::max()));
+                    for (const auto& Runtime : Agents) {
+                        if (Runtime->Session.RemoteFocused()) {
+                            State.RemoteFocused = true;
+                            State.FocusedMachine = Runtime->PeerMachine;
+                            break;
+                        }
+                    }
+                } else if (ActiveHost) {
+                    State.ConnectedPeerCount = 1;
+                    State.DesiredMode = ActiveHost->Session.DesiredMode();
+                    State.RemoteFocused = ActiveHost->Session.RemoteFocused();
+                    if (State.RemoteFocused) {
+                        State.FocusedMachine = ActiveHost->PeerMachine;
+                    }
+                }
+                if (!desklink::IsValidControlState(State)) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::Failed,
+                        std::nullopt};
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Ok, State};
+            }
+
+            const auto* SetMode = std::get_if<
+                desklink::SetDesiredModeControlRequest>(&Request.Payload);
+            if (!SetMode) {
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Unsupported,
+                    std::nullopt};
+            }
+
+            if (Command.Mode == Operation::Serve) {
+                DesiredMode.store(SetMode->Mode);
+                std::vector<std::shared_ptr<AgentRuntime>> Agents;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    Agents = AgentRuntimes;
+                }
+                for (const auto& Runtime : Agents) {
+                    Runtime->Session.SetLocalDesiredMode(SetMode->Mode);
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Ok,
+                    std::nullopt};
+            }
+
+            std::shared_ptr<HostRuntime> ActiveHost;
+            {
+                std::scoped_lock Lock(RuntimesMutex);
+                ActiveHost = Host;
+            }
+            if (!ActiveHost) {
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::NotReady,
+                    std::nullopt};
+            }
+            const bool Applied = ActiveHost->Session.SetDesiredMode(SetMode->Mode);
+            DesiredMode.store(SetMode->Mode);
+            if (SetMode->Mode == desklink::DeskMode::LockPc1 ||
+                SetMode->Mode == desklink::DeskMode::Game) {
+                CaptureActive.store(false);
+                std::scoped_lock CaptureLock(CaptureLifetimeMutex);
+                if (auto* Capture = ActiveCapture.load()) {
+                    Capture->SetRemoteRouting(false);
+                }
+            }
+            return desklink::ControlResponse{
+                Request.RequestId,
+                Applied ? desklink::ControlStatus::Ok
+                        : desklink::ControlStatus::Failed,
+                std::nullopt};
+        });
+    if (!ControlServer.Start()) {
+        std::cerr << "[Control:Pipe] could not create the current-user endpoint\n";
+        return 1;
+    }
+    std::cout << "[Control:Pipe] current-user endpoint active\n";
 
     desklink::MsQuicBootstrapHandlers Handlers;
     Handlers.PairingOffered = [](std::shared_ptr<desklink::MsQuicPairingSession> Session) {
@@ -782,6 +990,7 @@ int RunTrusted(const CommandLine& Command,
                 Runtime->Session.stop();
                 return;
             }
+            Runtime->Session.SetLocalDesiredMode(DesiredMode.load());
             {
                 std::scoped_lock Lock(RuntimesMutex);
                 AgentRuntimes.push_back(std::move(Runtime));
@@ -913,7 +1122,6 @@ int RunTrusted(const CommandLine& Command,
             return 1;
         }
         std::unique_ptr<desklink::Win32InputCapture> Capture;
-        std::atomic<desklink::Win32InputCapture*> ActiveCapture{};
         std::atomic_uint64_t KeyEventsCaptured{};
         std::atomic_uint64_t KeyEventsForwarded{};
         std::atomic_uint64_t ButtonEventsCaptured{};
@@ -931,6 +1139,7 @@ int RunTrusted(const CommandLine& Command,
                 const bool Renewed = ActiveHost->Session.renew_focus(750);
                 const bool Reconciled = Renewed && ActiveHost->Session.SendInputStateSnapshot();
                 if (!Reconciled) {
+                    CaptureActive.store(false);
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
@@ -1045,12 +1254,14 @@ int RunTrusted(const CommandLine& Command,
         if (Command.CaptureInput) {
             desklink::Win32CaptureHandlers CaptureHandlers;
             CaptureHandlers.Key = [ActiveHost, Result, &ActiveCapture,
+                                   &CaptureActive,
                                    &KeyEventsCaptured, &KeyEventsForwarded](
                 desklink::KeyEventMessage Event) {
                 KeyEventsCaptured.fetch_add(1, std::memory_order_relaxed);
                 if (ActiveHost->Session.send_key(Event)) {
                     KeyEventsForwarded.fetch_add(1, std::memory_order_relaxed);
                 } else {
+                    CaptureActive.store(false);
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
@@ -1063,6 +1274,7 @@ int RunTrusted(const CommandLine& Command,
                 }
             };
             CaptureHandlers.Button = [ActiveHost, Result, &ActiveCapture,
+                                      &CaptureActive,
                                       &ButtonEventsCaptured,
                                       &ButtonEventsForwarded](
                 desklink::MouseButtonMessage Event) {
@@ -1070,6 +1282,7 @@ int RunTrusted(const CommandLine& Command,
                 if (ActiveHost->Session.send_button(Event)) {
                     ButtonEventsForwarded.fetch_add(1, std::memory_order_relaxed);
                 } else {
+                    CaptureActive.store(false);
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
@@ -1090,6 +1303,7 @@ int RunTrusted(const CommandLine& Command,
                 }
             };
             CaptureHandlers.Wheel = [ActiveHost, Result, &ActiveCapture,
+                                     &CaptureActive,
                                      &WheelEventsCaptured,
                                      &WheelEventsForwarded](
                 desklink::MouseWheelMessage Message) {
@@ -1097,6 +1311,7 @@ int RunTrusted(const CommandLine& Command,
                 if (ActiveHost->Session.SendWheel(Message)) {
                     WheelEventsForwarded.fetch_add(1, std::memory_order_relaxed);
                 } else {
+                    CaptureActive.store(false);
                     if (auto* Current = ActiveCapture.load()) {
                         Current->SetRemoteRouting(false);
                     }
@@ -1108,7 +1323,9 @@ int RunTrusted(const CommandLine& Command,
                     Result->Changed.notify_all();
                 }
             };
-            CaptureHandlers.Emergency = [Result, &EmergencyTriggered] {
+            CaptureHandlers.Emergency = [Result, &EmergencyTriggered,
+                                         &CaptureActive] {
+                CaptureActive.store(false);
                 EmergencyTriggered.store(true, std::memory_order_relaxed);
                 {
                     std::scoped_lock Lock(Result->Mutex);
@@ -1116,7 +1333,8 @@ int RunTrusted(const CommandLine& Command,
                 }
                 Result->Changed.notify_all();
             };
-            CaptureHandlers.Failed = [Result](std::string Message) {
+            CaptureHandlers.Failed = [Result, &CaptureActive](std::string Message) {
+                CaptureActive.store(false);
                 {
                     std::scoped_lock Lock(Result->Mutex);
                     Result->Emergency = true;
@@ -1126,9 +1344,16 @@ int RunTrusted(const CommandLine& Command,
             };
             Capture = std::make_unique<desklink::Win32InputCapture>(
                 std::move(CaptureHandlers));
-            ActiveCapture.store(Capture.get());
+            {
+                std::scoped_lock CaptureLock(CaptureLifetimeMutex);
+                ActiveCapture.store(Capture.get());
+            }
             if (!Capture->Start()) {
-                ActiveCapture.store(nullptr);
+                CaptureActive.store(false);
+                {
+                    std::scoped_lock CaptureLock(CaptureLifetimeMutex);
+                    ActiveCapture.store(nullptr);
+                }
                 StopRenewal.store(true);
                 Renewal.join();
                 std::cerr << "[Input:Capture] could not install Raw Input and fail-local hooks\n";
@@ -1145,6 +1370,7 @@ int RunTrusted(const CommandLine& Command,
             }
             if (!RenewalFailed) {
                 Capture->SetRemoteRouting(true);
+                CaptureActive.store(true);
                 std::cout << "[Input:Capture] physical input is routed remotely\n"
                           << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n";
             }
@@ -1182,12 +1408,16 @@ int RunTrusted(const CommandLine& Command,
                 break;
             }
         }
+        CaptureActive.store(false);
+        {
+            std::scoped_lock CaptureLock(CaptureLifetimeMutex);
+            ActiveCapture.store(nullptr);
+        }
         if (Capture) Capture->SetRemoteRouting(false);
         StopRenewal.store(true);
         Renewal.join();
         if (Capture) {
             Capture->Stop();
-            ActiveCapture.store(nullptr);
             std::cout << "[Input:Capture] summary"
                       << " key_captured="
                       << KeyEventsCaptured.load(std::memory_order_relaxed)
@@ -1227,6 +1457,8 @@ int RunTrusted(const CommandLine& Command,
 }
 
 int Run(const CommandLine& Command) {
+    if (Command.Mode == Operation::Control) return RunControl(Command);
+
     desklink::BCryptPairingCrypto Crypto;
     auto Certificate = Command.Mode == Operation::Identity
         ? desklink::Win32DeviceCertificate::Load(kDeviceKeyName, Crypto)
@@ -1263,7 +1495,7 @@ int Run(const CommandLine& Command) {
         LocalIdentity, Certificate->CertificatePin(), Clock, Crypto, TrustStore);
     if (Command.Mode == Operation::Serve || Command.Mode == Operation::Focus) {
         return RunTrusted(Command, std::move(*Certificate), TrustStore, Crypto,
-                          Pairing, Clock);
+                          Pairing, Clock, LocalIdentity.machine_id);
     }
     if (!Pairing.BeginPairing(kPairingWindow)) {
         std::cerr << "[Pairing:Control] could not open the pairing window\n";

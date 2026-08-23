@@ -252,12 +252,21 @@ Capabilities should degrade independently.
 
 ## 10. Local named pipe
 
-Host should expose a current-user-only named pipe such as:
+Host and Agent expose a current-user-only pipe named from the protocol version
+and current user SID:
 
 ```text
-\\.\pipe\DeskLink.Control
+\\.\pipe\DeskLink.Control.v1.<current-user-SID>
 ```
 
-Create an explicit DACL for the current user SID.
+Creation uses a protected DACL with exactly one current-user allow ACE,
+`PIPE_REJECT_REMOTE_CLIENTS`, overlapped I/O, a two-second server I/O bound, and
+first-instance protection. Both endpoints read the opposite process ID and
+compare its token user SID before exchanging data. The client permits at most a
+five-second requested timeout.
 
-The pipe protocol should use bounded typed commands and never expose arbitrary transport packets or OS commands.
+The pipe protocol uses exact bounded typed commands and never exposes arbitrary
+transport packets, input injection, OS commands, or module loading. `GetState`
+and `SetDesiredMode` are implemented. `FocusMachine`, `SetAudioGain`, and
+`ToggleAudioMute` have reserved typed encodings but return `Unsupported` until
+their owning subsystems exist.

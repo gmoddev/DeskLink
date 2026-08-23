@@ -59,6 +59,21 @@ void AgentSession::tick() noexcept {
     coordinator_.tick();
 }
 
+void AgentSession::SetLocalDesiredMode(DeskMode Mode) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    coordinator_.SetLocalDesiredMode(Mode);
+}
+
+DeskMode AgentSession::DesiredMode() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return coordinator_.DesiredMode();
+}
+
+bool AgentSession::RemoteFocused() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return coordinator_.RemoteFocused();
+}
+
 SessionStats AgentSession::stats() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return stats_;
@@ -177,6 +192,13 @@ bool HostSession::focus_remote(std::uint32_t lease_ms) {
     return transport_->send_reliable(coordinator_.request_remote_focus(lease_ms));
 }
 
+bool HostSession::SetDesiredMode(DeskMode Mode) {
+    std::scoped_lock Lock(Mutex_);
+    if (!started_) return false;
+    auto Packet = coordinator_.set_mode(Mode);
+    return transport_->send_reliable(std::move(Packet));
+}
+
 bool HostSession::renew_focus(std::uint32_t lease_ms) {
     std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
@@ -229,6 +251,11 @@ bool HostSession::SendInputStateSnapshot() {
 bool HostSession::RemoteFocused() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return coordinator_.remote_focused();
+}
+
+DeskMode HostSession::DesiredMode() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return coordinator_.desired_mode();
 }
 
 SessionStats HostSession::stats() const noexcept {

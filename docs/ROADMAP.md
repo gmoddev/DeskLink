@@ -26,7 +26,12 @@ Work proceeds in this order:
    enqueues physical vertical/horizontal wheel input before suppression and
    fails local on invalid deltas, queue contention/overflow, or forwarding
    failure.
-4. **Blocked on item 1:** monitor edge graph, crossing hysteresis, and roaming
+4. **Complete:** current-user named-pipe control API. The versioned SID-derived
+   endpoint uses an explicit one-user DACL, rejects remote clients, verifies
+   both process-token SIDs, bounds frames/timeouts, and exposes only typed state
+   and desired-mode operations. Restrictive local modes cannot be weakened by
+   a remote peer.
+5. **Blocked on item 1:** monitor edge graph, crossing hysteresis, and roaming
    policy.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
@@ -35,7 +40,6 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- current-user named-pipe control API
 - LAN discovery/mDNS
 - foreground profile engine and GAME lifecycle
 - WASAPI capture/render, adaptive jitter, and clock-drift correction

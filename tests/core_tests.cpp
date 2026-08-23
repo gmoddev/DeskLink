@@ -1,6 +1,7 @@
 #include "desklink/agent.hpp"
 #include "desklink/audio.hpp"
 #include "desklink/capabilities.hpp"
+#include "desklink/control.hpp"
 #include "desklink/display_topology.hpp"
 #include "desklink/host.hpp"
 #include "desklink/input.hpp"
@@ -12,12 +13,18 @@
 #include "desklink/types.hpp"
 #ifdef _WIN32
 #include "desklink/win32_capture.hpp"
+#include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_display_topology.hpp"
 #include "desklink/win32_pairing.hpp"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -145,6 +152,78 @@ void protocol_round_trip() {
     CHECK(got.display_id == 3);
     CHECK(got.normalized_x == 12345);
     CHECK(got.normalized_y == 54321);
+}
+
+void ControlProtocolRoundTripAndValidation() {
+    using namespace desklink;
+
+    const std::array<ControlRequest, 5> Requests{
+        ControlRequest{1, GetStateControlRequest{}},
+        ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
+        ControlRequest{3, FocusMachineControlRequest{
+            MachineId{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}}},
+        ControlRequest{4, SetAudioGainControlRequest{7'500}},
+        ControlRequest{5, ToggleAudioMuteControlRequest{}},
+    };
+    for (const auto& Request : Requests) {
+        const auto Frame = EncodeControlRequest(Request);
+        CHECK(Frame.has_value());
+        CHECK(Frame->size() <= kMaximumControlFrameSize);
+        const auto Decoded = DecodeControlRequest(*Frame);
+        CHECK(Decoded.Decoded.has_value());
+        CHECK(Decoded.Decoded->RequestId == Request.RequestId);
+        CHECK(Decoded.Decoded->Payload.index() == Request.Payload.index());
+    }
+
+    ControlState State;
+    State.LocalMachine[0] = 0x11;
+    State.FocusedMachine[0] = 0x22;
+    State.Role = ControlRole::Host;
+    State.DesiredMode = DeskMode::Roam;
+    State.ConnectedPeerCount = 1;
+    State.AudioGainPermyriad = 8'000;
+    State.RemoteFocused = true;
+    State.CaptureActive = true;
+    const auto ResponseFrame = EncodeControlResponse(
+        ControlResponse{9, ControlStatus::Ok, State});
+    CHECK(ResponseFrame.has_value());
+    const auto Response = DecodeControlResponse(*ResponseFrame);
+    CHECK(Response.Decoded.has_value());
+    CHECK(Response.Decoded->RequestId == 9);
+    CHECK(Response.Decoded->Status == ControlStatus::Ok);
+    CHECK(Response.Decoded->State.has_value());
+    CHECK(Response.Decoded->State->FocusedMachine == State.FocusedMachine);
+    CHECK(Response.Decoded->State->CaptureActive);
+
+    CHECK(!EncodeControlRequest(ControlRequest{}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        6, SetDesiredModeControlRequest{static_cast<DeskMode>(99)}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        7, FocusMachineControlRequest{}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        8, SetAudioGainControlRequest{10'001}}).has_value());
+    CHECK(!EncodeControlResponse(ControlResponse{
+        10, ControlStatus::Failed, State}).has_value());
+
+    auto WrongType = *EncodeControlRequest(Requests[0]);
+    WrongType[7] = static_cast<std::uint8_t>(ControlFrameType::Response);
+    CHECK(!DecodeControlRequest(WrongType).Decoded.has_value());
+    CHECK(DecodeControlRequest(WrongType).Error ==
+          ControlDecodeError::InvalidHeader);
+
+    auto Oversized = *EncodeControlRequest(Requests[0]);
+    Oversized[16] = 0;
+    Oversized[17] = 0;
+    Oversized[18] = 0;
+    Oversized[19] = static_cast<std::uint8_t>(kMaximumControlPayload + 1);
+    CHECK(!DecodeControlRequest(Oversized).Decoded.has_value());
+    CHECK(DecodeControlRequest(Oversized).Error == ControlDecodeError::Oversized);
+
+    auto Trailing = *EncodeControlRequest(Requests[0]);
+    Trailing.push_back(0);
+    CHECK(!DecodeControlRequest(Trailing).Decoded.has_value());
+    CHECK(DecodeControlRequest(Trailing).Error ==
+          ControlDecodeError::InvalidPayload);
 }
 
 void MouseWheelRoundTripAndValidation() {
@@ -387,6 +466,46 @@ void capability_and_lease_gate_input() {
     CHECK(agent.handle(*key.packet) == AgentDecision::RejectedEpoch);
 }
 
+void DesiredModeControlIsCapabilityGatedAndFailsLocal() {
+    using namespace desklink;
+
+    ManualClock Clock;
+    RecordingInjector Injector;
+    AgentCoordinator Agent(Clock, Injector);
+    EnvelopeHeader Header;
+    const auto LockPacket = decode_packet(
+        encode_packet(Header, SetModeMessage{DeskMode::LockPc1}), false);
+    CHECK(LockPacket.packet.has_value());
+    CHECK(Agent.handle(*LockPacket.packet) ==
+          AgentDecision::RejectedCapability);
+
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Agent.set_peer_capabilities(Capabilities);
+    const auto FocusPacket = decode_packet(
+        encode_packet(Header, FocusRequestMessage{750, 1}), false);
+    CHECK(FocusPacket.packet.has_value());
+    CHECK(Agent.handle(*FocusPacket.packet) == AgentDecision::Accepted);
+    CHECK(Agent.RemoteFocused());
+
+    CHECK(Agent.handle(*LockPacket.packet) == AgentDecision::Accepted);
+    CHECK(Agent.DesiredMode() == DeskMode::LockPc1);
+    CHECK(!Agent.RemoteFocused());
+    CHECK(Injector.release_calls == 1);
+    CHECK(Agent.handle(*FocusPacket.packet) == AgentDecision::RejectedLease);
+
+    const auto RoamPacket = decode_packet(
+        encode_packet(Header, SetModeMessage{DeskMode::Roam}), false);
+    CHECK(RoamPacket.packet.has_value());
+    Agent.SetLocalDesiredMode(DeskMode::Game);
+    CHECK(Agent.handle(*RoamPacket.packet) == AgentDecision::Accepted);
+    CHECK(Agent.DesiredMode() == DeskMode::Game);
+    CHECK(Agent.handle(*FocusPacket.packet) == AgentDecision::RejectedLease);
+    Agent.SetLocalDesiredMode(DeskMode::Roam);
+    CHECK(Agent.handle(*FocusPacket.packet) == AgentDecision::Accepted);
+    CHECK(Agent.RemoteFocused());
+}
+
 void stale_epoch_rejected_after_refocus() {
     using namespace desklink;
     ManualClock clock;
@@ -619,6 +738,10 @@ void secure_session_end_to_end() {
     CHECK(host.SendInputStateSnapshot());
     CHECK(injector.snapshots.size() == 1); // expired lease rejects reconciliation too
     CHECK(agent.stats().authorization_rejected >= 1);
+    CHECK(host.SetDesiredMode(DeskMode::Game));
+    CHECK(host.DesiredMode() == DeskMode::Game);
+    CHECK(agent.DesiredMode() == DeskMode::Game);
+    CHECK(!agent.RemoteFocused());
 }
 
 void insecure_transport_refused() {
@@ -852,6 +975,57 @@ void CertificatePinsMatchOnlyTheStoredPeer() {
 }
 
 #ifdef _WIN32
+void WindowsCurrentUserControlPipeRoundTrip() {
+    using namespace desklink;
+
+    const auto Instance = L"test-" + std::to_wstring(GetCurrentProcessId());
+    CHECK(!GetWin32ControlPipeName(L"invalid.instance").has_value());
+
+    ControlState State;
+    State.LocalMachine[0] = 0x31;
+    State.Role = ControlRole::Agent;
+    State.DesiredMode = DeskMode::Roam;
+    State.ConnectedPeerCount = 2;
+    Win32ControlPipeServer Server(
+        [State](const ControlRequest& Request) {
+            if (std::holds_alternative<GetStateControlRequest>(Request.Payload)) {
+                return ControlResponse{
+                    Request.RequestId, ControlStatus::Ok, State};
+            }
+            return ControlResponse{
+                Request.RequestId, ControlStatus::Unsupported, std::nullopt};
+        }, Instance);
+    CHECK(Server.Start());
+    CHECK(Server.Running());
+    CHECK(!Server.PipeName().empty());
+    Win32ControlPipeServer Duplicate(
+        [](const ControlRequest& Request) {
+            return ControlResponse{
+                Request.RequestId, ControlStatus::Ok, std::nullopt};
+        }, Instance);
+    CHECK(!Duplicate.Start());
+
+    const auto Response = Win32ControlPipeClient::Send(
+        ControlRequest{101, GetStateControlRequest{}}, Instance);
+    CHECK(Response.has_value());
+    CHECK(Response->Status == ControlStatus::Ok);
+    CHECK(Response->State.has_value());
+    CHECK(Response->State->LocalMachine == State.LocalMachine);
+    CHECK(Response->State->ConnectedPeerCount == 2);
+
+    const auto Unsupported = Win32ControlPipeClient::Send(
+        ControlRequest{102, ToggleAudioMuteControlRequest{}}, Instance);
+    CHECK(Unsupported.has_value());
+    CHECK(Unsupported->Status == ControlStatus::Unsupported);
+    CHECK(!Unsupported->State.has_value());
+
+    Server.Stop();
+    CHECK(!Server.Running());
+    CHECK(!Win32ControlPipeClient::Send(
+        ControlRequest{103, GetStateControlRequest{}}, Instance,
+        std::chrono::milliseconds{25}).has_value());
+}
+
 void WindowsDisplayTopologyEnumeratesWhenAvailable() {
     using namespace desklink;
 
@@ -1011,6 +1185,7 @@ void in_memory_transport_preserves_security_metadata() {
 
 int main() {
     protocol_round_trip();
+    ControlProtocolRoundTripAndValidation();
     MouseWheelRoundTripAndValidation();
     DisplayTopologyMappingIsStableAndInvalidates();
     DisplayTopologyRejectsAmbiguousStableIds();
@@ -1018,6 +1193,7 @@ int main() {
     InputStateTransitionsReleaseBeforePress();
     rejects_wrong_lane_and_oversize();
     capability_and_lease_gate_input();
+    DesiredModeControlIsCapabilityGatedAndFailsLocal();
     stale_epoch_rejected_after_refocus();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();
@@ -1033,6 +1209,7 @@ int main() {
     AttemptRateLimiterIsBoundedAndExpires();
     CertificatePinsMatchOnlyTheStoredPeer();
 #ifdef _WIN32
+    WindowsCurrentUserControlPipeRoundTrip();
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();
