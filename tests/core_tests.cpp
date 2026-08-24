@@ -696,6 +696,59 @@ void AudioFrameAssemblerProducesExactBoundedBlocks() {
     CHECK(!IsDeskLinkAudioFrame(Invalid));
 }
 
+void AudioReceiverIsBoundedAndFailsClosed() {
+    using namespace desklink;
+    std::vector<AudioFrameMessage> Rendered;
+    AudioReceiver Receiver(
+        [&](AudioFrameMessage Frame) {
+            Rendered.push_back(std::move(Frame));
+            return true;
+        },
+        2, 4);
+    const auto MakeFrame = [](std::uint8_t Marker,
+                              std::uint32_t StreamId = 9) {
+        AudioFrameMessage Frame;
+        Frame.stream_id = StreamId;
+        Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, Marker);
+        return Frame;
+    };
+
+    CHECK(Receiver.Push(10, MakeFrame(10)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Buffering);
+    CHECK(Receiver.Push(12, MakeFrame(12)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(Rendered.size() == 1 && Rendered.back().pcm[0] == 10);
+    CHECK(Receiver.Push(13, MakeFrame(13)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(Rendered.size() == 2 && Rendered.back().pcm[0] == 0);
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(Rendered.size() == 3 && Rendered.back().pcm[0] == 12);
+    CHECK(!Receiver.Push(9, MakeFrame(9)));
+    CHECK(!Receiver.Push(0, MakeFrame(14)));
+    CHECK(!Receiver.Push(14, MakeFrame(14, 10)));
+    auto Invalid = MakeFrame(0);
+    Invalid.sample_rate = 44'100;
+    CHECK(!Receiver.Push(14, std::move(Invalid)));
+    const auto Stats = Receiver.Stats();
+    CHECK(Stats.Accepted == 3);
+    CHECK(Stats.Submitted == 3);
+    CHECK(Stats.Concealed == 1);
+    CHECK(Stats.SequenceRejected == 2);
+    CHECK(Stats.StreamRejected == 1);
+    CHECK(Stats.FormatRejected == 1);
+
+    AudioReceiver Rejecting(
+        [](AudioFrameMessage) { return false; }, 1, 2);
+    CHECK(Rejecting.Push(1, MakeFrame(1)));
+    CHECK(Rejecting.Pump() == AudioPumpResult::RenderRejected);
+    CHECK(Rejecting.Failed());
+    CHECK(!Rejecting.Push(2, MakeFrame(2)));
+    CHECK(Rejecting.Stats().RenderRejected == 1);
+    Rejecting.Reset();
+    CHECK(!Rejecting.Failed());
+    CHECK(Rejecting.Push(1, MakeFrame(1)));
+}
+
 
 
 void out_of_order_pointer_rejected() {
@@ -779,19 +832,45 @@ void secure_session_end_to_end() {
     AgentCoordinator agent_core(clock, injector);
     CapabilitySet caps;
     caps.grant(Capability::InputInject);
+    caps.grant(Capability::AudioReceive);
+    CapabilitySet HostCapabilities;
+    HostCapabilities.grant(Capability::AudioSend);
     InMemoryTrustStore host_trust;
     InMemoryTrustStore agent_trust;
-    SaveTrustedPeer(host_trust, host_view.identity);
+    SaveTrustedPeer(host_trust, host_view.identity, HostCapabilities);
     SaveTrustedPeer(agent_trust, agent_view.identity, caps);
     HostCoordinator host_core(nonce);
+
+    std::vector<AudioFrameMessage> RenderedAudio;
+    AudioReceiver Audio(
+        [&](AudioFrameMessage Frame) {
+            RenderedAudio.push_back(std::move(Frame));
+            return true;
+        },
+        2, 8);
 
     AgentSession agent(pair.b, agent_core, agent_trust, nonce);
     bool FocusReadyNotified = false;
     HostSession host(pair.a, host_core, host_trust, nonce, [&] {
         FocusReadyNotified = true;
-    });
+    }, &Audio);
     CHECK(agent.start());
     CHECK(host.start());
+    CHECK(agent.CanSendAudio());
+    CHECK(host.CanReceiveAudio());
+    AudioFrameMessage FirstAudio;
+    FirstAudio.stream_id = 1;
+    FirstAudio.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x41);
+    auto SecondAudio = FirstAudio;
+    SecondAudio.capture_timestamp_us = 5'000;
+    SecondAudio.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x42);
+    CHECK(agent.SendAudioFrame(std::move(FirstAudio)));
+    CHECK(agent.SendAudioFrame(std::move(SecondAudio)));
+    CHECK(Audio.Pump() == AudioPumpResult::Submitted);
+    CHECK(RenderedAudio.size() == 1);
+    CHECK(RenderedAudio[0].pcm[0] == 0x41);
+    CHECK(agent.stats().AudioSent == 2);
+    CHECK(host.stats().AudioAccepted == 2);
     CHECK(host.focus_remote(750));
     CHECK(host_core.remote_focused());
     CHECK(host.RemoteFocused());
@@ -823,6 +902,81 @@ void secure_session_end_to_end() {
     CHECK(host.DesiredMode() == DeskMode::Game);
     CHECK(agent.DesiredMode() == DeskMode::Game);
     CHECK(!agent.RemoteFocused());
+}
+
+void AudioSessionRequiresCapabilitiesNonceAndFormat() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x1234'5678u;
+    TransportPeerInfo HostView;
+    HostView.authenticated = true;
+    HostView.encrypted = true;
+    HostView.identity = MakeIdentity(31, "Audio sender");
+    TransportPeerInfo AgentView;
+    AgentView.authenticated = true;
+    AgentView.encrypted = true;
+    AgentView.identity = MakeIdentity(32, "Audio receiver");
+
+    {
+        auto Pair = make_in_memory_transport_pair(HostView, AgentView);
+        ManualClock Clock;
+        RecordingInjector Injector;
+        AgentCoordinator AgentCore(Clock, Injector);
+        HostCoordinator HostCore(Nonce);
+        InMemoryTrustStore HostTrust;
+        InMemoryTrustStore AgentTrust;
+        SaveTrustedPeer(HostTrust, HostView.identity);
+        SaveTrustedPeer(AgentTrust, AgentView.identity);
+        AudioReceiver Receiver(
+            [](AudioFrameMessage) { return true; }, 1, 2);
+        AgentSession Agent(Pair.b, AgentCore, AgentTrust, Nonce);
+        HostSession Host(Pair.a, HostCore, HostTrust, Nonce, {}, &Receiver);
+        CHECK(Agent.start());
+        CHECK(Host.start());
+        CHECK(!Agent.CanSendAudio());
+        CHECK(!Host.CanReceiveAudio());
+        AudioFrameMessage Frame;
+        Frame.stream_id = 1;
+        Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x11);
+        CHECK(!Agent.SendAudioFrame(Frame));
+        EnvelopeHeader Header;
+        Header.session_nonce = Nonce;
+        Header.sequence = 1;
+        CHECK(Pair.b->send_datagram(encode_packet(Header, Frame)));
+        CHECK(Host.stats().AudioRejected == 1);
+        CHECK(Receiver.Stats().Accepted == 0);
+    }
+
+    auto Pair = make_in_memory_transport_pair(HostView, AgentView);
+    CapabilitySet HostCapabilities;
+    HostCapabilities.grant(Capability::AudioSend);
+    InMemoryTrustStore HostTrust;
+    SaveTrustedPeer(HostTrust, HostView.identity, HostCapabilities);
+    HostCoordinator HostCore(Nonce);
+    AudioReceiver Receiver(
+        [](AudioFrameMessage) { return true; }, 1, 2);
+    HostSession Host(Pair.a, HostCore, HostTrust, Nonce, {}, &Receiver);
+    CHECK(Host.start());
+    CHECK(Host.CanReceiveAudio());
+    AudioFrameMessage Frame;
+    Frame.stream_id = 7;
+    Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x22);
+    EnvelopeHeader Header;
+    Header.session_nonce = Nonce + 1;
+    Header.sequence = 1;
+    CHECK(Pair.b->send_datagram(encode_packet(Header, Frame)));
+    CHECK(Host.stats().session_rejected == 1);
+    Header.session_nonce = Nonce;
+    auto Invalid = Frame;
+    Invalid.channels = 1;
+    CHECK(Pair.b->send_datagram(encode_packet(Header, Invalid)));
+    CHECK(Host.stats().decode_rejected == 1);
+    CHECK(Host.stats().AudioRejected == 2);
+    CHECK(Pair.b->send_datagram(encode_packet(Header, Frame)));
+    CHECK(Host.stats().AudioAccepted == 1);
+    Header.sequence = 2;
+    Frame.stream_id = 8;
+    CHECK(Pair.b->send_datagram(encode_packet(Header, Frame)));
+    CHECK(Receiver.Stats().StreamRejected == 1);
 }
 
 void insecure_transport_refused() {
@@ -1436,6 +1590,7 @@ void WindowsWasapiSmokeIfRequested() {
             [&](AudioFrameMessage Frame) {
                 CHECK(IsDeskLinkAudioFrame(Frame));
                 ++Captured;
+                return true;
             },
             [&](std::string) {
                 CaptureFailed.store(true);
@@ -1687,6 +1842,7 @@ void in_memory_transport_preserves_security_metadata() {
 
 int main() {
     AudioFrameAssemblerProducesExactBoundedBlocks();
+    AudioReceiverIsBoundedAndFailsClosed();
     ForegroundProfilePolicyIsBoundedAndDeterministic();
     HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus();
     HostInputLifecycleFailuresRemainLocal();
@@ -1708,6 +1864,7 @@ int main() {
     out_of_order_pointer_rejected();
     stale_focus_ready_cannot_win_new_transaction();
     secure_session_end_to_end();
+    AudioSessionRequiresCapabilitiesNonceAndFormat();
     insecure_transport_refused();
     UnpairedTransportIsRefused();
     PinnedIdentityMismatchIsRefused();

@@ -40,6 +40,7 @@ The current build proves the core invariants independently of Windows networking
 | Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | WASAPI capture/render foundation | Done | Event-driven shared-mode loopback capture and shared render; 64-frame render queue; silence underrun; explicit start/stop and failure isolation |
+| Audio session/datagram wiring | Done | Explicit runtime opt-in; complementary AudioReceive/AudioSend grants; PeerValidated transport, nonce, format, stream, sequence, and bounded receiver/render admission |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
 | Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
@@ -142,8 +143,6 @@ Build/test result in the creation environment:
 
 ### P1 — required for useful audio
 
-- capability-gated audio session/datagram wiring
-- receiver jitter/render pump
 - adaptive jitter target
 - clock drift resampler
 - endpoint-loss/recovery handling
@@ -206,10 +205,10 @@ monitor, and production CLI/live event runtime are complete. One serialized
 Host owner applies WinEvent and manual decisions through the fail-local
 lifecycle, admits capture only after fresh focus plus snapshot, and
 renews/reconciles only while Remote. The bounded event-driven WASAPI
-capture/render foundation and exact V1 audio block assembler are complete.
+capture/render foundation, exact V1 audio block assembler, complementary
+capability/session datagram gates, and receiver jitter/render pump are complete.
 Edge roaming remains gated on the deferred physical matrix; the next unblocked
-slice is capability-gated audio session/datagram wiring and receiver
-jitter/render pumping.
+slice is audio endpoint-loss/recovery with audio-only restart semantics.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

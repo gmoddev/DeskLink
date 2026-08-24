@@ -5,7 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -60,6 +62,7 @@ public:
 
     [[nodiscard]] bool push(std::uint64_t sequence, AudioFrameMessage frame);
     [[nodiscard]] std::optional<AudioPlayout> pop();
+    void Reset() noexcept;
     [[nodiscard]] std::size_t buffered() const noexcept { return frames_.size(); }
     [[nodiscard]] std::uint64_t dropped_late() const noexcept { return dropped_late_; }
     [[nodiscard]] std::uint64_t concealed_frames() const noexcept { return concealed_frames_; }
@@ -74,6 +77,46 @@ private:
     std::optional<AudioFrameMessage> last_model_;
     std::uint64_t dropped_late_{};
     std::uint64_t concealed_frames_{};
+};
+
+struct AudioReceiverStats {
+    std::uint64_t Accepted{};
+    std::uint64_t FormatRejected{};
+    std::uint64_t StreamRejected{};
+    std::uint64_t SequenceRejected{};
+    std::uint64_t Submitted{};
+    std::uint64_t Concealed{};
+    std::uint64_t RenderRejected{};
+};
+
+enum class AudioPumpResult {
+    Buffering,
+    Submitted,
+    RenderRejected,
+};
+
+class AudioReceiver final {
+public:
+    using RenderHandler = std::function<bool(AudioFrameMessage)>;
+
+    explicit AudioReceiver(RenderHandler Renderer,
+                           std::size_t TargetFrames = 4,
+                           std::size_t MaximumFrames = 20);
+
+    [[nodiscard]] bool Push(std::uint64_t Sequence,
+                            AudioFrameMessage Frame) noexcept;
+    [[nodiscard]] AudioPumpResult Pump() noexcept;
+    void Reset() noexcept;
+    [[nodiscard]] bool Failed() const noexcept;
+    [[nodiscard]] AudioReceiverStats Stats() const noexcept;
+
+private:
+    RenderHandler Renderer_;
+    AudioJitterBuffer Buffer_;
+    mutable std::mutex Mutex_;
+    std::optional<std::uint32_t> StreamId_;
+    AudioReceiverStats Stats_;
+    bool Failed_{};
 };
 
 } // namespace desklink

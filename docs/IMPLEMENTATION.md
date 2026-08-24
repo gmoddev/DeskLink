@@ -122,8 +122,8 @@ releases during cleanup. Bounded vertical/horizontal wheel events map to
 
 ### `audio.hpp` / `audio.cpp`
 
-Implements exact V1 audio block assembly and a bounded sequence-aware jitter
-buffer.
+Implements exact V1 audio block assembly, a bounded sequence-aware jitter
+buffer, and the thread-safe receiver/render pump.
 
 It:
 
@@ -135,6 +135,8 @@ It:
 - waits for a target amount of evidence before declaring a gap
 - synthesizes silence for a confirmed missing frame
 - limits buffered frame count
+- fixes one nonzero stream ID for each admitted receiver
+- fails the audio receiver closed when the render callback rejects a block
 
 ### `win32_audio.hpp` / `win32_audio.cpp`
 
@@ -146,10 +148,14 @@ the same canonical format, pre-rolls silence, accepts at most 64 validated
 blocks, and fills underruns with silence. Each adapter owns COM and WASAPI
 objects on its worker thread and exposes explicit start/stop/failure state.
 
-The adapters are not yet wired to peer capabilities or production transport.
-Endpoint notification/recovery, adaptive jitter, gain/mute, and clock-drift
-correction remain outside this foundation. Audio failure has no input-mode
-authority.
+`AgentSession` sends these blocks only when the stored peer grant includes
+`AudioReceive`. `HostSession` admits them only when the stored sender grant
+includes `AudioSend`, the current session nonce matches, and the receiver
+accepts the exact format/stream/sequence. The production CLI exposes explicit
+`--send-audio` and `--receive-audio` switches; neither capability silently
+starts an endpoint. Endpoint notification/recovery, adaptive jitter, gain/mute,
+and clock-drift correction remain outside this slice. Audio failure has no
+input-mode authority.
 
 ### `transport.hpp` / `in_memory_transport.cpp`
 
@@ -367,6 +373,11 @@ WASAPI shared render
 
 Audio has no authority over input mode. Module failures are isolated.
 
+The implemented sender and receiver are not keyed to the input focus epoch.
+They are independently authorized capabilities within the same fresh,
+`PeerValidated` session nonce. This permits audio to continue without granting
+or holding input focus while still rejecting stale-session datagrams.
+
 ---
 
 ## 9. Configuration ownership
@@ -409,10 +420,10 @@ implemented. One serialized lifecycle owner handles profile/manual decisions,
 `FocusReady`, renewal/reconciliation, emergency release, and capture failures.
 It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
 and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
-capture/render foundation and exact V1 block assembler are now implemented.
+capture/render foundation, exact V1 block assembler, complementary audio grants,
+session/datagram admission, and receiver jitter/render pump are now implemented.
 Edge roaming remains gated on the physical matrix; the next unblocked roadmap
-item is capability-gated audio session/datagram wiring and receiver
-jitter/render pumping.
+item is audio endpoint-loss/recovery with audio-only restart semantics.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 namespace desklink {
 namespace {
@@ -167,6 +168,99 @@ std::optional<AudioPlayout> AudioJitterBuffer::pop() {
     ++concealed_frames_;
     ++(*next_sequence_);
     return out;
+}
+
+void AudioJitterBuffer::Reset() noexcept {
+    frames_.clear();
+    next_sequence_.reset();
+    last_model_.reset();
+    dropped_late_ = 0;
+    concealed_frames_ = 0;
+}
+
+AudioReceiver::AudioReceiver(RenderHandler Renderer,
+                             std::size_t TargetFrames,
+                             std::size_t MaximumFrames)
+    : Renderer_(std::move(Renderer)),
+      Buffer_(TargetFrames, MaximumFrames) {}
+
+bool AudioReceiver::Push(std::uint64_t Sequence,
+                         AudioFrameMessage Frame) noexcept {
+    try {
+        std::scoped_lock Lock(Mutex_);
+        if (Failed_) return false;
+        if (!IsDeskLinkAudioFrame(Frame)) {
+            ++Stats_.FormatRejected;
+            return false;
+        }
+        if (Sequence == 0) {
+            ++Stats_.SequenceRejected;
+            return false;
+        }
+        if (Frame.stream_id == 0 ||
+            (StreamId_.has_value() && Frame.stream_id != *StreamId_)) {
+            ++Stats_.StreamRejected;
+            return false;
+        }
+        const auto StreamId = Frame.stream_id;
+        if (!Buffer_.push(Sequence, std::move(Frame))) {
+            ++Stats_.SequenceRejected;
+            return false;
+        }
+        if (!StreamId_) StreamId_ = StreamId;
+        ++Stats_.Accepted;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+AudioPumpResult AudioReceiver::Pump() noexcept {
+    std::optional<AudioPlayout> Playout;
+    try {
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (Failed_) return AudioPumpResult::RenderRejected;
+            Playout = Buffer_.pop();
+        }
+        if (!Playout) return AudioPumpResult::Buffering;
+        const bool Submitted = Renderer_ &&
+            Renderer_(std::move(Playout->frame));
+        std::scoped_lock Lock(Mutex_);
+        if (!Submitted) {
+            ++Stats_.RenderRejected;
+            Failed_ = true;
+            Buffer_.Reset();
+            return AudioPumpResult::RenderRejected;
+        }
+        ++Stats_.Submitted;
+        if (Playout->concealed) ++Stats_.Concealed;
+        return AudioPumpResult::Submitted;
+    } catch (...) {
+        std::scoped_lock Lock(Mutex_);
+        ++Stats_.RenderRejected;
+        Failed_ = true;
+        Buffer_.Reset();
+        return AudioPumpResult::RenderRejected;
+    }
+}
+
+void AudioReceiver::Reset() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    Buffer_.Reset();
+    StreamId_.reset();
+    Stats_ = {};
+    Failed_ = false;
+}
+
+bool AudioReceiver::Failed() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Failed_;
+}
+
+AudioReceiverStats AudioReceiver::Stats() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Stats_;
 }
 
 } // namespace desklink

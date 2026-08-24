@@ -4,6 +4,7 @@
 #include "desklink/host_input_lifecycle.hpp"
 #include "desklink/profile.hpp"
 #include "desklink/session.hpp"
+#include "desklink/win32_audio.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_foreground.hpp"
@@ -63,7 +64,11 @@ struct CommandLine {
     std::uint16_t Port{kDefaultPort};
     std::uint32_t DiscoveryDurationMs{3'000};
     bool GrantInput{};
+    bool GrantAudioSend{};
+    bool GrantAudioReceive{};
     bool CaptureInput{};
+    bool SendAudio{};
+    bool ReceiveAudio{};
     bool ConsoleConfirm{};
     bool ProfileConfigurationSeen{};
     desklink::DeskMode ProfileDefaultMode{desklink::DeskMode::Roam};
@@ -183,13 +188,17 @@ void PrintUsage() {
         << L"Usage:\n"
         << L"  desklink_pair identity\n"
         << L"  desklink_pair discover [seconds: 1..30]\n"
-        << L"  desklink_pair listen [port] [--grant-input]\n"
-        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input]\n"
-        << L"  desklink_pair serve [port]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture]\n"
+        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive]\n"
+        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive]\n"
+        << L"  desklink_pair serve [port] [--send-audio]\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--receive-audio]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
+        << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
+        << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
+        << L"--send-audio explicitly starts loopback capture for authorized peers.\n"
+        << L"--receive-audio explicitly starts shared-mode rendering for an authorized peer.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
         << L"focus --default-mode roam|lock-pc1|lock-pc2|game sets the fallback policy.\n"
         << L"focus --profile <exe>=<mode> adds an exact executable-name rule.\n"
@@ -285,9 +294,29 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.GrantInput = true;
             continue;
         }
+        if (Argument == L"--grant-audio-send") {
+            if (Result.GrantAudioSend) return std::nullopt;
+            Result.GrantAudioSend = true;
+            continue;
+        }
+        if (Argument == L"--grant-audio-receive") {
+            if (Result.GrantAudioReceive) return std::nullopt;
+            Result.GrantAudioReceive = true;
+            continue;
+        }
         if (Argument == L"--capture") {
             if (Result.CaptureInput) return std::nullopt;
             Result.CaptureInput = true;
+            continue;
+        }
+        if (Argument == L"--send-audio") {
+            if (Result.SendAudio) return std::nullopt;
+            Result.SendAudio = true;
+            continue;
+        }
+        if (Argument == L"--receive-audio") {
+            if (Result.ReceiveAudio) return std::nullopt;
+            Result.ReceiveAudio = true;
             continue;
         }
         if (Argument == L"--console-confirm") {
@@ -396,12 +425,15 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         Result.Port = *Port;
         PortSeen = true;
     }
-    if (Result.GrantInput &&
+    if ((Result.GrantInput || Result.GrantAudioSend ||
+         Result.GrantAudioReceive) &&
         Result.Mode != Operation::PairListen &&
         Result.Mode != Operation::PairConnect) {
         return std::nullopt;
     }
     if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    if (Result.SendAudio && Result.Mode != Operation::Serve) return std::nullopt;
+    if (Result.ReceiveAudio && Result.Mode != Operation::Focus) return std::nullopt;
     if (Result.ProfileConfigurationSeen && Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
@@ -515,8 +547,10 @@ desklink::DiscoveryAdvertisement GetDiscoveryAdvertisement(
     Result.Machine = Identity.machine_id;
     Result.DisplayName = Identity.display_name;
     Result.Port = Port;
-    Result.CapabilityHints = static_cast<std::uint64_t>(
-        desklink::Capability::InputInject);
+    Result.CapabilityHints =
+        static_cast<std::uint64_t>(desklink::Capability::InputInject) |
+        static_cast<std::uint64_t>(desklink::Capability::AudioSend) |
+        static_cast<std::uint64_t>(desklink::Capability::AudioReceive);
     Result.PairingAvailable = PairingAvailable;
     return Result;
 }
@@ -663,6 +697,8 @@ desklink::MachineId GetMachineId(const desklink::Sha256Digest& CertificatePin) {
 
 bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool GrantInput,
+                    bool GrantAudioSend,
+                    bool GrantAudioReceive,
                     bool ConsoleConfirm) {
     const auto& Candidate = Session.Candidate();
     const auto RemoteName = ToWide(Candidate.Identity.display_name);
@@ -679,6 +715,10 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     Text += GrantInput
         ? L"This PC will allow the remote PC to inject keyboard and mouse input."
         : L"No input-injection capability will be granted on this PC.";
+    Text += L"\nAudio send into this PC: ";
+    Text += GrantAudioSend ? L"allowed" : L"not allowed";
+    Text += L"\nAudio receive from this PC: ";
+    Text += GrantAudioReceive ? L"allowed" : L"not allowed";
     Text += L"\n\nSelect Yes only if the code matches on both PCs.";
 
     if (ConsoleConfirm) {
@@ -686,6 +726,10 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                    << L"[Pairing:Confirmation] remote_pc=" << *RemoteName << L'\n'
                    << L"[Pairing:Confirmation] grant_input="
                    << (GrantInput ? L"yes" : L"no") << L'\n'
+                   << L"[Pairing:Confirmation] grant_audio_send="
+                   << (GrantAudioSend ? L"yes" : L"no") << L'\n'
+                   << L"[Pairing:Confirmation] grant_audio_receive="
+                   << (GrantAudioReceive ? L"yes" : L"no") << L'\n'
                    << L"[Pairing:Confirmation] type yes only after comparing both PCs: "
                    << std::flush;
         std::wstring Answer;
@@ -700,6 +744,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
 void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
                         std::shared_ptr<desklink::MsQuicPairingSession> Session,
                         bool GrantInput,
+                        bool GrantAudioSend,
+                        bool GrantAudioReceive,
                         bool ConsoleConfirm) {
     {
         std::scoped_lock Lock(Result->Mutex);
@@ -711,9 +757,16 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
     }
 
     const bool UserConfirmed = ConfirmPairing(
-        *Session, GrantInput, ConsoleConfirm);
+        *Session, GrantInput, GrantAudioSend, GrantAudioReceive,
+        ConsoleConfirm);
     desklink::CapabilitySet Capabilities;
     if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
+    if (GrantAudioSend) {
+        Capabilities.grant(desklink::Capability::AudioSend);
+    }
+    if (GrantAudioReceive) {
+        Capabilities.grant(desklink::Capability::AudioReceive);
+    }
     const bool ConfirmationSent = UserConfirmed &&
         Session->Confirm(Session->Candidate().VerificationCode, Capabilities);
     if (!UserConfirmed) Session->Reject();
@@ -954,10 +1007,49 @@ struct AgentRuntime {
 #endif
     }
 
+    ~AgentRuntime() { StopAudio(); }
+
+    [[nodiscard]] bool StartAudio() {
+        if (AudioCapture) return true;
+        if (!Session.CanSendAudio()) {
+            std::cerr << "[Audio:Security] peer lacks audio.receive grant; "
+                         "capture remains stopped\n";
+            return false;
+        }
+        desklink::Win32WasapiCaptureHandlers Handlers;
+        Handlers.Frame = [this](desklink::AudioFrameMessage Frame) {
+            return Session.SendAudioFrame(std::move(Frame));
+        };
+        Handlers.Failed = [](std::string Message) {
+            std::cerr << "[Audio:Capture] "
+                      << (Message.empty() ? "capture failed" : Message)
+                      << "; input session remains active\n";
+        };
+        AudioCapture =
+            std::make_unique<desklink::Win32WasapiLoopbackCapture>(
+                1, std::move(Handlers));
+        if (!AudioCapture->Start()) {
+            AudioCapture.reset();
+            return false;
+        }
+        std::cout << "[Audio:Capture] capability-gated loopback active\n";
+        return true;
+    }
+
+    void StopAudio() noexcept {
+        if (!AudioCapture) return;
+        AudioCapture->Stop();
+        AudioCapture.reset();
+        const auto Stats = Session.stats();
+        std::cout << "[Audio:Capture] stopped sent=" << Stats.AudioSent
+                  << " rejected=" << Stats.AudioSendRejected << '\n';
+    }
+
     desklink::MachineId PeerMachine{};
     AgentInputInjector Injector;
     desklink::AgentCoordinator Coordinator;
     desklink::AgentSession Session;
+    std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
 };
 
 struct HostRuntime {
@@ -968,14 +1060,82 @@ struct HostRuntime {
           Endpoint(Trusted.Endpoint),
           SessionNonce(Trusted.SessionNonce),
           Coordinator(Trusted.SessionNonce),
+          Renderer(desklink::Win32WasapiRenderHandlers{
+              [](std::string Message) {
+                  std::cerr << "[Audio:Render] "
+                            << (Message.empty() ? "render failed" : Message)
+                            << "; input session remains active\n";
+              }}),
+          Receiver([this](desklink::AudioFrameMessage Frame) {
+              return Renderer.Submit(std::move(Frame));
+          }),
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
-                  Trusted.SessionNonce, std::move(FocusReadyHandler)) {}
+                  Trusted.SessionNonce, std::move(FocusReadyHandler),
+                  &Receiver) {}
+
+    ~HostRuntime() { StopAudio(); }
+
+    [[nodiscard]] bool StartAudio() {
+        if (AudioPump.joinable()) return true;
+        if (!Session.CanReceiveAudio()) {
+            std::cerr << "[Audio:Security] peer lacks audio.send grant; "
+                         "renderer remains stopped\n";
+            return false;
+        }
+        Receiver.Reset();
+        if (!Renderer.Start()) return false;
+        AudioStop.store(false);
+        try {
+            AudioPump = std::thread([this] {
+                auto Next = std::chrono::steady_clock::now();
+                while (!AudioStop.load()) {
+                    Next += std::chrono::milliseconds(5);
+                    if (Receiver.Pump() ==
+                        desklink::AudioPumpResult::RenderRejected) {
+                        std::cerr << "[Audio:Render] receiver stopped after "
+                                     "render rejection; input session remains active\n";
+                        break;
+                    }
+                    std::this_thread::sleep_until(Next);
+                }
+            });
+        } catch (...) {
+            Renderer.Stop();
+            return false;
+        }
+        std::cout << "[Audio:Render] capability-gated receiver active\n";
+        return true;
+    }
+
+    void StopAudio() noexcept {
+        AudioStop.store(true);
+        if (AudioPump.joinable() &&
+            AudioPump.get_id() != std::this_thread::get_id()) {
+            AudioPump.join();
+        }
+        Renderer.Stop();
+        const auto Stats = Receiver.Stats();
+        if (Stats.Accepted || Stats.Submitted || Stats.RenderRejected) {
+            std::cout << "[Audio:Render] stopped accepted=" << Stats.Accepted
+                      << " submitted=" << Stats.Submitted
+                      << " concealed=" << Stats.Concealed
+                      << " rejected="
+                      << (Stats.FormatRejected + Stats.StreamRejected +
+                          Stats.SequenceRejected + Stats.RenderRejected)
+                      << '\n';
+        }
+        Receiver.Reset();
+    }
 
     desklink::MachineId PeerMachine{};
     std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
     std::uint64_t SessionNonce{};
     desklink::HostCoordinator Coordinator;
+    desklink::Win32WasapiRenderer Renderer;
+    desklink::AudioReceiver Receiver;
     desklink::HostSession Session;
+    std::atomic_bool AudioStop{};
+    std::thread AudioPump;
 };
 
 const char* ProfileSourceName(desklink::ProfileModeSource Source) noexcept {
@@ -1828,6 +1988,10 @@ int RunTrusted(const CommandLine& Command,
                 Runtime->Session.stop();
                 return;
             }
+            if (Command.SendAudio && !Runtime->StartAudio()) {
+                std::cerr << "[Audio:Capture] requested audio was not started; "
+                             "input session remains active\n";
+            }
             Runtime->Session.SetLocalDesiredMode(DesiredMode.load());
             {
                 std::scoped_lock Lock(RuntimesMutex);
@@ -1860,6 +2024,10 @@ int RunTrusted(const CommandLine& Command,
                 Result->Changed.notify_all();
                 return;
             }
+            if (Command.ReceiveAudio && !Runtime->StartAudio()) {
+                std::cerr << "[Audio:Render] requested audio was not started; "
+                             "input session remains active\n";
+            }
             auto Input = std::make_shared<HostInputRuntime>(
                 Runtime, Result, Command.ProfileDefaultMode,
                 Command.ProfileRules, Command.CaptureInput);
@@ -1871,6 +2039,7 @@ int RunTrusted(const CommandLine& Command,
             }
             if (!Input->Start()) {
                 Input->Stop();
+                Runtime->StopAudio();
                 Runtime->Session.stop();
                 {
                     std::scoped_lock Lock(Result->Mutex);
@@ -1941,7 +2110,10 @@ int RunTrusted(const CommandLine& Command,
         Ticker.join();
         {
             std::scoped_lock Lock(RuntimesMutex);
-            for (const auto& Runtime : AgentRuntimes) Runtime->Session.stop();
+            for (const auto& Runtime : AgentRuntimes) {
+                Runtime->StopAudio();
+                Runtime->Session.stop();
+            }
             AgentRuntimes.clear();
         }
         Advertiser.Stop();
@@ -2000,6 +2172,7 @@ int RunTrusted(const CommandLine& Command,
                           << '\n';
                 Lock.unlock();
                 ActiveInput->Stop();
+                ActiveHost->StopAudio();
                 ActiveHost->Session.stop();
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -2137,6 +2310,7 @@ int RunTrusted(const CommandLine& Command,
             }
         }
         ActiveInput->Stop();
+        ActiveHost->StopAudio();
         ActiveHost->Session.stop();
         {
             std::scoped_lock Lock(Result->Mutex);
@@ -2203,10 +2377,13 @@ int Run(const CommandLine& Command) {
     desklink::MsQuicBootstrapHandlers Handlers;
     Handlers.PairingOffered = [Result,
                                GrantInput = Command.GrantInput,
+                               GrantAudioSend = Command.GrantAudioSend,
+                               GrantAudioReceive = Command.GrantAudioReceive,
                                ConsoleConfirm = Command.ConsoleConfirm](
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         HandlePairingOffer(
-            Result, std::move(Session), GrantInput, ConsoleConfirm);
+            Result, std::move(Session), GrantInput, GrantAudioSend,
+            GrantAudioReceive, ConsoleConfirm);
     };
     Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         Session.Endpoint->close();

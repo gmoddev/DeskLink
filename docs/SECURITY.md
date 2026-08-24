@@ -205,17 +205,27 @@ A later hardened Windows implementation can move the cleanup watchdog into a min
 
 ### Audio backend isolation
 
-The WASAPI foundation is a current-user, shared-mode capability module. It has
+The WASAPI path is a current-user, shared-mode capability module. It has
 no authority over focus, input capture, injection, pairing, trust, or session
 admission. Capture packets are capped at 8192 source frames, emitted network
 blocks are fixed at 960 PCM bytes, and the renderer accepts at most 64 validated
 blocks. Queue overflow or endpoint failure stops/rejects audio work without
 weakening input or transport security.
 
-The backend never logs audio samples. It is not production-admissible until an
-authenticated peer has the explicit audio capability and `PeerValidated`
-session admission has completed. Endpoint recovery must remain local to the
-audio module and cannot trigger provider, certificate, or transport fallback.
+The backend never logs audio samples. Loopback capture requires an explicit
+`--send-audio` runtime opt-in after `PeerValidated` and a local trust record that
+grants the peer `AudioReceive`. Rendering requires `--receive-audio` after
+`PeerValidated` and a local trust record that grants the sender `AudioSend`.
+Both grants are independently confirmed during manual pairing and default off.
+
+Every audio datagram is decoded on the datagram lane, bound to the fresh
+session nonce, fixed to the canonical frame shape, restricted to one nonzero
+stream ID per receiver, and admitted to a bounded sequence-aware jitter buffer
+before the render callback runs. A missing grant, stale nonce, malformed frame,
+changed stream, duplicate/late sequence, full queue, capture send failure, or
+render rejection cannot become application-admissible audio. Endpoint recovery
+must remain local to the audio module and cannot trigger provider, certificate,
+session, or transport fallback.
 
 ---
 
@@ -430,3 +440,7 @@ The following must remain regression-tested:
 22. exportable or certificate-mismatched CNG credentials fail before networking
 23. WASAPI frames and queues remain bounded and audio failure cannot alter
     input authority
+24. audio capture/render require explicit runtime opt-in plus complementary
+    `AudioReceive`/`AudioSend` grants after `PeerValidated`
+25. stale nonce, malformed format, changed stream, duplicate/late sequence,
+    and render rejection cannot reach audio playout

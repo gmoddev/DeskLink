@@ -370,10 +370,14 @@ gain
 WASAPI shared render
 ```
 
-The foundation implements exact 48 kHz/stereo/PCM16/5 ms block assembly,
+The implementation provides exact 48 kHz/stereo/PCM16/5 ms block assembly,
 bounded reorder/jitter with silence concealment, event-driven loopback capture,
 and a shared-render adapter with a bounded 64-frame submission queue and
-silence underrun. Capability/session transport wiring, endpoint recovery,
+silence underrun. The operational path is explicitly PC2 to PC1: the sender
+requires the peer's local `AudioReceive` grant and `--send-audio`; the receiver
+requires the sender's `AudioSend` grant and `--receive-audio`. `PeerValidated`,
+the current session nonce, one invariant nonzero stream ID, exact frame shape,
+and bounded sequence admission all precede rendering. Endpoint recovery,
 adaptive jitter targeting, gain/mute, and drift compensation remain separate
 integration work. Audio worker failure does not change input focus or capture.
 

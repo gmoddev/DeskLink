@@ -38,6 +38,7 @@ bool AgentSession::start() {
     if (started_) return true;
     const auto Trusted = GetTrustedTransportPeer(transport_, trust_store_);
     if (!Trusted) return false;
+    PeerCapabilities_ = Trusted->Capabilities;
     coordinator_.set_peer_capabilities(Trusted->Capabilities);
 
     transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
@@ -51,6 +52,8 @@ void AgentSession::stop() noexcept {
     if (!started_) return;
     coordinator_.disconnect();
     transport_->close();
+    PeerCapabilities_ = {};
+    AudioDatagramSequence_ = 1;
     started_ = false;
 }
 
@@ -72,6 +75,33 @@ DeskMode AgentSession::DesiredMode() const noexcept {
 bool AgentSession::RemoteFocused() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return coordinator_.RemoteFocused();
+}
+
+bool AgentSession::CanSendAudio() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return started_ &&
+        PeerCapabilities_.contains(Capability::AudioReceive);
+}
+
+bool AgentSession::SendAudioFrame(AudioFrameMessage Frame) {
+    std::scoped_lock Lock(Mutex_);
+    if (!started_ ||
+        !PeerCapabilities_.contains(Capability::AudioReceive) ||
+        Frame.stream_id == 0 || !IsDeskLinkAudioFrame(Frame)) {
+        ++stats_.AudioSendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = session_nonce_;
+    Header.sequence = AudioDatagramSequence_++;
+    if (AudioDatagramSequence_ == 0) ++AudioDatagramSequence_;
+    auto Packet = encode_packet(Header, Frame);
+    if (!transport_->send_datagram(std::move(Packet))) {
+        ++stats_.AudioSendRejected;
+        return false;
+    }
+    ++stats_.AudioSent;
+    return true;
 }
 
 SessionStats AgentSession::stats() const noexcept {
@@ -135,20 +165,25 @@ HostSession::HostSession(std::shared_ptr<ITransportEndpoint> transport,
                          HostCoordinator& coordinator,
                          const ITrustStore& TrustStore,
                          std::uint64_t session_nonce,
-                         std::function<void()> FocusReadyHandler) noexcept
+                         std::function<void()> FocusReadyHandler,
+                         AudioReceiver* Receiver) noexcept
     : transport_(std::move(transport)),
       coordinator_(coordinator),
       trust_store_(TrustStore),
       session_nonce_(session_nonce),
-      FocusReadyHandler_(std::move(FocusReadyHandler)) {}
+      FocusReadyHandler_(std::move(FocusReadyHandler)),
+      AudioReceiver_(Receiver) {}
 
 HostSession::~HostSession() { stop(); }
 
 bool HostSession::start() {
     std::scoped_lock Lock(Mutex_);
     if (started_) return true;
-    if (!GetTrustedTransportPeer(transport_, trust_store_)) return false;
+    const auto Trusted = GetTrustedTransportPeer(transport_, trust_store_);
+    if (!Trusted) return false;
+    PeerCapabilities_ = Trusted->Capabilities;
     transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
+    transport_->set_datagram_handler([this](ByteBuffer packet) { on_datagram(std::move(packet)); });
     started_ = true;
     return true;
 }
@@ -158,6 +193,8 @@ void HostSession::stop() noexcept {
     if (!started_) return;
     coordinator_.emergency_fail_local();
     transport_->close();
+    if (AudioReceiver_) AudioReceiver_->Reset();
+    PeerCapabilities_ = {};
     started_ = false;
 }
 
@@ -184,6 +221,34 @@ void HostSession::on_reliable(ByteBuffer packet) {
         }
     }
     if (FocusReady && FocusReadyHandler_) FocusReadyHandler_();
+}
+
+void HostSession::on_datagram(ByteBuffer packet) {
+    std::scoped_lock Lock(Mutex_);
+    ++stats_.datagrams_received;
+    auto Decoded = decode_packet(packet, true);
+    if (!Decoded.packet) {
+        ++stats_.decode_rejected;
+        ++stats_.AudioRejected;
+        return;
+    }
+    if (Decoded.packet->header.session_nonce != session_nonce_) {
+        ++stats_.session_rejected;
+        ++stats_.AudioRejected;
+        return;
+    }
+    ++stats_.AudioReceived;
+    if (Decoded.packet->header.type != MessageType::AudioFrame ||
+        !PeerCapabilities_.contains(Capability::AudioSend) ||
+        AudioReceiver_ == nullptr ||
+        !AudioReceiver_->Push(
+            Decoded.packet->header.sequence,
+            std::get<AudioFrameMessage>(std::move(Decoded.packet->message)))) {
+        ++stats_.authorization_rejected;
+        ++stats_.AudioRejected;
+        return;
+    }
+    ++stats_.AudioAccepted;
 }
 
 bool HostSession::focus_remote(std::uint32_t lease_ms) {
@@ -256,6 +321,12 @@ bool HostSession::RemoteFocused() const noexcept {
 DeskMode HostSession::DesiredMode() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return coordinator_.desired_mode();
+}
+
+bool HostSession::CanReceiveAudio() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return started_ && AudioReceiver_ != nullptr &&
+        PeerCapabilities_.contains(Capability::AudioSend);
 }
 
 SessionStats HostSession::stats() const noexcept {
