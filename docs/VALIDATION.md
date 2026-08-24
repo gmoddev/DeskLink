@@ -313,7 +313,12 @@ configured but missing or uninspectable foreground must select `LockPc1`. The
 Windows test installs the out-of-context foreground WinEvent hook, receives an
 initial bounded snapshot even when no inspectable foreground exists, and stops
 the monitor through same-thread unregistration. Runtime GAME capture teardown
-and recreation remain the next physical-integration gate.
+and recreation have a portable ordering test: routing is disabled before focus
+release, hook teardown completes before the restricted mode is applied, stale
+`FocusReady` cannot reinstall capture, and a new capture starts only after a
+fresh focus grant and initial state snapshot. Snapshot and capture-start
+failures return to `LockPc1`. The opt-in Windows capture smoke test also performs
+a complete start/stop/restart/stop cycle with remote routing disabled.
 
 ---
 

@@ -263,8 +263,13 @@ an out-of-context WinEvent hook on an owned message-loop thread. It requests
 only `PROCESS_QUERY_LIMITED_INFORMATION`, extracts a bounded executable
 basename, compares window bounds with the containing monitor for fullscreen
 state, and never loads target-process code. The policy and observer are now
-implemented; applying decisions to capture teardown/recreation is the next
-runtime stage.
+implemented. The Host input lifecycle enforces transition ordering independently
+of the CLI: capture routing is disabled before focus release, Win32 capture
+hooks are synchronously stopped before a restricted mode is entered, and
+leaving `GAME` or `LOCK_PC1` requests a new focus transaction. Capture cannot be
+reinstalled or enabled until that transaction produces a fresh `FocusReady` and
+the initial reliable input-state snapshot succeeds. Production CLI/profile
+configuration and event wiring remain the next runtime stage.
 
 ---
 

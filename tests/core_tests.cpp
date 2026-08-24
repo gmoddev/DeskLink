@@ -5,6 +5,7 @@
 #include "desklink/display_topology.hpp"
 #include "desklink/discovery.hpp"
 #include "desklink/host.hpp"
+#include "desklink/host_input_lifecycle.hpp"
 #include "desklink/input.hpp"
 #include "desklink/pairing.hpp"
 #include "desklink/pairing_wire.hpp"
@@ -1067,6 +1068,140 @@ void ForegroundProfilePolicyIsBoundedAndDeterministic() {
     CHECK(!Engine.SetRules(std::move(TooManyRules)));
 }
 
+class RecordingHostInputBackend final
+    : public desklink::IHostInputLifecycleBackend {
+public:
+    void DisableCapture() noexcept override {
+        Calls.push_back("disable-capture");
+    }
+
+    void StopCapture() noexcept override {
+        Calls.push_back("stop-capture");
+    }
+
+    bool ReleaseFocus() noexcept override {
+        Calls.push_back("release-focus");
+        return ReleaseFocusResult;
+    }
+
+    bool SetDesiredMode(desklink::DeskMode Mode) noexcept override {
+        Calls.push_back("set-mode-" +
+                        std::to_string(static_cast<unsigned>(Mode)));
+        return SetModeResult;
+    }
+
+    bool RequestFocus() noexcept override {
+        Calls.push_back("request-focus");
+        return RequestFocusResult;
+    }
+
+    bool SendInputStateSnapshot() noexcept override {
+        Calls.push_back("send-snapshot");
+        return SnapshotResult;
+    }
+
+    bool StartCapture() noexcept override {
+        Calls.push_back("start-capture");
+        return StartCaptureResult;
+    }
+
+    void EnableCapture() noexcept override {
+        Calls.push_back("enable-capture");
+    }
+
+    std::vector<std::string> Calls;
+    bool ReleaseFocusResult{true};
+    bool SetModeResult{true};
+    bool RequestFocusResult{true};
+    bool SnapshotResult{true};
+    bool StartCaptureResult{true};
+};
+
+void HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus() {
+    using namespace desklink;
+
+    RecordingHostInputBackend Backend;
+    HostInputLifecycle Lifecycle(Backend, true);
+    CHECK(Lifecycle.Start());
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "set-mode-0", "request-focus"}));
+    CHECK(Lifecycle.Status().State ==
+          HostInputLifecycleState::AwaitingFocus);
+    CHECK(!Lifecycle.Status().CaptureInstalled);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.FocusReady());
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "send-snapshot", "start-capture", "enable-capture"}));
+    CHECK(Lifecycle.Status().State == HostInputLifecycleState::Remote);
+    CHECK(Lifecycle.Status().CaptureInstalled);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ApplyMode(DeskMode::Game));
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "disable-capture", "release-focus", "stop-capture", "set-mode-3"}));
+    CHECK(Lifecycle.Status().State == HostInputLifecycleState::Local);
+    CHECK(!Lifecycle.Status().CaptureInstalled);
+
+    Backend.Calls.clear();
+    CHECK(!Lifecycle.FocusReady());
+    CHECK(Backend.Calls.empty());
+
+    CHECK(Lifecycle.ApplyMode(DeskMode::Roam));
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "set-mode-0", "request-focus"}));
+    CHECK(!Lifecycle.Status().CaptureInstalled);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.FocusReady());
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "send-snapshot", "start-capture", "enable-capture"}));
+    CHECK(Lifecycle.Status().CaptureInstalled);
+}
+
+void HostInputLifecycleFailuresRemainLocal() {
+    using namespace desklink;
+
+    RecordingHostInputBackend Backend;
+    HostInputLifecycle Lifecycle(Backend, true);
+    CHECK(Lifecycle.Start());
+    Backend.Calls.clear();
+    Backend.SnapshotResult = false;
+    CHECK(!Lifecycle.FocusReady());
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "send-snapshot", "disable-capture", "release-focus",
+        "stop-capture", "set-mode-1"}));
+    CHECK(Lifecycle.Status().Mode == DeskMode::LockPc1);
+    CHECK(Lifecycle.Status().State == HostInputLifecycleState::Local);
+    CHECK(!Lifecycle.Status().CaptureInstalled);
+
+    RecordingHostInputBackend CaptureFailureBackend;
+    HostInputLifecycle CaptureFailure(CaptureFailureBackend, true);
+    CHECK(CaptureFailure.Start());
+    CaptureFailureBackend.Calls.clear();
+    CaptureFailureBackend.StartCaptureResult = false;
+    CHECK(!CaptureFailure.FocusReady());
+    CHECK((CaptureFailureBackend.Calls == std::vector<std::string>{
+        "send-snapshot", "start-capture", "disable-capture",
+        "release-focus", "stop-capture", "set-mode-1"}));
+    CHECK(CaptureFailure.Status().Mode == DeskMode::LockPc1);
+    CHECK(!CaptureFailure.Status().CaptureInstalled);
+
+    RecordingHostInputBackend NoCaptureBackend;
+    HostInputLifecycle NoCapture(NoCaptureBackend, false);
+    CHECK(NoCapture.Start(DeskMode::LockPc2));
+    NoCaptureBackend.Calls.clear();
+    CHECK(NoCapture.FocusReady());
+    CHECK((NoCaptureBackend.Calls == std::vector<std::string>{
+        "send-snapshot"}));
+    CHECK(!NoCapture.Status().CaptureInstalled);
+
+    NoCaptureBackend.Calls.clear();
+    CHECK(NoCapture.ApplyMode(DeskMode::Roam));
+    CHECK((NoCaptureBackend.Calls == std::vector<std::string>{"set-mode-0"}));
+    CHECK(!NoCapture.ApplyMode(static_cast<DeskMode>(0xffu)));
+}
+
 #ifdef _WIN32
 void WindowsForegroundMonitorPublishesBoundedSnapshot() {
     using namespace desklink;
@@ -1216,6 +1351,9 @@ void WindowsSuppressionGateFailsLocal() {
 void WindowsCaptureSmokeIfRequested() {
     if (std::getenv("DESKLINK_CAPTURE_SMOKE") == nullptr) return;
     desklink::Win32InputCapture Capture({});
+    CHECK(Capture.Start());
+    CHECK(!Capture.RemoteRouting());
+    Capture.Stop();
     CHECK(Capture.Start());
     CHECK(!Capture.RemoteRouting());
     Capture.Stop();
@@ -1446,6 +1584,8 @@ void in_memory_transport_preserves_security_metadata() {
 
 int main() {
     ForegroundProfilePolicyIsBoundedAndDeterministic();
+    HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus();
+    HostInputLifecycleFailuresRemainLocal();
     DiscoveryPropertiesAreStrictAndRoundTrip();
     DiscoveryCacheExpiresAndFlagsConflicts();
     protocol_round_trip();
