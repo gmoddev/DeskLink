@@ -377,9 +377,15 @@ silence underrun. The operational path is explicitly PC2 to PC1: the sender
 requires the peer's local `AudioReceive` grant and `--send-audio`; the receiver
 requires the sender's `AudioSend` grant and `--receive-audio`. `PeerValidated`,
 the current session nonce, one invariant nonzero stream ID, exact frame shape,
-and bounded sequence admission all precede rendering. Endpoint recovery,
-adaptive jitter targeting, gain/mute, and drift compensation remain separate
-integration work. Audio worker failure does not change input focus or capture.
+and bounded sequence admission all precede rendering. Both WASAPI workers watch
+the selected render endpoint and the default-console selection. Endpoint loss,
+removal, disablement, property/format change, and default switching stop the old
+worker and schedule audio-only reopen with 250 ms to 5 s capped backoff. Capture
+client rejection is not recoverable and never restarts. Recovery preserves the
+admitted peer, session nonce, capability grants, TLS provider, CNG identity, and
+input state; receiver recovery discards queued audio before playout resumes.
+Adaptive jitter targeting, gain/mute, and drift compensation remain separate
+integration work.
 
 ---
 

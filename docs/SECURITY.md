@@ -227,6 +227,16 @@ render rejection cannot become application-admissible audio. Endpoint recovery
 must remain local to the audio module and cannot trigger provider, certificate,
 session, or transport fallback.
 
+The selected/default render endpoint is watched by a scoped
+`IMMNotificationClient`. Endpoint change, removal, disablement, property/format
+change, or operational WASAPI failure stops the old worker, drops queued audio,
+and schedules reopen with 250 ms to 5 s capped backoff. Reopen reuses only the
+already admitted session, nonce, and complementary grants; it does not reconnect,
+re-pair, reload TLS, replace identity, or alter input authority. Capture callback
+or datagram-send rejection is explicitly non-recoverable, so credential,
+authorization, session, and transport failures cannot be disguised as endpoint
+recovery.
+
 ---
 
 ## 7. Protocol hardening
@@ -444,3 +454,5 @@ The following must remain regression-tested:
     `AudioReceive`/`AudioSend` grants after `PeerValidated`
 25. stale nonce, malformed format, changed stream, duplicate/late sequence,
     and render rejection cannot reach audio playout
+26. endpoint recovery drops queued audio, preserves identity/session/input
+    authority, caps retry rate, and never retries client/send rejection

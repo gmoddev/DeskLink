@@ -146,16 +146,21 @@ flags, drains every complete capture packet, respects silent/timestamp-error/
 discontinuity flags, and publishes exact V1 blocks. The render adapter requests
 the same canonical format, pre-rolls silence, accepts at most 64 validated
 blocks, and fills underruns with silence. Each adapter owns COM and WASAPI
-objects on its worker thread and exposes explicit start/stop/failure state.
+objects on its worker thread, registers a scoped `IMMNotificationClient` for
+the selected/default render endpoint, and exposes restart-safe
+start/stop/typed-failure state.
 
 `AgentSession` sends these blocks only when the stored peer grant includes
 `AudioReceive`. `HostSession` admits them only when the stored sender grant
 includes `AudioSend`, the current session nonce matches, and the receiver
 accepts the exact format/stream/sequence. The production CLI exposes explicit
 `--send-audio` and `--receive-audio` switches; neither capability silently
-starts an endpoint. Endpoint notification/recovery, adaptive jitter, gain/mute,
-and clock-drift correction remain outside this slice. Audio failure has no
-input-mode authority.
+starts an endpoint. Recoverable endpoint failures schedule reopen without
+reconnecting the session: retry begins after 250 ms and doubles to a five-second
+cap while audio remains explicitly enabled. A capture callback/send rejection
+is non-recoverable and stops capture rather than retrying an authorization or
+transport failure. Adaptive jitter, gain/mute, and clock-drift correction
+remain outside this slice. Audio failure has no input-mode authority.
 
 ### `transport.hpp` / `in_memory_transport.cpp`
 
@@ -421,9 +426,10 @@ implemented. One serialized lifecycle owner handles profile/manual decisions,
 It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
 and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
 capture/render foundation, exact V1 block assembler, complementary audio grants,
-session/datagram admission, and receiver jitter/render pump are now implemented.
+session/datagram admission, receiver jitter/render pump, and audio-only endpoint
+recovery are now implemented.
 Edge roaming remains gated on the physical matrix; the next unblocked roadmap
-item is audio endpoint-loss/recovery with audio-only restart semantics.
+item is adaptive jitter targeting.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

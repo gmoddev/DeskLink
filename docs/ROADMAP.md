@@ -63,9 +63,13 @@ Work proceeds in this order:
     jitter/render pumping. Sender and receiver require complementary local trust
     grants plus explicit runtime opt-in after `PeerValidated`; nonce, format,
     stream, sequence, and bounded queue checks precede playout.
-12. **Next unblocked slice:** audio endpoint-loss/recovery with audio-only
-    restart semantics while edge roaming remains gated on the deferred Windows
-    11 physical matrix.
+12. **Complete:** audio endpoint-loss/recovery with audio-only restart
+    semantics. Scoped endpoint notifications stop stale WASAPI workers;
+    restart-safe adapters reopen the current default endpoint with capped
+    250 ms to 5 s backoff while the admitted session and input remain intact.
+    Client/send rejection never triggers reopen.
+13. **Next unblocked slice:** adaptive jitter targeting while edge roaming
+    remains gated on the deferred Windows 11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -73,7 +77,7 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- audio endpoint recovery, adaptive jitter, and clock-drift correction
+- adaptive jitter and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project
