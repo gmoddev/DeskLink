@@ -13,7 +13,7 @@
 namespace desklink {
 
 struct Win32WasapiCaptureHandlers {
-    std::function<void(AudioFrameMessage)> Frame;
+    std::function<bool(AudioFrameMessage)> Frame;
     std::function<void(std::string)> Failed;
 };
 

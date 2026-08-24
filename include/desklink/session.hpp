@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desklink/agent.hpp"
+#include "desklink/audio.hpp"
 #include "desklink/host.hpp"
 #include "desklink/pairing.hpp"
 #include "desklink/transport.hpp"
@@ -18,6 +19,11 @@ struct SessionStats {
     std::uint64_t decode_rejected{};
     std::uint64_t session_rejected{};
     std::uint64_t authorization_rejected{};
+    std::uint64_t AudioSent{};
+    std::uint64_t AudioSendRejected{};
+    std::uint64_t AudioReceived{};
+    std::uint64_t AudioAccepted{};
+    std::uint64_t AudioRejected{};
 };
 
 class AgentSession {
@@ -34,6 +40,8 @@ public:
     void SetLocalDesiredMode(DeskMode Mode) noexcept;
     [[nodiscard]] DeskMode DesiredMode() const noexcept;
     [[nodiscard]] bool RemoteFocused() const noexcept;
+    [[nodiscard]] bool CanSendAudio() const noexcept;
+    [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
     [[nodiscard]] SessionStats stats() const noexcept;
 
 private:
@@ -47,6 +55,8 @@ private:
     const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
     std::uint64_t response_sequence_{1};
+    std::uint64_t AudioDatagramSequence_{1};
+    CapabilitySet PeerCapabilities_;
     SessionStats stats_;
     mutable std::recursive_mutex Mutex_;
     bool started_{};
@@ -58,7 +68,8 @@ public:
                 HostCoordinator& coordinator,
                 const ITrustStore& TrustStore,
                 std::uint64_t session_nonce,
-                std::function<void()> FocusReadyHandler = {}) noexcept;
+                std::function<void()> FocusReadyHandler = {},
+                AudioReceiver* Receiver = nullptr) noexcept;
     ~HostSession();
 
     [[nodiscard]] bool start();
@@ -75,17 +86,21 @@ public:
     [[nodiscard]] bool SendInputStateSnapshot();
     [[nodiscard]] bool RemoteFocused() const noexcept;
     [[nodiscard]] DeskMode DesiredMode() const noexcept;
+    [[nodiscard]] bool CanReceiveAudio() const noexcept;
 
     [[nodiscard]] SessionStats stats() const noexcept;
 
 private:
     void on_reliable(ByteBuffer packet);
+    void on_datagram(ByteBuffer packet);
 
     std::shared_ptr<ITransportEndpoint> transport_;
     HostCoordinator& coordinator_;
     const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
     std::function<void()> FocusReadyHandler_;
+    AudioReceiver* AudioReceiver_{};
+    CapabilitySet PeerCapabilities_;
     SessionStats stats_;
     mutable std::recursive_mutex Mutex_;
     bool started_{};

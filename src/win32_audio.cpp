@@ -162,7 +162,13 @@ struct Win32WasapiLoopbackCapture::State {
     bool Deliver(std::vector<AudioFrameMessage>& Frames) noexcept {
         if (!Handlers.Frame) return true;
         try {
-            for (auto& Frame : Frames) Handlers.Frame(std::move(Frame));
+            for (auto& Frame : Frames) {
+                if (!Handlers.Frame(std::move(Frame))) {
+                    PublishFailure(Handlers.Failed,
+                                   "audio capture frame was rejected");
+                    return false;
+                }
+            }
             return true;
         } catch (...) {
             PublishFailure(Handlers.Failed, "audio capture handler failed");

@@ -343,14 +343,23 @@ steps, emits a full silence block, and rejects a non-frame-aligned byte count.
 The standard Windows build compiles the concrete Core Audio adapter under
 `/W4`.
 
+The session suite also proves that outbound audio requires the peer's
+`AudioReceive` grant, inbound audio requires `AudioSend`, and neither direction
+is available before an authenticated/encrypted pinned session starts. It checks
+fresh nonce binding, canonical format rejection, invariant stream ID, late and
+duplicate sequence rejection, bounded jitter concealment, renderer rejection,
+and audio-only fail-stop behavior. The end-to-end in-memory session transfers
+canonical datagrams through both capability gates and pumps them into the
+receiver callback without acquiring input focus.
+
 Set `DESKLINK_WASAPI_SMOKE=1` for the opt-in native device test. It opens the
 current default render endpoint for event-driven loopback, starts and stops the
 capture worker, opens a shared render stream, submits one canonical silence
 block, and verifies that neither worker reports a failure. The handler never
 logs or persists captured samples.
 
-This foundation test does not claim endpoint-change recovery, sustained timing,
-adaptive jitter, drift correction, gain/mute, or network playout.
+This foundation test does not claim endpoint-change recovery, sustained
+physical two-PC timing, adaptive jitter, drift correction, or gain/mute.
 
 ---
 
@@ -361,6 +370,7 @@ This validation does not yet prove:
 - sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
 - sustained WASAPI timing, endpoint recovery, or clock-drift correction
 - real packet-loss/jitter characteristics
+- physical two-PC audio privacy, interruption, reconnect, and endpoint-change behavior
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

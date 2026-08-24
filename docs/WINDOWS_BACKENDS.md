@@ -234,7 +234,9 @@ conversion flags, drains each complete capture packet before release, converts
 WASAPI silence into zero samples, resets a partial block on discontinuity, and
 uses a steady timestamp if WASAPI marks its QPC timestamp invalid. Source
 packets above 8192 frames fail the audio module rather than causing unbounded
-work. Published blocks are always exactly 960 PCM bytes.
+work. Published blocks are always exactly 960 PCM bytes. The production sender
+starts only with `--send-audio` after `PeerValidated` and the peer's
+`AudioReceive` grant; datagram rejection stops capture without stopping input.
 
 ---
 
@@ -260,8 +262,12 @@ Windows then mixes the DeskLink stream with local applications. DeskLink does no
 
 `Win32WasapiRenderer` validates the canonical frame shape before accepting a
 block, caps its queue at 64 blocks (320 ms), pre-rolls silence, and fills an
-empty shared endpoint buffer with silence while counting underruns. It does not
-yet own the network jitter pump, adaptive target, gain/mute, or resampler.
+empty shared endpoint buffer with silence while counting underruns. The
+production receiver starts only with `--receive-audio` after `PeerValidated`
+and the sender's `AudioSend` grant. `HostSession` rejects stale nonces and the
+portable receiver enforces format, stream, sequence, and jitter bounds before a
+five-millisecond pump submits to WASAPI. Adaptive targeting, gain/mute,
+resampling, and endpoint recovery remain future work.
 
 ---
 

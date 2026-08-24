@@ -22,6 +22,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Exact 48 kHz/stereo/PCM16/5 ms audio block assembler
 - Bounded reorder/jitter buffer with silence concealment
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
+- Two-sided capability-gated audio datagrams and bounded receiver/render pump
 - Abstract transport interface
 - Authenticated/encrypted session gate and session-nonce binding
 - Manual pairing transcript with short authentication code confirmation
@@ -62,7 +63,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
 - Monitor graph and edge roaming
-- Audio capability/session and production transport wiring
+- Sustained physical two-PC audio timing and failure validation
 - WASAPI endpoint-loss/recovery handling
 - Adaptive jitter targeting
 - Clock-drift resampling
@@ -165,7 +166,10 @@ desklink_pair.exe pair 192.168.1.25 43821
 Both PCs show a native confirmation prompt. Accept only when the same six-digit
 code appears on both machines. `--grant-input` grants the newly paired remote PC
 permission to inject input on the PC where that flag is supplied; it is omitted
-by default. Trust is stored under the current user's local application-data
+by default. `--grant-audio-send` permits that remote PC to send audio into this
+PC. `--grant-audio-receive` permits it to receive loopback audio captured on
+this PC. These independent grants are shown in the confirmation prompt and are
+omitted by default. Trust is stored under the current user's local application-data
 directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
 `--tls-provider auto|schannel|openssl` controls the packaged MsQuic TLS runtime.
@@ -185,6 +189,23 @@ low-level hook and mouse events from Raw Input, and suppresses corresponding
 local input until Enter is pressed. Ctrl+Alt+Pause (including Windows'
 Ctrl+Break representation) immediately disables suppression and fails local.
 Omitting `--capture` retains the manual control-plane-only check.
+
+Audio is separately opt-in and requires complementary grants on both PCs. To
+send PC2's system mix to PC1, pair PC1 with `--grant-audio-send` and pair PC2
+with `--grant-audio-receive`, then run:
+
+```powershell
+# PC2
+desklink_pair.exe serve 43821 --send-audio
+
+# PC1
+desklink_pair.exe focus 192.168.1.25 43821 --receive-audio
+```
+
+`--send-audio` starts loopback only after the trusted session is admitted and
+the peer has `AudioReceive`. `--receive-audio` starts rendering only after
+admission and an `AudioSend` grant. Audio failure stops only the audio module;
+it does not change input focus, identity, TLS, or session admission.
 
 The Host CLI accepts an optional fallback mode plus at most 32 exact executable
 basename rules:

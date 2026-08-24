@@ -59,9 +59,13 @@ Work proceeds in this order:
     Capture packet handling, renderer submission, and renderer buffering are
     bounded; silence, discontinuity, underrun, and module-local failure paths
     are explicit.
-11. **Next unblocked slice:** capability-gated audio session/datagram wiring and
-    receiver jitter/render pumping while edge roaming remains gated on the
-    deferred Windows 11 physical matrix.
+11. **Complete:** capability-gated audio session/datagram wiring and receiver
+    jitter/render pumping. Sender and receiver require complementary local trust
+    grants plus explicit runtime opt-in after `PeerValidated`; nonce, format,
+    stream, sequence, and bounded queue checks precede playout.
+12. **Next unblocked slice:** audio endpoint-loss/recovery with audio-only
+    restart semantics while edge roaming remains gated on the deferred Windows
+    11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -69,8 +73,7 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- audio session/transport wiring, endpoint recovery, adaptive jitter, and
-  clock-drift correction
+- audio endpoint recovery, adaptive jitter, and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project
