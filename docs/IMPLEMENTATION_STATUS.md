@@ -38,7 +38,7 @@ The current build proves the core invariants independently of Windows networking
 | Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
 | PCM audio frame | Done | Bounded wire representation |
 | Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
-| Audio jitter buffer | Done | Reorder + bounded silence concealment |
+| Audio jitter buffer | Done | Reorder + bounded silence concealment; adaptive 2-12 block target; immediate bounded increases, 200-sample downward hysteresis, explicit rebuffer accounting |
 | WASAPI capture/render foundation | Done | Event-driven shared-mode loopback capture and shared render; 64-frame render queue; silence underrun; explicit start/stop and failure isolation |
 | Audio session/datagram wiring | Done | Explicit runtime opt-in; complementary AudioReceive/AudioSend grants; PeerValidated transport, nonce, format, stream, sequence, and bounded receiver/render admission |
 | Audio endpoint recovery | Done | Scoped endpoint notifications; restart-safe adapters; audio-only 250 ms to 5 s capped retry; buffered audio reset; client/send rejection is not retried |
@@ -144,7 +144,6 @@ Build/test result in the creation environment:
 
 ### P1 — required for useful audio
 
-- adaptive jitter target
 - clock drift resampler
 - gain/mute state
 
@@ -208,8 +207,9 @@ renews/reconciles only while Remote. The bounded event-driven WASAPI
 capture/render foundation, exact V1 audio block assembler, complementary
 capability/session datagram gates, and receiver jitter/render pump are complete.
 Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
-Edge roaming remains gated on the deferred physical matrix; the next unblocked
-slice is adaptive jitter targeting.
+Bounded adaptive jitter targeting and rebuffer accounting are complete. Edge
+roaming remains gated on the deferred physical matrix; the next unblocked slice
+is bounded clock-drift correction.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

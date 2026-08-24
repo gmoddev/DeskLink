@@ -227,6 +227,14 @@ render rejection cannot become application-admissible audio. Endpoint recovery
 must remain local to the audio module and cannot trigger provider, certificate,
 session, or transport fallback.
 
+Capture timestamps from an authenticated peer remain untrusted timing hints.
+Only forward, already-admitted frames update the adaptive jitter estimator;
+backward/reordered timestamps and intervals over five seconds reset the timing
+baseline. Per-sample variation is capped, and the target is clamped to 2-12
+five-millisecond blocks. A peer can therefore cause at most bounded audio-only
+latency/rebuffering, not unbounded allocation, identity/provider changes,
+session admission, focus, capture authority, or input state changes.
+
 The selected/default render endpoint is watched by a scoped
 `IMMNotificationClient`. Endpoint change, removal, disablement, property/format
 change, or operational WASAPI failure stops the old worker, drops queued audio,

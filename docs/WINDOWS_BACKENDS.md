@@ -266,8 +266,10 @@ empty shared endpoint buffer with silence while counting underruns. The
 production receiver starts only with `--receive-audio` after `PeerValidated`
 and the sender's `AudioSend` grant. `HostSession` rejects stale nonces and the
 portable receiver enforces format, stream, sequence, and jitter bounds before a
-five-millisecond pump submits to WASAPI. Adaptive targeting, gain/mute, and
-resampling remain future work.
+five-millisecond pump submits to WASAPI. Capture/arrival delta variation and
+concealment raise an adaptive 2-12 block target immediately; each downward
+step requires 200 stable samples, and target growth enters a bounded rebuffer
+state. Gain/mute and resampling remain future work.
 
 ---
 
@@ -280,9 +282,7 @@ Track jitter-buffer occupancy around a target. Apply very small resampling-ratio
 Example policy:
 
 ```text
-target occupancy: 20 ms
-minimum: 10 ms
-maximum: 50 ms
+adaptive target occupancy: 10-60 ms
 normal correction bound: ±0.1%
 ```
 

@@ -134,6 +134,9 @@ It:
 - rejects late frames
 - waits for a target amount of evidence before declaring a gap
 - synthesizes silence for a confirmed missing frame
+- estimates arrival variation from capture/arrival timestamp deltas
+- raises a bounded playout target immediately and lowers it with hysteresis
+- enters an explicit rebuffer state when a larger target must add latency
 - limits buffered frame count
 - fixes one nonzero stream ID for each admitted receiver
 - fails the audio receiver closed when the render callback rejects a block
@@ -159,8 +162,11 @@ starts an endpoint. Recoverable endpoint failures schedule reopen without
 reconnecting the session: retry begins after 250 ms and doubles to a five-second
 cap while audio remains explicitly enabled. A capture callback/send rejection
 is non-recoverable and stops capture rather than retrying an authorization or
-transport failure. Adaptive jitter, gain/mute, and clock-drift correction
-remain outside this slice. Audio failure has no input-mode authority.
+transport failure. The receiver's adaptive target is 2-12 blocks (10-60 ms):
+arrival spikes and concealment raise it immediately, while 200 stable samples
+are required for each one-block decrease. Backward/reordered timestamp samples
+do not update the estimator. Gain/mute and clock-drift correction remain
+outside this slice. Audio failure has no input-mode authority.
 
 ### `transport.hpp` / `in_memory_transport.cpp`
 
@@ -426,10 +432,10 @@ implemented. One serialized lifecycle owner handles profile/manual decisions,
 It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
 and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
 capture/render foundation, exact V1 block assembler, complementary audio grants,
-session/datagram admission, receiver jitter/render pump, and audio-only endpoint
-recovery are now implemented.
+session/datagram admission, receiver jitter/render pump, audio-only endpoint
+recovery, and bounded adaptive jitter targeting are now implemented.
 Edge roaming remains gated on the physical matrix; the next unblocked roadmap
-item is adaptive jitter targeting.
+item is bounded clock-drift correction.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

@@ -68,7 +68,11 @@ Work proceeds in this order:
     restart-safe adapters reopen the current default endpoint with capped
     250 ms to 5 s backoff while the admitted session and input remain intact.
     Client/send rejection never triggers reopen.
-13. **Next unblocked slice:** adaptive jitter targeting while edge roaming
+13. **Complete:** bounded adaptive jitter targeting. The receiver compares
+    capture and steady arrival deltas, raises the 2-12 block target immediately
+    on spikes/concealment, enters an explicit rebuffer state when latency must
+    grow, and requires 200 stable samples for each one-block decrease.
+14. **Next unblocked slice:** bounded clock-drift correction while edge roaming
     remains gated on the deferred Windows 11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
@@ -77,7 +81,7 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- adaptive jitter and clock-drift correction
+- clock-drift correction and per-peer gain/mute
 - UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project
