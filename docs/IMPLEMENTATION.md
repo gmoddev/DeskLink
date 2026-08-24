@@ -386,12 +386,14 @@ stable monitor mapping, bounded wheel transport, current-user control pipe, and
 bounded native Windows DNS-SD/mDNS discovery are implemented. Discovery emits
 only untrusted candidates and cannot connect, pair, grant capabilities, or
 write trust. Because edge roaming remains gated on the deferred physical
-Windows 11 failure matrix, the bounded foreground profile evaluator and native
-WinEvent observation layer are now implemented. A portable Host lifecycle now
-enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
-and restart-safe Win32 capture teardown/recreation. The next independent
-roadmap item is production CLI/profile configuration and live foreground-event
-wiring.
+Windows 11 failure matrix, the bounded foreground profile evaluator, native
+WinEvent observation, and production Host CLI/live event runtime are now
+implemented. One serialized lifecycle owner handles profile/manual decisions,
+`FocusReady`, renewal/reconciliation, emergency release, and capture failures.
+It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
+and restart-safe Win32 capture teardown/recreation. Edge roaming remains gated
+on the physical matrix; the next unblocked roadmap item is the WASAPI
+capture/render foundation.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

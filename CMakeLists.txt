@@ -225,6 +225,16 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
             COMMAND desklink_pair serve --validation-drop-next-key-release)
         set_tests_properties(desklink_pair_rejects_validation_flags
             PROPERTIES WILL_FAIL TRUE)
+        add_test(NAME desklink_pair_rejects_invalid_profile
+            COMMAND desklink_pair focus 127.0.0.1
+                --profile bad/path.exe=game)
+        add_test(NAME desklink_pair_rejects_duplicate_profile
+            COMMAND desklink_pair focus 127.0.0.1
+                --profile game.exe=game --profile GAME.EXE=roam)
+        set_tests_properties(
+            desklink_pair_rejects_invalid_profile
+            desklink_pair_rejects_duplicate_profile
+            PROPERTIES WILL_FAIL TRUE)
     endif()
 
     if(DESKLINK_BUILD_PHYSICAL_VALIDATION)

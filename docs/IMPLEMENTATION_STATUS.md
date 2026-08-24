@@ -35,6 +35,7 @@ The current build proves the core invariants independently of Windows networking
 | Foreground profile foundation | Done | At most 32 exact executable-name rules; optional fullscreen match; emergency/manual/profile/default precedence; uninspectable configured foreground fails local |
 | Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
 | Host input lifecycle safety boundary | Done | Disable capture, release focus, synchronously stop hooks, then enter GAME/LOCK_PC1; exit requires fresh FocusReady + initial snapshot before capture restart/enable |
+| Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
 | PCM audio frame | Done | Bounded wire representation |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
@@ -114,6 +115,7 @@ The current test suite verifies:
 44. bounded foreground rules, case normalization, fullscreen matching, duplicate rejection, and precedence
 45. native Windows foreground-hook startup, initial bounded snapshot delivery, and same-thread teardown
 46. ordered GAME/LOCK_PC1 teardown, stale FocusReady rejection, fresh-focus capture recreation, and fail-local snapshot/start failure handling
+47. exact profile-spec parsing, all four mode names, invalid-path/mode rejection, and case-normalized duplicate rejection
 
 Build/test result in the creation environment:
 
@@ -135,7 +137,6 @@ Build/test result in the creation environment:
 - physical emergency-chord and high-poll-rate timing validation
 - edge graph
 - edge hysteresis
-- production CLI/profile configuration and effective-mode event wiring
 
 ### P1 — required for useful audio
 
@@ -199,12 +200,13 @@ Do **not** add edge roaming until this manual focus switch survives failure inje
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
 available. Bounded mouse-wheel transport, current-user IPC, and link-local
-discovery are complete. The bounded foreground policy engine and native WinEvent
-monitor foundation are complete. A portable Host lifecycle now enforces
-fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission, and
-restart-safe Win32 capture teardown/recreation. The next independent milestone
-is production CLI/profile configuration and live foreground-event wiring; edge
-roaming remains gated on the deferred physical matrix.
+discovery are complete. The bounded foreground policy engine, native WinEvent
+monitor, and production CLI/live event runtime are complete. One serialized
+Host owner applies WinEvent and manual decisions through the fail-local
+lifecycle, admits capture only after fresh focus plus snapshot, and
+renews/reconciles only while Remote. Edge roaming remains gated on the deferred
+physical matrix; the next unblocked implementation slice is the WASAPI
+capture/render foundation.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

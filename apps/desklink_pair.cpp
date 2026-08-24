@@ -1,9 +1,12 @@
 #include "desklink/msquic_bootstrap.hpp"
 #include "desklink/capabilities.hpp"
 #include "desklink/discovery.hpp"
+#include "desklink/host_input_lifecycle.hpp"
+#include "desklink/profile.hpp"
 #include "desklink/session.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_control.hpp"
+#include "desklink/win32_foreground.hpp"
 #include "desklink/win32_input.hpp"
 #include "desklink/win32_pairing.hpp"
 #include "desklink/win32_discovery.hpp"
@@ -19,8 +22,10 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -60,6 +65,9 @@ struct CommandLine {
     bool GrantInput{};
     bool CaptureInput{};
     bool ConsoleConfirm{};
+    bool ProfileConfigurationSeen{};
+    desklink::DeskMode ProfileDefaultMode{desklink::DeskMode::Roam};
+    std::vector<desklink::ForegroundProfileRule> ProfileRules;
     desklink::TlsBackend TlsBackend{desklink::TlsBackend::Auto};
     desklink::ControlRequestPayload ControlPayload{
         desklink::GetStateControlRequest{}};
@@ -183,6 +191,9 @@ void PrintUsage() {
         << L"  desklink_pair control mode roam|lock|game\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
+        << L"focus --default-mode roam|lock-pc1|lock-pc2|game sets the fallback policy.\n"
+        << L"focus --profile <exe>=<mode> adds an exact executable-name rule.\n"
+        << L"focus --profile-fullscreen <exe>=<mode> requires a fullscreen match.\n"
         << L"--console-confirm requires typing yes after comparing the pairing code.\n"
         << L"--tls-provider auto|schannel|openssl selects the packaged TLS runtime.\n";
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
@@ -266,6 +277,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
 
     bool PortSeen = false;
     bool ProviderSeen = false;
+    bool DefaultModeSeen = false;
     for (; Index < ArgumentCount; ++Index) {
         const std::wstring_view Argument(Arguments[Index]);
         if (Argument == L"--grant-input") {
@@ -281,6 +293,35 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--console-confirm") {
             if (Result.ConsoleConfirm) return std::nullopt;
             Result.ConsoleConfirm = true;
+            continue;
+        }
+        if (Argument == L"--default-mode") {
+            if (DefaultModeSeen || Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            DefaultModeSeen = true;
+            Result.ProfileConfigurationSeen = true;
+            const auto ModeName = ToUtf8(Arguments[++Index]);
+            if (!ModeName) return std::nullopt;
+            const auto Mode = desklink::ParseDeskModeName(*ModeName);
+            if (!Mode) return std::nullopt;
+            Result.ProfileDefaultMode = *Mode;
+            continue;
+        }
+        if (Argument == L"--profile" ||
+            Argument == L"--profile-fullscreen") {
+            if (Index + 1 >= ArgumentCount ||
+                Result.ProfileRules.size() >=
+                    desklink::kMaximumForegroundProfileRules) {
+                return std::nullopt;
+            }
+            Result.ProfileConfigurationSeen = true;
+            const auto Specification = ToUtf8(Arguments[++Index]);
+            if (!Specification) return std::nullopt;
+            const auto Rule = desklink::ParseForegroundProfileRule(
+                *Specification, Argument == L"--profile-fullscreen");
+            if (!Rule) return std::nullopt;
+            Result.ProfileRules.push_back(*Rule);
             continue;
         }
         if (Argument == L"--tls-provider") {
@@ -361,6 +402,12 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         return std::nullopt;
     }
     if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    if (Result.ProfileConfigurationSeen && Result.Mode != Operation::Focus) {
+        return std::nullopt;
+    }
+    desklink::ForegroundProfileEngine ProfileValidator(
+        Result.ProfileDefaultMode);
+    if (!ProfileValidator.SetRules(Result.ProfileRules)) return std::nullopt;
     if (Result.ConsoleConfirm &&
         Result.Mode != Operation::PairListen &&
         Result.Mode != Operation::PairConnect) {
@@ -519,7 +566,8 @@ std::string_view ControlRoleName(desklink::ControlRole Role) noexcept {
 std::string_view DeskModeName(desklink::DeskMode Mode) noexcept {
     switch (Mode) {
         case desklink::DeskMode::Roam: return "roam";
-        case desklink::DeskMode::LockPc1: return "lock";
+        case desklink::DeskMode::LockPc1: return "lock-pc1";
+        case desklink::DeskMode::LockPc2: return "lock-pc2";
         case desklink::DeskMode::Game: return "game";
     }
     return "invalid";
@@ -687,6 +735,7 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
 struct TrustedResult {
     std::mutex Mutex;
     std::condition_variable Changed;
+    bool Connected{};
     bool Ready{};
     bool Emergency{};
     std::string Failure;
@@ -929,6 +978,704 @@ struct HostRuntime {
     desklink::HostSession Session;
 };
 
+const char* ProfileSourceName(desklink::ProfileModeSource Source) noexcept {
+    switch (Source) {
+        case desklink::ProfileModeSource::SystemDefault: return "default";
+        case desklink::ProfileModeSource::ProfileRule: return "profile";
+        case desklink::ProfileModeSource::ManualOverride: return "manual";
+        case desklink::ProfileModeSource::ForegroundUnavailable:
+            return "foreground-unavailable";
+        case desklink::ProfileModeSource::Emergency: return "emergency";
+    }
+    return "invalid";
+}
+
+class HostInputRuntime final
+    : public desklink::IHostInputLifecycleBackend,
+      public std::enable_shared_from_this<HostInputRuntime> {
+public:
+    HostInputRuntime(std::shared_ptr<HostRuntime> Host,
+                     std::shared_ptr<TrustedResult> Result,
+                     desklink::DeskMode DefaultMode,
+                     std::vector<desklink::ForegroundProfileRule> Rules,
+                     bool CaptureRequested)
+        : Host_(std::move(Host)),
+          Result_(std::move(Result)),
+          Profiles_(DefaultMode),
+          Lifecycle_(*this, CaptureRequested),
+          ConfigurationValid_(Profiles_.SetRules(std::move(Rules))) {}
+
+    ~HostInputRuntime() override { Stop(); }
+
+    HostInputRuntime(const HostInputRuntime&) = delete;
+    HostInputRuntime& operator=(const HostInputRuntime&) = delete;
+
+    [[nodiscard]] bool Start() {
+        if (Dispatcher_.joinable() || !ConfigurationValid_) return false;
+        Stopping_.store(false);
+        FailLocalRequested_.store(false);
+        StopRequested_ = false;
+        std::promise<bool> Promise;
+        auto Future = Promise.get_future();
+        Dispatcher_ = std::thread(
+            [this, Promise = std::move(Promise)]() mutable {
+                RunDispatcher(std::move(Promise));
+            });
+        const bool Started = Future.get();
+        if (!Started && Dispatcher_.joinable()) Dispatcher_.join();
+        return Started;
+    }
+
+    void Stop() noexcept {
+        if (!Dispatcher_.joinable()) return;
+        Stopping_.store(true);
+        DisableCaptureImmediately();
+        try {
+            {
+                std::scoped_lock Lock(QueueMutex_);
+                StopRequested_ = true;
+                Queue_.clear();
+            }
+            QueueChanged_.notify_all();
+            if (Dispatcher_.get_id() != std::this_thread::get_id()) {
+                Dispatcher_.join();
+            }
+        } catch (...) {
+        }
+    }
+
+    void NotifyFocusReady() noexcept {
+        if (!Post([this] {
+            LastBackendFailure_ = BackendFailure::None;
+            if (Lifecycle_.FocusReady()) {
+                PublishLifecycleStatus();
+                {
+                    std::scoped_lock Lock(Result_->Mutex);
+                    Result_->Ready = true;
+                }
+                Result_->Changed.notify_all();
+                std::cout
+                    << "[Input:Lifecycle] fresh focus admitted after initial snapshot\n";
+                return;
+            }
+            const auto Status = Lifecycle_.Status();
+            PublishLifecycleStatus();
+            if (Status.State == desklink::HostInputLifecycleState::Local &&
+                LastBackendFailure_ != BackendFailure::None) {
+                ReportTerminalFailure(BackendFailureMessage());
+            } else {
+                std::cerr
+                    << "[Input:Lifecycle] stale or unexpected FocusReady rejected\n";
+            }
+        }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal("Host input event queue overflow");
+        }
+    }
+
+    [[nodiscard]] bool ApplyManualMode(desklink::DeskMode Mode) {
+        if (Stopping_.load()) return false;
+        if (std::this_thread::get_id() == DispatcherId_) {
+            return Profiles_.SetManualOverride(Mode) && ApplyDecision();
+        }
+        auto Promise = std::make_shared<std::promise<bool>>();
+        auto Future = Promise->get_future();
+        if (!Post([this, Mode, Promise] {
+                bool Applied = false;
+                try {
+                    Applied = Profiles_.SetManualOverride(Mode);
+                    if (Applied) Applied = ApplyDecision();
+                } catch (...) {
+                    ReportTerminalFailure("manual mode transition failed");
+                }
+                try {
+                    Promise->set_value(Applied);
+                } catch (...) {
+                }
+            })) {
+            RequestAsynchronousFailLocal(
+                "manual mode event queue admission failed");
+            return false;
+        }
+        try {
+            if (Future.wait_for(std::chrono::milliseconds(1'500)) !=
+                std::future_status::ready) {
+                RequestAsynchronousFailLocal(
+                    "manual mode transition timed out");
+                return false;
+            }
+            return Future.get();
+        } catch (...) {
+            RequestAsynchronousFailLocal(
+                "manual mode transition result failed");
+            return false;
+        }
+    }
+
+    [[nodiscard]] desklink::DeskMode DesiredMode() const noexcept {
+        return DesiredMode_.load();
+    }
+
+    [[nodiscard]] bool CaptureActive() const noexcept {
+        return CaptureActive_.load();
+    }
+
+    [[nodiscard]] bool RemoteFocused() const noexcept {
+        return LifecycleState_.load() ==
+                   desklink::HostInputLifecycleState::Remote &&
+               Host_->Session.RemoteFocused();
+    }
+
+    void DisableCapture() noexcept override {
+        CaptureActive_.store(false);
+        try {
+            std::scoped_lock Lock(CaptureLifetimeMutex_);
+            if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+        } catch (...) {
+        }
+    }
+
+    void StopCapture() noexcept override {
+        CaptureActive_.store(false);
+        try {
+            {
+                std::scoped_lock Lock(CaptureLifetimeMutex_);
+                if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+                ActiveCapture_ = nullptr;
+            }
+            if (Capture_) {
+                Capture_->Stop();
+                Capture_.reset();
+            }
+        } catch (...) {
+        }
+    }
+
+    [[nodiscard]] bool ReleaseFocus() noexcept override {
+        try {
+            return Host_->Session.release_focus();
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool SetDesiredMode(desklink::DeskMode Mode) noexcept override {
+        DesiredMode_.store(Mode);
+        try {
+            if (Host_->Session.SetDesiredMode(Mode)) return true;
+        } catch (...) {
+        }
+        LastBackendFailure_ = BackendFailure::SetMode;
+        return false;
+    }
+
+    [[nodiscard]] bool RequestFocus() noexcept override {
+        try {
+            if (Host_->Session.focus_remote(750)) return true;
+        } catch (...) {
+        }
+        LastBackendFailure_ = BackendFailure::RequestFocus;
+        return false;
+    }
+
+    [[nodiscard]] bool SendInputStateSnapshot() noexcept override {
+        try {
+            if (Host_->Session.SendInputStateSnapshot()) return true;
+        } catch (...) {
+        }
+        LastBackendFailure_ = BackendFailure::Snapshot;
+        return false;
+    }
+
+    [[nodiscard]] bool StartCapture() noexcept override {
+        try {
+            desklink::Win32CaptureHandlers Handlers;
+            const auto Weak = weak_from_this();
+            Handlers.Key = [Weak](desklink::KeyEventMessage Event) {
+                if (const auto Runtime = Weak.lock()) Runtime->ForwardKey(Event);
+            };
+            Handlers.Button = [Weak](desklink::MouseButtonMessage Event) {
+                if (const auto Runtime = Weak.lock()) Runtime->ForwardButton(Event);
+            };
+            Handlers.Pointer = [Weak](desklink::PointerPositionMessage Event) {
+                if (const auto Runtime = Weak.lock()) Runtime->ForwardPointer(Event);
+            };
+            Handlers.Wheel = [Weak](desklink::MouseWheelMessage Message) {
+                if (const auto Runtime = Weak.lock()) Runtime->ForwardWheel(Message);
+            };
+            Handlers.Emergency = [Weak] {
+                if (const auto Runtime = Weak.lock()) Runtime->EmergencyRelease();
+            };
+            Handlers.Failed = [Weak](std::string Message) {
+                if (const auto Runtime = Weak.lock()) {
+                    Runtime->CaptureFailed(std::move(Message));
+                }
+            };
+
+            Capture_ = std::make_unique<desklink::Win32InputCapture>(
+                std::move(Handlers));
+            if (!Capture_->Start()) {
+                Capture_.reset();
+                LastBackendFailure_ = BackendFailure::StartCapture;
+                return false;
+            }
+            {
+                std::scoped_lock Lock(CaptureLifetimeMutex_);
+                ActiveCapture_ = Capture_.get();
+            }
+            return true;
+        } catch (...) {
+            Capture_.reset();
+            LastBackendFailure_ = BackendFailure::StartCapture;
+            return false;
+        }
+    }
+
+    void EnableCapture() noexcept override {
+        try {
+            std::scoped_lock Lock(CaptureLifetimeMutex_);
+            if (!ActiveCapture_ || FailLocalRequested_.load()) {
+                CaptureActive_.store(false);
+                if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+                return;
+            }
+            ActiveCapture_->SetRemoteRouting(true);
+            CaptureActive_.store(true);
+            std::cout
+                << "[Input:Capture] physical input is routed remotely\n"
+                << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n";
+        } catch (...) {
+            CaptureActive_.store(false);
+        }
+    }
+
+private:
+    enum class BackendFailure {
+        None,
+        SetMode,
+        RequestFocus,
+        Snapshot,
+        StartCapture,
+    };
+
+    [[nodiscard]] const char* BackendFailureMessage() const noexcept {
+        switch (LastBackendFailure_) {
+            case BackendFailure::SetMode:
+                return "desired-mode update failed";
+            case BackendFailure::RequestFocus:
+                return "remote focus request failed";
+            case BackendFailure::Snapshot:
+                return "input state reconciliation failed";
+            case BackendFailure::StartCapture:
+                return "Raw Input capture installation failed";
+            case BackendFailure::None:
+                return "Host input lifecycle failed";
+        }
+        return "Host input lifecycle failed";
+    }
+
+    [[nodiscard]] bool Initialize() {
+        if (!Profiles_.Rules().empty()) {
+            Profiles_.SetForeground(desklink::ReadWin32ForegroundWindow());
+        }
+        LastBackendFailure_ = BackendFailure::None;
+        const auto Decision = Profiles_.Decision();
+        if (!Lifecycle_.Start(Decision.Mode)) {
+            PublishLifecycleStatus();
+            ReportTerminalFailure(BackendFailureMessage());
+            return false;
+        }
+        LastDecision_ = Decision;
+        PublishLifecycleStatus();
+        LogDecision(Decision);
+
+        if (Profiles_.Rules().empty()) return true;
+        const auto Weak = weak_from_this();
+        desklink::Win32ForegroundHandlers Handlers;
+        Handlers.Changed = [Weak](desklink::ForegroundWindowSnapshot Snapshot) {
+            if (const auto Runtime = Weak.lock()) {
+                Runtime->ForegroundChanged(std::move(Snapshot));
+            }
+        };
+        Handlers.Failed = [Weak](std::string Message) {
+            if (const auto Runtime = Weak.lock()) {
+                Runtime->ForegroundFailed(std::move(Message));
+            }
+        };
+        ForegroundMonitor_ =
+            std::make_unique<desklink::Win32ForegroundMonitor>(
+                std::move(Handlers));
+        if (!ForegroundMonitor_->Start()) {
+            Profiles_.EmergencyFailLocal();
+            Lifecycle_.FailLocal();
+            PublishLifecycleStatus();
+            ReportTerminalFailure("foreground monitor could not start");
+            return false;
+        }
+        std::cout << "[Input:Profile] foreground monitoring active rules="
+                  << Profiles_.Rules().size() << '\n';
+        return true;
+    }
+
+    void RunDispatcher(std::promise<bool> Promise) noexcept {
+        DispatcherId_ = std::this_thread::get_id();
+        bool Initialized = false;
+        try {
+            Initialized = Initialize();
+        } catch (...) {
+            ReportTerminalFailure("Host input runtime initialization failed");
+        }
+        Promise.set_value(Initialized);
+        if (!Initialized) {
+            Lifecycle_.FailLocal();
+            PublishLifecycleStatus();
+            if (ForegroundMonitor_) ForegroundMonitor_->Stop();
+            return;
+        }
+
+        auto NextRenewal = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(500);
+        for (;;) {
+            std::function<void()> Task;
+            {
+                std::unique_lock Lock(QueueMutex_);
+                QueueChanged_.wait_until(Lock, NextRenewal, [&] {
+                    return StopRequested_ || FailLocalRequested_.load() ||
+                           !Queue_.empty();
+                });
+                if (StopRequested_) break;
+                if (!FailLocalRequested_.load() && !Queue_.empty()) {
+                    Task = std::move(Queue_.front());
+                    Queue_.pop_front();
+                }
+            }
+            if (FailLocalRequested_.exchange(false)) {
+                ReportTerminalFailure("asynchronous fail-local requested");
+                continue;
+            }
+            if (Task) {
+                try {
+                    Task();
+                } catch (...) {
+                    ReportTerminalFailure("serialized Host input event failed");
+                }
+            }
+            if (FailLocalRequested_.exchange(false)) {
+                ReportTerminalFailure("asynchronous fail-local requested");
+                continue;
+            }
+            const auto Now = std::chrono::steady_clock::now();
+            if (Now >= NextRenewal) {
+                RenewAndReconcile();
+                NextRenewal = Now + std::chrono::milliseconds(500);
+            }
+        }
+
+        Lifecycle_.FailLocal();
+        PublishLifecycleStatus();
+        if (ForegroundMonitor_) ForegroundMonitor_->Stop();
+        PrintCaptureSummary();
+    }
+
+    [[nodiscard]] bool Post(std::function<void()> Task) noexcept {
+        if (Stopping_.load()) return false;
+        try {
+            {
+                std::scoped_lock Lock(QueueMutex_);
+                if (StopRequested_ || Stopping_.load() ||
+                    Queue_.size() >= MaximumQueuedEvents) {
+                    return false;
+                }
+                Queue_.push_back(std::move(Task));
+            }
+            QueueChanged_.notify_one();
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void ForegroundChanged(desklink::ForegroundWindowSnapshot Snapshot) noexcept {
+        if (!Post([this, Snapshot = std::move(Snapshot)]() mutable {
+            Profiles_.SetForeground(std::move(Snapshot));
+            (void)ApplyDecision();
+        }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal("foreground event queue overflow");
+        }
+    }
+
+    void ForegroundFailed(std::string Message) noexcept {
+        if (!Post([this, Message = std::move(Message)] {
+            ReportTerminalFailure(Message.empty()
+                ? "foreground monitoring failed"
+                : Message);
+        }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal("foreground failure queue overflow");
+        }
+    }
+
+    [[nodiscard]] bool ApplyDecision() {
+        const auto Decision = Profiles_.Decision();
+        LastBackendFailure_ = BackendFailure::None;
+        const bool Applied = Lifecycle_.ApplyMode(Decision.Mode);
+        PublishLifecycleStatus();
+        if (!Applied) {
+            ReportTerminalFailure(BackendFailureMessage());
+            return false;
+        }
+        if (!LastDecision_ || *LastDecision_ != Decision) {
+            LogDecision(Decision);
+            LastDecision_ = Decision;
+        }
+        if (Lifecycle_.Status().State !=
+            desklink::HostInputLifecycleState::Remote) {
+            std::scoped_lock Lock(Result_->Mutex);
+            Result_->Ready = false;
+        }
+        Result_->Changed.notify_all();
+        return true;
+    }
+
+    void RenewAndReconcile() noexcept {
+        if (Lifecycle_.Status().State !=
+            desklink::HostInputLifecycleState::Remote) {
+            return;
+        }
+        bool Renewed = false;
+        bool Reconciled = false;
+        try {
+            Renewed = Host_->Session.renew_focus(750);
+            Reconciled = Renewed && Host_->Session.SendInputStateSnapshot();
+        } catch (...) {
+        }
+        if (!Reconciled) {
+            ReportTerminalFailure(Renewed
+                ? "input state reconciliation failed"
+                : "focus lease renewal failed");
+        }
+    }
+
+    void PublishLifecycleStatus() noexcept {
+        const auto Status = Lifecycle_.Status();
+        DesiredMode_.store(Status.Mode);
+        LifecycleState_.store(Status.State);
+        if (Status.State != desklink::HostInputLifecycleState::Remote) {
+            CaptureActive_.store(false);
+        }
+    }
+
+    void LogDecision(const desklink::ProfileModeDecision& Decision) const {
+        std::cout << "[Input:Profile] effective_mode="
+                  << DeskModeName(Decision.Mode)
+                  << " source=" << ProfileSourceName(Decision.Source);
+        if (Decision.RuleIndex) {
+            std::cout << " rule=" << *Decision.RuleIndex;
+        }
+        std::cout << '\n';
+    }
+
+    void ReportTerminalFailure(std::string_view Message) noexcept {
+        Profiles_.EmergencyFailLocal();
+        Lifecycle_.FailLocal();
+        PublishLifecycleStatus();
+        try {
+            std::scoped_lock Lock(Result_->Mutex);
+            Result_->Ready = false;
+            Result_->Emergency = true;
+            if (Result_->Failure.empty()) Result_->Failure = Message;
+        } catch (...) {
+        }
+        Result_->Changed.notify_all();
+    }
+
+    void SignalEmergencyOnly(std::string_view Message = {}) noexcept {
+        try {
+            std::scoped_lock Lock(Result_->Mutex);
+            Result_->Ready = false;
+            Result_->Emergency = true;
+            if (!Message.empty() && Result_->Failure.empty()) {
+                Result_->Failure = Message;
+            }
+        } catch (...) {
+        }
+        Result_->Changed.notify_all();
+    }
+
+    void DisableCaptureImmediately() noexcept {
+        CaptureActive_.store(false);
+        try {
+            std::scoped_lock Lock(CaptureLifetimeMutex_);
+            if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+        } catch (...) {
+        }
+    }
+
+    void RequestAsynchronousFailLocal(std::string_view Message) noexcept {
+        try {
+            std::scoped_lock Lock(CaptureLifetimeMutex_);
+            FailLocalRequested_.store(true);
+            CaptureActive_.store(false);
+            if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+        } catch (...) {
+            FailLocalRequested_.store(true);
+            CaptureActive_.store(false);
+        }
+        SignalEmergencyOnly(Message);
+        QueueChanged_.notify_all();
+    }
+
+    void CaptureTransportFailed(std::string Message) noexcept {
+        DisableCaptureImmediately();
+        if (!Post([this, Message = std::move(Message)] {
+                ReportTerminalFailure(Message);
+            })) {
+            RequestAsynchronousFailLocal(
+                "capture failure event queue admission failed");
+        }
+    }
+
+    void ForwardKey(desklink::KeyEventMessage Event) noexcept {
+        KeyEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
+        bool Sent = false;
+        try {
+            Sent = Host_->Session.send_key(Event);
+        } catch (...) {
+        }
+        if (Sent) {
+            KeyEventsForwarded_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            CaptureTransportFailed("reliable keyboard forwarding failed");
+        }
+    }
+
+    void ForwardButton(desklink::MouseButtonMessage Event) noexcept {
+        ButtonEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
+        bool Sent = false;
+        try {
+            Sent = Host_->Session.send_button(Event);
+        } catch (...) {
+        }
+        if (Sent) {
+            ButtonEventsForwarded_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            CaptureTransportFailed("reliable mouse-button forwarding failed");
+        }
+    }
+
+    void ForwardPointer(desklink::PointerPositionMessage Event) noexcept {
+        PointerEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
+        bool Sent = false;
+        try {
+            Sent = Host_->Session.send_pointer(Event);
+        } catch (...) {
+        }
+        if (Sent) {
+            PointerEventsForwarded_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            CaptureTransportFailed("pointer forwarding failed");
+        }
+    }
+
+    void ForwardWheel(desklink::MouseWheelMessage Message) noexcept {
+        WheelEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
+        bool Sent = false;
+        try {
+            Sent = Host_->Session.SendWheel(Message);
+        } catch (...) {
+        }
+        if (Sent) {
+            WheelEventsForwarded_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            CaptureTransportFailed("reliable mouse-wheel forwarding failed");
+        }
+    }
+
+    void EmergencyRelease() noexcept {
+        DisableCaptureImmediately();
+        EmergencyTriggered_.store(true, std::memory_order_relaxed);
+        if (!Post([this] {
+            Profiles_.EmergencyFailLocal();
+            Lifecycle_.FailLocal();
+            PublishLifecycleStatus();
+            {
+                std::scoped_lock Lock(Result_->Mutex);
+                Result_->Ready = false;
+                Result_->Emergency = true;
+            }
+            Result_->Changed.notify_all();
+        })) {
+            RequestAsynchronousFailLocal(
+                "emergency event queue admission failed");
+        }
+    }
+
+    void CaptureFailed(std::string Message) noexcept {
+        CaptureTransportFailed(Message.empty()
+            ? "physical input capture failed"
+            : std::move(Message));
+    }
+
+    void PrintCaptureSummary() const {
+        std::cout << "[Input:Capture] summary"
+                  << " key_captured="
+                  << KeyEventsCaptured_.load(std::memory_order_relaxed)
+                  << " key_forwarded="
+                  << KeyEventsForwarded_.load(std::memory_order_relaxed)
+                  << " button_captured="
+                  << ButtonEventsCaptured_.load(std::memory_order_relaxed)
+                  << " button_forwarded="
+                  << ButtonEventsForwarded_.load(std::memory_order_relaxed)
+                  << " pointer_captured="
+                  << PointerEventsCaptured_.load(std::memory_order_relaxed)
+                  << " pointer_forwarded="
+                  << PointerEventsForwarded_.load(std::memory_order_relaxed)
+                  << " wheel_captured="
+                  << WheelEventsCaptured_.load(std::memory_order_relaxed)
+                  << " wheel_forwarded="
+                  << WheelEventsForwarded_.load(std::memory_order_relaxed)
+                  << " emergency_triggered="
+                  << (EmergencyTriggered_.load(std::memory_order_relaxed)
+                          ? "true" : "false")
+                  << '\n';
+    }
+
+    std::shared_ptr<HostRuntime> Host_;
+    std::shared_ptr<TrustedResult> Result_;
+    desklink::ForegroundProfileEngine Profiles_;
+    desklink::HostInputLifecycle Lifecycle_;
+    bool ConfigurationValid_{};
+    std::optional<desklink::ProfileModeDecision> LastDecision_;
+    BackendFailure LastBackendFailure_{BackendFailure::None};
+
+    std::unique_ptr<desklink::Win32ForegroundMonitor> ForegroundMonitor_;
+    std::unique_ptr<desklink::Win32InputCapture> Capture_;
+    std::mutex CaptureLifetimeMutex_;
+    desklink::Win32InputCapture* ActiveCapture_{};
+
+    std::thread Dispatcher_;
+    std::thread::id DispatcherId_{};
+    std::mutex QueueMutex_;
+    std::condition_variable QueueChanged_;
+    std::deque<std::function<void()>> Queue_;
+    static constexpr std::size_t MaximumQueuedEvents = 64;
+    bool StopRequested_{};
+    std::atomic_bool Stopping_{};
+    std::atomic_bool FailLocalRequested_{};
+
+    std::atomic<desklink::DeskMode> DesiredMode_{desklink::DeskMode::LockPc1};
+    std::atomic<desklink::HostInputLifecycleState> LifecycleState_{
+        desklink::HostInputLifecycleState::Local};
+    std::atomic_bool CaptureActive_{};
+    std::atomic_bool EmergencyTriggered_{};
+    std::atomic_uint64_t KeyEventsCaptured_{};
+    std::atomic_uint64_t KeyEventsForwarded_{};
+    std::atomic_uint64_t ButtonEventsCaptured_{};
+    std::atomic_uint64_t ButtonEventsForwarded_{};
+    std::atomic_uint64_t PointerEventsCaptured_{};
+    std::atomic_uint64_t PointerEventsForwarded_{};
+    std::atomic_uint64_t WheelEventsCaptured_{};
+    std::atomic_uint64_t WheelEventsForwarded_{};
+};
+
 int RunTrusted(const CommandLine& Command,
                desklink::Win32DeviceCertificate Certificate,
                desklink::DpapiTrustStore& TrustStore,
@@ -940,10 +1687,8 @@ int RunTrusted(const CommandLine& Command,
     std::mutex RuntimesMutex;
     std::vector<std::shared_ptr<AgentRuntime>> AgentRuntimes;
     std::shared_ptr<HostRuntime> Host;
+    std::shared_ptr<HostInputRuntime> HostInput;
     int ExitCode = 0;
-    std::atomic<desklink::Win32InputCapture*> ActiveCapture{};
-    std::mutex CaptureLifetimeMutex;
-    std::atomic_bool CaptureActive{};
     std::atomic<desklink::DeskMode> DesiredMode{desklink::DeskMode::Roam};
 
     desklink::Win32ControlPipeServer ControlServer(
@@ -956,14 +1701,15 @@ int RunTrusted(const CommandLine& Command,
                     ? desklink::ControlRole::Agent
                     : desklink::ControlRole::Host;
                 State.DesiredMode = DesiredMode.load();
-                State.CaptureActive = CaptureActive.load();
 
                 std::vector<std::shared_ptr<AgentRuntime>> Agents;
                 std::shared_ptr<HostRuntime> ActiveHost;
+                std::shared_ptr<HostInputRuntime> ActiveInput;
                 {
                     std::scoped_lock Lock(RuntimesMutex);
                     Agents = AgentRuntimes;
                     ActiveHost = Host;
+                    ActiveInput = HostInput;
                 }
                 if (Command.Mode == Operation::Serve) {
                     State.ConnectedPeerCount = static_cast<std::uint16_t>(
@@ -976,10 +1722,11 @@ int RunTrusted(const CommandLine& Command,
                             break;
                         }
                     }
-                } else if (ActiveHost) {
+                } else if (ActiveHost && ActiveInput) {
                     State.ConnectedPeerCount = 1;
-                    State.DesiredMode = ActiveHost->Session.DesiredMode();
-                    State.RemoteFocused = ActiveHost->Session.RemoteFocused();
+                    State.DesiredMode = ActiveInput->DesiredMode();
+                    State.CaptureActive = ActiveInput->CaptureActive();
+                    State.RemoteFocused = ActiveInput->RemoteFocused();
                     if (State.RemoteFocused) {
                         State.FocusedMachine = ActiveHost->PeerMachine;
                     }
@@ -1017,25 +1764,18 @@ int RunTrusted(const CommandLine& Command,
             }
 
             std::shared_ptr<HostRuntime> ActiveHost;
+            std::shared_ptr<HostInputRuntime> ActiveInput;
             {
                 std::scoped_lock Lock(RuntimesMutex);
                 ActiveHost = Host;
+                ActiveInput = HostInput;
             }
-            if (!ActiveHost) {
+            if (!ActiveHost || !ActiveInput) {
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::NotReady,
                     std::nullopt};
             }
-            const bool Applied = ActiveHost->Session.SetDesiredMode(SetMode->Mode);
-            DesiredMode.store(SetMode->Mode);
-            if (SetMode->Mode == desklink::DeskMode::LockPc1 ||
-                SetMode->Mode == desklink::DeskMode::Game) {
-                CaptureActive.store(false);
-                std::scoped_lock CaptureLock(CaptureLifetimeMutex);
-                if (auto* Capture = ActiveCapture.load()) {
-                    Capture->SetRemoteRouting(false);
-                }
-            }
+            const bool Applied = ActiveInput->ApplyManualMode(SetMode->Mode);
             return desklink::ControlResponse{
                 Request.RequestId,
                 Applied ? desklink::ControlStatus::Ok
@@ -1067,6 +1807,8 @@ int RunTrusted(const CommandLine& Command,
         }
         Result->Changed.notify_all();
     };
+    const auto FocusTarget =
+        std::make_shared<std::weak_ptr<HostInputRuntime>>();
     if (Command.Mode == Operation::Serve) {
         Handlers.Connected = [&, Result](
             desklink::MsQuicBootstrapHandlers::TrustedSession Trusted) {
@@ -1104,12 +1846,10 @@ int RunTrusted(const CommandLine& Command,
             std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
                       << " role=initiator\n";
             auto Runtime = std::make_shared<HostRuntime>(
-                TrustStore, std::move(Trusted), [Result] {
-                    {
-                        std::scoped_lock Lock(Result->Mutex);
-                        Result->Ready = true;
+                TrustStore, std::move(Trusted), [FocusTarget] {
+                    if (const auto Input = FocusTarget->lock()) {
+                        Input->NotifyFocusReady();
                     }
-                    Result->Changed.notify_all();
                 });
             if (!Runtime->Session.start()) {
                 Runtime->Session.stop();
@@ -1120,18 +1860,32 @@ int RunTrusted(const CommandLine& Command,
                 Result->Changed.notify_all();
                 return;
             }
+            auto Input = std::make_shared<HostInputRuntime>(
+                Runtime, Result, Command.ProfileDefaultMode,
+                Command.ProfileRules, Command.CaptureInput);
+            *FocusTarget = Input;
             {
                 std::scoped_lock Lock(RuntimesMutex);
                 Host = Runtime;
+                HostInput = Input;
             }
-            if (!Runtime->Session.focus_remote(750)) {
+            if (!Input->Start()) {
+                Input->Stop();
                 Runtime->Session.stop();
                 {
                     std::scoped_lock Lock(Result->Mutex);
-                    Result->Failure = "remote focus request could not be sent";
+                    if (Result->Failure.empty()) {
+                        Result->Failure = "Host input runtime could not start";
+                    }
                 }
                 Result->Changed.notify_all();
+                return;
             }
+            {
+                std::scoped_lock Lock(Result->Mutex);
+                Result->Connected = true;
+            }
+            Result->Changed.notify_all();
         };
     }
 
@@ -1200,11 +1954,11 @@ int RunTrusted(const CommandLine& Command,
         {
             std::unique_lock Lock(Result->Mutex);
             if (!Result->Changed.wait_for(Lock, std::chrono::seconds(10), [&] {
-                    return Result->Ready || !Result->Failure.empty();
-                }) || !Result->Ready) {
+                    return Result->Connected || !Result->Failure.empty();
+                }) || !Result->Connected) {
                 std::cerr << "[Session:Control] "
                           << (Result->Failure.empty()
-                                  ? "remote focus was not granted"
+                                  ? "trusted Host runtime did not become ready"
                                   : Result->Failure)
                           << '\n';
                 Bootstrap->Close();
@@ -1213,56 +1967,45 @@ int RunTrusted(const CommandLine& Command,
             }
         }
         std::shared_ptr<HostRuntime> ActiveHost;
+        std::shared_ptr<HostInputRuntime> ActiveInput;
         {
             std::scoped_lock Lock(RuntimesMutex);
             ActiveHost = Host;
+            ActiveInput = HostInput;
         }
-        if (!ActiveHost || !ActiveHost->Session.RemoteFocused()) {
-            std::cerr << "[Session:Control] remote focus state was not established\n";
+        if (!ActiveHost || !ActiveInput) {
+            std::cerr << "[Session:Control] trusted Host runtime is unavailable\n";
             Bootstrap->Close();
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return 1;
         }
-        if (!ActiveHost->Session.SendInputStateSnapshot()) {
-            std::cerr << "[Input:Reconciliation] initial state snapshot failed\n";
-            Bootstrap->Close();
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            return 1;
-        }
-        std::unique_ptr<desklink::Win32InputCapture> Capture;
-        std::atomic_uint64_t KeyEventsCaptured{};
-        std::atomic_uint64_t KeyEventsForwarded{};
-        std::atomic_uint64_t ButtonEventsCaptured{};
-        std::atomic_uint64_t ButtonEventsForwarded{};
-        std::atomic_uint64_t PointerEventsCaptured{};
-        std::atomic_uint64_t PointerEventsForwarded{};
-        std::atomic_uint64_t WheelEventsCaptured{};
-        std::atomic_uint64_t WheelEventsForwarded{};
-        std::atomic_bool EmergencyTriggered{};
-        std::atomic_bool StopRenewal{};
-        std::thread Renewal([&, Result] {
-            while (!StopRenewal.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (StopRenewal.load()) continue;
-                const bool Renewed = ActiveHost->Session.renew_focus(750);
-                const bool Reconciled = Renewed && ActiveHost->Session.SendInputStateSnapshot();
-                if (!Reconciled) {
-                    CaptureActive.store(false);
-                    if (auto* Current = ActiveCapture.load()) {
-                        Current->SetRemoteRouting(false);
-                    }
-                    {
-                        std::scoped_lock Lock(Result->Mutex);
-                        Result->Emergency = true;
-                        Result->Failure = Renewed
-                            ? "input state reconciliation failed"
-                            : "focus lease renewal failed";
-                    }
-                    Result->Changed.notify_all();
-                    break;
-                }
+        bool RequireRemote = Command.ProfileRules.empty() &&
+            Command.ProfileDefaultMode != desklink::DeskMode::LockPc1 &&
+            Command.ProfileDefaultMode != desklink::DeskMode::Game;
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+        RequireRemote = RequireRemote ||
+            Command.ValidationReconciliationProbe ||
+            Command.ValidationTerminateHeldInput ||
+            Command.ValidationStaleSessionNonce != 0;
+#endif
+        if (RequireRemote) {
+            std::unique_lock Lock(Result->Mutex);
+            if (!Result->Changed.wait_for(Lock, std::chrono::seconds(10), [&] {
+                    return Result->Ready || !Result->Failure.empty();
+                }) || !Result->Ready || !ActiveInput->RemoteFocused()) {
+                std::cerr << "[Input:Lifecycle] "
+                          << (Result->Failure.empty()
+                                  ? "fresh remote focus was not admitted"
+                                  : Result->Failure)
+                          << '\n';
+                Lock.unlock();
+                ActiveInput->Stop();
+                ActiveHost->Session.stop();
+                Bootstrap->Close();
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                return 1;
             }
-        });
+        }
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
         if (Command.ValidationReconciliationProbe) {
             constexpr std::uint16_t ValidationScanCode = 0x7eu;
@@ -1359,131 +2102,9 @@ int RunTrusted(const CommandLine& Command,
             }
         }
 #endif
-        if (Command.CaptureInput) {
-            desklink::Win32CaptureHandlers CaptureHandlers;
-            CaptureHandlers.Key = [ActiveHost, Result, &ActiveCapture,
-                                   &CaptureActive,
-                                   &KeyEventsCaptured, &KeyEventsForwarded](
-                desklink::KeyEventMessage Event) {
-                KeyEventsCaptured.fetch_add(1, std::memory_order_relaxed);
-                if (ActiveHost->Session.send_key(Event)) {
-                    KeyEventsForwarded.fetch_add(1, std::memory_order_relaxed);
-                } else {
-                    CaptureActive.store(false);
-                    if (auto* Current = ActiveCapture.load()) {
-                        Current->SetRemoteRouting(false);
-                    }
-                    {
-                        std::scoped_lock Lock(Result->Mutex);
-                        Result->Emergency = true;
-                        Result->Failure = "reliable keyboard forwarding failed";
-                    }
-                    Result->Changed.notify_all();
-                }
-            };
-            CaptureHandlers.Button = [ActiveHost, Result, &ActiveCapture,
-                                      &CaptureActive,
-                                      &ButtonEventsCaptured,
-                                      &ButtonEventsForwarded](
-                desklink::MouseButtonMessage Event) {
-                ButtonEventsCaptured.fetch_add(1, std::memory_order_relaxed);
-                if (ActiveHost->Session.send_button(Event)) {
-                    ButtonEventsForwarded.fetch_add(1, std::memory_order_relaxed);
-                } else {
-                    CaptureActive.store(false);
-                    if (auto* Current = ActiveCapture.load()) {
-                        Current->SetRemoteRouting(false);
-                    }
-                    {
-                        std::scoped_lock Lock(Result->Mutex);
-                        Result->Emergency = true;
-                        Result->Failure = "reliable mouse-button forwarding failed";
-                    }
-                    Result->Changed.notify_all();
-                }
-            };
-            CaptureHandlers.Pointer = [ActiveHost, &PointerEventsCaptured,
-                                       &PointerEventsForwarded](
-                desklink::PointerPositionMessage Event) {
-                PointerEventsCaptured.fetch_add(1, std::memory_order_relaxed);
-                if (ActiveHost->Session.send_pointer(Event)) {
-                    PointerEventsForwarded.fetch_add(1, std::memory_order_relaxed);
-                }
-            };
-            CaptureHandlers.Wheel = [ActiveHost, Result, &ActiveCapture,
-                                     &CaptureActive,
-                                     &WheelEventsCaptured,
-                                     &WheelEventsForwarded](
-                desklink::MouseWheelMessage Message) {
-                WheelEventsCaptured.fetch_add(1, std::memory_order_relaxed);
-                if (ActiveHost->Session.SendWheel(Message)) {
-                    WheelEventsForwarded.fetch_add(1, std::memory_order_relaxed);
-                } else {
-                    CaptureActive.store(false);
-                    if (auto* Current = ActiveCapture.load()) {
-                        Current->SetRemoteRouting(false);
-                    }
-                    {
-                        std::scoped_lock Lock(Result->Mutex);
-                        Result->Emergency = true;
-                        Result->Failure = "reliable mouse-wheel forwarding failed";
-                    }
-                    Result->Changed.notify_all();
-                }
-            };
-            CaptureHandlers.Emergency = [Result, &EmergencyTriggered,
-                                         &CaptureActive] {
-                CaptureActive.store(false);
-                EmergencyTriggered.store(true, std::memory_order_relaxed);
-                {
-                    std::scoped_lock Lock(Result->Mutex);
-                    Result->Emergency = true;
-                }
-                Result->Changed.notify_all();
-            };
-            CaptureHandlers.Failed = [Result, &CaptureActive](std::string Message) {
-                CaptureActive.store(false);
-                {
-                    std::scoped_lock Lock(Result->Mutex);
-                    Result->Emergency = true;
-                    Result->Failure = std::move(Message);
-                }
-                Result->Changed.notify_all();
-            };
-            Capture = std::make_unique<desklink::Win32InputCapture>(
-                std::move(CaptureHandlers));
-            {
-                std::scoped_lock CaptureLock(CaptureLifetimeMutex);
-                ActiveCapture.store(Capture.get());
-            }
-            if (!Capture->Start()) {
-                CaptureActive.store(false);
-                {
-                    std::scoped_lock CaptureLock(CaptureLifetimeMutex);
-                    ActiveCapture.store(nullptr);
-                }
-                StopRenewal.store(true);
-                Renewal.join();
-                std::cerr << "[Input:Capture] could not install Raw Input and fail-local hooks\n";
-                (void)ActiveHost->Session.release_focus();
-                ActiveHost->Session.stop();
-                Bootstrap->Close();
-                std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                return 1;
-            }
-            bool RenewalFailed = false;
-            {
-                std::scoped_lock Lock(Result->Mutex);
-                RenewalFailed = Result->Emergency;
-            }
-            if (!RenewalFailed) {
-                Capture->SetRemoteRouting(true);
-                CaptureActive.store(true);
-                std::cout << "[Input:Capture] physical input is routed remotely\n"
-                          << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n";
-            }
-        }
-        std::cout << "[Session:Control] remote focus active; press Enter to release\n";
+        std::cout
+            << "[Session:Control] trusted Host runtime active; profiles control focus; "
+               "press Enter to stop\n";
         const auto ValidationDeadline = Command.ValidationDurationMs == 0
             ? std::chrono::steady_clock::time_point::max()
             : std::chrono::steady_clock::now() +
@@ -1494,10 +2115,9 @@ int RunTrusted(const CommandLine& Command,
                 std::scoped_lock Lock(Result->Mutex);
                 if (Result->Emergency) break;
             }
-            if (Capture && !Capture->RemoteRouting()) break;
             if (std::chrono::steady_clock::now() >= ValidationDeadline) {
                 std::cout
-                    << "[Input:Capture] validation duration elapsed; releasing locally\n";
+                    << "[Input:Lifecycle] validation duration elapsed; stopping locally\n";
                 break;
             }
             if (Command.ValidationDurationMs != 0) {
@@ -1516,44 +2136,12 @@ int RunTrusted(const CommandLine& Command,
                 break;
             }
         }
-        CaptureActive.store(false);
-        {
-            std::scoped_lock CaptureLock(CaptureLifetimeMutex);
-            ActiveCapture.store(nullptr);
-        }
-        if (Capture) Capture->SetRemoteRouting(false);
-        StopRenewal.store(true);
-        Renewal.join();
-        if (Capture) {
-            Capture->Stop();
-            std::cout << "[Input:Capture] summary"
-                      << " key_captured="
-                      << KeyEventsCaptured.load(std::memory_order_relaxed)
-                      << " key_forwarded="
-                      << KeyEventsForwarded.load(std::memory_order_relaxed)
-                      << " button_captured="
-                      << ButtonEventsCaptured.load(std::memory_order_relaxed)
-                      << " button_forwarded="
-                      << ButtonEventsForwarded.load(std::memory_order_relaxed)
-                      << " pointer_captured="
-                      << PointerEventsCaptured.load(std::memory_order_relaxed)
-                      << " pointer_forwarded="
-                      << PointerEventsForwarded.load(std::memory_order_relaxed)
-                      << " wheel_captured="
-                      << WheelEventsCaptured.load(std::memory_order_relaxed)
-                      << " wheel_forwarded="
-                      << WheelEventsForwarded.load(std::memory_order_relaxed)
-                      << " emergency_triggered="
-                      << (EmergencyTriggered.load(std::memory_order_relaxed)
-                              ? "true" : "false")
-                      << '\n';
-        }
-        (void)ActiveHost->Session.release_focus();
+        ActiveInput->Stop();
         ActiveHost->Session.stop();
         {
             std::scoped_lock Lock(Result->Mutex);
             if (!Result->Failure.empty()) {
-                std::cerr << "[Input:Capture] " << Result->Failure << '\n';
+                std::cerr << "[Input:Lifecycle] " << Result->Failure << '\n';
                 ExitCode = 1;
             }
         }

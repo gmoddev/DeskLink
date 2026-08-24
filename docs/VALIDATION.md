@@ -320,6 +320,19 @@ fresh focus grant and initial state snapshot. Snapshot and capture-start
 failures return to `LockPc1`. The opt-in Windows capture smoke test also performs
 a complete start/stop/restart/stop cycle with remote routing disabled.
 
+Production profile-runtime validation additionally requires:
+
+1. invalid paths, modes, malformed specifications, duplicate normalized rules,
+   and a 33rd rule are rejected before identity or network work;
+2. a live matching foreground transition to `game`/`lock-pc1` disables routing,
+   releases focus, and completes hook teardown in lifecycle order;
+3. a later permissive transition requests a fresh focus transaction and cannot
+   route before `FocusReady` plus the initial snapshot;
+4. control-pipe mode changes act as manual overrides above profile/default;
+5. intentional restricted modes do not run renewal or report a lease failure;
+6. WinEvent, control, `FocusReady`, renewal, and capture-failure concurrency
+   remains serialized, and every forwarding/start/snapshot failure fails local.
+
 ---
 
 ## Limitations of this validation

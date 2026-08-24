@@ -48,6 +48,11 @@ struct ProfileModeDecision {
 [[nodiscard]] bool IsValidForegroundProfileRule(
     const ForegroundProfileRule& Rule) noexcept;
 [[nodiscard]] std::string NormalizeExecutableName(std::string_view Name);
+[[nodiscard]] std::optional<DeskMode> ParseDeskModeName(
+    std::string_view Name) noexcept;
+[[nodiscard]] std::optional<ForegroundProfileRule> ParseForegroundProfileRule(
+    std::string_view Specification,
+    bool FullscreenOnly = false);
 
 class ForegroundProfileEngine final {
 public:

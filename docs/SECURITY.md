@@ -122,6 +122,12 @@ exist and the foreground window or process cannot be inspected, the policy
 returns `LockPc1` instead of assuming the system default. Manual override is
 still subordinate to the emergency fail-local state.
 
+The production profile surface is limited to one validated fallback mode and
+32 exact `executable=mode` rules. Fullscreen matching is an explicit CLI option;
+there is no configuration-file discovery, wildcard/regex matching, path lookup,
+shell expansion, or target-process command-line inspection. Control-pipe mode
+changes are explicit process-lifetime manual overrides.
+
 The Host input lifecycle treats `GAME` and `LOCK_PC1` as restricted modes. It
 first disables local suppression/forwarding, releases the current focus epoch,
 and synchronously removes the capture hooks before applying the restricted
@@ -130,6 +136,16 @@ installation: a fresh focus grant and a successful reliable input-state
 snapshot are required before capture is restarted and routing is enabled. Any
 focus-request, snapshot, or capture-start failure returns to `LOCK_PC1` with
 capture disabled.
+
+Foreground callbacks, control requests, `FocusReady`, lease/snapshot ticks,
+emergency release, and capture failures execute through one serialized Host
+lifecycle owner. A capture callback first clears the routing gate synchronously;
+it never tears down its own worker thread. The serialized queue is capped at 64
+events; admission failure clears routing and signals terminal fail-local rather
+than dropping a foreground restriction. The serialized owner then releases
+focus and joins capture threads. Renewal is attempted only in the `Remote`
+state, so an intentional `GAME`/`LOCK_PC1` transition cannot be mistaken for a
+transport failure or reopen capture.
 
 ---
 

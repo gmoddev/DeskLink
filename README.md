@@ -49,6 +49,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
 - Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture
+- Production Host profile CLI and serialized live mode-event runtime
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -61,7 +62,6 @@ The following are intentionally kept behind interfaces and are the next producti
 - Monitor graph and edge roaming
 - WASAPI loopback capture and render backend
 - Clock-drift resampling
-- Production CLI/profile configuration and live mode-event wiring
 - UI and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
@@ -181,6 +181,23 @@ low-level hook and mouse events from Raw Input, and suppresses corresponding
 local input until Enter is pressed. Ctrl+Alt+Pause (including Windows'
 Ctrl+Break representation) immediately disables suppression and fails local.
 Omitting `--capture` retains the manual control-plane-only check.
+
+The Host CLI accepts an optional fallback mode plus at most 32 exact executable
+basename rules:
+
+```powershell
+desklink_pair.exe focus 192.168.1.25 43821 --capture `
+  --default-mode roam `
+  --profile-fullscreen game.exe=game `
+  --profile editor.exe=lock-pc1
+```
+
+Modes are `roam`, `lock-pc1`, `lock-pc2`, and `game`. Rules contain no paths,
+wildcards, regular expressions, or command lines. `control mode` remains an
+explicit process-lifetime manual override and therefore outranks profile and
+default decisions; Ctrl+Alt+Pause remains the highest-precedence emergency
+fail-local action. When rules exist and the foreground process is not
+inspectable, the effective mode is `lock-pc1`.
 
 ## Repository layout
 
