@@ -44,9 +44,13 @@ Work proceeds in this order:
    profile, then default. A configured but uninspectable foreground produces a
    fail-local decision. The WinEvent source owns its message-loop thread and
    unhooks on that same thread.
-8. **Next:** apply profile decisions to the production Host runtime, including
-   immediate GAME focus release, complete capture-hook teardown, and safe
-   capture recreation only after a fresh focus grant when GAME exits.
+8. **Complete safety boundary:** the portable Host lifecycle disables routing,
+   releases remote focus, synchronously tears down capture hooks, and then
+   enters `GAME`/`LOCK_PC1`. Leaving a restricted mode requests a fresh focus
+   transaction; capture cannot restart or enable until `FocusReady` and the
+   initial state snapshot succeed. Win32 capture is restart-safe.
+9. **Next:** wire foreground/profile decisions and bounded profile
+   configuration into the production Host CLI through that lifecycle.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -54,7 +58,7 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- profile-driven runtime integration and GAME capture lifecycle
+- production profile configuration and live runtime event wiring
 - WASAPI capture/render, adaptive jitter, and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 

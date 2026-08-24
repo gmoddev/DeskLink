@@ -47,6 +47,7 @@ add_library(desklink_core
     src/input.cpp
     src/focus.cpp
     src/host.cpp
+    src/host_input_lifecycle.cpp
     src/session.cpp
     src/pairing.cpp
     src/pairing_wire.cpp

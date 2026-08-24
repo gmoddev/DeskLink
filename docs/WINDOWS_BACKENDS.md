@@ -166,8 +166,13 @@ the foreground process.
 is normalized, path separators/control characters and duplicate matches are
 rejected, and rules may require fullscreen. If configured rules cannot inspect
 the current foreground, the engine selects fail-local `LockPc1`. Production
-Host application and GAME capture teardown/recreation are intentionally the
-next separate integration stage.
+Host profile event wiring is intentionally the next separate integration stage.
+The intervening lifecycle boundary is implemented: it disables routing,
+releases the active focus epoch, stops the Win32 capture threads and hooks, then
+applies `GAME`/`LOCK_PC1`. On exit it requests a new focus transaction and does
+not restart or enable capture until `FocusReady` and the initial state snapshot
+succeed. `Win32InputCapture` resets its queues, worker stop state, hook handles,
+window, and pointer accumulators before a restart.
 
 ---
 

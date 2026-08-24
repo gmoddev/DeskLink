@@ -321,6 +321,20 @@ Win32InputCapture::~Win32InputCapture() { Stop(); }
 
 bool Win32InputCapture::Start() {
     if (State_->CaptureThread.joinable()) return State_->StartSucceeded;
+    State_->Gate.SetRemoteRouting(false);
+    {
+        std::scoped_lock Lock(State_->QueueMutex);
+        State_->Queue.clear();
+        State_->StopWorker = false;
+    }
+    State_->CaptureThreadId = 0;
+    State_->Window = nullptr;
+    State_->KeyboardHook = nullptr;
+    State_->MouseHook = nullptr;
+    State_->PointerX = 0;
+    State_->PointerY = 0;
+    State_->StartComplete = false;
+    State_->StartSucceeded = false;
     State_->WorkerThread = std::thread([State = State_.get()] {
         for (;;) {
             CapturedEvent Event;

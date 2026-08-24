@@ -122,6 +122,15 @@ exist and the foreground window or process cannot be inspected, the policy
 returns `LockPc1` instead of assuming the system default. Manual override is
 still subordinate to the emergency fail-local state.
 
+The Host input lifecycle treats `GAME` and `LOCK_PC1` as restricted modes. It
+first disables local suppression/forwarding, releases the current focus epoch,
+and synchronously removes the capture hooks before applying the restricted
+mode. A later permissive decision cannot reuse the old epoch or capture
+installation: a fresh focus grant and a successful reliable input-state
+snapshot are required before capture is restarted and routing is enabled. Any
+focus-request, snapshot, or capture-start failure returns to `LOCK_PC1` with
+capture disabled.
+
 ---
 
 ## 5. Focus lease and epoch
