@@ -2,7 +2,7 @@
 
 DeskLink is a local distributed desk-control platform intended to provide secure keyboard/mouse roaming, network audio, state synchronization, and future capability modules between trusted Windows PCs.
 
-This repository is a **reference foundation implementation**, not a finished production release. It deliberately implements and tests the protocol/state/security invariants before binding them to privileged or timing-sensitive Windows APIs.
+This repository is a **reference foundation implementation**, not a finished production release. It deliberately implements and tests protocol/state/security invariants before and alongside privileged or timing-sensitive Windows adapters.
 
 ## Implemented
 
@@ -19,7 +19,9 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Absolute normalized pointer messages
 - Bounded reliable vertical/horizontal mouse-wheel messages
 - PCM audio frame format
+- Exact 48 kHz/stereo/PCM16/5 ms audio block assembler
 - Bounded reorder/jitter buffer with silence concealment
+- Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Abstract transport interface
 - Authenticated/encrypted session gate and session-nonce binding
 - Manual pairing transcript with short authentication code confirmation
@@ -60,7 +62,9 @@ The following are intentionally kept behind interfaces and are the next producti
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
 - Monitor graph and edge roaming
-- WASAPI loopback capture and render backend
+- Audio capability/session and production transport wiring
+- WASAPI endpoint-loss/recovery handling
+- Adaptive jitter targeting
 - Clock-drift resampling
 - UI and Stream Deck plugin
 
@@ -210,10 +214,11 @@ include/desklink/
     session.hpp          Secure session binding over ITransportEndpoint
     agent.hpp            PC2 authorization and injection gate
     input.hpp            Input backend interface
-    audio.hpp            Audio jitter/reorder buffer
+    audio.hpp            Exact audio framing and jitter/reorder buffer
     transport.hpp        Authenticated transport abstraction
     win32_input.hpp      Windows SendInput adapter
     win32_capture.hpp    Physical input and fail-local suppression adapter
+    win32_audio.hpp      WASAPI loopback capture and shared render adapters
 
 src/
     protocol.cpp
@@ -224,6 +229,7 @@ src/
     audio.cpp
     in_memory_transport.cpp
     win32_input.cpp
+    win32_audio.cpp
 
 apps/
     desklink_sim.cpp

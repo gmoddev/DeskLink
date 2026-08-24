@@ -45,8 +45,8 @@ Owns mechanisms shared by all modules:
 
 The portable core contains neither hooks nor WASAPI details. The optional
 `desklink_windows` adapter contains low-level physical keyboard capture,
-Raw Input mouse capture, fail-local suppression hooks, and `SendInput`; WASAPI
-remains unimplemented.
+Raw Input mouse capture, fail-local suppression hooks, `SendInput`, and
+event-driven shared-mode WASAPI loopback/render adapters.
 
 ### DeskLink.Host
 
@@ -370,7 +370,12 @@ gain
 WASAPI shared render
 ```
 
-The foundation implements the bounded reorder/jitter and silence-concealment layer. WASAPI and drift compensation remain backend work.
+The foundation implements exact 48 kHz/stereo/PCM16/5 ms block assembly,
+bounded reorder/jitter with silence concealment, event-driven loopback capture,
+and a shared-render adapter with a bounded 64-frame submission queue and
+silence underrun. Capability/session transport wiring, endpoint recovery,
+adaptive jitter targeting, gain/mute, and drift compensation remain separate
+integration work. Audio worker failure does not change input focus or capture.
 
 ---
 

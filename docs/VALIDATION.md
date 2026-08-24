@@ -335,12 +335,31 @@ Production profile-runtime validation additionally requires:
 
 ---
 
+## WASAPI foundation validation
+
+The portable suite splits and joins PCM input across packet boundaries, checks
+exact 48 kHz/stereo/PCM16/240-frame output, verifies five-millisecond timestamp
+steps, emits a full silence block, and rejects a non-frame-aligned byte count.
+The standard Windows build compiles the concrete Core Audio adapter under
+`/W4`.
+
+Set `DESKLINK_WASAPI_SMOKE=1` for the opt-in native device test. It opens the
+current default render endpoint for event-driven loopback, starts and stops the
+capture worker, opens a shared render stream, submits one canonical silence
+block, and verifies that neither worker reports a failure. The handler never
+logs or persists captured samples.
+
+This foundation test does not claim endpoint-change recovery, sustained timing,
+adaptive jitter, drift correction, gain/mute, or network playout.
+
+---
+
 ## Limitations of this validation
 
 This validation does not yet prove:
 
 - sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
-- WASAPI timing or endpoint recovery
+- sustained WASAPI timing, endpoint recovery, or clock-drift correction
 - real packet-loss/jitter characteristics
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:

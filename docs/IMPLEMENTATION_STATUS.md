@@ -37,7 +37,9 @@ The current build proves the core invariants independently of Windows networking
 | Host input lifecycle safety boundary | Done | Disable capture, release focus, synchronously stop hooks, then enter GAME/LOCK_PC1; exit requires fresh FocusReady + initial snapshot before capture restart/enable |
 | Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
 | PCM audio frame | Done | Bounded wire representation |
+| Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
+| WASAPI capture/render foundation | Done | Event-driven shared-mode loopback capture and shared render; 64-frame render queue; silence underrun; explicit start/stop and failure isolation |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
 | Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
@@ -140,9 +142,8 @@ Build/test result in the creation environment:
 
 ### P1 — required for useful audio
 
-- WASAPI loopback capture
-- format conversion
-- WASAPI render
+- capability-gated audio session/datagram wiring
+- receiver jitter/render pump
 - adaptive jitter target
 - clock drift resampler
 - endpoint-loss/recovery handling
@@ -204,9 +205,11 @@ discovery are complete. The bounded foreground policy engine, native WinEvent
 monitor, and production CLI/live event runtime are complete. One serialized
 Host owner applies WinEvent and manual decisions through the fail-local
 lifecycle, admits capture only after fresh focus plus snapshot, and
-renews/reconciles only while Remote. Edge roaming remains gated on the deferred
-physical matrix; the next unblocked implementation slice is the WASAPI
-capture/render foundation.
+renews/reconciles only while Remote. The bounded event-driven WASAPI
+capture/render foundation and exact V1 audio block assembler are complete.
+Edge roaming remains gated on the deferred physical matrix; the next unblocked
+slice is capability-gated audio session/datagram wiring and receiver
+jitter/render pumping.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

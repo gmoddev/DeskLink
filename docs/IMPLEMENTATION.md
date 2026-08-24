@@ -122,17 +122,34 @@ releases during cleanup. Bounded vertical/horizontal wheel events map to
 
 ### `audio.hpp` / `audio.cpp`
 
-Implements a bounded sequence-aware jitter buffer.
+Implements exact V1 audio block assembly and a bounded sequence-aware jitter
+buffer.
 
 It:
 
+- accepts only whole PCM16 stereo source frames in bounded pushes
+- assembles exact 48 kHz, 240-frame, 5 ms wire blocks
+- produces explicit silence blocks and resets partial state on discontinuity
 - reorders future frames
 - rejects late frames
 - waits for a target amount of evidence before declaring a gap
 - synthesizes silence for a confirmed missing frame
 - limits buffered frame count
 
-WASAPI capture/render and clock-drift correction are deliberately outside this class.
+### `win32_audio.hpp` / `win32_audio.cpp`
+
+Implements an event-driven shared-mode WASAPI foundation. The capture adapter
+opens the default render endpoint with the loopback and audio-engine conversion
+flags, drains every complete capture packet, respects silent/timestamp-error/
+discontinuity flags, and publishes exact V1 blocks. The render adapter requests
+the same canonical format, pre-rolls silence, accepts at most 64 validated
+blocks, and fills underruns with silence. Each adapter owns COM and WASAPI
+objects on its worker thread and exposes explicit start/stop/failure state.
+
+The adapters are not yet wired to peer capabilities or production transport.
+Endpoint notification/recovery, adaptive jitter, gain/mute, and clock-drift
+correction remain outside this foundation. Audio failure has no input-mode
+authority.
 
 ### `transport.hpp` / `in_memory_transport.cpp`
 
@@ -391,9 +408,11 @@ WinEvent observation, and production Host CLI/live event runtime are now
 implemented. One serialized lifecycle owner handles profile/manual decisions,
 `FocusReady`, renewal/reconciliation, emergency release, and capture failures.
 It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
-and restart-safe Win32 capture teardown/recreation. Edge roaming remains gated
-on the physical matrix; the next unblocked roadmap item is the WASAPI
-capture/render foundation.
+and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
+capture/render foundation and exact V1 block assembler are now implemented.
+Edge roaming remains gated on the physical matrix; the next unblocked roadmap
+item is capability-gated audio session/datagram wiring and receiver
+jitter/render pumping.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
