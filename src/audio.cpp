@@ -1,6 +1,7 @@
 #include "desklink/audio.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -9,6 +10,9 @@ namespace desklink {
 namespace {
 
 constexpr std::size_t kMaximumSourceFramesPerPush = 8'192;
+constexpr std::uint64_t kMaximumJitterSampleIntervalUs = 5'000'000;
+constexpr std::uint64_t kMaximumJitterVariationUs = 100'000;
+constexpr std::size_t kStableSamplesBeforeTargetDecrease = 200;
 
 std::optional<std::uint64_t> AddFrameDuration(
     std::uint64_t TimestampUs, std::size_t Frames) noexcept {
@@ -28,6 +32,12 @@ std::optional<std::uint64_t> AddFrameDuration(
     }
     Result += Fraction;
     return Result;
+}
+
+std::uint64_t SteadyTimestampUs() noexcept {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 } // namespace
@@ -148,6 +158,11 @@ std::optional<AudioPlayout> AudioJitterBuffer::pop() {
         next_sequence_ = frames_.begin()->first;
     }
 
+    if (Rebuffering_) {
+        if (frames_.size() < target_frames_) return std::nullopt;
+        Rebuffering_ = false;
+    }
+
     const auto expected = *next_sequence_;
     auto it = frames_.find(expected);
     if (it != frames_.end()) {
@@ -170,22 +185,147 @@ std::optional<AudioPlayout> AudioJitterBuffer::pop() {
     return out;
 }
 
+void AudioJitterBuffer::SetTargetFrames(std::size_t TargetFrames) noexcept {
+    const auto NewTarget = std::clamp(
+        TargetFrames, std::size_t{1}, max_frames_);
+    if (NewTarget > target_frames_ && next_sequence_.has_value() &&
+        frames_.size() < NewTarget && !Rebuffering_) {
+        Rebuffering_ = true;
+        ++RebufferEvents_;
+    }
+    target_frames_ = NewTarget;
+    if (Rebuffering_ && frames_.size() >= target_frames_) {
+        Rebuffering_ = false;
+    }
+}
+
 void AudioJitterBuffer::Reset() noexcept {
     frames_.clear();
     next_sequence_.reset();
     last_model_.reset();
+    Rebuffering_ = false;
+    RebufferEvents_ = 0;
     dropped_late_ = 0;
     concealed_frames_ = 0;
+}
+
+AudioAdaptiveJitterController::AudioAdaptiveJitterController(
+    std::size_t InitialTargetFrames,
+    std::size_t MaximumTargetFrames) noexcept
+    : InitialTargetFrames_(std::max<std::size_t>(1, InitialTargetFrames)),
+      MinimumTargetFrames_(std::min<std::size_t>(InitialTargetFrames_, 2)),
+      MaximumTargetFrames_(std::max(
+          InitialTargetFrames_, MaximumTargetFrames)),
+      TargetFrames_(InitialTargetFrames_),
+      PeakTargetFrames_(InitialTargetFrames_) {}
+
+void AudioAdaptiveJitterController::Observe(
+    std::uint64_t Sequence,
+    std::uint64_t CaptureTimestampUs,
+    std::uint64_t ArrivalTimestampUs) noexcept {
+    if (Sequence == 0) return;
+    if (!LastSequence_.has_value()) {
+        LastSequence_ = Sequence;
+        LastCaptureTimestampUs_ = CaptureTimestampUs;
+        LastArrivalTimestampUs_ = ArrivalTimestampUs;
+        return;
+    }
+    if (Sequence <= *LastSequence_) return;
+
+    const bool TimestampAdvanced =
+        CaptureTimestampUs > LastCaptureTimestampUs_ &&
+        ArrivalTimestampUs >= LastArrivalTimestampUs_;
+    const auto CaptureDelta = TimestampAdvanced
+        ? CaptureTimestampUs - LastCaptureTimestampUs_
+        : std::uint64_t{};
+    const auto ArrivalDelta = TimestampAdvanced
+        ? ArrivalTimestampUs - LastArrivalTimestampUs_
+        : std::uint64_t{};
+    LastSequence_ = Sequence;
+    LastCaptureTimestampUs_ = CaptureTimestampUs;
+    LastArrivalTimestampUs_ = ArrivalTimestampUs;
+    if (!TimestampAdvanced || CaptureDelta > kMaximumJitterSampleIntervalUs ||
+        ArrivalDelta > kMaximumJitterSampleIntervalUs) {
+        StableSamples_ = 0;
+        return;
+    }
+
+    const auto RawVariation = CaptureDelta > ArrivalDelta
+        ? CaptureDelta - ArrivalDelta
+        : ArrivalDelta - CaptureDelta;
+    const auto Variation = std::min(
+        RawVariation, kMaximumJitterVariationUs);
+    JitterScaled_ = JitterScaled_ - (JitterScaled_ / 16) + Variation;
+    const auto Estimated = EstimatedJitterUs();
+    const auto BudgetUs = std::max(Variation, Estimated * 4);
+    const auto ExtraFrames = static_cast<std::size_t>(
+        (BudgetUs + kDeskLinkAudioBlockDurationUs - 1) /
+        kDeskLinkAudioBlockDurationUs);
+    const auto AvailableGrowth =
+        MaximumTargetFrames_ - MinimumTargetFrames_;
+    const auto DesiredTarget = MinimumTargetFrames_ +
+        std::min(ExtraFrames, AvailableGrowth);
+    if (DesiredTarget > TargetFrames_) {
+        TargetFrames_ = DesiredTarget;
+        PeakTargetFrames_ = std::max(PeakTargetFrames_, TargetFrames_);
+        StableSamples_ = 0;
+        ++TargetRaises_;
+        return;
+    }
+    if (DesiredTarget < TargetFrames_) {
+        ++StableSamples_;
+        if (StableSamples_ >= kStableSamplesBeforeTargetDecrease) {
+            --TargetFrames_;
+            StableSamples_ = 0;
+            ++TargetLowers_;
+        }
+        return;
+    }
+    StableSamples_ = 0;
+}
+
+void AudioAdaptiveJitterController::ObserveConcealment() noexcept {
+    StableSamples_ = 0;
+    if (TargetFrames_ >= MaximumTargetFrames_) return;
+    ++TargetFrames_;
+    PeakTargetFrames_ = std::max(PeakTargetFrames_, TargetFrames_);
+    ++TargetRaises_;
+}
+
+void AudioAdaptiveJitterController::Reset() noexcept {
+    TargetFrames_ = InitialTargetFrames_;
+    PeakTargetFrames_ = InitialTargetFrames_;
+    LastSequence_.reset();
+    LastCaptureTimestampUs_ = 0;
+    LastArrivalTimestampUs_ = 0;
+    JitterScaled_ = 0;
+    StableSamples_ = 0;
+    TargetRaises_ = 0;
+    TargetLowers_ = 0;
+}
+
+std::uint64_t AudioAdaptiveJitterController::EstimatedJitterUs() const noexcept {
+    return (JitterScaled_ + 8) / 16;
 }
 
 AudioReceiver::AudioReceiver(RenderHandler Renderer,
                              std::size_t TargetFrames,
                              std::size_t MaximumFrames)
     : Renderer_(std::move(Renderer)),
-      Buffer_(TargetFrames, MaximumFrames) {}
+      Buffer_(TargetFrames, MaximumFrames),
+      JitterController_(
+          TargetFrames,
+          std::min(MaximumFrames,
+                   kDeskLinkAudioMaximumAdaptiveTargetFrames)) {}
 
 bool AudioReceiver::Push(std::uint64_t Sequence,
                          AudioFrameMessage Frame) noexcept {
+    return PushAt(Sequence, std::move(Frame), SteadyTimestampUs());
+}
+
+bool AudioReceiver::PushAt(std::uint64_t Sequence,
+                           AudioFrameMessage Frame,
+                           std::uint64_t ArrivalTimestampUs) noexcept {
     try {
         std::scoped_lock Lock(Mutex_);
         if (Failed_) return false;
@@ -203,11 +343,15 @@ bool AudioReceiver::Push(std::uint64_t Sequence,
             return false;
         }
         const auto StreamId = Frame.stream_id;
+        const auto CaptureTimestampUs = Frame.capture_timestamp_us;
         if (!Buffer_.push(Sequence, std::move(Frame))) {
             ++Stats_.SequenceRejected;
             return false;
         }
         if (!StreamId_) StreamId_ = StreamId;
+        JitterController_.Observe(
+            Sequence, CaptureTimestampUs, ArrivalTimestampUs);
+        Buffer_.SetTargetFrames(JitterController_.TargetFrames());
         ++Stats_.Accepted;
         return true;
     } catch (...) {
@@ -234,7 +378,11 @@ AudioPumpResult AudioReceiver::Pump() noexcept {
             return AudioPumpResult::RenderRejected;
         }
         ++Stats_.Submitted;
-        if (Playout->concealed) ++Stats_.Concealed;
+        if (Playout->concealed) {
+            ++Stats_.Concealed;
+            JitterController_.ObserveConcealment();
+            Buffer_.SetTargetFrames(JitterController_.TargetFrames());
+        }
         return AudioPumpResult::Submitted;
     } catch (...) {
         std::scoped_lock Lock(Mutex_);
@@ -248,6 +396,8 @@ AudioPumpResult AudioReceiver::Pump() noexcept {
 void AudioReceiver::Reset() noexcept {
     std::scoped_lock Lock(Mutex_);
     Buffer_.Reset();
+    JitterController_.Reset();
+    Buffer_.SetTargetFrames(JitterController_.TargetFrames());
     StreamId_.reset();
     Stats_ = {};
     Failed_ = false;
@@ -260,7 +410,14 @@ bool AudioReceiver::Failed() const noexcept {
 
 AudioReceiverStats AudioReceiver::Stats() const noexcept {
     std::scoped_lock Lock(Mutex_);
-    return Stats_;
+    auto Result = Stats_;
+    Result.CurrentTargetFrames = JitterController_.TargetFrames();
+    Result.PeakTargetFrames = JitterController_.PeakTargetFrames();
+    Result.EstimatedJitterUs = JitterController_.EstimatedJitterUs();
+    Result.TargetRaises = JitterController_.TargetRaises();
+    Result.TargetLowers = JitterController_.TargetLowers();
+    Result.RebufferEvents = Buffer_.RebufferEvents();
+    return Result;
 }
 
 } // namespace desklink

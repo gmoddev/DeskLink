@@ -21,6 +21,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - PCM audio frame format
 - Exact 48 kHz/stereo/PCM16/5 ms audio block assembler
 - Bounded reorder/jitter buffer with silence concealment
+- Adaptive 10-60 ms audio jitter targeting with bounded rebuffer hysteresis
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
 - Default-endpoint notification and bounded audio-only WASAPI recovery
@@ -66,7 +67,6 @@ The following are intentionally kept behind interfaces and are the next producti
 - Monitor graph and edge roaming
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
-- Adaptive jitter targeting
 - Clock-drift resampling
 - UI and Stream Deck plugin
 

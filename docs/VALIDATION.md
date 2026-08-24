@@ -352,6 +352,11 @@ and audio-only fail-stop behavior. The end-to-end in-memory session transfers
 canonical datagrams through both capability gates and pumps them into the
 receiver callback without acquiring input focus.
 
+Deterministic adaptive-jitter tests prove immediate bounded target growth for
+arrival variation, one-block decreases only after 200 stable samples, a hard
+12-block ceiling, reordered-sample rejection, concealment-driven growth,
+explicit rebuffer accounting, maximum-frame clamping, and reset behavior.
+
 The Windows suite classifies endpoint change/unavailability as recoverable and
 capture client/send rejection as non-recoverable. Runtime recovery preserves
 the current admitted session and uses a capped 250 ms to 5 s retry interval;
@@ -367,8 +372,8 @@ proving notification registration, worker teardown, event handles, and queues
 are reopen-safe.
 
 This device smoke does not physically switch or disable the default endpoint;
-that matrix, sustained physical two-PC timing, adaptive jitter, drift
-correction, and gain/mute remain separate validation.
+that matrix, sustained physical two-PC timing, drift correction, and gain/mute
+remain separate validation.
 
 ---
 
@@ -379,7 +384,8 @@ This validation does not yet prove:
 - sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
 - sustained WASAPI timing, physical endpoint switch/disable/sleep recovery, or
   clock-drift correction
-- real packet-loss/jitter characteristics
+- real packet-loss/jitter characteristics beyond the deterministic adaptive
+  target and bounded rebuffer tests
 - physical two-PC audio privacy, interruption, reconnect, and endpoint-change behavior
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:

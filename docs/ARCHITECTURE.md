@@ -384,8 +384,14 @@ worker and schedule audio-only reopen with 250 ms to 5 s capped backoff. Capture
 client rejection is not recoverable and never restarts. Recovery preserves the
 admitted peer, session nonce, capability grants, TLS provider, CNG identity, and
 input state; receiver recovery discards queued audio before playout resumes.
-Adaptive jitter targeting, gain/mute, and drift compensation remain separate
-integration work.
+The receiver compares sender capture-time deltas with local steady arrival-time
+deltas only after format, stream, sequence, nonce, capability, and peer
+validation. A bounded estimator raises the playout target immediately on an
+arrival spike or concealment, but lowers it by only one block after 200 stable
+samples. An increase can deliberately rebuffer before the next block; the
+target is clamped to 2-12 five-millisecond blocks (10-60 ms) and cannot affect
+the admitted session, transport, identity, or input lifecycle. Gain/mute and
+clock-drift compensation remain separate integration work.
 
 ---
 

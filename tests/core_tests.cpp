@@ -647,6 +647,81 @@ void jitter_buffer_reorders_and_conceals() {
     CHECK(twelve.has_value() && !twelve->concealed && twelve->frame.pcm[0] == 12);
 }
 
+void AdaptiveJitterRaisesQuicklyAndLowersSlowly() {
+    using namespace desklink;
+    AudioAdaptiveJitterController Controller(4, 12);
+    std::uint64_t Capture{};
+    std::uint64_t Arrival{};
+    Controller.Observe(1, Capture, Arrival);
+    for (std::uint64_t Sequence = 2; Sequence <= 401; ++Sequence) {
+        Capture += kDeskLinkAudioBlockDurationUs;
+        Arrival += kDeskLinkAudioBlockDurationUs;
+        Controller.Observe(Sequence, Capture, Arrival);
+    }
+    CHECK(Controller.TargetFrames() == 2);
+    CHECK(Controller.TargetLowers() == 2);
+
+    Capture += kDeskLinkAudioBlockDurationUs;
+    Arrival += kDeskLinkAudioBlockDurationUs + 30'000;
+    Controller.Observe(402, Capture, Arrival);
+    CHECK(Controller.TargetFrames() == 8);
+    CHECK(Controller.PeakTargetFrames() == 8);
+    CHECK(Controller.TargetRaises() == 1);
+    CHECK(Controller.EstimatedJitterUs() > 0);
+
+    Controller.Observe(401, Capture, Arrival);
+    CHECK(Controller.TargetFrames() == 8);
+    Arrival += kDeskLinkAudioBlockDurationUs;
+    Controller.Observe(403, 1, Arrival);
+    CHECK(Controller.TargetFrames() == 8);
+    Arrival += 6'000'000;
+    Controller.Observe(404, 6'000'001, Arrival);
+    CHECK(Controller.TargetFrames() == 8);
+    for (int Index = 0; Index < 20; ++Index) {
+        Controller.ObserveConcealment();
+    }
+    CHECK(Controller.TargetFrames() == 12);
+    CHECK(Controller.PeakTargetFrames() == 12);
+
+    Controller.Reset();
+    CHECK(Controller.TargetFrames() == 4);
+    CHECK(Controller.PeakTargetFrames() == 4);
+    CHECK(Controller.EstimatedJitterUs() == 0);
+    CHECK(Controller.TargetRaises() == 0);
+}
+
+void JitterTargetIncreaseRebuffersWithinBounds() {
+    using namespace desklink;
+    AudioJitterBuffer Buffer(2, 8);
+    const auto MakeFrame = [](std::uint8_t Marker) {
+        AudioFrameMessage Frame;
+        Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, Marker);
+        return Frame;
+    };
+    CHECK(Buffer.push(1, MakeFrame(1)));
+    CHECK(Buffer.push(2, MakeFrame(2)));
+    auto First = Buffer.pop();
+    CHECK(First.has_value() && First->frame.pcm[0] == 1);
+
+    Buffer.SetTargetFrames(4);
+    CHECK(Buffer.TargetFrames() == 4);
+    CHECK(Buffer.RebufferEvents() == 1);
+    CHECK(!Buffer.pop().has_value());
+    CHECK(Buffer.push(3, MakeFrame(3)));
+    CHECK(Buffer.push(4, MakeFrame(4)));
+    CHECK(!Buffer.pop().has_value());
+    CHECK(Buffer.push(5, MakeFrame(5)));
+    auto Second = Buffer.pop();
+    CHECK(Second.has_value() && Second->frame.pcm[0] == 2);
+
+    Buffer.SetTargetFrames(2);
+    CHECK(Buffer.TargetFrames() == 2);
+    CHECK(Buffer.RebufferEvents() == 1);
+    Buffer.SetTargetFrames(100);
+    CHECK(Buffer.TargetFrames() == 8);
+    CHECK(Buffer.RebufferEvents() == 2);
+}
+
 void AudioFrameAssemblerProducesExactBoundedBlocks() {
     using namespace desklink;
     AudioFrameAssembler Assembler(17);
@@ -721,21 +796,27 @@ void AudioReceiverIsBoundedAndFailsClosed() {
     CHECK(Receiver.Push(13, MakeFrame(13)));
     CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
     CHECK(Rendered.size() == 2 && Rendered.back().pcm[0] == 0);
+    CHECK(Receiver.Pump() == AudioPumpResult::Buffering);
+    CHECK(Receiver.Push(14, MakeFrame(14)));
     CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
     CHECK(Rendered.size() == 3 && Rendered.back().pcm[0] == 12);
     CHECK(!Receiver.Push(9, MakeFrame(9)));
     CHECK(!Receiver.Push(0, MakeFrame(14)));
-    CHECK(!Receiver.Push(14, MakeFrame(14, 10)));
+    CHECK(!Receiver.Push(15, MakeFrame(15, 10)));
     auto Invalid = MakeFrame(0);
     Invalid.sample_rate = 44'100;
-    CHECK(!Receiver.Push(14, std::move(Invalid)));
+    CHECK(!Receiver.Push(15, std::move(Invalid)));
     const auto Stats = Receiver.Stats();
-    CHECK(Stats.Accepted == 3);
+    CHECK(Stats.Accepted == 4);
     CHECK(Stats.Submitted == 3);
     CHECK(Stats.Concealed == 1);
     CHECK(Stats.SequenceRejected == 2);
     CHECK(Stats.StreamRejected == 1);
     CHECK(Stats.FormatRejected == 1);
+    CHECK(Stats.CurrentTargetFrames == 3);
+    CHECK(Stats.PeakTargetFrames == 3);
+    CHECK(Stats.TargetRaises == 1);
+    CHECK(Stats.RebufferEvents == 1);
 
     AudioReceiver Rejecting(
         [](AudioFrameMessage) { return false; }, 1, 2);
@@ -864,13 +945,17 @@ void secure_session_end_to_end() {
     auto SecondAudio = FirstAudio;
     SecondAudio.capture_timestamp_us = 5'000;
     SecondAudio.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x42);
+    auto ThirdAudio = SecondAudio;
+    ThirdAudio.capture_timestamp_us = 10'000;
+    ThirdAudio.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x43);
     CHECK(agent.SendAudioFrame(std::move(FirstAudio)));
     CHECK(agent.SendAudioFrame(std::move(SecondAudio)));
+    CHECK(agent.SendAudioFrame(std::move(ThirdAudio)));
     CHECK(Audio.Pump() == AudioPumpResult::Submitted);
     CHECK(RenderedAudio.size() == 1);
     CHECK(RenderedAudio[0].pcm[0] == 0x41);
-    CHECK(agent.stats().AudioSent == 2);
-    CHECK(host.stats().AudioAccepted == 2);
+    CHECK(agent.stats().AudioSent == 3);
+    CHECK(host.stats().AudioAccepted == 3);
     CHECK(host.focus_remote(750));
     CHECK(host_core.remote_focused());
     CHECK(host.RemoteFocused());
@@ -1871,6 +1956,8 @@ void in_memory_transport_preserves_security_metadata() {
 int main() {
     AudioFrameAssemblerProducesExactBoundedBlocks();
     AudioReceiverIsBoundedAndFailsClosed();
+    AdaptiveJitterRaisesQuicklyAndLowersSlowly();
+    JitterTargetIncreaseRebuffersWithinBounds();
     ForegroundProfilePolicyIsBoundedAndDeterministic();
     HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus();
     HostInputLifecycleFailuresRemainLocal();
