@@ -4,10 +4,50 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <map>
 #include <optional>
+#include <vector>
 
 namespace desklink {
+
+inline constexpr std::uint32_t kDeskLinkAudioSampleRate = 48'000;
+inline constexpr std::uint16_t kDeskLinkAudioFramesPerBlock = 240;
+inline constexpr std::uint8_t kDeskLinkAudioChannels = 2;
+inline constexpr std::uint8_t kDeskLinkAudioBytesPerSample = 2;
+inline constexpr std::size_t kDeskLinkAudioBytesPerFrame =
+    static_cast<std::size_t>(kDeskLinkAudioChannels) *
+    kDeskLinkAudioBytesPerSample;
+inline constexpr std::size_t kDeskLinkAudioBytesPerBlock =
+    static_cast<std::size_t>(kDeskLinkAudioFramesPerBlock) *
+    kDeskLinkAudioBytesPerFrame;
+
+[[nodiscard]] bool IsDeskLinkAudioFrame(
+    const AudioFrameMessage& Frame) noexcept;
+
+class AudioFrameAssembler final {
+public:
+    explicit AudioFrameAssembler(std::uint32_t StreamId) noexcept;
+
+    [[nodiscard]] bool Push(
+        ByteSpan Pcm16Stereo, std::uint64_t CaptureTimestampUs,
+        std::vector<AudioFrameMessage>& Output);
+    [[nodiscard]] bool PushSilence(
+        std::size_t FrameCount, std::uint64_t CaptureTimestampUs,
+        std::vector<AudioFrameMessage>& Output);
+    void Reset() noexcept;
+
+private:
+    [[nodiscard]] bool Append(
+        const std::uint8_t* Data, std::size_t FrameCount, bool Silent,
+        std::uint64_t CaptureTimestampUs,
+        std::vector<AudioFrameMessage>& Output);
+
+    std::uint32_t StreamId_{};
+    std::array<std::uint8_t, kDeskLinkAudioBytesPerBlock> Pending_{};
+    std::size_t PendingFrames_{};
+    std::uint64_t PendingTimestampUs_{};
+};
 
 struct AudioPlayout {
     AudioFrameMessage frame;

@@ -15,6 +15,7 @@
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
 #ifdef _WIN32
+#include "desklink/win32_audio.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
@@ -29,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -37,6 +39,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -642,6 +645,55 @@ void jitter_buffer_reorders_and_conceals() {
 
     auto twelve = jitter.pop();
     CHECK(twelve.has_value() && !twelve->concealed && twelve->frame.pcm[0] == 12);
+}
+
+void AudioFrameAssemblerProducesExactBoundedBlocks() {
+    using namespace desklink;
+    AudioFrameAssembler Assembler(17);
+    std::vector<AudioFrameMessage> Output;
+
+    ByteBuffer First(100 * kDeskLinkAudioBytesPerFrame, 0x11);
+    ByteBuffer Second(140 * kDeskLinkAudioBytesPerFrame, 0x22);
+    CHECK(Assembler.Push(First, 10'000, Output));
+    CHECK(Output.empty());
+    CHECK(Assembler.Push(Second, 12'083, Output));
+    CHECK(Output.size() == 1);
+    CHECK(IsDeskLinkAudioFrame(Output[0]));
+    CHECK(Output[0].stream_id == 17);
+    CHECK(Output[0].capture_timestamp_us == 10'000);
+    CHECK(Output[0].pcm[0] == 0x11);
+    CHECK(Output[0].pcm[First.size()] == 0x22);
+
+    Output.clear();
+    ByteBuffer TwoBlocks(2 * kDeskLinkAudioBytesPerBlock, 0x33);
+    CHECK(Assembler.Push(TwoBlocks, 20'000, Output));
+    CHECK(Output.size() == 2);
+    CHECK(Output[0].capture_timestamp_us == 20'000);
+    CHECK(Output[1].capture_timestamp_us == 25'000);
+
+    Output.clear();
+    CHECK(Assembler.PushSilence(kDeskLinkAudioFramesPerBlock,
+                                30'000, Output));
+    CHECK(Output.size() == 1);
+    CHECK(std::all_of(Output[0].pcm.begin(), Output[0].pcm.end(),
+                      [](std::uint8_t Value) { return Value == 0; }));
+
+    Output.clear();
+    CHECK(!Assembler.Push(ByteBuffer{1, 2, 3}, 40'000, Output));
+    CHECK(Output.empty());
+    CHECK(!Assembler.PushSilence(8'193, 40'000, Output));
+    ByteBuffer Partial(10 * kDeskLinkAudioBytesPerFrame, 0x44);
+    CHECK(Assembler.Push(Partial, 40'000, Output));
+    Assembler.Reset();
+    CHECK(Assembler.PushSilence(kDeskLinkAudioFramesPerBlock,
+                                50'000, Output));
+    CHECK(Output.size() == 1);
+    CHECK(Output[0].capture_timestamp_us == 50'000);
+    auto Invalid = AudioFrameMessage{};
+    Invalid.pcm.assign(kDeskLinkAudioBytesPerBlock, 0);
+    CHECK(IsDeskLinkAudioFrame(Invalid));
+    Invalid.sample_rate = 44'100;
+    CHECK(!IsDeskLinkAudioFrame(Invalid));
 }
 
 
@@ -1374,6 +1426,42 @@ void WindowsCaptureSmokeIfRequested() {
     Capture.Stop();
 }
 
+void WindowsWasapiSmokeIfRequested() {
+    if (std::getenv("DESKLINK_WASAPI_SMOKE") == nullptr) return;
+    using namespace desklink;
+    std::atomic_uint32_t Captured{};
+    std::atomic_bool CaptureFailed{};
+    Win32WasapiLoopbackCapture Capture(
+        1, Win32WasapiCaptureHandlers{
+            [&](AudioFrameMessage Frame) {
+                CHECK(IsDeskLinkAudioFrame(Frame));
+                ++Captured;
+            },
+            [&](std::string) {
+                CaptureFailed.store(true);
+            }});
+    CHECK(Capture.Start());
+    CHECK(Capture.Running());
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Capture.Stop();
+    CHECK(!Capture.Running());
+    CHECK(!CaptureFailed.load());
+
+    std::atomic_bool RenderFailed{};
+    Win32WasapiRenderer Renderer(Win32WasapiRenderHandlers{
+        [&](std::string) { RenderFailed.store(true); }});
+    CHECK(Renderer.Start());
+    AudioFrameMessage Silence;
+    Silence.stream_id = 1;
+    Silence.pcm.assign(kDeskLinkAudioBytesPerBlock, 0);
+    CHECK(Renderer.Submit(std::move(Silence)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Renderer.Stop();
+    CHECK(!Renderer.Running());
+    CHECK(!RenderFailed.load());
+    CHECK(Renderer.QueuedFrames() == 0);
+}
+
 void WindowsCryptoAndDpapiTrustStoreWork() {
     using namespace desklink;
     BCryptPairingCrypto crypto;
@@ -1598,6 +1686,7 @@ void in_memory_transport_preserves_security_metadata() {
 } // namespace
 
 int main() {
+    AudioFrameAssemblerProducesExactBoundedBlocks();
     ForegroundProfilePolicyIsBoundedAndDeterministic();
     HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus();
     HostInputLifecycleFailuresRemainLocal();
@@ -1633,6 +1722,7 @@ int main() {
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();
+    WindowsWasapiSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
 #endif
     in_memory_transport_preserves_security_metadata();

@@ -54,8 +54,14 @@ Work proceeds in this order:
    owner. Exact `exe=mode` rules, fullscreen-only rules, current-user manual
    overrides, `FocusReady`, renewal, and capture failures share the same ordered
    event boundary. Renewal and reconciliation run only while Remote.
-10. **Next unblocked slice:** begin the WASAPI capture/render foundation while
-    edge roaming remains gated on the deferred Windows 11 physical matrix.
+10. **Complete foundation:** event-driven shared-mode WASAPI loopback capture
+    and render adapters normalize to exact 48 kHz/stereo/PCM16/5 ms blocks.
+    Capture packet handling, renderer submission, and renderer buffering are
+    bounded; silence, discontinuity, underrun, and module-local failure paths
+    are explicit.
+11. **Next unblocked slice:** capability-gated audio session/datagram wiring and
+    receiver jitter/render pumping while edge roaming remains gated on the
+    deferred Windows 11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -63,7 +69,8 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- WASAPI capture/render, adaptive jitter, and clock-drift correction
+- audio session/transport wiring, endpoint recovery, adaptive jitter, and
+  clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project

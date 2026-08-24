@@ -206,7 +206,7 @@ Crossing should include a small hysteresis/dead-zone to prevent focus oscillatio
 
 ## 6. WASAPI sender on PC2
 
-Recommended capture path:
+The implemented foundation uses:
 
 ```text
 IMMDeviceEnumerator
@@ -228,13 +228,19 @@ V1 should normalize to:
 48 kHz / stereo / PCM16 / 5 ms
 ```
 
-If the endpoint's mix format differs, convert in the sender before packetization.
+`Win32WasapiLoopbackCapture` owns COM and all endpoint interfaces on one MMCSS
+worker. It requests the canonical format with the shared-mode audio-engine
+conversion flags, drains each complete capture packet before release, converts
+WASAPI silence into zero samples, resets a partial block on discontinuity, and
+uses a steady timestamp if WASAPI marks its QPC timestamp invalid. Source
+packets above 8192 frames fail the audio module rather than causing unbounded
+work. Published blocks are always exactly 960 PCM bytes.
 
 ---
 
 ## 7. WASAPI receiver on PC1
 
-Recommended playback path:
+The implemented foundation uses:
 
 ```text
 network datagrams
@@ -251,6 +257,11 @@ IAudioRenderClient shared mode
 ```
 
 Windows then mixes the DeskLink stream with local applications. DeskLink does not need to capture/re-mix all PC1 audio itself.
+
+`Win32WasapiRenderer` validates the canonical frame shape before accepting a
+block, caps its queue at 64 blocks (320 ms), pre-rolls silence, and fills an
+empty shared endpoint buffer with silence while counting underruns. It does not
+yet own the network jitter pump, adaptive target, gain/mute, or resampler.
 
 ---
 
@@ -275,7 +286,7 @@ This prevents hours-long sessions from gradually underrunning or overflowing.
 
 ## 9. Device changes
 
-The audio backend must handle:
+Production audio integration must add recovery for:
 
 - default endpoint changes
 - device removal
@@ -283,7 +294,9 @@ The audio backend must handle:
 - format change
 - sleep/resume
 
-Audio failure must not affect input capability availability.
+The current foundation reports endpoint failure and stops its own worker; it
+does not silently reopen a changed endpoint. Audio failure must not affect
+input capability availability.
 
 Capabilities should degrade independently.
 
