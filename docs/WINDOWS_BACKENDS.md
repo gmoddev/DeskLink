@@ -165,10 +165,13 @@ the foreground process.
 `ForegroundProfileEngine` accepts at most 32 exact basename rules. ASCII case
 is normalized, path separators/control characters and duplicate matches are
 rejected, and rules may require fullscreen. If configured rules cannot inspect
-the current foreground, the engine selects fail-local `LockPc1`. Production
-Host profile event wiring is intentionally the next separate integration stage.
-The intervening lifecycle boundary is implemented: it disables routing,
-releases the active focus epoch, stops the Win32 capture threads and hooks, then
+the current foreground, the engine selects fail-local `LockPc1`. The production
+Host CLI exposes `--default-mode`, repeated `--profile exe=mode`, and repeated
+`--profile-fullscreen exe=mode`; parsing uses the same bounded validator as the
+policy engine. WinEvent, control-pipe, `FocusReady`, renewal, emergency, and
+capture-failure events are serialized by one Host runtime owner. The lifecycle
+boundary disables routing, releases the active focus epoch, stops the Win32
+capture threads and hooks, then
 applies `GAME`/`LOCK_PC1`. On exit it requests a new focus transaction and does
 not restart or enable capture until `FocusReady` and the initial state snapshot
 succeed. `Win32InputCapture` resets its queues, worker stop state, hook handles,

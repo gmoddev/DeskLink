@@ -262,14 +262,22 @@ or weakens a rule. The Windows adapter observes `EVENT_SYSTEM_FOREGROUND` with
 an out-of-context WinEvent hook on an owned message-loop thread. It requests
 only `PROCESS_QUERY_LIMITED_INFORMATION`, extracts a bounded executable
 basename, compares window bounds with the containing monitor for fullscreen
-state, and never loads target-process code. The policy and observer are now
-implemented. The Host input lifecycle enforces transition ordering independently
-of the CLI: capture routing is disabled before focus release, Win32 capture
-hooks are synchronously stopped before a restricted mode is entered, and
-leaving `GAME` or `LOCK_PC1` requests a new focus transaction. Capture cannot be
-reinstalled or enabled until that transaction produces a fresh `FocusReady` and
-the initial reliable input-state snapshot succeeds. Production CLI/profile
-configuration and event wiring remain the next runtime stage.
+state, and never loads target-process code. The policy and observer are
+implemented. The production Host CLI accepts a bounded fallback mode and at
+most 32 exact `executable=mode` rules, including a separate fullscreen-only
+form. The Host runtime serializes foreground WinEvent callbacks, current-user
+control requests, transport `FocusReady`, renewal ticks, emergency release, and
+capture/transport failures onto one lifecycle owner. Capture callbacks disable
+routing synchronously before queueing any failure event. Its event queue is
+bounded to 64 entries; overflow disables routing and terminates fail-local. The
+lifecycle disables
+routing before focus release, synchronously stops Win32 capture hooks before a
+restricted mode is entered, and requests a new focus transaction when leaving
+`GAME` or `LOCK_PC1`. Capture cannot be reinstalled or enabled until that
+transaction produces a fresh `FocusReady` and the initial reliable input-state
+snapshot succeeds. Renewal and authoritative snapshots run only while the
+serialized lifecycle is `Remote`; restrictive profile decisions are not
+misreported as renewal failures.
 
 ---
 

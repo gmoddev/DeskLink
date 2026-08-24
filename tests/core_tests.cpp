@@ -1006,6 +1006,21 @@ void CertificatePinsMatchOnlyTheStoredPeer() {
 void ForegroundProfilePolicyIsBoundedAndDeterministic() {
     using namespace desklink;
 
+    CHECK(ParseDeskModeName("roam") == DeskMode::Roam);
+    CHECK(ParseDeskModeName("lock-pc1") == DeskMode::LockPc1);
+    CHECK(ParseDeskModeName("lock-pc2") == DeskMode::LockPc2);
+    CHECK(ParseDeskModeName("game") == DeskMode::Game);
+    CHECK(!ParseDeskModeName("lock"));
+    const auto ParsedRule = ParseForegroundProfileRule(
+        "GAME.EXE=game", true);
+    CHECK(ParsedRule.has_value());
+    CHECK(ParsedRule->ExecutableName == "game.exe");
+    CHECK(ParsedRule->Mode == DeskMode::Game);
+    CHECK(ParsedRule->FullscreenOnly);
+    CHECK(!ParseForegroundProfileRule("game.exe"));
+    CHECK(!ParseForegroundProfileRule("bad/path.exe=game"));
+    CHECK(!ParseForegroundProfileRule("game.exe=unknown"));
+
     ForegroundProfileEngine Engine;
     CHECK(Engine.SetRules({
         ForegroundProfileRule{"game.exe", DeskMode::Game, true},

@@ -92,6 +92,37 @@ std::string NormalizeExecutableName(std::string_view Name) {
     return Result;
 }
 
+std::optional<DeskMode> ParseDeskModeName(std::string_view Name) noexcept {
+    if (Name == "roam") return DeskMode::Roam;
+    if (Name == "lock-pc1") return DeskMode::LockPc1;
+    if (Name == "lock-pc2") return DeskMode::LockPc2;
+    if (Name == "game") return DeskMode::Game;
+    return std::nullopt;
+}
+
+std::optional<ForegroundProfileRule> ParseForegroundProfileRule(
+    std::string_view Specification,
+    bool FullscreenOnly) {
+    if (Specification.empty() ||
+        Specification.size() > kMaximumExecutableNameBytes + 9u) {
+        return std::nullopt;
+    }
+    const auto Separator = Specification.rfind('=');
+    if (Separator == std::string_view::npos || Separator == 0 ||
+        Separator + 1 >= Specification.size()) {
+        return std::nullopt;
+    }
+    const auto Mode = ParseDeskModeName(Specification.substr(Separator + 1));
+    if (!Mode) return std::nullopt;
+
+    ForegroundProfileRule Rule{
+        std::string(Specification.substr(0, Separator)), *Mode,
+        FullscreenOnly};
+    if (!IsValidForegroundProfileRule(Rule)) return std::nullopt;
+    Rule.ExecutableName = NormalizeExecutableName(Rule.ExecutableName);
+    return Rule;
+}
+
 ForegroundProfileEngine::ForegroundProfileEngine(
     DeskMode SystemDefault) noexcept {
     if (IsValidDeskMode(SystemDefault)) SystemDefault_ = SystemDefault;

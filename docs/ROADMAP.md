@@ -49,8 +49,13 @@ Work proceeds in this order:
    enters `GAME`/`LOCK_PC1`. Leaving a restricted mode requests a fresh focus
    transaction; capture cannot restart or enable until `FocusReady` and the
    initial state snapshot succeed. Win32 capture is restart-safe.
-9. **Next:** wire foreground/profile decisions and bounded profile
-   configuration into the production Host CLI through that lifecycle.
+9. **Complete:** foreground/profile decisions and bounded profile configuration
+   are wired into the production Host CLI through one serialized lifecycle
+   owner. Exact `exe=mode` rules, fullscreen-only rules, current-user manual
+   overrides, `FocusReady`, renewal, and capture failures share the same ordered
+   event boundary. Renewal and reconciliation run only while Remote.
+10. **Next unblocked slice:** begin the WASAPI capture/render foundation while
+    edge roaming remains gated on the deferred Windows 11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -58,7 +63,6 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- production profile configuration and live runtime event wiring
 - WASAPI capture/render, adaptive jitter, and clock-drift correction
 - UI, Stream Deck integration, installer, and update flow
 

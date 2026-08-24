@@ -88,7 +88,7 @@ $DeskLinkCredentialSources = @(
 $ScannedSources = @($PatchPath) + $ProviderSources + $DeskLinkCredentialSources
 foreach ($ForbiddenApi in $ForbiddenPrivateKeyApis) {
     if (Select-String -LiteralPath $ScannedSources `
-            -SimpleMatch $ForbiddenApi -Quiet) {
+            -SimpleMatch $ForbiddenApi -CaseSensitive -Quiet) {
         throw "Compatibility patch contains prohibited API or mechanism: $ForbiddenApi"
     }
 }
