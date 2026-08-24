@@ -21,6 +21,8 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <new>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -106,13 +108,134 @@ std::uint64_t SteadyTimestampUs() noexcept {
 }
 
 template <typename Handler>
-void PublishFailure(const Handler& Failed, std::string Message) noexcept {
+void PublishFailure(const Handler& Failed, Win32WasapiFailureKind Kind,
+                    std::string Message) noexcept {
     if (!Failed) return;
     try {
-        Failed(std::move(Message));
+        Failed(Kind, std::move(Message));
     } catch (...) {
     }
 }
+
+class EndpointNotificationClient final : public IMMNotificationClient {
+public:
+    explicit EndpointNotificationClient(HANDLE ChangedEvent) noexcept
+        : ChangedEvent_(ChangedEvent) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+        REFIID InterfaceId, void** Object) noexcept override {
+        if (Object == nullptr) return E_POINTER;
+        *Object = nullptr;
+        if (InterfaceId == __uuidof(IUnknown) ||
+            InterfaceId == __uuidof(IMMNotificationClient)) {
+            *Object = static_cast<IMMNotificationClient*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() noexcept override {
+        return ++References_;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() noexcept override {
+        const auto Remaining = --References_;
+        if (Remaining == 0) delete this;
+        return Remaining;
+    }
+
+    void SetDeviceId(std::wstring DeviceId) noexcept {
+        DeviceId_ = std::move(DeviceId);
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(
+        LPCWSTR DeviceId, DWORD NewState) noexcept override {
+        if (Matches(DeviceId) && (NewState & DEVICE_STATE_ACTIVE) == 0) {
+            Signal();
+        }
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) noexcept override {
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(
+        LPCWSTR DeviceId) noexcept override {
+        if (Matches(DeviceId)) Signal();
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(
+        EDataFlow Flow, ERole Role, LPCWSTR) noexcept override {
+        if (Flow == eRender && Role == eConsole) Signal();
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(
+        LPCWSTR DeviceId, const PROPERTYKEY) noexcept override {
+        if (Matches(DeviceId)) Signal();
+        return S_OK;
+    }
+
+private:
+    [[nodiscard]] bool Matches(LPCWSTR DeviceId) const noexcept {
+        return DeviceId != nullptr && !DeviceId_.empty() &&
+            _wcsicmp(DeviceId_.c_str(), DeviceId) == 0;
+    }
+
+    void Signal() noexcept {
+        if (ChangedEvent_) SetEvent(ChangedEvent_);
+    }
+
+    HANDLE ChangedEvent_{};
+    std::wstring DeviceId_;
+    std::atomic_ulong References_{1};
+};
+
+class EndpointNotificationOwner final {
+public:
+    explicit EndpointNotificationOwner(HANDLE ChangedEvent) noexcept
+        : Client_(new (std::nothrow)
+              EndpointNotificationClient(ChangedEvent)) {}
+    ~EndpointNotificationOwner() {
+        if (Client_) Client_->Release();
+    }
+
+    [[nodiscard]] EndpointNotificationClient* Get() const noexcept {
+        return Client_;
+    }
+
+private:
+    EndpointNotificationClient* Client_{};
+};
+
+class EndpointNotificationRegistration final {
+public:
+    EndpointNotificationRegistration() = default;
+    ~EndpointNotificationRegistration() {
+        if (Enumerator_ && Client_) {
+            Enumerator_->UnregisterEndpointNotificationCallback(Client_);
+        }
+    }
+
+    [[nodiscard]] bool Start(
+        IMMDeviceEnumerator* Enumerator,
+        IMMNotificationClient* Client) noexcept {
+        if (!Enumerator || !Client || Enumerator_ || Client_) return false;
+        if (FAILED(Enumerator->RegisterEndpointNotificationCallback(Client))) {
+            return false;
+        }
+        Enumerator_ = Enumerator;
+        Client_ = Client;
+        return true;
+    }
+
+private:
+    IMMDeviceEnumerator* Enumerator_{};
+    IMMNotificationClient* Client_{};
+};
 
 bool OpenDefaultRenderClient(
     ComPtr<IMMDeviceEnumerator>& Enumerator, ComPtr<IMMDevice>& Device,
@@ -132,6 +255,21 @@ bool OpenDefaultRenderClient(
         reinterpret_cast<void**>(AudioClient.Put())));
 }
 
+std::optional<std::wstring> GetDeviceId(IMMDevice* Device) noexcept {
+    if (!Device) return std::nullopt;
+    LPWSTR RawDeviceId{};
+    if (FAILED(Device->GetId(&RawDeviceId)) || RawDeviceId == nullptr) {
+        return std::nullopt;
+    }
+    std::optional<std::wstring> Result;
+    try {
+        Result = std::wstring(RawDeviceId);
+    } catch (...) {
+    }
+    CoTaskMemFree(RawDeviceId);
+    return Result;
+}
+
 } // namespace
 
 struct Win32WasapiLoopbackCapture::State {
@@ -144,6 +282,7 @@ struct Win32WasapiLoopbackCapture::State {
     std::mutex StartMutex;
     std::condition_variable Started;
     HANDLE StopEvent{};
+    HANDLE EndpointEvent{};
     HANDLE AudioEvent{};
     bool StartComplete{};
     bool StartSucceeded{};
@@ -165,13 +304,16 @@ struct Win32WasapiLoopbackCapture::State {
             for (auto& Frame : Frames) {
                 if (!Handlers.Frame(std::move(Frame))) {
                     PublishFailure(Handlers.Failed,
+                                   Win32WasapiFailureKind::ClientRejected,
                                    "audio capture frame was rejected");
                     return false;
                 }
             }
             return true;
         } catch (...) {
-            PublishFailure(Handlers.Failed, "audio capture handler failed");
+            PublishFailure(Handlers.Failed,
+                           Win32WasapiFailureKind::ClientRejected,
+                           "audio capture handler failed");
             return false;
         }
     }
@@ -183,38 +325,58 @@ struct Win32WasapiLoopbackCapture::State {
         ComPtr<IMMDevice> Device;
         ComPtr<IAudioClient> AudioClient;
         ComPtr<IAudioCaptureClient> CaptureClient;
+        EndpointNotificationOwner Notifications(EndpointEvent);
+        EndpointNotificationRegistration NotificationRegistration;
         auto Format = DeskLinkWaveFormat();
         const DWORD Flags =
             AUDCLNT_STREAMFLAGS_LOOPBACK |
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
             AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-        const bool Initialized = Apartment.Ready() &&
-            OpenDefaultRenderClient(Enumerator, Device, AudioClient) &&
-            SUCCEEDED(AudioClient->Initialize(
-                AUDCLNT_SHAREMODE_SHARED, Flags, kRequestedBufferDuration,
-                0, &Format, nullptr)) &&
-            SUCCEEDED(AudioClient->SetEventHandle(AudioEvent)) &&
-            SUCCEEDED(AudioClient->GetService(
-                __uuidof(IAudioCaptureClient),
-                reinterpret_cast<void**>(CaptureClient.Put()))) &&
-            SUCCEEDED(AudioClient->Start());
+        bool Initialized = Apartment.Ready() &&
+            OpenDefaultRenderClient(Enumerator, Device, AudioClient);
+        if (Initialized) {
+            auto DeviceId = GetDeviceId(Device.Get());
+            if (DeviceId && Notifications.Get()) {
+                Notifications.Get()->SetDeviceId(std::move(*DeviceId));
+            }
+            Initialized = DeviceId.has_value() && Notifications.Get() &&
+                NotificationRegistration.Start(
+                Enumerator.Get(), Notifications.Get()) &&
+                SUCCEEDED(AudioClient->Initialize(
+                    AUDCLNT_SHAREMODE_SHARED, Flags,
+                    kRequestedBufferDuration, 0, &Format, nullptr)) &&
+                SUCCEEDED(AudioClient->SetEventHandle(AudioEvent)) &&
+                SUCCEEDED(AudioClient->GetService(
+                    __uuidof(IAudioCaptureClient),
+                    reinterpret_cast<void**>(CaptureClient.Put()))) &&
+                SUCCEEDED(AudioClient->Start());
+        }
         FinishStart(Initialized);
         if (!Initialized) {
             PublishFailure(Handlers.Failed,
+                           Win32WasapiFailureKind::EndpointUnavailable,
                            "WASAPI loopback initialization failed");
             return;
         }
 
         AudioFrameAssembler Assembler(StreamId);
-        HANDLE WaitHandles[]{StopEvent, AudioEvent};
+        HANDLE WaitHandles[]{StopEvent, EndpointEvent, AudioEvent};
         bool Failed{};
         while (!Failed) {
             const auto WaitResult = WaitForMultipleObjects(
-                2, WaitHandles, FALSE, INFINITE);
+                3, WaitHandles, FALSE, INFINITE);
             if (WaitResult == WAIT_OBJECT_0) break;
-            if (WaitResult != WAIT_OBJECT_0 + 1) {
-                PublishFailure(Handlers.Failed, "WASAPI capture wait failed");
+            if (WaitResult == WAIT_OBJECT_0 + 1) {
+                PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointChanged,
+                               "WASAPI render endpoint changed");
+                break;
+            }
+            if (WaitResult != WAIT_OBJECT_0 + 2) {
+                PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointUnavailable,
+                               "WASAPI capture wait failed");
                 break;
             }
 
@@ -224,6 +386,7 @@ struct Win32WasapiLoopbackCapture::State {
                     CaptureClient->GetNextPacketSize(&PacketFrames);
                 if (FAILED(PacketSizeResult)) {
                     PublishFailure(Handlers.Failed,
+                                   Win32WasapiFailureKind::EndpointUnavailable,
                                    "WASAPI capture packet query failed");
                     Failed = true;
                     break;
@@ -236,6 +399,7 @@ struct Win32WasapiLoopbackCapture::State {
                     &Data, &PacketFrames, &PacketFlags, nullptr, &QpcPosition);
                 if (FAILED(GetResult)) {
                     PublishFailure(Handlers.Failed,
+                                   Win32WasapiFailureKind::EndpointUnavailable,
                                    "WASAPI capture packet rejected");
                     Failed = true;
                     break;
@@ -246,6 +410,7 @@ struct Win32WasapiLoopbackCapture::State {
                     (!Silent && Data == nullptr)) {
                     CaptureClient->ReleaseBuffer(PacketFrames);
                     PublishFailure(Handlers.Failed,
+                                   Win32WasapiFailureKind::EndpointUnavailable,
                                    "WASAPI capture packet rejected");
                     Failed = true;
                     break;
@@ -269,6 +434,7 @@ struct Win32WasapiLoopbackCapture::State {
                     CaptureClient->ReleaseBuffer(PacketFrames);
                 if (!Accepted || FAILED(ReleaseResult)) {
                     PublishFailure(Handlers.Failed,
+                                   Win32WasapiFailureKind::EndpointUnavailable,
                                    "WASAPI capture packet processing failed");
                     Failed = true;
                     break;
@@ -293,10 +459,15 @@ Win32WasapiLoopbackCapture::~Win32WasapiLoopbackCapture() {
 }
 
 bool Win32WasapiLoopbackCapture::Start() {
-    if (State_->Thread.joinable()) return State_->StartSucceeded;
+    if (State_->Thread.joinable()) {
+        if (State_->IsRunning.load()) return true;
+        Stop();
+    }
     State_->StopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    State_->EndpointEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     State_->AudioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!State_->StopEvent || !State_->AudioEvent) {
+    if (!State_->StopEvent || !State_->EndpointEvent ||
+        !State_->AudioEvent) {
         Stop();
         return false;
     }
@@ -326,8 +497,10 @@ void Win32WasapiLoopbackCapture::Stop() noexcept {
     }
     State_->IsRunning.store(false);
     if (State_->AudioEvent) CloseHandle(State_->AudioEvent);
+    if (State_->EndpointEvent) CloseHandle(State_->EndpointEvent);
     if (State_->StopEvent) CloseHandle(State_->StopEvent);
     State_->AudioEvent = nullptr;
+    State_->EndpointEvent = nullptr;
     State_->StopEvent = nullptr;
 }
 
@@ -344,6 +517,7 @@ struct Win32WasapiRenderer::State {
     std::mutex StartMutex;
     std::condition_variable Started;
     HANDLE StopEvent{};
+    HANDLE EndpointEvent{};
     HANDLE AudioEvent{};
     bool StartComplete{};
     bool StartSucceeded{};
@@ -391,6 +565,8 @@ struct Win32WasapiRenderer::State {
         ComPtr<IMMDevice> Device;
         ComPtr<IAudioClient> AudioClient;
         ComPtr<IAudioRenderClient> RenderClient;
+        EndpointNotificationOwner Notifications(EndpointEvent);
+        EndpointNotificationRegistration NotificationRegistration;
         auto Format = DeskLinkWaveFormat();
         const DWORD Flags =
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
@@ -400,17 +576,27 @@ struct Win32WasapiRenderer::State {
         UINT32 BufferFrames{};
         BYTE* InitialBuffer{};
         bool Initialized = Apartment.Ready() &&
-            OpenDefaultRenderClient(Enumerator, Device, AudioClient) &&
-            SUCCEEDED(AudioClient->Initialize(
-                AUDCLNT_SHAREMODE_SHARED, Flags, kRequestedBufferDuration,
-                0, &Format, nullptr)) &&
-            SUCCEEDED(AudioClient->SetEventHandle(AudioEvent)) &&
-            SUCCEEDED(AudioClient->GetBufferSize(&BufferFrames)) &&
-            BufferFrames != 0 &&
-            SUCCEEDED(AudioClient->GetService(
-                __uuidof(IAudioRenderClient),
-                reinterpret_cast<void**>(RenderClient.Put()))) &&
-            SUCCEEDED(RenderClient->GetBuffer(BufferFrames, &InitialBuffer));
+            OpenDefaultRenderClient(Enumerator, Device, AudioClient);
+        if (Initialized) {
+            auto DeviceId = GetDeviceId(Device.Get());
+            if (DeviceId && Notifications.Get()) {
+                Notifications.Get()->SetDeviceId(std::move(*DeviceId));
+            }
+            Initialized = DeviceId.has_value() && Notifications.Get() &&
+                NotificationRegistration.Start(
+                Enumerator.Get(), Notifications.Get()) &&
+                SUCCEEDED(AudioClient->Initialize(
+                    AUDCLNT_SHAREMODE_SHARED, Flags,
+                    kRequestedBufferDuration, 0, &Format, nullptr)) &&
+                SUCCEEDED(AudioClient->SetEventHandle(AudioEvent)) &&
+                SUCCEEDED(AudioClient->GetBufferSize(&BufferFrames)) &&
+                BufferFrames != 0 &&
+                SUCCEEDED(AudioClient->GetService(
+                    __uuidof(IAudioRenderClient),
+                    reinterpret_cast<void**>(RenderClient.Put()))) &&
+                SUCCEEDED(RenderClient->GetBuffer(
+                    BufferFrames, &InitialBuffer));
+        }
         if (Initialized) {
             Initialized = SUCCEEDED(RenderClient->ReleaseBuffer(
                 BufferFrames, AUDCLNT_BUFFERFLAGS_SILENT)) &&
@@ -419,23 +605,33 @@ struct Win32WasapiRenderer::State {
         FinishStart(Initialized);
         if (!Initialized) {
             PublishFailure(Handlers.Failed,
+                           Win32WasapiFailureKind::EndpointUnavailable,
                            "WASAPI render initialization failed");
             return;
         }
 
-        HANDLE WaitHandles[]{StopEvent, AudioEvent};
+        HANDLE WaitHandles[]{StopEvent, EndpointEvent, AudioEvent};
         while (true) {
             const auto WaitResult = WaitForMultipleObjects(
-                2, WaitHandles, FALSE, INFINITE);
+                3, WaitHandles, FALSE, INFINITE);
             if (WaitResult == WAIT_OBJECT_0) break;
-            if (WaitResult != WAIT_OBJECT_0 + 1) {
-                PublishFailure(Handlers.Failed, "WASAPI render wait failed");
+            if (WaitResult == WAIT_OBJECT_0 + 1) {
+                PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointChanged,
+                               "WASAPI render endpoint changed");
+                break;
+            }
+            if (WaitResult != WAIT_OBJECT_0 + 2) {
+                PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointUnavailable,
+                               "WASAPI render wait failed");
                 break;
             }
             UINT32 Padding{};
             if (FAILED(AudioClient->GetCurrentPadding(&Padding)) ||
                 Padding > BufferFrames) {
                 PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointUnavailable,
                                "WASAPI render padding failed");
                 break;
             }
@@ -444,6 +640,7 @@ struct Win32WasapiRenderer::State {
             BYTE* Buffer{};
             if (FAILED(RenderClient->GetBuffer(AvailableFrames, &Buffer))) {
                 PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointUnavailable,
                                "WASAPI render buffer failed");
                 break;
             }
@@ -456,6 +653,7 @@ struct Win32WasapiRenderer::State {
             if (!HasAudio) ++UnderrunCount;
             if (FAILED(ReleaseResult)) {
                 PublishFailure(Handlers.Failed,
+                               Win32WasapiFailureKind::EndpointUnavailable,
                                "WASAPI render release failed");
                 break;
             }
@@ -473,10 +671,15 @@ Win32WasapiRenderer::~Win32WasapiRenderer() {
 }
 
 bool Win32WasapiRenderer::Start() {
-    if (State_->Thread.joinable()) return State_->StartSucceeded;
+    if (State_->Thread.joinable()) {
+        if (State_->IsRunning.load()) return true;
+        Stop();
+    }
     State_->StopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    State_->EndpointEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     State_->AudioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!State_->StopEvent || !State_->AudioEvent) {
+    if (!State_->StopEvent || !State_->EndpointEvent ||
+        !State_->AudioEvent) {
         Stop();
         return false;
     }
@@ -520,8 +723,10 @@ void Win32WasapiRenderer::Stop() noexcept {
         State_->CurrentOffset = 0;
     }
     if (State_->AudioEvent) CloseHandle(State_->AudioEvent);
+    if (State_->EndpointEvent) CloseHandle(State_->EndpointEvent);
     if (State_->StopEvent) CloseHandle(State_->StopEvent);
     State_->AudioEvent = nullptr;
+    State_->EndpointEvent = nullptr;
     State_->StopEvent = nullptr;
 }
 

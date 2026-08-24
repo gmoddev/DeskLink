@@ -41,6 +41,8 @@ namespace {
 
 constexpr std::uint16_t kDefaultPort = 43821;
 constexpr std::chrono::seconds kPairingWindow{300};
+constexpr std::chrono::milliseconds kAudioRecoveryInitialDelay{250};
+constexpr std::chrono::milliseconds kAudioRecoveryMaximumDelay{5'000};
 constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
 constexpr std::uint16_t kValidationAcceptedScanCode = 0x7cu;
@@ -57,6 +59,11 @@ enum class Operation {
     Focus,
     Control,
 };
+
+std::chrono::milliseconds NextAudioRecoveryDelay(
+    std::chrono::milliseconds Current) noexcept {
+    return std::min(Current * 2, kAudioRecoveryMaximumDelay);
+}
 
 struct CommandLine {
     Operation Mode{Operation::PairListen};
@@ -1009,6 +1016,68 @@ struct AgentRuntime {
 
     ~AgentRuntime() { StopAudio(); }
 
+    void RequestAudioRecovery(
+        desklink::Win32WasapiFailureKind Kind,
+        std::string Message) noexcept {
+        std::cerr << "[Audio:Capture] "
+                  << (Message.empty() ? "capture stopped" : Message);
+        if (!desklink::IsRecoverableWasapiFailure(Kind)) {
+            std::cerr << "; audio stopped without restart; input session remains active\n";
+            return;
+        }
+        std::cerr << "; scheduling audio-only recovery\n";
+        AudioRecoveryGeneration.fetch_add(1);
+        AudioRecoveryChanged.notify_one();
+    }
+
+    void RunAudioRecovery() noexcept {
+        std::uint64_t SeenGeneration{};
+        while (!AudioStop.load()) {
+            {
+                std::unique_lock Lock(AudioRecoveryMutex);
+                AudioRecoveryChanged.wait(Lock, [&] {
+                    return AudioStop.load() ||
+                        AudioRecoveryGeneration.load() != SeenGeneration;
+                });
+            }
+            if (AudioStop.load()) break;
+            SeenGeneration = AudioRecoveryGeneration.load();
+            auto Delay = kAudioRecoveryInitialDelay;
+            while (!AudioStop.load()) {
+                std::unique_lock Lock(AudioRecoveryMutex);
+                if (AudioRecoveryChanged.wait_for(Lock, Delay, [&] {
+                        return AudioStop.load();
+                    })) {
+                    break;
+                }
+                Lock.unlock();
+
+                bool Restarted = false;
+                const auto AttemptGeneration =
+                    AudioRecoveryGeneration.load();
+                try {
+                    std::scoped_lock LifecycleLock(AudioLifecycleMutex);
+                    if (AudioCapture) {
+                        AudioCapture->Stop();
+                        Restarted = !AudioStop.load() &&
+                            AudioCapture->Start();
+                    }
+                } catch (...) {
+                    Restarted = false;
+                }
+                if (Restarted) {
+                    SeenGeneration = AttemptGeneration;
+                    ++AudioRestartCount;
+                    std::cout << "[Audio:Capture] endpoint recovered; "
+                                 "session and input remained active\n";
+                    break;
+                }
+                SeenGeneration = AudioRecoveryGeneration.load();
+                Delay = NextAudioRecoveryDelay(Delay);
+            }
+        }
+    }
+
     [[nodiscard]] bool StartAudio() {
         if (AudioCapture) return true;
         if (!Session.CanSendAudio()) {
@@ -1020,29 +1089,57 @@ struct AgentRuntime {
         Handlers.Frame = [this](desklink::AudioFrameMessage Frame) {
             return Session.SendAudioFrame(std::move(Frame));
         };
-        Handlers.Failed = [](std::string Message) {
-            std::cerr << "[Audio:Capture] "
-                      << (Message.empty() ? "capture failed" : Message)
-                      << "; input session remains active\n";
+        Handlers.Failed = [this](
+            desklink::Win32WasapiFailureKind Kind,
+            std::string Message) {
+            RequestAudioRecovery(Kind, std::move(Message));
         };
-        AudioCapture =
-            std::make_unique<desklink::Win32WasapiLoopbackCapture>(
-                1, std::move(Handlers));
-        if (!AudioCapture->Start()) {
+        try {
+            AudioCapture =
+                std::make_unique<desklink::Win32WasapiLoopbackCapture>(
+                    1, std::move(Handlers));
+            AudioStop.store(false);
+            AudioRecoveryGeneration.store(0);
+            AudioRestartCount.store(0);
+            AudioRecovery = std::thread([this] { RunAudioRecovery(); });
+        } catch (...) {
             AudioCapture.reset();
             return false;
         }
-        std::cout << "[Audio:Capture] capability-gated loopback active\n";
+        bool Started = false;
+        try {
+            std::scoped_lock LifecycleLock(AudioLifecycleMutex);
+            Started = AudioCapture->Start();
+        } catch (...) {
+            StopAudio();
+            return false;
+        }
+        if (Started) {
+            std::cout << "[Audio:Capture] capability-gated loopback active\n";
+        } else {
+            std::cout << "[Audio:Capture] waiting for a usable default endpoint; "
+                         "input session remains active\n";
+        }
         return true;
     }
 
     void StopAudio() noexcept {
         if (!AudioCapture) return;
-        AudioCapture->Stop();
+        AudioStop.store(true);
+        AudioRecoveryChanged.notify_all();
+        {
+            std::scoped_lock LifecycleLock(AudioLifecycleMutex);
+            AudioCapture->Stop();
+        }
+        if (AudioRecovery.joinable() &&
+            AudioRecovery.get_id() != std::this_thread::get_id()) {
+            AudioRecovery.join();
+        }
         AudioCapture.reset();
         const auto Stats = Session.stats();
         std::cout << "[Audio:Capture] stopped sent=" << Stats.AudioSent
-                  << " rejected=" << Stats.AudioSendRejected << '\n';
+                  << " rejected=" << Stats.AudioSendRejected
+                  << " restarts=" << AudioRestartCount.load() << '\n';
     }
 
     desklink::MachineId PeerMachine{};
@@ -1050,6 +1147,13 @@ struct AgentRuntime {
     desklink::AgentCoordinator Coordinator;
     desklink::AgentSession Session;
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
+    std::mutex AudioLifecycleMutex;
+    std::mutex AudioRecoveryMutex;
+    std::condition_variable AudioRecoveryChanged;
+    std::atomic_bool AudioStop{};
+    std::atomic_uint64_t AudioRecoveryGeneration{};
+    std::atomic_uint64_t AudioRestartCount{};
+    std::thread AudioRecovery;
 };
 
 struct HostRuntime {
@@ -1061,10 +1165,9 @@ struct HostRuntime {
           SessionNonce(Trusted.SessionNonce),
           Coordinator(Trusted.SessionNonce),
           Renderer(desklink::Win32WasapiRenderHandlers{
-              [](std::string Message) {
-                  std::cerr << "[Audio:Render] "
-                            << (Message.empty() ? "render failed" : Message)
-                            << "; input session remains active\n";
+              [this](desklink::Win32WasapiFailureKind Kind,
+                     std::string Message) {
+                  RequestAudioRecovery(Kind, std::move(Message));
               }}),
           Receiver([this](desklink::AudioFrameMessage Frame) {
               return Renderer.Submit(std::move(Frame));
@@ -1075,6 +1178,76 @@ struct HostRuntime {
 
     ~HostRuntime() { StopAudio(); }
 
+    void RequestAudioRecovery(
+        desklink::Win32WasapiFailureKind Kind,
+        std::string Message) noexcept {
+        std::cerr << "[Audio:Render] "
+                  << (Message.empty() ? "renderer stopped" : Message);
+        if (!desklink::IsRecoverableWasapiFailure(Kind)) {
+            std::cerr << "; audio stopped without restart; input session remains active\n";
+            return;
+        }
+        std::cerr << "; scheduling audio-only recovery\n";
+        AudioRecoveryGeneration.fetch_add(1);
+    }
+
+    void RunAudioPump() noexcept {
+        std::uint64_t SeenGeneration{};
+        bool RendererReady = Renderer.Running();
+        auto Delay = kAudioRecoveryInitialDelay;
+        auto RetryAt = std::chrono::steady_clock::now() + Delay;
+        while (!AudioStop.load()) {
+            const auto Now = std::chrono::steady_clock::now();
+            const auto Generation = AudioRecoveryGeneration.load();
+            if (RendererReady &&
+                (Generation != SeenGeneration || !Renderer.Running())) {
+                Renderer.Stop();
+                Receiver.Reset();
+                RendererReady = false;
+                SeenGeneration = Generation;
+                Delay = kAudioRecoveryInitialDelay;
+                RetryAt = Now + Delay;
+            }
+            if (!RendererReady) {
+                SeenGeneration = AudioRecoveryGeneration.load();
+                if (Now >= RetryAt) {
+                    bool Restarted = false;
+                    const auto AttemptGeneration =
+                        AudioRecoveryGeneration.load();
+                    try {
+                        Renderer.Stop();
+                        Receiver.Reset();
+                        Restarted = !AudioStop.load() && Renderer.Start();
+                    } catch (...) {
+                        Restarted = false;
+                    }
+                    if (Restarted) {
+                        SeenGeneration = AttemptGeneration;
+                        RendererReady = true;
+                        Delay = kAudioRecoveryInitialDelay;
+                        ++AudioRestartCount;
+                        std::cout << "[Audio:Render] endpoint recovered; "
+                                     "session and input remained active\n";
+                    } else {
+                        SeenGeneration = AudioRecoveryGeneration.load();
+                        Delay = NextAudioRecoveryDelay(Delay);
+                        RetryAt = std::chrono::steady_clock::now() + Delay;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+
+            if (Receiver.Pump() ==
+                desklink::AudioPumpResult::RenderRejected) {
+                std::cerr << "[Audio:Render] receiver rejected playout; "
+                             "scheduling audio-only recovery\n";
+                AudioRecoveryGeneration.fetch_add(1);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
     [[nodiscard]] bool StartAudio() {
         if (AudioPump.joinable()) return true;
         if (!Session.CanReceiveAudio()) {
@@ -1083,27 +1256,23 @@ struct HostRuntime {
             return false;
         }
         Receiver.Reset();
-        if (!Renderer.Start()) return false;
         AudioStop.store(false);
+        AudioRecoveryGeneration.store(0);
+        AudioRestartCount.store(0);
+        bool Started = false;
         try {
-            AudioPump = std::thread([this] {
-                auto Next = std::chrono::steady_clock::now();
-                while (!AudioStop.load()) {
-                    Next += std::chrono::milliseconds(5);
-                    if (Receiver.Pump() ==
-                        desklink::AudioPumpResult::RenderRejected) {
-                        std::cerr << "[Audio:Render] receiver stopped after "
-                                     "render rejection; input session remains active\n";
-                        break;
-                    }
-                    std::this_thread::sleep_until(Next);
-                }
-            });
+            Started = Renderer.Start();
+            AudioPump = std::thread([this] { RunAudioPump(); });
         } catch (...) {
             Renderer.Stop();
             return false;
         }
-        std::cout << "[Audio:Render] capability-gated receiver active\n";
+        if (Started) {
+            std::cout << "[Audio:Render] capability-gated receiver active\n";
+        } else {
+            std::cout << "[Audio:Render] waiting for a usable default endpoint; "
+                         "input session remains active\n";
+        }
         return true;
     }
 
@@ -1122,6 +1291,7 @@ struct HostRuntime {
                       << " rejected="
                       << (Stats.FormatRejected + Stats.StreamRejected +
                           Stats.SequenceRejected + Stats.RenderRejected)
+                      << " restarts=" << AudioRestartCount.load()
                       << '\n';
         }
         Receiver.Reset();
@@ -1135,6 +1305,8 @@ struct HostRuntime {
     desklink::AudioReceiver Receiver;
     desklink::HostSession Session;
     std::atomic_bool AudioStop{};
+    std::atomic_uint64_t AudioRecoveryGeneration{};
+    std::atomic_uint64_t AudioRestartCount{};
     std::thread AudioPump;
 };
 

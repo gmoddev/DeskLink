@@ -266,8 +266,8 @@ empty shared endpoint buffer with silence while counting underruns. The
 production receiver starts only with `--receive-audio` after `PeerValidated`
 and the sender's `AudioSend` grant. `HostSession` rejects stale nonces and the
 portable receiver enforces format, stream, sequence, and jitter bounds before a
-five-millisecond pump submits to WASAPI. Adaptive targeting, gain/mute,
-resampling, and endpoint recovery remain future work.
+five-millisecond pump submits to WASAPI. Adaptive targeting, gain/mute, and
+resampling remain future work.
 
 ---
 
@@ -292,7 +292,7 @@ This prevents hours-long sessions from gradually underrunning or overflowing.
 
 ## 9. Device changes
 
-Production audio integration must add recovery for:
+The production adapters recover audio locally for:
 
 - default endpoint changes
 - device removal
@@ -300,9 +300,20 @@ Production audio integration must add recovery for:
 - format change
 - sleep/resume
 
-The current foundation reports endpoint failure and stops its own worker; it
-does not silently reopen a changed endpoint. Audio failure must not affect
-input capability availability.
+Each worker registers a scoped `IMMNotificationClient` for the selected render
+endpoint and default-console selection. A matching state/property/removal event,
+default change, or operational WASAPI failure stops and unregisters the old
+worker. The production audio owner clears assembler/receiver/render state and
+reopens the current default endpoint after 250 ms, doubling to a five-second
+retry cap while the same explicitly enabled session remains active. A new
+endpoint never changes the audio stream ID, session nonce, peer grant, TLS
+provider, CNG identity, or input state.
+
+Capture callback/datagram-send rejection is classified as `ClientRejected` and
+is not retried. This keeps session, authorization, and transport failure outside
+the endpoint-recovery path. Physical default-device switching, disable/re-enable,
+and sleep/resume remain release validation work rather than unimplemented
+runtime behavior.
 
 Capabilities should degrade independently.
 

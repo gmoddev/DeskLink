@@ -41,6 +41,7 @@ The current build proves the core invariants independently of Windows networking
 | Audio jitter buffer | Done | Reorder + bounded silence concealment |
 | WASAPI capture/render foundation | Done | Event-driven shared-mode loopback capture and shared render; 64-frame render queue; silence underrun; explicit start/stop and failure isolation |
 | Audio session/datagram wiring | Done | Explicit runtime opt-in; complementary AudioReceive/AudioSend grants; PeerValidated transport, nonce, format, stream, sequence, and bounded receiver/render admission |
+| Audio endpoint recovery | Done | Scoped endpoint notifications; restart-safe adapters; audio-only 250 ms to 5 s capped retry; buffered audio reset; client/send rejection is not retried |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
 | Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
@@ -145,7 +146,6 @@ Build/test result in the creation environment:
 
 - adaptive jitter target
 - clock drift resampler
-- endpoint-loss/recovery handling
 - gain/mute state
 
 ### P2 — product surface
@@ -207,8 +207,9 @@ lifecycle, admits capture only after fresh focus plus snapshot, and
 renews/reconciles only while Remote. The bounded event-driven WASAPI
 capture/render foundation, exact V1 audio block assembler, complementary
 capability/session datagram gates, and receiver jitter/render pump are complete.
+Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
 Edge roaming remains gated on the deferred physical matrix; the next unblocked
-slice is audio endpoint-loss/recovery with audio-only restart semantics.
+slice is adaptive jitter targeting.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

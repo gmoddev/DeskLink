@@ -12,9 +12,20 @@
 
 namespace desklink {
 
+enum class Win32WasapiFailureKind {
+    EndpointChanged,
+    EndpointUnavailable,
+    ClientRejected,
+};
+
+[[nodiscard]] constexpr bool IsRecoverableWasapiFailure(
+    Win32WasapiFailureKind Kind) noexcept {
+    return Kind != Win32WasapiFailureKind::ClientRejected;
+}
+
 struct Win32WasapiCaptureHandlers {
     std::function<bool(AudioFrameMessage)> Frame;
-    std::function<void(std::string)> Failed;
+    std::function<void(Win32WasapiFailureKind, std::string)> Failed;
 };
 
 class Win32WasapiLoopbackCapture final {
@@ -38,7 +49,7 @@ private:
 };
 
 struct Win32WasapiRenderHandlers {
-    std::function<void(std::string)> Failed;
+    std::function<void(Win32WasapiFailureKind, std::string)> Failed;
 };
 
 class Win32WasapiRenderer final {

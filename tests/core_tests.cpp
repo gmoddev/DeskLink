@@ -1580,6 +1580,16 @@ void WindowsCaptureSmokeIfRequested() {
     Capture.Stop();
 }
 
+void WindowsWasapiFailureKindsAreExplicit() {
+    using namespace desklink;
+    CHECK(IsRecoverableWasapiFailure(
+        Win32WasapiFailureKind::EndpointChanged));
+    CHECK(IsRecoverableWasapiFailure(
+        Win32WasapiFailureKind::EndpointUnavailable));
+    CHECK(!IsRecoverableWasapiFailure(
+        Win32WasapiFailureKind::ClientRejected));
+}
+
 void WindowsWasapiSmokeIfRequested() {
     if (std::getenv("DESKLINK_WASAPI_SMOKE") == nullptr) return;
     using namespace desklink;
@@ -1592,7 +1602,7 @@ void WindowsWasapiSmokeIfRequested() {
                 ++Captured;
                 return true;
             },
-            [&](std::string) {
+            [&](Win32WasapiFailureKind, std::string) {
                 CaptureFailed.store(true);
             }});
     CHECK(Capture.Start());
@@ -1601,15 +1611,33 @@ void WindowsWasapiSmokeIfRequested() {
     Capture.Stop();
     CHECK(!Capture.Running());
     CHECK(!CaptureFailed.load());
+    CHECK(Capture.Start());
+    CHECK(Capture.Running());
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Capture.Stop();
+    CHECK(!Capture.Running());
+    CHECK(!CaptureFailed.load());
 
     std::atomic_bool RenderFailed{};
     Win32WasapiRenderer Renderer(Win32WasapiRenderHandlers{
-        [&](std::string) { RenderFailed.store(true); }});
+        [&](Win32WasapiFailureKind, std::string) {
+            RenderFailed.store(true);
+        }});
     CHECK(Renderer.Start());
     AudioFrameMessage Silence;
     Silence.stream_id = 1;
     Silence.pcm.assign(kDeskLinkAudioBytesPerBlock, 0);
     CHECK(Renderer.Submit(std::move(Silence)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Renderer.Stop();
+    CHECK(!Renderer.Running());
+    CHECK(!RenderFailed.load());
+    CHECK(Renderer.QueuedFrames() == 0);
+    CHECK(Renderer.Start());
+    AudioFrameMessage RestartSilence;
+    RestartSilence.stream_id = 1;
+    RestartSilence.pcm.assign(kDeskLinkAudioBytesPerBlock, 0);
+    CHECK(Renderer.Submit(std::move(RestartSilence)));
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     Renderer.Stop();
     CHECK(!Renderer.Running());
@@ -1879,6 +1907,7 @@ int main() {
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();
+    WindowsWasapiFailureKindsAreExplicit();
     WindowsWasapiSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
 #endif

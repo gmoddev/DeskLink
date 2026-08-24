@@ -23,6 +23,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded reorder/jitter buffer with silence concealment
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
+- Default-endpoint notification and bounded audio-only WASAPI recovery
 - Abstract transport interface
 - Authenticated/encrypted session gate and session-nonce binding
 - Manual pairing transcript with short authentication code confirmation
@@ -64,7 +65,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Windows 10 OpenSSL/CNG production admission and release integration
 - Monitor graph and edge roaming
 - Sustained physical two-PC audio timing and failure validation
-- WASAPI endpoint-loss/recovery handling
+- Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Adaptive jitter targeting
 - Clock-drift resampling
 - UI and Stream Deck plugin
@@ -206,6 +207,9 @@ desklink_pair.exe focus 192.168.1.25 43821 --receive-audio
 the peer has `AudioReceive`. `--receive-audio` starts rendering only after
 admission and an `AudioSend` grant. Audio failure stops only the audio module;
 it does not change input focus, identity, TLS, or session admission.
+Default render-device changes and recoverable WASAPI failures reopen audio with
+capped 250 ms to 5 s backoff while that admitted session remains active.
+Capture send/client rejection is not retried.
 
 The Host CLI accepts an optional fallback mode plus at most 32 exact executable
 basename rules:

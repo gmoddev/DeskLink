@@ -352,14 +352,23 @@ and audio-only fail-stop behavior. The end-to-end in-memory session transfers
 canonical datagrams through both capability gates and pumps them into the
 receiver callback without acquiring input focus.
 
+The Windows suite classifies endpoint change/unavailability as recoverable and
+capture client/send rejection as non-recoverable. Runtime recovery preserves
+the current admitted session and uses a capped 250 ms to 5 s retry interval;
+receiver recovery clears jitter and renderer queues before playout resumes.
+
 Set `DESKLINK_WASAPI_SMOKE=1` for the opt-in native device test. It opens the
 current default render endpoint for event-driven loopback, starts and stops the
 capture worker, opens a shared render stream, submits one canonical silence
 block, and verifies that neither worker reports a failure. The handler never
-logs or persists captured samples.
+logs or persists captured samples. The smoke then performs a second complete
+capture start/stop and renderer start/submit/stop cycle on the same objects,
+proving notification registration, worker teardown, event handles, and queues
+are reopen-safe.
 
-This foundation test does not claim endpoint-change recovery, sustained
-physical two-PC timing, adaptive jitter, drift correction, or gain/mute.
+This device smoke does not physically switch or disable the default endpoint;
+that matrix, sustained physical two-PC timing, adaptive jitter, drift
+correction, and gain/mute remain separate validation.
 
 ---
 
@@ -368,7 +377,8 @@ physical two-PC timing, adaptive jitter, drift correction, or gain/mute.
 This validation does not yet prove:
 
 - sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
-- sustained WASAPI timing, endpoint recovery, or clock-drift correction
+- sustained WASAPI timing, physical endpoint switch/disable/sleep recovery, or
+  clock-drift correction
 - real packet-loss/jitter characteristics
 - physical two-PC audio privacy, interruption, reconnect, and endpoint-change behavior
 
