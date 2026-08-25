@@ -49,6 +49,9 @@ enum ControlId : int {
     CaptureInput,
     PointerGain,
     PointerDpi,
+    AudioGain,
+    ApplyAudioGain,
+    ToggleAudioMute,
     SendAudio,
     ReceiveAudio,
     StartReceiver,
@@ -340,6 +343,17 @@ private:
             L"EDIT", L"0", ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP,
             390, 475, 90, 28, PointerDpi, WS_EX_CLIENTEDGE);
         SendMessageW(PointerDpiControl_, EM_SETLIMITTEXT, 5, 0);
+        CreateControl(L"STATIC", L"Peer audio %", SS_LEFT,
+                      500, 480, 95, 22);
+        AudioGainControl_ = CreateControl(
+            L"EDIT", L"100", ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP,
+            595, 475, 55, 28, AudioGain, WS_EX_CLIENTEDGE);
+        SendMessageW(AudioGainControl_, EM_SETLIMITTEXT, 3, 0);
+        CreateControl(L"BUTTON", L"Apply", BS_PUSHBUTTON,
+                      660, 475, 75, 28, ApplyAudioGain);
+        AudioMuteControl_ = CreateControl(
+            L"BUTTON", L"Mute", BS_PUSHBUTTON,
+            745, 475, 90, 28, ToggleAudioMute);
         CreateControl(L"STATIC",
             L"A controller always connects in Local mode. Press Focus remote after status shows Connected.",
             SS_LEFT, 32, 514, 840, 24);
@@ -360,7 +374,8 @@ private:
         RefreshRuntimeStatus();
         UpdateButtons();
         return AddressControl_ && PortControl_ && PointerGainControl_ &&
-               PointerDpiControl_ && StatusControl_ && LogControl_;
+               PointerDpiControl_ && AudioGainControl_ && AudioMuteControl_ &&
+               StatusControl_ && LogControl_;
     }
 
     void HandleCommand(int Id) {
@@ -375,6 +390,8 @@ private:
             case FocusRemote: SendMode(desklink::DeskMode::Roam, true); break;
             case ReturnLocalButton: ReturnLocal(true); break;
             case StopProcess: StopOwnedOperation(); break;
+            case ApplyAudioGain: SendAudioGain(); break;
+            case ToggleAudioMute: SendAudioMute(); break;
             case ClearLog: SetWindowTextW(LogControl_, L""); break;
             default: break;
         }
@@ -745,6 +762,38 @@ private:
         return Applied;
     }
 
+    void SendAudioGain() {
+        const auto GainPercent = ReadUnsignedControl(
+            AudioGainControl_, 0, 100);
+        if (!GainPercent) {
+            MessageBoxW(Window_, L"Peer audio volume must be 0..100 percent.",
+                        L"DeskLink Alpha", MB_OK | MB_ICONERROR);
+            return;
+        }
+        const auto Response = SendControl(
+            desklink::SetAudioGainControlRequest{
+                static_cast<std::uint16_t>(*GainPercent * 100)},
+            std::chrono::milliseconds{500});
+        const bool Applied = Response &&
+            Response->Status == desklink::ControlStatus::Ok;
+        AppendLog(Applied
+            ? L"[Wrapper:Audio] peer volume applied\r\n"
+            : L"[Wrapper:Audio] runtime did not apply peer volume\r\n");
+        if (Applied) RefreshRuntimeStatus();
+    }
+
+    void SendAudioMute() {
+        const auto Response = SendControl(
+            desklink::ToggleAudioMuteControlRequest{},
+            std::chrono::milliseconds{500});
+        const bool Applied = Response &&
+            Response->Status == desklink::ControlStatus::Ok;
+        AppendLog(Applied
+            ? L"[Wrapper:Audio] peer mute toggled\r\n"
+            : L"[Wrapper:Audio] runtime did not toggle peer mute\r\n");
+        if (Applied) RefreshRuntimeStatus();
+    }
+
     void ReturnLocal(bool Report) {
         if (!ActiveProcess_) {
             if (Report) AppendLog(
@@ -785,6 +834,9 @@ private:
         Text += State.RemoteFocused ? L"Remote" : L"Local";
         Text += L"    Capture: ";
         Text += State.CaptureActive ? L"Active" : L"Off";
+        Text += L"    Peer audio: ";
+        Text += State.AudioMuted ? L"Muted" :
+            std::to_wstring(State.AudioGainPermyriad / 100) + L"%";
         Text += L"\r\nLocal identity: ";
         Text += FormatMachine(State.LocalMachine);
         if (State.RemoteFocused) {
@@ -792,6 +844,12 @@ private:
             Text += FormatMachine(State.FocusedMachine);
         }
         SetWindowTextW(StatusControl_, Text.c_str());
+        if (GetFocus() != AudioGainControl_) {
+            SetWindowTextW(AudioGainControl_,
+                std::to_wstring(State.AudioGainPermyriad / 100).c_str());
+        }
+        SetWindowTextW(AudioMuteControl_,
+            State.AudioMuted ? L"Unmute" : L"Mute");
         RuntimeAvailable_ = true;
         UpdateButtons();
     }
@@ -811,6 +869,10 @@ private:
         EnableWindow(GetDlgItem(Window_, FocusRemote),
                      Controller && RuntimeAvailable_);
         EnableWindow(GetDlgItem(Window_, ReturnLocalButton), Session);
+        EnableWindow(GetDlgItem(Window_, ApplyAudioGain),
+                     Controller && RuntimeAvailable_);
+        EnableWindow(GetDlgItem(Window_, ToggleAudioMute),
+                     Controller && RuntimeAvailable_);
         if (!Busy) RuntimeAvailable_ = false;
     }
 
@@ -821,6 +883,8 @@ private:
     HWND PortControl_{};
     HWND PointerGainControl_{};
     HWND PointerDpiControl_{};
+    HWND AudioGainControl_{};
+    HWND AudioMuteControl_{};
     HWND LogControl_{};
     HFONT Font_{};
     HFONT TitleFont_{};

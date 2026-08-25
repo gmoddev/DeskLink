@@ -295,10 +295,17 @@ desklink_pair.exe control state
 desklink_pair.exe control mode game
 desklink_pair.exe control state
 desklink_pair.exe control mode roam
+desklink_pair.exe control gain 5000
+desklink_pair.exe control state
+desklink_pair.exe control mute
 ```
 
 The state response must report the expected role, connected-peer count, focus,
 capture, and desired mode without exposing input contents or trust secrets.
+On an active Host receiver, gain must report `5000`, rendered samples must ramp
+to 50% within one five-millisecond block, and mute must ramp to silence without
+changing the Windows endpoint volume. An Agent or inactive Host must return
+`NotReady`. Audio-only endpoint recovery must preserve both values.
 `game` and `lock` must release remote focus/capture fail-locally. On an Agent,
 send a remote `Roam` preference after selecting a restrictive local mode and
 verify the effective mode remains restrictive. A second server for the same

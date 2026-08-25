@@ -330,12 +330,12 @@ Request command numbers are:
 | 1 | `GetState` | empty | returns bounded typed runtime state |
 | 2 | `SetDesiredMode` | one validated `DeskMode` byte | applies through the existing focus/session state machines |
 | 3 | `FocusMachine` | one nonzero 16-byte machine ID | `Unsupported` until persistent host orchestration exists |
-| 4 | `SetAudioGain` | unsigned permyriad, `0..10000` | `Unsupported` until the audio backend exists |
-| 5 | `ToggleAudioMute` | empty | `Unsupported` until the audio backend exists |
+| 4 | `SetAudioGain` | unsigned permyriad, `0..10000` | applies bounded gain to the active Host peer receiver; otherwise `NotReady` |
+| 5 | `ToggleAudioMute` | empty | toggles mute on the active Host peer receiver; otherwise `NotReady` |
 
 Responses contain a bounded status and an optional typed state record. A state
 record includes local/focused machine IDs, role, desired mode, peer count,
-audio gain/mute placeholders, focus, and capture state. Cross-field validation
+current per-peer audio gain/mute, focus, and capture state. Cross-field validation
 rejects impossible combinations such as active capture without Host remote
 focus. Each connection exchanges exactly one request/response and completes
 with a fixed acknowledgement byte so the server does not disconnect before the

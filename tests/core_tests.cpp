@@ -961,6 +961,78 @@ void AudioReceiverIsBoundedAndFailsClosed() {
     CHECK(Rejecting.Push(1, MakeFrame(1)));
 }
 
+void AudioReceiverGainAndMuteAreBoundedAndRamped() {
+    using namespace desklink;
+    std::vector<AudioFrameMessage> Rendered;
+    AudioReceiver Receiver(
+        [&](AudioFrameMessage Frame) {
+            Rendered.push_back(std::move(Frame));
+            return true;
+        },
+        1, 4);
+    const auto MakeFrame = [](std::int16_t Sample) {
+        AudioFrameMessage Frame;
+        Frame.stream_id = 12;
+        Frame.pcm.resize(kDeskLinkAudioBytesPerBlock);
+        std::uint16_t Bits{};
+        std::memcpy(&Bits, &Sample, sizeof(Bits));
+        for (std::size_t Offset = 0; Offset < Frame.pcm.size(); Offset += 2) {
+            Frame.pcm[Offset] = static_cast<std::uint8_t>(Bits & 0xffu);
+            Frame.pcm[Offset + 1] = static_cast<std::uint8_t>(Bits >> 8);
+        }
+        return Frame;
+    };
+    const auto ReadSample = [](const AudioFrameMessage& Frame,
+                               std::size_t FrameIndex) {
+        const auto Offset = FrameIndex * kDeskLinkAudioBytesPerFrame;
+        const auto Bits = static_cast<std::uint16_t>(Frame.pcm[Offset]) |
+            (static_cast<std::uint16_t>(Frame.pcm[Offset + 1]) << 8);
+        std::int16_t Sample{};
+        std::memcpy(&Sample, &Bits, sizeof(Sample));
+        return Sample;
+    };
+
+    CHECK(Receiver.GainPermyriad() == 10'000);
+    CHECK(!Receiver.Muted());
+    CHECK(!Receiver.SetGainPermyriad(10'001));
+    CHECK(Receiver.SetGainPermyriad(5'000));
+    CHECK(Receiver.Push(1, MakeFrame(10'000)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(ReadSample(Rendered.back(), 0) > 5'000);
+    CHECK(ReadSample(Rendered.back(), 0) < 10'000);
+    CHECK(ReadSample(Rendered.back(), kDeskLinkAudioFramesPerBlock - 1) ==
+          5'000);
+
+    CHECK(Receiver.Push(2, MakeFrame(10'000)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(ReadSample(Rendered.back(), 0) == 5'000);
+    CHECK(ReadSample(Rendered.back(), kDeskLinkAudioFramesPerBlock - 1) ==
+          5'000);
+
+    CHECK(Receiver.ToggleMuted());
+    CHECK(Receiver.Muted());
+    CHECK(Receiver.Push(3, MakeFrame(10'000)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(ReadSample(Rendered.back(), 0) < 5'000);
+    CHECK(ReadSample(Rendered.back(), 0) > 0);
+    CHECK(ReadSample(Rendered.back(), kDeskLinkAudioFramesPerBlock - 1) == 0);
+    CHECK(Receiver.SetGainPermyriad(2'500));
+    Receiver.Reset();
+    CHECK(Receiver.GainPermyriad() == 2'500);
+    CHECK(Receiver.Muted());
+    CHECK(Receiver.Push(1, MakeFrame(10'000)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(ReadSample(Rendered.back(), 0) == 0);
+
+    CHECK(!Receiver.ToggleMuted());
+    CHECK(!Receiver.Muted());
+    CHECK(Receiver.Push(2, MakeFrame(10'000)));
+    CHECK(Receiver.Pump() == AudioPumpResult::Submitted);
+    CHECK(ReadSample(Rendered.back(), 0) > 0);
+    CHECK(ReadSample(Rendered.back(), kDeskLinkAudioFramesPerBlock - 1) ==
+          2'500);
+}
+
 
 
 void out_of_order_pointer_rejected() {
@@ -2185,6 +2257,7 @@ void in_memory_transport_preserves_security_metadata() {
 int main() {
     AudioFrameAssemblerProducesExactBoundedBlocks();
     AudioReceiverIsBoundedAndFailsClosed();
+    AudioReceiverGainAndMuteAreBoundedAndRamped();
     AdaptiveJitterRaisesQuicklyAndLowersSlowly();
     ClockDriftControllerIsBoundedAndSlewLimited();
     ClockDriftResamplerIsExactAndBounded();

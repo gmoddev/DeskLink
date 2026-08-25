@@ -620,6 +620,7 @@ AudioPumpResult AudioReceiver::Pump() noexcept {
                 Corrected = DriftResampler_.Pop(
                     DriftController_.AppliedPpm());
             }
+            if (Corrected) ApplyGain(*Corrected);
         }
         if (!Corrected) return AudioPumpResult::Buffering;
         const bool Submitted = Renderer_ &&
@@ -646,6 +647,65 @@ AudioPumpResult AudioReceiver::Pump() noexcept {
     }
 }
 
+bool AudioReceiver::SetGainPermyriad(std::uint16_t Gain) noexcept {
+    if (Gain > kDeskLinkAudioMaximumGainPermyriad) return false;
+    std::scoped_lock Lock(Mutex_);
+    GainPermyriad_ = Gain;
+    return true;
+}
+
+bool AudioReceiver::ToggleMuted() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    Muted_ = !Muted_;
+    return Muted_;
+}
+
+void AudioReceiver::SetMuted(bool Muted) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    Muted_ = Muted;
+}
+
+std::uint16_t AudioReceiver::GainPermyriad() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return GainPermyriad_;
+}
+
+bool AudioReceiver::Muted() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Muted_;
+}
+
+void AudioReceiver::ApplyGain(AudioFrameMessage& Frame) noexcept {
+    const auto TargetGain = Muted_ ? std::uint16_t{} : GainPermyriad_;
+    const auto StartingGain = AppliedGainPermyriad_;
+    const auto Delta = static_cast<std::int32_t>(TargetGain) -
+        static_cast<std::int32_t>(StartingGain);
+    for (std::size_t FrameIndex = 0;
+         FrameIndex < kDeskLinkAudioFramesPerBlock; ++FrameIndex) {
+        const auto Gain = static_cast<std::int32_t>(StartingGain) +
+            (Delta * static_cast<std::int32_t>(FrameIndex + 1)) /
+                static_cast<std::int32_t>(kDeskLinkAudioFramesPerBlock);
+        for (std::size_t Channel = 0;
+             Channel < kDeskLinkAudioChannels; ++Channel) {
+            const auto Offset = FrameIndex * kDeskLinkAudioBytesPerFrame +
+                Channel * kDeskLinkAudioBytesPerSample;
+            const auto Bits = static_cast<std::uint16_t>(Frame.pcm[Offset]) |
+                (static_cast<std::uint16_t>(Frame.pcm[Offset + 1]) << 8);
+            std::int16_t Sample{};
+            std::memcpy(&Sample, &Bits, sizeof(Sample));
+            const auto Scaled = (static_cast<std::int32_t>(Sample) * Gain) /
+                static_cast<std::int32_t>(kDeskLinkAudioMaximumGainPermyriad);
+            const auto Output = static_cast<std::int16_t>(Scaled);
+            std::uint16_t OutputBits{};
+            std::memcpy(&OutputBits, &Output, sizeof(OutputBits));
+            Frame.pcm[Offset] = static_cast<std::uint8_t>(OutputBits & 0xffu);
+            Frame.pcm[Offset + 1] =
+                static_cast<std::uint8_t>(OutputBits >> 8);
+        }
+    }
+    AppliedGainPermyriad_ = TargetGain;
+}
+
 void AudioReceiver::Reset() noexcept {
     std::scoped_lock Lock(Mutex_);
     Buffer_.Reset();
@@ -656,6 +716,7 @@ void AudioReceiver::Reset() noexcept {
     StreamId_.reset();
     LastCaptureTimestampUs_.reset();
     Stats_ = {};
+    AppliedGainPermyriad_ = Muted_ ? std::uint16_t{} : GainPermyriad_;
     PlayoutStarted_ = false;
     Failed_ = false;
 }

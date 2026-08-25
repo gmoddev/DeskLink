@@ -31,7 +31,7 @@ The current build proves the core invariants independently of Windows networking
 | Pointer calibration | Done | 25-400% fixed-point gain with fractional-count retention; optional 100-32000 source-DPI normalization; no global Windows setting changes |
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
-| Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode` |
+| Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode`/audio gain/mute |
 | LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
 | Foreground profile foundation | Done | At most 32 exact executable-name rules; optional fullscreen match; emergency/manual/profile/default precedence; uninspectable configured foreground fails local |
 | Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
@@ -45,6 +45,7 @@ The current build proves the core invariants independently of Windows networking
 | Audio session/datagram wiring | Done | Explicit runtime opt-in; complementary AudioReceive/AudioSend grants; PeerValidated transport, nonce, format, stream, sequence, and bounded receiver/render admission |
 | Audio endpoint recovery | Done | Scoped endpoint notifications; restart-safe adapters; audio-only 250 ms to 5 s capped retry; buffered audio reset; client/send rejection is not retried |
 | Audio clock-drift correction | Done | 400-sample occupancy windows; 50 ppm slew steps; ±1000 ppm cap; four-block source bound; exact-block linear resampling; discontinuity reset |
+| Per-peer audio gain/mute | Done | Host-local 0-10000 permyriad attenuation; five-millisecond ramp; endpoint-recovery persistence; no system mixer changes |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
 | Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
@@ -214,8 +215,9 @@ capture/render foundation, exact V1 audio block assembler, complementary
 capability/session datagram gates, and receiver jitter/render pump are complete.
 Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
 Bounded adaptive jitter targeting, rebuffer accounting, and asynchronous clock-
-drift correction are complete. Edge roaming remains gated on the deferred
-physical matrix; the next unblocked audio slice is per-peer gain/mute. The
+drift correction and per-peer gain/mute are complete. Edge roaming remains
+gated on the deferred physical matrix; its monitor graph and configurator are
+the next design slice. The
 native Windows alpha wrapper is complete
 and provides the manual pairing/session/status surface used for future physical
 validation without changing any trust or transport boundary.

@@ -216,7 +216,9 @@ void PrintUsage() {
         << L"  desklink_pair serve [port] [--send-audio]\n"
         << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio]\n"
         << L"  desklink_pair control state\n"
-        << L"  desklink_pair control mode roam|lock|game\n\n"
+        << L"  desklink_pair control mode roam|lock|game\n"
+        << L"  desklink_pair control gain 0..10000\n"
+        << L"  desklink_pair control mute\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
         << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
@@ -302,6 +304,20 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             } else {
                 return std::nullopt;
             }
+            return Result;
+        }
+        if (ArgumentCount == 4 &&
+            std::wstring_view(Arguments[2]) == L"gain") {
+            const auto Gain = ParseBoundedUnsigned(
+                Arguments[3], 0,
+                desklink::kDeskLinkAudioMaximumGainPermyriad);
+            if (!Gain) return std::nullopt;
+            Result.ControlPayload = desklink::SetAudioGainControlRequest{*Gain};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"mute") {
+            Result.ControlPayload = desklink::ToggleAudioMuteControlRequest{};
             return Result;
         }
         return std::nullopt;
@@ -1235,6 +1251,22 @@ struct HostRuntime {
 
     ~HostRuntime() { StopAudio(); }
 
+    [[nodiscard]] bool SetAudioGainPermyriad(std::uint16_t Gain) noexcept {
+        return Receiver.SetGainPermyriad(Gain);
+    }
+
+    void ToggleAudioMuted() noexcept {
+        (void)Receiver.ToggleMuted();
+    }
+
+    [[nodiscard]] std::uint16_t AudioGainPermyriad() const noexcept {
+        return Receiver.GainPermyriad();
+    }
+
+    [[nodiscard]] bool AudioMuted() const noexcept {
+        return Receiver.Muted();
+    }
+
     void RequestAudioRecovery(
         desklink::Win32WasapiFailureKind Kind,
         std::string Message) noexcept {
@@ -2154,6 +2186,11 @@ int RunTrusted(const CommandLine& Command,
                         State.FocusedMachine = ActiveHost->PeerMachine;
                     }
                 }
+                if (ActiveHost) {
+                    State.AudioGainPermyriad =
+                        ActiveHost->AudioGainPermyriad();
+                    State.AudioMuted = ActiveHost->AudioMuted();
+                }
                 if (!desklink::IsValidControlState(State)) {
                     return desklink::ControlResponse{
                         Request.RequestId, desklink::ControlStatus::Failed,
@@ -2161,6 +2198,40 @@ int RunTrusted(const CommandLine& Command,
                 }
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::Ok, State};
+            }
+
+            const auto* SetGain = std::get_if<
+                desklink::SetAudioGainControlRequest>(&Request.Payload);
+            const bool ToggleMute = std::holds_alternative<
+                desklink::ToggleAudioMuteControlRequest>(Request.Payload);
+            if (SetGain || ToggleMute) {
+                if (Command.Mode == Operation::Serve) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady,
+                        std::nullopt};
+                }
+                std::shared_ptr<HostRuntime> ActiveHost;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    ActiveHost = Host;
+                }
+                if (!ActiveHost) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady,
+                        std::nullopt};
+                }
+                bool Applied = true;
+                if (SetGain) {
+                    Applied = ActiveHost->SetAudioGainPermyriad(
+                        SetGain->GainPermyriad);
+                } else {
+                    ActiveHost->ToggleAudioMuted();
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId,
+                    Applied ? desklink::ControlStatus::Ok
+                            : desklink::ControlStatus::Failed,
+                    std::nullopt};
             }
 
             const auto* SetMode = std::get_if<

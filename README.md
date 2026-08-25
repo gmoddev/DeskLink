@@ -146,6 +146,8 @@ desklink_pair.exe control state
 desklink_pair.exe control mode roam
 desklink_pair.exe control mode lock
 desklink_pair.exe control mode game
+desklink_pair.exe control gain 7500
+desklink_pair.exe control mute
 ```
 
 The named pipe uses an explicit one-SID DACL, rejects remote clients, verifies
@@ -237,6 +239,10 @@ it does not change input focus, identity, TLS, or session admission.
 Default render-device changes and recoverable WASAPI failures reopen audio with
 capped 250 ms to 5 s backoff while that admitted session remains active.
 Capture send/client rejection is not retried.
+On the receiving Host, `control gain` applies a per-peer `0..10000` render
+gain and `control mute` toggles mute. Changes ramp across one five-millisecond
+block, persist through audio-only endpoint recovery, and never change the
+Windows endpoint or system mixer volume.
 
 The Host CLI accepts an optional fallback mode plus at most 32 exact executable
 basename rules:

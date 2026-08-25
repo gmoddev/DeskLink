@@ -417,8 +417,8 @@ Example commands:
 GetState             implemented
 SetDesiredMode       implemented
 FocusMachine         typed, currently unsupported
-SetAudioGain         typed, currently unsupported
-ToggleAudioMute      typed, currently unsupported
+SetAudioGain         implemented on an active Host peer receiver
+ToggleAudioMute      implemented on an active Host peer receiver
 ```
 
 The local API must not expose:
@@ -436,6 +436,13 @@ This keeps a compromised Stream Deck plugin from automatically gaining the entir
 local `Game` or `LockPc1` choice takes precedence over a remote peer's `Roam`
 preference. Restrictive mode changes release DeskLink-owned input state and
 disable active capture fail-locally.
+
+Audio gain and mute are local render policy owned by the active Host's
+`AudioReceiver`. They run after authenticated audio admission, jitter
+buffering, concealment, and drift correction, immediately before WASAPI
+submission. A transition ramps over one five-millisecond block. Audio endpoint
+recovery preserves the configured per-peer policy; session teardown discards
+it. These commands cannot alter transport, focus, or the Windows system mixer.
 
 ---
 
