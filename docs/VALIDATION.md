@@ -357,6 +357,12 @@ arrival variation, one-block decreases only after 200 stable samples, a hard
 12-block ceiling, reordered-sample rejection, concealment-driven growth,
 explicit rebuffer accounting, maximum-frame clamping, and reset behavior.
 
+Deterministic clock-drift tests prove a quarter-block occupancy deadband,
+50 ppm bidirectional slew steps, hard ±1000 ppm saturation, discontinuity
+reset, exact 240-frame resampled output, and bounded long-run source storage for
+both compression and expansion. Receiver/session and endpoint recovery tests
+continue to clear the complete audio pipeline, including drift state.
+
 The Windows suite classifies endpoint change/unavailability as recoverable and
 capture client/send rejection as non-recoverable. Runtime recovery preserves
 the current admitted session and uses a capped 250 ms to 5 s retry interval;
@@ -382,8 +388,8 @@ remain separate validation.
 This validation does not yet prove:
 
 - sustained high-poll-rate keyboard-hook/Raw Input timing across physical Windows 11 PCs
-- sustained WASAPI timing, physical endpoint switch/disable/sleep recovery, or
-  clock-drift correction
+- sustained WASAPI timing and clock-drift behavior, or physical endpoint
+  switch/disable/sleep recovery
 - real packet-loss/jitter characteristics beyond the deterministic adaptive
   target and bounded rebuffer tests
 - physical two-PC audio privacy, interruption, reconnect, and endpoint-change behavior

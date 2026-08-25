@@ -13,6 +13,12 @@ constexpr std::size_t kMaximumSourceFramesPerPush = 8'192;
 constexpr std::uint64_t kMaximumJitterSampleIntervalUs = 5'000'000;
 constexpr std::uint64_t kMaximumJitterVariationUs = 100'000;
 constexpr std::size_t kStableSamplesBeforeTargetDecrease = 200;
+constexpr std::size_t kDriftOccupancyDeadbandFrames =
+    kDeskLinkAudioFramesPerBlock / 4;
+constexpr std::size_t kMaximumDriftSourceFrames =
+    static_cast<std::size_t>(kDeskLinkAudioFramesPerBlock) * 4;
+constexpr std::size_t kMaximumDriftObservationSamples = 10'000;
+constexpr std::uint64_t kQ32One = std::uint64_t{1} << 32;
 
 std::optional<std::uint64_t> AddFrameDuration(
     std::uint64_t TimestampUs, std::size_t Frames) noexcept {
@@ -308,6 +314,206 @@ std::uint64_t AudioAdaptiveJitterController::EstimatedJitterUs() const noexcept 
     return (JitterScaled_ + 8) / 16;
 }
 
+AudioClockDriftController::AudioClockDriftController(
+    std::size_t ObservationSamples,
+    std::int32_t MaximumPpm,
+    std::int32_t AdjustmentPpm) noexcept
+    : ObservationSamples_(std::clamp<std::size_t>(
+          ObservationSamples, 1, kMaximumDriftObservationSamples)),
+      MaximumPpm_(std::max<std::int32_t>(1, MaximumPpm)),
+      AdjustmentPpm_(std::clamp<std::int32_t>(
+          AdjustmentPpm, 1, MaximumPpm_)) {}
+
+void AudioClockDriftController::Observe(
+    std::size_t BufferedSourceFrames,
+    std::size_t TargetSourceFrames,
+    bool PlayoutStarted) noexcept {
+    if (!LastTargetSourceFrames_) {
+        LastTargetSourceFrames_ = TargetSourceFrames;
+        ClearObservation();
+        return;
+    }
+    if (*LastTargetSourceFrames_ != TargetSourceFrames) {
+        Discontinuity();
+        LastTargetSourceFrames_ = TargetSourceFrames;
+        return;
+    }
+    if (!PlayoutStarted) {
+        ClearObservation();
+        return;
+    }
+
+    const auto Buffered = static_cast<std::int64_t>(BufferedSourceFrames);
+    const auto Target = static_cast<std::int64_t>(TargetSourceFrames);
+    const auto MaximumError = static_cast<std::int64_t>(
+        kDeskLinkAudioFramesPerBlock);
+    OccupancyErrorSum_ += std::clamp(
+        Buffered - Target, -MaximumError, MaximumError);
+    ++Samples_;
+    if (Samples_ < ObservationSamples_) return;
+
+    const auto Threshold = static_cast<std::int64_t>(
+        ObservationSamples_ * kDriftOccupancyDeadbandFrames);
+    auto UpdatedPpm = AppliedPpm_;
+    if (OccupancyErrorSum_ > Threshold) {
+        UpdatedPpm = std::min(
+            MaximumPpm_, AppliedPpm_ + AdjustmentPpm_);
+    } else if (OccupancyErrorSum_ < -Threshold) {
+        UpdatedPpm = std::max(
+            -MaximumPpm_, AppliedPpm_ - AdjustmentPpm_);
+    }
+    if (UpdatedPpm != AppliedPpm_) {
+        AppliedPpm_ = UpdatedPpm;
+        ++Adjustments_;
+    }
+    ClearObservation();
+}
+
+void AudioClockDriftController::Discontinuity() noexcept {
+    AppliedPpm_ = 0;
+    ClearObservation();
+    ++Discontinuities_;
+}
+
+void AudioClockDriftController::Reset() noexcept {
+    LastTargetSourceFrames_.reset();
+    AppliedPpm_ = 0;
+    Adjustments_ = 0;
+    Discontinuities_ = 0;
+    ClearObservation();
+}
+
+void AudioClockDriftController::ClearObservation() noexcept {
+    OccupancyErrorSum_ = 0;
+    Samples_ = 0;
+}
+
+bool AudioClockDriftResampler::Push(AudioFrameMessage Frame) {
+    if (!IsDeskLinkAudioFrame(Frame)) return false;
+    if (OutputModel_ &&
+        Frame.stream_id != OutputModel_->stream_id) {
+        return false;
+    }
+    Compact();
+    if (BufferedSourceFrames() + kDeskLinkAudioFramesPerBlock >
+        kMaximumDriftSourceFrames) {
+        return false;
+    }
+    if (!OutputModel_) {
+        OutputModel_ = Frame;
+        OutputModel_->pcm.clear();
+        NextOutputTimestampUs_ = Frame.capture_timestamp_us;
+    }
+    SourcePcm_.insert(SourcePcm_.end(),
+                      Frame.pcm.begin(), Frame.pcm.end());
+    return true;
+}
+
+std::optional<AudioFrameMessage> AudioClockDriftResampler::Pop(
+    std::int32_t AppliedPpm) {
+    if (!OutputModel_) return std::nullopt;
+    const auto BoundedPpm = std::clamp(
+        AppliedPpm, -kDeskLinkAudioMaximumClockDriftPpm,
+        kDeskLinkAudioMaximumClockDriftPpm);
+    const auto StepAdjustment =
+        (static_cast<std::int64_t>(BoundedPpm) *
+         static_cast<std::int64_t>(kQ32One)) / 1'000'000;
+    const auto StepQ32 = static_cast<std::uint64_t>(
+        static_cast<std::int64_t>(kQ32One) + StepAdjustment);
+    const auto LastPosition = PhaseQ32_ + StepQ32 *
+        (static_cast<std::uint64_t>(kDeskLinkAudioFramesPerBlock) - 1);
+    auto RequiredFrames = static_cast<std::size_t>(LastPosition >> 32) + 1;
+    if ((LastPosition & (kQ32One - 1)) != 0) ++RequiredFrames;
+    if (BufferedSourceFrames() < RequiredFrames) return std::nullopt;
+
+    AudioFrameMessage Output = *OutputModel_;
+    Output.capture_timestamp_us = NextOutputTimestampUs_;
+    Output.pcm.resize(kDeskLinkAudioBytesPerBlock);
+    auto Position = PhaseQ32_;
+    for (std::size_t Frame = 0;
+         Frame < kDeskLinkAudioFramesPerBlock; ++Frame) {
+        const auto SourceFrame = static_cast<std::size_t>(Position >> 32);
+        const auto Fraction = Position & (kQ32One - 1);
+        for (std::size_t Channel = 0;
+             Channel < kDeskLinkAudioChannels; ++Channel) {
+            const auto First = static_cast<std::int64_t>(
+                ReadSample(SourceFrame, Channel));
+            auto Sample = First;
+            if (Fraction != 0) {
+                const auto Second = static_cast<std::int64_t>(
+                    ReadSample(SourceFrame + 1, Channel));
+                Sample += ((Second - First) *
+                    static_cast<std::int64_t>(Fraction)) /
+                    static_cast<std::int64_t>(kQ32One);
+            }
+            WriteSample(Output.pcm, Frame, Channel,
+                        static_cast<std::int16_t>(Sample));
+        }
+        Position += StepQ32;
+    }
+
+    const auto EndPosition = PhaseQ32_ + StepQ32 *
+        static_cast<std::uint64_t>(kDeskLinkAudioFramesPerBlock);
+    SourceOffsetFrames_ += static_cast<std::size_t>(EndPosition >> 32);
+    PhaseQ32_ = EndPosition & (kQ32One - 1);
+    if (NextOutputTimestampUs_ <=
+        std::numeric_limits<std::uint64_t>::max() -
+            kDeskLinkAudioBlockDurationUs) {
+        NextOutputTimestampUs_ += kDeskLinkAudioBlockDurationUs;
+    }
+    Compact();
+    return Output;
+}
+
+void AudioClockDriftResampler::Reset() noexcept {
+    SourcePcm_.clear();
+    SourceOffsetFrames_ = 0;
+    PhaseQ32_ = 0;
+    OutputModel_.reset();
+    NextOutputTimestampUs_ = 0;
+}
+
+std::size_t AudioClockDriftResampler::BufferedSourceFrames() const noexcept {
+    const auto TotalFrames = SourcePcm_.size() /
+        kDeskLinkAudioBytesPerFrame;
+    return TotalFrames >= SourceOffsetFrames_
+        ? TotalFrames - SourceOffsetFrames_
+        : 0;
+}
+
+void AudioClockDriftResampler::Compact() {
+    if (SourceOffsetFrames_ == 0) return;
+    const auto OffsetBytes = SourceOffsetFrames_ *
+        kDeskLinkAudioBytesPerFrame;
+    SourcePcm_.erase(
+        SourcePcm_.begin(),
+        SourcePcm_.begin() + static_cast<std::ptrdiff_t>(OffsetBytes));
+    SourceOffsetFrames_ = 0;
+}
+
+std::int16_t AudioClockDriftResampler::ReadSample(
+    std::size_t Frame, std::size_t Channel) const noexcept {
+    const auto Offset = (SourceOffsetFrames_ + Frame) *
+        kDeskLinkAudioBytesPerFrame +
+        Channel * kDeskLinkAudioBytesPerSample;
+    const auto Bits = static_cast<std::uint16_t>(SourcePcm_[Offset]) |
+        (static_cast<std::uint16_t>(SourcePcm_[Offset + 1]) << 8);
+    std::int16_t Sample{};
+    std::memcpy(&Sample, &Bits, sizeof(Sample));
+    return Sample;
+}
+
+void AudioClockDriftResampler::WriteSample(
+    ByteBuffer& Output, std::size_t Frame,
+    std::size_t Channel, std::int16_t Sample) noexcept {
+    std::uint16_t Bits{};
+    std::memcpy(&Bits, &Sample, sizeof(Bits));
+    const auto Offset = Frame * kDeskLinkAudioBytesPerFrame +
+        Channel * kDeskLinkAudioBytesPerSample;
+    Output[Offset] = static_cast<std::uint8_t>(Bits & 0xffu);
+    Output[Offset + 1] = static_cast<std::uint8_t>(Bits >> 8);
+}
+
 AudioReceiver::AudioReceiver(RenderHandler Renderer,
                              std::size_t TargetFrames,
                              std::size_t MaximumFrames)
@@ -349,6 +555,13 @@ bool AudioReceiver::PushAt(std::uint64_t Sequence,
             return false;
         }
         if (!StreamId_) StreamId_ = StreamId;
+        if (LastCaptureTimestampUs_ &&
+            (CaptureTimestampUs <= *LastCaptureTimestampUs_ ||
+             CaptureTimestampUs - *LastCaptureTimestampUs_ >
+                 kMaximumJitterSampleIntervalUs)) {
+            DriftController_.Discontinuity();
+        }
+        LastCaptureTimestampUs_ = CaptureTimestampUs;
         JitterController_.Observe(
             Sequence, CaptureTimestampUs, ArrivalTimestampUs);
         Buffer_.SetTargetFrames(JitterController_.TargetFrames());
@@ -360,35 +573,75 @@ bool AudioReceiver::PushAt(std::uint64_t Sequence,
 }
 
 AudioPumpResult AudioReceiver::Pump() noexcept {
-    std::optional<AudioPlayout> Playout;
+    std::optional<AudioFrameMessage> Corrected;
     try {
         {
             std::scoped_lock Lock(Mutex_);
             if (Failed_) return AudioPumpResult::RenderRejected;
-            Playout = Buffer_.pop();
+            const auto TargetSourceFrames =
+                (JitterController_.TargetFrames() - 1) *
+                static_cast<std::size_t>(kDeskLinkAudioFramesPerBlock);
+            const auto BufferedSourceFrames =
+                Buffer_.buffered() *
+                    static_cast<std::size_t>(
+                        kDeskLinkAudioFramesPerBlock) +
+                DriftResampler_.BufferedSourceFrames();
+            DriftController_.Observe(
+                BufferedSourceFrames, TargetSourceFrames,
+                PlayoutStarted_);
+            Corrected = DriftResampler_.Pop(
+                DriftController_.AppliedPpm());
+            for (std::size_t Attempt = 0;
+                 !Corrected && Attempt < 2; ++Attempt) {
+                auto Playout = Buffer_.pop();
+                if (!Playout) break;
+                PlayoutStarted_ = true;
+                if (Playout->concealed) {
+                    ++Stats_.Concealed;
+                    const auto PreviousTarget =
+                        JitterController_.TargetFrames();
+                    JitterController_.ObserveConcealment();
+                    Buffer_.SetTargetFrames(
+                        JitterController_.TargetFrames());
+                    if (PreviousTarget !=
+                        JitterController_.TargetFrames()) {
+                        DriftController_.Discontinuity();
+                    }
+                }
+                if (!DriftResampler_.Push(
+                        std::move(Playout->frame))) {
+                    ++Stats_.RenderRejected;
+                    Failed_ = true;
+                    Buffer_.Reset();
+                    DriftController_.Discontinuity();
+                    DriftResampler_.Reset();
+                    return AudioPumpResult::RenderRejected;
+                }
+                Corrected = DriftResampler_.Pop(
+                    DriftController_.AppliedPpm());
+            }
         }
-        if (!Playout) return AudioPumpResult::Buffering;
+        if (!Corrected) return AudioPumpResult::Buffering;
         const bool Submitted = Renderer_ &&
-            Renderer_(std::move(Playout->frame));
+            Renderer_(std::move(*Corrected));
         std::scoped_lock Lock(Mutex_);
         if (!Submitted) {
             ++Stats_.RenderRejected;
             Failed_ = true;
             Buffer_.Reset();
+            DriftController_.Discontinuity();
+            DriftResampler_.Reset();
             return AudioPumpResult::RenderRejected;
         }
         ++Stats_.Submitted;
-        if (Playout->concealed) {
-            ++Stats_.Concealed;
-            JitterController_.ObserveConcealment();
-            Buffer_.SetTargetFrames(JitterController_.TargetFrames());
-        }
         return AudioPumpResult::Submitted;
     } catch (...) {
         std::scoped_lock Lock(Mutex_);
         ++Stats_.RenderRejected;
         Failed_ = true;
         Buffer_.Reset();
+        DriftController_.Discontinuity();
+        DriftResampler_.Reset();
         return AudioPumpResult::RenderRejected;
     }
 }
@@ -398,8 +651,12 @@ void AudioReceiver::Reset() noexcept {
     Buffer_.Reset();
     JitterController_.Reset();
     Buffer_.SetTargetFrames(JitterController_.TargetFrames());
+    DriftController_.Reset();
+    DriftResampler_.Reset();
     StreamId_.reset();
+    LastCaptureTimestampUs_.reset();
     Stats_ = {};
+    PlayoutStarted_ = false;
     Failed_ = false;
 }
 
@@ -417,6 +674,12 @@ AudioReceiverStats AudioReceiver::Stats() const noexcept {
     Result.TargetRaises = JitterController_.TargetRaises();
     Result.TargetLowers = JitterController_.TargetLowers();
     Result.RebufferEvents = Buffer_.RebufferEvents();
+    Result.AppliedClockDriftPpm = DriftController_.AppliedPpm();
+    Result.ClockDriftAdjustments = DriftController_.Adjustments();
+    Result.ClockDriftDiscontinuities =
+        DriftController_.Discontinuities();
+    Result.DriftBufferedSourceFrames =
+        DriftResampler_.BufferedSourceFrames();
     return Result;
 }
 

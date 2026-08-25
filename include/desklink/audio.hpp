@@ -26,6 +26,9 @@ inline constexpr std::size_t kDeskLinkAudioBytesPerBlock =
 inline constexpr std::uint64_t kDeskLinkAudioBlockDurationUs = 5'000;
 inline constexpr std::size_t kDeskLinkAudioDefaultTargetFrames = 4;
 inline constexpr std::size_t kDeskLinkAudioMaximumAdaptiveTargetFrames = 12;
+inline constexpr std::int32_t kDeskLinkAudioMaximumClockDriftPpm = 1'000;
+inline constexpr std::size_t kDeskLinkAudioDriftObservationSamples = 400;
+inline constexpr std::int32_t kDeskLinkAudioDriftAdjustmentPpm = 50;
 
 [[nodiscard]] bool IsDeskLinkAudioFrame(
     const AudioFrameMessage& Frame) noexcept;
@@ -129,6 +132,70 @@ private:
     std::uint64_t TargetLowers_{};
 };
 
+class AudioClockDriftController final {
+public:
+    explicit AudioClockDriftController(
+        std::size_t ObservationSamples =
+            kDeskLinkAudioDriftObservationSamples,
+        std::int32_t MaximumPpm =
+            kDeskLinkAudioMaximumClockDriftPpm,
+        std::int32_t AdjustmentPpm =
+            kDeskLinkAudioDriftAdjustmentPpm) noexcept;
+
+    void Observe(std::size_t BufferedSourceFrames,
+                 std::size_t TargetSourceFrames,
+                 bool PlayoutStarted) noexcept;
+    void Discontinuity() noexcept;
+    void Reset() noexcept;
+
+    [[nodiscard]] std::int32_t AppliedPpm() const noexcept {
+        return AppliedPpm_;
+    }
+    [[nodiscard]] std::uint64_t Adjustments() const noexcept {
+        return Adjustments_;
+    }
+    [[nodiscard]] std::uint64_t Discontinuities() const noexcept {
+        return Discontinuities_;
+    }
+
+private:
+    void ClearObservation() noexcept;
+
+    std::size_t ObservationSamples_{};
+    std::int32_t MaximumPpm_{};
+    std::int32_t AdjustmentPpm_{};
+    std::optional<std::size_t> LastTargetSourceFrames_;
+    std::int64_t OccupancyErrorSum_{};
+    std::size_t Samples_{};
+    std::int32_t AppliedPpm_{};
+    std::uint64_t Adjustments_{};
+    std::uint64_t Discontinuities_{};
+};
+
+class AudioClockDriftResampler final {
+public:
+    [[nodiscard]] bool Push(AudioFrameMessage Frame);
+    [[nodiscard]] std::optional<AudioFrameMessage> Pop(
+        std::int32_t AppliedPpm);
+    void Reset() noexcept;
+
+    [[nodiscard]] std::size_t BufferedSourceFrames() const noexcept;
+
+private:
+    void Compact();
+    [[nodiscard]] std::int16_t ReadSample(
+        std::size_t Frame, std::size_t Channel) const noexcept;
+    static void WriteSample(ByteBuffer& Output, std::size_t Frame,
+                            std::size_t Channel,
+                            std::int16_t Sample) noexcept;
+
+    ByteBuffer SourcePcm_;
+    std::size_t SourceOffsetFrames_{};
+    std::uint64_t PhaseQ32_{};
+    std::optional<AudioFrameMessage> OutputModel_;
+    std::uint64_t NextOutputTimestampUs_{};
+};
+
 struct AudioReceiverStats {
     std::uint64_t Accepted{};
     std::uint64_t FormatRejected{};
@@ -143,6 +210,10 @@ struct AudioReceiverStats {
     std::uint64_t TargetRaises{};
     std::uint64_t TargetLowers{};
     std::uint64_t RebufferEvents{};
+    std::int32_t AppliedClockDriftPpm{};
+    std::uint64_t ClockDriftAdjustments{};
+    std::uint64_t ClockDriftDiscontinuities{};
+    std::uint64_t DriftBufferedSourceFrames{};
 };
 
 enum class AudioPumpResult {
@@ -174,9 +245,13 @@ private:
     RenderHandler Renderer_;
     AudioJitterBuffer Buffer_;
     AudioAdaptiveJitterController JitterController_;
+    AudioClockDriftController DriftController_;
+    AudioClockDriftResampler DriftResampler_;
     mutable std::mutex Mutex_;
     std::optional<std::uint32_t> StreamId_;
+    std::optional<std::uint64_t> LastCaptureTimestampUs_;
     AudioReceiverStats Stats_;
+    bool PlayoutStarted_{};
     bool Failed_{};
 };
 

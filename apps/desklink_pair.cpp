@@ -1349,6 +1349,11 @@ struct HostRuntime {
                       << (Stats.FormatRejected + Stats.StreamRejected +
                           Stats.SequenceRejected + Stats.RenderRejected)
                       << " restarts=" << AudioRestartCount.load()
+                      << " drift_ppm=" << Stats.AppliedClockDriftPpm
+                      << " drift_adjustments="
+                      << Stats.ClockDriftAdjustments
+                      << " drift_resets="
+                      << Stats.ClockDriftDiscontinuities
                       << '\n';
         }
         Receiver.Reset();

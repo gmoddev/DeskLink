@@ -81,8 +81,12 @@ Work proceeds in this order:
     controller sessions start Local, runtime status and mode use the same-user
     control pipe, diagnostics remain bounded/in-memory, and the package contains
     only the Schannel production runtime.
-15. **Next unblocked slice:** bounded clock-drift correction while edge roaming
-    remains gated on the deferred Windows 11 physical matrix.
+15. **Complete:** bounded clock-drift correction. A 400-sample occupancy window
+    slews an asynchronous linear resampler in 50 ppm steps within a hard
+    ±1000 ppm bound; source buffering remains capped at four blocks and
+    discontinuities clear correction state.
+16. **Next unblocked slice:** per-peer audio gain/mute while edge roaming remains
+    gated on the deferred Windows 11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
 failure matrix pass.
@@ -90,7 +94,7 @@ failure matrix pass.
 ## Later milestones
 
 - monitor edge graph, crossing hysteresis, and roaming policy
-- clock-drift correction and per-peer gain/mute
+- per-peer gain/mute
 - final tray/onboarding UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project

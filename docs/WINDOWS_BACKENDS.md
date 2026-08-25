@@ -275,24 +275,34 @@ portable receiver enforces format, stream, sequence, and jitter bounds before a
 five-millisecond pump submits to WASAPI. Capture/arrival delta variation and
 concealment raise an adaptive 2-12 block target immediately; each downward
 step requires 200 stable samples, and target growth enters a bounded rebuffer
-state. Gain/mute and resampling remain future work.
+state. Bounded clock-drift resampling follows concealment; gain/mute remains
+future work.
 
 ---
 
 ## 8. Clock drift controller
 
-Separate machines do not have perfectly identical audio clocks.
-
-Track jitter-buffer occupancy around a target. Apply very small resampling-ratio corrections when the buffer trends high/low.
-
-Example policy:
+Separate machines do not have perfectly identical audio clocks. The receiver
+tracks total admitted source samples in the jitter buffer plus asynchronous
+resampler around the adaptive target. It averages 400 five-millisecond pump
+observations before changing the ratio by one 50 ppm step:
 
 ```text
 adaptive target occupancy: 10-60 ms
-normal correction bound: ±0.1%
+observation window: 2 s
+ratio slew: 50 ppm per window
+hard correction bound: ±1000 ppm (±0.1%)
+resampler source bound: four 5 ms blocks
 ```
 
-This prevents hours-long sessions from gradually underrunning or overflowing.
+The streaming linear interpolator may consume slightly more or less than one
+source block per output block, but emits only the canonical 240-frame PCM16
+stereo shape. Occupancy—not an authenticated peer's still-untrusted capture
+timestamp—selects the direction. A quarter-block deadband filters scheduling
+jitter. Adaptive-target changes, capture-time regression/large jumps, session
+reset/reconnect, render rejection, and endpoint recovery clear correction
+state. These controls prevent hours-long sessions from gradually underrunning
+or overflowing without allowing unbounded buffering or rate selection.
 
 ---
 

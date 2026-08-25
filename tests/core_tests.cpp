@@ -35,6 +35,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -723,6 +724,101 @@ void AdaptiveJitterRaisesQuicklyAndLowersSlowly() {
     CHECK(Controller.PeakTargetFrames() == 4);
     CHECK(Controller.EstimatedJitterUs() == 0);
     CHECK(Controller.TargetRaises() == 0);
+}
+
+void ClockDriftControllerIsBoundedAndSlewLimited() {
+    using namespace desklink;
+    AudioClockDriftController Controller(4, 100, 25);
+    Controller.Observe(240, 240, false);
+    for (int Window = 0; Window < 8; ++Window) {
+        for (int Sample = 0; Sample < 4; ++Sample) {
+            Controller.Observe(480, 240, true);
+        }
+    }
+    CHECK(Controller.AppliedPpm() == 100);
+    CHECK(Controller.Adjustments() == 4);
+
+    for (int Sample = 0; Sample < 4; ++Sample) {
+        Controller.Observe(0, 240, true);
+    }
+    CHECK(Controller.AppliedPpm() == 75);
+    CHECK(Controller.Adjustments() == 5);
+
+    Controller.Observe(240, 480, true);
+    CHECK(Controller.AppliedPpm() == 0);
+    CHECK(Controller.Discontinuities() == 1);
+    Controller.Reset();
+    CHECK(Controller.AppliedPpm() == 0);
+    CHECK(Controller.Adjustments() == 0);
+    CHECK(Controller.Discontinuities() == 0);
+    Controller.Observe(240, 240, false);
+    for (int Sample = 0; Sample < 4; ++Sample) {
+        Controller.Observe(300, 240, true);
+    }
+    CHECK(Controller.AppliedPpm() == 0);
+}
+
+void ClockDriftResamplerIsExactAndBounded() {
+    using namespace desklink;
+    const auto MakeFrame = [](std::uint64_t Timestamp,
+                              std::int16_t Base) {
+        AudioFrameMessage Frame;
+        Frame.stream_id = 7;
+        Frame.capture_timestamp_us = Timestamp;
+        Frame.pcm.resize(kDeskLinkAudioBytesPerBlock);
+        for (std::size_t Index = 0;
+             Index < kDeskLinkAudioFramesPerBlock; ++Index) {
+            const auto Sample = static_cast<std::int16_t>(
+                Base + static_cast<std::int16_t>(Index));
+            std::uint16_t Bits{};
+            std::memcpy(&Bits, &Sample, sizeof(Bits));
+            for (std::size_t Channel = 0;
+                 Channel < kDeskLinkAudioChannels; ++Channel) {
+                const auto Offset = Index * kDeskLinkAudioBytesPerFrame +
+                    Channel * kDeskLinkAudioBytesPerSample;
+                Frame.pcm[Offset] = static_cast<std::uint8_t>(Bits & 0xffu);
+                Frame.pcm[Offset + 1] =
+                    static_cast<std::uint8_t>(Bits >> 8);
+            }
+        }
+        return Frame;
+    };
+
+    AudioClockDriftResampler FasterSource;
+    std::size_t CompressedBlocks{};
+    for (std::size_t Index = 0; Index < 2'000; ++Index) {
+        CHECK(FasterSource.Push(MakeFrame(
+            10'000 + Index * kDeskLinkAudioBlockDurationUs,
+            static_cast<std::int16_t>(Index))));
+        while (auto Output = FasterSource.Pop(1'000)) {
+            CHECK(IsDeskLinkAudioFrame(*Output));
+            ++CompressedBlocks;
+        }
+        CHECK(FasterSource.BufferedSourceFrames() <=
+              2 * kDeskLinkAudioFramesPerBlock);
+    }
+    CHECK(CompressedBlocks < 2'000);
+    CHECK(CompressedBlocks >= 1'997);
+
+    AudioClockDriftResampler SlowerSource;
+    std::size_t ExpandedBlocks{};
+    for (std::size_t Index = 0; Index < 2'000; ++Index) {
+        CHECK(SlowerSource.Push(MakeFrame(
+            20'000 + Index * kDeskLinkAudioBlockDurationUs,
+            static_cast<std::int16_t>(Index))));
+        while (auto Output = SlowerSource.Pop(-1'000)) {
+            CHECK(IsDeskLinkAudioFrame(*Output));
+            ++ExpandedBlocks;
+        }
+        CHECK(SlowerSource.BufferedSourceFrames() <=
+              2 * kDeskLinkAudioFramesPerBlock);
+    }
+    CHECK(ExpandedBlocks > 2'000);
+    CHECK(ExpandedBlocks <= 2'003);
+
+    SlowerSource.Reset();
+    CHECK(SlowerSource.BufferedSourceFrames() == 0);
+    CHECK(!SlowerSource.Pop(0).has_value());
 }
 
 void JitterTargetIncreaseRebuffersWithinBounds() {
@@ -2090,6 +2186,8 @@ int main() {
     AudioFrameAssemblerProducesExactBoundedBlocks();
     AudioReceiverIsBoundedAndFailsClosed();
     AdaptiveJitterRaisesQuicklyAndLowersSlowly();
+    ClockDriftControllerIsBoundedAndSlewLimited();
+    ClockDriftResamplerIsExactAndBounded();
     JitterTargetIncreaseRebuffersWithinBounds();
     ForegroundProfilePolicyIsBoundedAndDeterministic();
     HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus();

@@ -23,6 +23,7 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Exact 48 kHz/stereo/PCM16/5 ms audio block assembler
 - Bounded reorder/jitter buffer with silence concealment
 - Adaptive 10-60 ms audio jitter targeting with bounded rebuffer hysteresis
+- Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
 - Default-endpoint notification and bounded audio-only WASAPI recovery
@@ -72,7 +73,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Monitor graph and edge roaming
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
-- Clock-drift resampling
+- Per-peer audio gain/mute
 - Final tray/onboarding UI, installer/update flow, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
