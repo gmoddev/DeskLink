@@ -11,6 +11,7 @@
 #include "desklink/pairing_wire.hpp"
 #include "desklink/profile.hpp"
 #include "desklink/protocol.hpp"
+#include "desklink/roaming.hpp"
 #include "desklink/session.hpp"
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
@@ -23,6 +24,7 @@
 #include "desklink/win32_foreground.hpp"
 #include "desklink/win32_launcher.hpp"
 #include "desklink/win32_pairing.hpp"
+#include "desklink/win32_roaming_settings.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -38,6 +40,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -148,6 +151,29 @@ desklink::MachineId MakeMachineId(std::uint8_t Marker) {
     desklink::MachineId Result{};
     Result[0] = Marker;
     Result[15] = static_cast<std::uint8_t>(Marker ^ 0xA5u);
+    return Result;
+}
+
+desklink::RoamingConfiguration MakeRoamingConfiguration() {
+    using namespace desklink;
+    RoamingConfiguration Result;
+    Result.CrossingDefaults = {
+        CrossingPolicy::Push, 8, 120, 500};
+    Result.Links.push_back(RoamingLink{
+        {MakeMachineId(1), "display-a", DisplayEdgeSide::Right, 1'000, 9'000},
+        {MakeMachineId(2), "display-b", DisplayEdgeSide::Left, 2'000, 8'000},
+        RoamingDirectionMode::Bidirectional,
+        {CrossingPolicy::DwellAndPush, 12, 250, 500},
+        {CrossingPolicy::DoublePush, 9, 0, 600},
+        12,
+        24,
+        24,
+        true,
+    });
+    Result.CanvasLayout.push_back(
+        {MakeMachineId(1), "display-a", -1'920, 75});
+    Result.CanvasLayout.push_back(
+        {MakeMachineId(2), "display-b", 0, -25});
     return Result;
 }
 
@@ -413,6 +439,210 @@ void DisplayTopologyRejectsAmbiguousStableIds() {
     }) == DisplayTopologyUpdate::Invalid);
     CHECK(Topology.Current().Generation == 0);
     CHECK(Topology.Current().Displays.empty());
+}
+
+void DisplayMetadataIsBoundedAndDoesNotChangeRoutingGeneration() {
+    using namespace desklink;
+    DisplayTopologyMap Topology;
+    DiscoveredDisplay Display{
+        "metadata-monitor", "Metadata monitor", {0, 0, 2560, 1440}, true};
+    Display.PixelWidth = 2560;
+    Display.PixelHeight = 1440;
+    Display.RefreshMilliHertz = 177'000;
+    Display.PhysicalWidthMillimeters = 597;
+    Display.PhysicalHeightMillimeters = 336;
+    Display.PhysicalSize = PhysicalSizeSource::Edid;
+    Display.Orientation = DisplayOrientation::Landscape;
+    CHECK(Topology.Update({Display}) == DisplayTopologyUpdate::Changed);
+    const auto Generation = Topology.Current().Generation;
+    const auto Id = DeriveStableDisplayId(Display.StableIdentity);
+    CHECK(Topology.Current().FindStableIdentity(Display.StableIdentity) ==
+          Topology.Current().Find(Id));
+    CHECK(Topology.Current().Find(Id)->RefreshMilliHertz == 177'000);
+
+    Display.RefreshMilliHertz = 165'000;
+    Display.PhysicalWidthMillimeters = 600;
+    Display.FriendlyName = "Renamed metadata monitor";
+    CHECK(Topology.Update({Display}) == DisplayTopologyUpdate::Unchanged);
+    CHECK(Topology.Current().Generation == Generation);
+    CHECK(Topology.Current().Find(Id)->RefreshMilliHertz == 165'000);
+    CHECK(Topology.Current().Find(Id)->PhysicalWidthMillimeters == 600);
+
+    auto Invalid = Display;
+    Invalid.PhysicalSize = PhysicalSizeSource::Unknown;
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
+    Invalid.RefreshMilliHertz = kMaximumDisplayRefreshMilliHertz + 1;
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
+    Invalid.RefreshMilliHertz = kMinimumDisplayRefreshMilliHertz - 1;
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
+    Invalid.PixelWidth = kMaximumDisplayPixelDimension + 1;
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
+    Invalid.Orientation = static_cast<DisplayOrientation>(99);
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    CHECK(Topology.Current().Generation == Generation);
+}
+
+void EdidPhysicalSizeParsingIsStrictAndBounded() {
+    using namespace desklink;
+    std::array<std::uint8_t, 128> Edid{};
+    const std::array<std::uint8_t, 8> Header{
+        0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00};
+    std::copy(Header.begin(), Header.end(), Edid.begin());
+    Edid[21] = 60;
+    Edid[22] = 34;
+    constexpr std::size_t Descriptor = 54;
+    Edid[Descriptor] = 1;
+    Edid[Descriptor + 1] = 1;
+    Edid[Descriptor + 12] = 0x55;
+    Edid[Descriptor + 13] = 0x50;
+    Edid[Descriptor + 14] = 0x21;
+    const auto SetChecksum = [&Edid] {
+        std::uint8_t Sum{};
+        for (std::size_t Index = 0; Index < 127; ++Index) {
+            Sum = static_cast<std::uint8_t>(Sum + Edid[Index]);
+        }
+        Edid[127] = static_cast<std::uint8_t>(0u - Sum);
+    };
+    SetChecksum();
+    CHECK(ParseEdidPhysicalSize(Edid) ==
+          (PhysicalDisplaySize{597, 336}));
+
+    auto Corrupt = Edid;
+    ++Corrupt[10];
+    CHECK(!ParseEdidPhysicalSize(Corrupt));
+    CHECK(!ParseEdidPhysicalSize(ByteSpan{Edid.data(), 127}));
+
+    Edid[Descriptor] = 0;
+    Edid[Descriptor + 1] = 0;
+    SetChecksum();
+    CHECK(ParseEdidPhysicalSize(Edid) ==
+          (PhysicalDisplaySize{600, 340}));
+    CHECK(OrientPhysicalDisplaySize(
+              {600, 340}, DisplayOrientation::Landscape) ==
+          (PhysicalDisplaySize{600, 340}));
+    CHECK(OrientPhysicalDisplaySize(
+              {600, 340}, DisplayOrientation::LandscapeFlipped) ==
+          (PhysicalDisplaySize{600, 340}));
+    CHECK(OrientPhysicalDisplaySize(
+              {600, 340}, DisplayOrientation::Portrait) ==
+          (PhysicalDisplaySize{340, 600}));
+    CHECK(OrientPhysicalDisplaySize(
+              {600, 340}, DisplayOrientation::PortraitFlipped) ==
+          (PhysicalDisplaySize{340, 600}));
+    CHECK(!OrientPhysicalDisplaySize(
+        {600, 340}, static_cast<DisplayOrientation>(99)));
+}
+
+void RoamingGraphValidationAndCodecAreStrict() {
+    using namespace desklink;
+    const auto Configuration = MakeRoamingConfiguration();
+    CHECK(IsValidRoamingConfiguration(Configuration));
+    const auto Encoded = EncodeRoamingConfiguration(Configuration);
+    CHECK(Encoded.has_value());
+    CHECK(DecodeRoamingConfiguration(*Encoded) == Configuration);
+
+    auto InvalidBytes = *Encoded;
+    InvalidBytes.push_back(0);
+    CHECK(!DecodeRoamingConfiguration(InvalidBytes));
+    InvalidBytes = *Encoded;
+    InvalidBytes[0] ^= 0xffu;
+    CHECK(!DecodeRoamingConfiguration(InvalidBytes));
+    InvalidBytes = *Encoded;
+    InvalidBytes.resize(InvalidBytes.size() - 1);
+    CHECK(!DecodeRoamingConfiguration(InvalidBytes));
+    CHECK(!DecodeRoamingConfiguration(
+        ByteBuffer(kMaximumRoamingSettingsBytes + 1)));
+
+    auto Invalid = Configuration;
+    Invalid.Links[0].EndpointA.Machine = {};
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+    Invalid = Configuration;
+    Invalid.Links[0].EndpointB.Machine = Invalid.Links[0].EndpointA.Machine;
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+    Invalid = Configuration;
+    Invalid.Links[0].EndpointA.SegmentEndPermyriad =
+        Invalid.Links[0].EndpointA.SegmentStartPermyriad;
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+    Invalid = Configuration;
+    Invalid.Links[0].AToB.PushDistancePixels = 65;
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+    Invalid = Configuration;
+    Invalid.Links.push_back(Invalid.Links.front());
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+
+    auto Touching = Configuration;
+    auto Second = Touching.Links.front();
+    Second.EndpointA.SegmentStartPermyriad = 9'000;
+    Second.EndpointA.SegmentEndPermyriad = 10'000;
+    Second.EndpointB.Machine = MakeMachineId(3);
+    Second.EndpointB.StableDisplayIdentity = "display-c";
+    Second.Direction = RoamingDirectionMode::AToB;
+    Touching.Links.push_back(Second);
+    CHECK(IsValidRoamingConfiguration(Touching));
+    Touching.Links.back().EndpointA.SegmentStartPermyriad = 8'999;
+    CHECK(!IsValidRoamingConfiguration(Touching));
+    Touching.Links.back().Enabled = false;
+    CHECK(IsValidRoamingConfiguration(Touching));
+
+    Invalid = Configuration;
+    Invalid.CanvasLayout.push_back(Invalid.CanvasLayout.front());
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+    Invalid = Configuration;
+    Invalid.CanvasLayout[0].StableDisplayIdentity.push_back('\0');
+    CHECK(!IsValidRoamingConfiguration(Invalid));
+}
+
+void RoamingEndpointsResolveAgainstCurrentStableTopologies() {
+    using namespace desklink;
+    auto Configuration = MakeRoamingConfiguration();
+    DisplayTopologyMap TopologyA;
+    DisplayTopologyMap TopologyB;
+    CHECK(TopologyA.Update({
+        {"display-a", "A", {0, 0, 1920, 1080}, true}}) ==
+        DisplayTopologyUpdate::Changed);
+    CHECK(TopologyB.Update({
+        {"display-b", "B", {0, 0, 2560, 1440}, true}}) ==
+        DisplayTopologyUpdate::Changed);
+    std::array<MachineDisplayTopology, 2> Topologies{
+        MachineDisplayTopology{MakeMachineId(1), &TopologyA.Current()},
+        MachineDisplayTopology{MakeMachineId(2), &TopologyB.Current()},
+    };
+    const auto Ready = ResolveRoamingLink(Configuration.Links[0], Topologies);
+    CHECK(Ready.Ready());
+    CHECK(Ready.EndpointA.Endpoint->Display ==
+          DeriveStableDisplayId("display-a"));
+    CHECK(Ready.EndpointB.Endpoint->TopologyGeneration == 1);
+
+    auto Missing = Configuration.Links[0].EndpointB;
+    Missing.StableDisplayIdentity = "offline-display";
+    CHECK(ResolveRoamingEndpoint(Missing, Topologies).Status ==
+          RoamingEndpointResolution::DisplayMissing);
+    Missing.Machine = MakeMachineId(9);
+    CHECK(ResolveRoamingEndpoint(Missing, Topologies).Status ==
+          RoamingEndpointResolution::MachineUnavailable);
+
+    std::array<MachineDisplayTopology, 3> Ambiguous{
+        Topologies[0], Topologies[1], Topologies[1]};
+    CHECK(ResolveRoamingEndpoint(
+              Configuration.Links[0].EndpointB, Ambiguous).Status ==
+          RoamingEndpointResolution::AmbiguousMachine);
+
+    auto DisplayA = DiscoveredDisplay{
+        "display-a", "A renamed", {0, 0, 1920, 1080}, true};
+    DisplayA.RefreshMilliHertz = 144'000;
+    CHECK(TopologyA.Update({DisplayA}) == DisplayTopologyUpdate::Unchanged);
+    CHECK(ResolveRoamingEndpoint(
+              Configuration.Links[0].EndpointA, Topologies).Endpoint
+              ->TopologyGeneration == 1);
+    DisplayA.Bounds.Right = 2560;
+    CHECK(TopologyA.Update({DisplayA}) == DisplayTopologyUpdate::Changed);
+    CHECK(ResolveRoamingEndpoint(
+              Configuration.Links[0].EndpointA, Topologies).Endpoint
+              ->TopologyGeneration == 2);
 }
 
 void InputStateSnapshotRoundTripAndValidation() {
@@ -1916,6 +2146,17 @@ void WindowsDisplayTopologyEnumeratesWhenAvailable() {
         CHECK(Display.Id != kLegacyVirtualDesktopDisplayId);
         CHECK(!Display.StableIdentity.empty());
         CHECK(Display.Bounds.IsValid());
+        CHECK(Display.PixelWidth > 0);
+        CHECK(Display.PixelHeight > 0);
+        CHECK(Display.RefreshMilliHertz <=
+              kMaximumDisplayRefreshMilliHertz);
+        if (Display.PhysicalSize == PhysicalSizeSource::Unknown) {
+            CHECK(Display.PhysicalWidthMillimeters == 0);
+            CHECK(Display.PhysicalHeightMillimeters == 0);
+        } else {
+            CHECK(Display.PhysicalWidthMillimeters > 0);
+            CHECK(Display.PhysicalHeightMillimeters > 0);
+        }
     }
     std::cout << "[Display:Topology] enumerated "
               << Topology.Current().Displays.size() << " active Windows display(s).\n";
@@ -2095,6 +2336,52 @@ void WindowsCryptoAndDpapiTrustStoreWork() {
     CHECK(!Win32DeviceCertificate::Load(KeyName, crypto));
     CHECK(!Win32DeviceCertificate::LoadOrCreate(L"invalid key name!", crypto));
 }
+
+void WindowsRoamingSettingsAreAtomicAndStrict() {
+    using namespace desklink;
+    const auto Directory = std::filesystem::temp_directory_path() /
+        ("desklink-roaming-test-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto Path = Directory / "roaming.bin";
+    std::error_code Ignored;
+    std::filesystem::remove_all(Directory, Ignored);
+
+    Win32RoamingSettingsStore First(Path);
+    CHECK(First.Load());
+    CHECK(First.IsLoaded());
+    CHECK(First.Current() == RoamingConfiguration{});
+    const auto Configuration = MakeRoamingConfiguration();
+    CHECK(First.Save(Configuration));
+    CHECK(First.Current() == Configuration);
+    CHECK(std::filesystem::exists(Path));
+    auto Temporary = Path;
+    Temporary += L".tmp";
+    CHECK(!std::filesystem::exists(Temporary));
+
+    Win32RoamingSettingsStore Second(Path);
+    CHECK(Second.Load());
+    CHECK(Second.Current() == Configuration);
+    auto Invalid = Configuration;
+    Invalid.Links[0].EndpointA.Machine = {};
+    CHECK(!Second.Save(Invalid));
+    CHECK(Second.Current() == Configuration);
+
+    {
+        std::ofstream Output(Path, std::ios::binary | std::ios::trunc);
+        CHECK(Output.good());
+        const std::array<char, 4> Malformed{'b', 'a', 'd', '!'};
+        Output.write(Malformed.data(), Malformed.size());
+        CHECK(Output.good());
+    }
+    Win32RoamingSettingsStore Malformed(Path);
+    CHECK(!Malformed.Load());
+    CHECK(!Malformed.IsLoaded());
+    CHECK(!Malformed.Current().has_value());
+    CHECK(!Second.Load());
+    CHECK(!Second.IsLoaded());
+    CHECK(!Second.Current().has_value());
+    std::filesystem::remove_all(Directory, Ignored);
+}
 #endif
 
 void DiscoveryPropertiesAreStrictAndRoundTrip() {
@@ -2273,6 +2560,10 @@ int main() {
     MouseWheelRoundTripAndValidation();
     DisplayTopologyMappingIsStableAndInvalidates();
     DisplayTopologyRejectsAmbiguousStableIds();
+    DisplayMetadataIsBoundedAndDoesNotChangeRoutingGeneration();
+    EdidPhysicalSizeParsingIsStrictAndBounded();
+    RoamingGraphValidationAndCodecAreStrict();
+    RoamingEndpointsResolveAgainstCurrentStableTopologies();
     InputStateSnapshotRoundTripAndValidation();
     InputStateTransitionsReleaseBeforePress();
     rejects_wrong_lane_and_oversize();
@@ -2304,6 +2595,7 @@ int main() {
     WindowsWasapiFailureKindsAreExplicit();
     WindowsWasapiSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
+    WindowsRoamingSettingsAreAtomicAndStrict();
 #endif
     in_memory_transport_preserves_security_metadata();
     std::cout << "All DeskLink foundation tests passed.\n";

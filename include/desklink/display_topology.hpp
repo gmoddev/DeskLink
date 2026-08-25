@@ -1,5 +1,7 @@
 #pragma once
 
+#include "desklink/types.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -14,6 +16,30 @@ inline constexpr DisplayId kLegacyVirtualDesktopDisplayId = 0;
 inline constexpr std::size_t kMaxDisplayCount = 64;
 inline constexpr std::size_t kMaxDisplayIdentityLength = 1024;
 inline constexpr std::size_t kMaxDisplayFriendlyNameLength = 256;
+inline constexpr std::uint32_t kMaximumDisplayPixelDimension = 65'535;
+inline constexpr std::uint32_t kMinimumDisplayRefreshMilliHertz = 1'000;
+inline constexpr std::uint32_t kMaximumDisplayRefreshMilliHertz = 1'000'000;
+inline constexpr std::uint16_t kMaximumPhysicalDisplayMillimeters = 10'000;
+
+enum class PhysicalSizeSource : std::uint8_t {
+    Unknown,
+    RawDpiEstimate,
+    Edid,
+};
+
+enum class DisplayOrientation : std::uint8_t {
+    Landscape,
+    Portrait,
+    LandscapeFlipped,
+    PortraitFlipped,
+};
+
+struct PhysicalDisplaySize {
+    std::uint16_t WidthMillimeters{};
+    std::uint16_t HeightMillimeters{};
+
+    [[nodiscard]] bool operator==(const PhysicalDisplaySize&) const noexcept = default;
+};
 
 struct DisplayRect {
     std::int32_t Left{};
@@ -37,6 +63,13 @@ struct DiscoveredDisplay {
     std::string FriendlyName;
     DisplayRect Bounds;
     bool Primary{};
+    std::uint32_t PixelWidth{};
+    std::uint32_t PixelHeight{};
+    std::uint32_t RefreshMilliHertz{};
+    std::uint16_t PhysicalWidthMillimeters{};
+    std::uint16_t PhysicalHeightMillimeters{};
+    PhysicalSizeSource PhysicalSize{PhysicalSizeSource::Unknown};
+    DisplayOrientation Orientation{DisplayOrientation::Landscape};
 };
 
 struct DisplayDescriptor {
@@ -45,6 +78,13 @@ struct DisplayDescriptor {
     std::string FriendlyName;
     DisplayRect Bounds;
     bool Primary{};
+    std::uint32_t PixelWidth{};
+    std::uint32_t PixelHeight{};
+    std::uint32_t RefreshMilliHertz{};
+    std::uint16_t PhysicalWidthMillimeters{};
+    std::uint16_t PhysicalHeightMillimeters{};
+    PhysicalSizeSource PhysicalSize{PhysicalSizeSource::Unknown};
+    DisplayOrientation Orientation{DisplayOrientation::Landscape};
 };
 
 struct DisplayTopologySnapshot {
@@ -53,6 +93,8 @@ struct DisplayTopologySnapshot {
     std::vector<DisplayDescriptor> Displays;
 
     [[nodiscard]] const DisplayDescriptor* Find(DisplayId Id) const noexcept;
+    [[nodiscard]] const DisplayDescriptor* FindStableIdentity(
+        std::string_view StableIdentity) const noexcept;
 };
 
 enum class DisplayTopologyUpdate {
@@ -62,6 +104,10 @@ enum class DisplayTopologyUpdate {
 };
 
 [[nodiscard]] DisplayId DeriveStableDisplayId(std::string_view StableIdentity) noexcept;
+[[nodiscard]] std::optional<PhysicalDisplaySize> ParseEdidPhysicalSize(
+    ByteSpan Edid) noexcept;
+[[nodiscard]] std::optional<PhysicalDisplaySize> OrientPhysicalDisplaySize(
+    PhysicalDisplaySize Size, DisplayOrientation Orientation) noexcept;
 [[nodiscard]] std::optional<NormalizedDisplayPoint> MapDisplayPointToVirtualDesktop(
     const DisplayRect& DisplayBounds,
     const DisplayRect& VirtualBounds,

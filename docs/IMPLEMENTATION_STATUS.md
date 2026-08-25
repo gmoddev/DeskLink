@@ -30,6 +30,9 @@ The current build proves the core invariants independently of Windows networking
 | Pointer format | Done | Protocol v2 relative-motion datagrams for ordinary movement; absolute display-aware datagrams retained for monitor transitions/resync; shared monotonic sequence gate |
 | Pointer calibration | Done | 25-400% fixed-point gain with fractional-count retention; optional 100-32000 source-DPI normalization; no global Windows setting changes |
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
+| Display presentation metadata | Done | Checked active resolution/refresh/orientation; EDID physical size with raw-DPI estimate fallback; metadata does not change routing generations |
+| Roaming graph foundation | Done | Strict bounded directional links and normalized edge segments; duplicate/overlapping source routes rejected; stable identities resolve only against current machine topologies |
+| Roaming preference persistence | Done | Versioned 512 KiB-bounded exact codec and atomic current-user replacement; canvas positions remain presentation-only and trust/identity stay in security stores |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode`/audio gain/mute |
 | LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
@@ -128,6 +131,11 @@ The current test suite verifies:
 49. fixed-point pointer gain/DPI scaling, including fractional-count retention and invalid calibration rejection
 50. alpha-launcher typed argument bounds, Schannel pinning, gain/DPI forwarding, and duplicated endpoint-port rejection
 51. trusted reconnect with fresh nonce plus successfully decoded application traffic before graceful close
+52. strict EDID header/checksum/detailed-timing parsing, physical-size fallback, and all four orientations
+53. presentation-only metadata updates preserve routing generation while rectangle changes invalidate it
+54. roaming graph bounds, reciprocal/one-way links, duplicate and overlapping source rejection, and exact codec framing
+55. current-topology stable-identity resolution including offline, missing, and ambiguous machines
+56. atomic current-user roaming preference save/load, invalid-candidate rollback, and malformed-file rejection
 
 Build/test result in the creation environment:
 
@@ -147,12 +155,7 @@ Build/test result in the creation environment:
 ### P1 — required for useful KM roaming
 
 - physical emergency-chord and high-poll-rate timing validation
-- edge graph
 - edge hysteresis
-
-### P1 — required for useful audio
-
-- gain/mute state
 
 ### P2 — final product surface
 
@@ -201,7 +204,9 @@ two real Windows 11 PCs using this exact sequence:
 10. both machines recover safely without stuck state
 ```
 
-Do **not** add edge roaming until this manual focus switch survives failure injection reliably.
+The complete Windows 11 physical matrix remains a production-release gate. It
+does not block the approved staged implementation and controlled experimental
+validation of roaming.
 
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
@@ -215,9 +220,11 @@ capture/render foundation, exact V1 audio block assembler, complementary
 capability/session datagram gates, and receiver jitter/render pump are complete.
 Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
 Bounded adaptive jitter targeting, rebuffer accounting, and asynchronous clock-
-drift correction and per-peer gain/mute are complete. Edge roaming remains
-gated on the deferred physical matrix; its monitor graph and configurator are
-the next design slice. The
+drift correction and per-peer gain/mute are complete. Roaming Phase 1 now adds
+bounded display presentation metadata, the strict persisted directional graph,
+current-topology stable-identity resolution, and atomic preferences without
+allowing canvas geometry to influence routing. Authenticated topology exchange
+is the next roaming slice. The
 native Windows alpha wrapper is complete
 and provides the manual pairing/session/status surface used for future physical
 validation without changing any trust or transport boundary.

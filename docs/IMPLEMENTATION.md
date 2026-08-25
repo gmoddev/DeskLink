@@ -433,9 +433,8 @@ session-nonce negotiation, explicit Windows pairing control, reconciliation,
 stable monitor mapping, bounded wheel transport, current-user control pipe, and
 bounded native Windows DNS-SD/mDNS discovery are implemented. Discovery emits
 only untrusted candidates and cannot connect, pair, grant capabilities, or
-write trust. Because edge roaming remains gated on the deferred physical
-Windows 11 failure matrix, the bounded foreground profile evaluator, native
-WinEvent observation, and production Host CLI/live event runtime are now
+write trust. The bounded foreground profile evaluator, native WinEvent
+observation, and production Host CLI/live event runtime are now
 implemented. One serialized lifecycle owner handles profile/manual decisions,
 `FocusReady`, renewal/reconciliation, emergency release, and capture failures.
 It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
@@ -443,9 +442,13 @@ and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
 capture/render foundation, exact V1 block assembler, complementary audio grants,
 session/datagram admission, receiver jitter/render pump, audio-only endpoint
 recovery, bounded adaptive jitter targeting, and bounded asynchronous clock-
-drift correction and per-peer gain/mute are now implemented. Edge roaming
-remains gated on the physical matrix; the monitor graph and configurator are
-the next design slice.
+drift correction and per-peer gain/mute are now implemented. Roaming Phase 1
+adds checked display presentation metadata, a bounded directional edge graph,
+stable-identity resolution against current topology generations, and atomic
+current-user preferences. Canvas placement and physical size remain
+presentation-only and are absent from route resolution. Authenticated topology
+exchange is the next roaming slice; the full Windows 11 physical matrix remains
+a production qualification gate.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
