@@ -128,6 +128,24 @@ zero as the legacy whole-virtual-desktop path; a nonzero mapping is pinned to th
 current topology generation and is rejected after a material topology change
 until focus is released.
 
+### Authenticated topology-exchange validation
+
+Portable tests encode and decode canonical topology snapshots on the reliable
+lane, enforce the aggregate 64 KiB bound, and reject truncation, wrong-lane use,
+embedded NULs, duplicate descriptors, noncanonical IDs, malformed bounds, and
+oversized dense 64-display snapshots. Admission tests require the explicit
+capability, expected trusted machine, and current envelope and payload nonce.
+They cover lower generations, conflicting same-generation metadata, five-second
+freshness expiry, missing displays, unsupported directions, and invalid route
+state.
+
+The in-memory HostSession/AgentSession test exchanges topology in both
+directions, verifies two independent Ready states, invalidates them on wrong
+nonce or malformed authenticated traffic, and proves recovery only through a
+fresh connection and session nonce after rejection. Existing tests continue to
+prove that pre-validation MsQuic stream traffic is unavailable. Phase 2 does
+not request focus, enable capture, or switch an edge.
+
 ---
 
 ## LAN DNS-SD/mDNS discovery
@@ -165,13 +183,13 @@ build `desklink_pair` against the pinned Schannel package. Start the listener on
 the PC that should accept remote input:
 
 ```powershell
-desklink_pair.exe listen 43821 --grant-input
+desklink_pair.exe listen 43821 --grant-input --grant-topology
 ```
 
 Then connect from the other PC:
 
 ```powershell
-desklink_pair.exe pair <listener-ip> 43821
+desklink_pair.exe pair <listener-ip> 43821 --grant-topology
 ```
 
 Verify that both prompts show the same six-digit code and the intended

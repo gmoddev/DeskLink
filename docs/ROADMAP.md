@@ -35,11 +35,14 @@ Work proceeds in this order:
    both process-token SIDs, bounds frames/timeouts, and exposes only typed state
    and desired-mode operations. Restrictive local modes cannot be weakened by
    a remote peer.
-5. **Phase 1 complete:** bounded monitor presentation metadata, strict
+5. **Phases 1-2 complete:** bounded monitor presentation metadata, strict
    directional edge graph, stable-identity/current-generation resolution, and
    atomic current-user preference persistence. Canvas layout and physical size
-   are presentation-only and cannot influence runtime routing. **Next:** Phase
-   2 authenticated topology exchange and explicit connection/route status.
+   are presentation-only and cannot influence runtime routing. Explicit
+   capability-gated topology snapshots now use the authenticated reliable
+   session, bind to the current peer/machine/nonce, expire after five seconds,
+   and keep routes unready on missing, stale, malformed, oversized, or rejected
+   state. **Next:** Phase 3 configurator, tray integration, and Identify overlays.
 6. **Complete:** bounded LAN DNS-SD/mDNS discovery. `listen` and `serve`
    advertise `_desklink._udp.local`; `discover [1..30 seconds]` reports strict,
    expiring, deterministic candidates without connecting, pairing, granting a
@@ -92,10 +95,9 @@ Work proceeds in this order:
     bounded attenuation after drift correction, ramps changes over one block,
     preserves policy across audio-only recovery, and exposes typed CLI/wrapper
     controls without changing the system mixer.
-17. **Design complete; implementation staged:** roaming Phase 1 is complete.
-    Phase 2 adds authenticated topology exchange, followed by the configurator
-    and Identify overlays in Phase 3 and controlled experimental switching in
-    Phase 4.
+17. **Implementation staged:** roaming Phases 1 and 2 are complete. The
+    configurator and Identify overlays follow in Phase 3, then controlled
+    experimental switching in Phase 4.
 
 The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
@@ -103,8 +105,7 @@ work does not wait for unavailable hardware.
 
 ## Later milestones
 
-- authenticated topology exchange, configurator, crossing hysteresis, and
-  roaming policy
+- configurator, Identify overlays, crossing hysteresis, and roaming policy
 - final tray/onboarding UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project

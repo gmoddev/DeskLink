@@ -446,9 +446,13 @@ drift correction and per-peer gain/mute are now implemented. Roaming Phase 1
 adds checked display presentation metadata, a bounded directional edge graph,
 stable-identity resolution against current topology generations, and atomic
 current-user preferences. Canvas placement and physical size remain
-presentation-only and are absent from route resolution. Authenticated topology
-exchange is the next roaming slice; the full Windows 11 physical matrix remains
-a production qualification gate.
+presentation-only and are absent from route resolution. Roaming Phase 2 adds an
+explicit pairing grant and bounded reliable topology snapshots after trusted
+session admission. Expected peer machine, current envelope/payload nonce,
+canonical descriptors, monotonic generation, and a five-second freshness lease
+all gate separate route readiness. It does not switch edges. The configurator
+and Identify overlays are next; the full Windows 11 physical matrix remains a
+production qualification gate.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

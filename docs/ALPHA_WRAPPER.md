@@ -48,6 +48,12 @@ The audio permission names describe what the peer may do:
 - **Send this PC system audio** is a receiver-session startup option.
 - **Render peer system audio** is a controller-session startup option.
 
+**Exchange monitor layouts** grants `DisplayTopologyExchange` to that peer.
+It is checked explicitly during pairing and defaults on in the alpha UI, but it
+is still a visible user choice. Existing paired peers do not acquire it; re-pair
+both directions to enable topology exchange. The grant shares no input or focus
+authority and cannot modify the saved roaming graph.
+
 ## Process and failure behavior
 
 The wrapper launches `desklink_pair.exe` by absolute path with

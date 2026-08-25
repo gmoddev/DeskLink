@@ -172,6 +172,40 @@ std::optional<PhysicalDisplaySize> OrientPhysicalDisplaySize(
     return Size;
 }
 
+bool IsValidDisplayTopologySnapshot(
+    const DisplayTopologySnapshot& Snapshot) {
+    if (Snapshot.Generation == 0 || Snapshot.Displays.empty() ||
+        Snapshot.Displays.size() > kMaxDisplayCount ||
+        !Snapshot.VirtualBounds.IsValid()) {
+        return false;
+    }
+    std::vector<DiscoveredDisplay> Discovered;
+    Discovered.reserve(Snapshot.Displays.size());
+    for (const auto& Display : Snapshot.Displays) {
+        Discovered.push_back(DiscoveredDisplay{
+            Display.StableIdentity,
+            Display.FriendlyName,
+            Display.Bounds,
+            Display.Primary,
+            Display.PixelWidth,
+            Display.PixelHeight,
+            Display.RefreshMilliHertz,
+            Display.PhysicalWidthMillimeters,
+            Display.PhysicalHeightMillimeters,
+            Display.PhysicalSize,
+            Display.Orientation,
+        });
+    }
+    DisplayTopologyMap Validator;
+    if (Validator.Update(std::move(Discovered)) !=
+            DisplayTopologyUpdate::Changed ||
+        Validator.Current().VirtualBounds != Snapshot.VirtualBounds ||
+        Validator.Current().Displays != Snapshot.Displays) {
+        return false;
+    }
+    return true;
+}
+
 std::optional<NormalizedDisplayPoint> MapDisplayPointToVirtualDesktop(
     const DisplayRect& DisplayBounds,
     const DisplayRect& VirtualBounds,

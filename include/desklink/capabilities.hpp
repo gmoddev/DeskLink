@@ -18,7 +18,10 @@ enum class Capability : std::uint64_t {
     SystemLaunch   = 1ull << 9,
     FileSend       = 1ull << 10,
     FileReceive    = 1ull << 11,
+    DisplayTopologyExchange = 1ull << 12,
 };
+
+inline constexpr std::uint64_t kKnownCapabilityBits = (1ull << 13u) - 1u;
 
 class CapabilitySet {
 public:

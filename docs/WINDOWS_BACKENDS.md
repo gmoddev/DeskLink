@@ -217,6 +217,15 @@ and missing displays fail closed. The preference store contains no certificate,
 pin, capability, trust record, or CNG identity material. Canvas coordinates are
 not accepted by any route-resolution API.
 
+The Phase 2 runtime uses `Win32DisplayTopology` as the local snapshot source on
+both trusted session roles. It publishes after session admission, on material
+generation changes, and every two seconds while the peer's trust record carries
+the explicit `DisplayTopologyExchange` capability. Existing trust records are
+not rewritten; the grant requires re-pairing. Incoming snapshots remain behind
+the transport's `PeerValidated` gate and the session's trust, expected-machine,
+and fresh-nonce checks. Invalid or five-second-stale topology leaves routes
+unready without affecting focus, input cleanup, or the persisted graph.
+
 The Host UI should store edge adjacency, for example:
 
 ```text

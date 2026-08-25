@@ -44,6 +44,7 @@ enum ControlId : int {
     GrantInput,
     GrantAudioSend,
     GrantAudioReceive,
+    GrantTopology,
     OpenPairing,
     PairPeer,
     CaptureInput,
@@ -305,10 +306,13 @@ private:
         CreateControl(L"BUTTON", L"Allow this PC audio to peer",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 580, 277, 235, 24,
                       GrantAudioReceive);
+        CreateControl(L"BUTTON", L"Exchange monitor layouts",
+                      BS_AUTOCHECKBOX | WS_TABSTOP, 32, 306, 240, 24,
+                      GrantTopology);
         CreateControl(L"BUTTON", L"Open pairing window", BS_PUSHBUTTON,
-                      220, 315, 210, 32, OpenPairing);
+                      290, 310, 210, 32, OpenPairing);
         CreateControl(L"BUTTON", L"Pair with address", BS_PUSHBUTTON,
-                      465, 315, 210, 32, PairPeer);
+                      520, 310, 210, 32, PairPeer);
 
         CreateControl(L"BUTTON", L"Session", BS_GROUPBOX,
                       15, 371, 900, 178);
@@ -370,6 +374,7 @@ private:
                       825, 580, 72, 30, ClearLog);
 
         CheckDlgButton(Window_, GrantInput, BST_CHECKED);
+        CheckDlgButton(Window_, GrantTopology, BST_CHECKED);
         SetTimer(Window_, kStatusTimer, 1'000, nullptr);
         RefreshRuntimeStatus();
         UpdateButtons();
@@ -478,6 +483,7 @@ private:
         Request->GrantInput = IsChecked(GrantInput);
         Request->GrantAudioSend = IsChecked(GrantAudioSend);
         Request->GrantAudioReceive = IsChecked(GrantAudioReceive);
+        Request->GrantTopology = IsChecked(GrantTopology);
         StartRequest(*Request);
     }
 

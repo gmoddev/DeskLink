@@ -29,7 +29,7 @@ bool IsValidHost(std::wstring_view Host) noexcept {
 
 bool HasPairingGrants(const LauncherRequest& Request) noexcept {
     return Request.GrantInput || Request.GrantAudioSend ||
-           Request.GrantAudioReceive;
+           Request.GrantAudioReceive || Request.GrantTopology;
 }
 
 void AppendPort(std::vector<std::wstring>& Arguments, std::uint16_t Port) {
@@ -44,6 +44,9 @@ void AppendPairingGrants(std::vector<std::wstring>& Arguments,
     }
     if (Request.GrantAudioReceive) {
         Arguments.emplace_back(L"--grant-audio-receive");
+    }
+    if (Request.GrantTopology) {
+        Arguments.emplace_back(L"--grant-topology");
     }
 }
 

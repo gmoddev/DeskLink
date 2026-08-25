@@ -46,6 +46,7 @@ InputStateSnapshot
 MouseWheel
 SetAudioGain
 Heartbeat
+DisplayTopologySnapshot
 ```
 
 ### QUIC DATAGRAM
@@ -245,6 +246,52 @@ PCM payload = 960 bytes
 ### Heartbeat — type 40
 
 No payload.
+
+### DisplayTopologySnapshot — type 50
+
+```text
+machine_id                      16 bytes
+payload_session_nonce            u64
+topology_generation              u64
+virtual_left                     i32
+virtual_top                      i32
+virtual_right                    i32
+virtual_bottom                   i32
+display_count                    u16
+
+repeated display_count times:
+  display_id                     u16
+  stable_identity_length         u16
+  stable_identity                bytes
+  friendly_name_length           u16
+  friendly_name                  bytes
+  left/top/right/bottom          4 × i32
+  primary                        u8 bool
+  pixel_width                    u32
+  pixel_height                   u32
+  refresh_millihertz             u32
+  physical_width_mm              u16
+  physical_height_mm             u16
+  physical_size_source           u8
+  orientation                    u8
+```
+
+This message is reliable-only and informational. It cannot grant a capability,
+request focus, inject input, or mutate the persisted roaming graph. The decoder
+requires one to 64 canonical, collision-free descriptors, one primary display,
+exact virtual bounds, bounded strings/dimensions/enums, exact framing, and an
+aggregate payload no larger than the 64 KiB reliable limit.
+
+Session admission additionally requires an authenticated/encrypted trusted
+peer, the explicit `DisplayTopologyExchange` trust grant, an envelope nonce and
+payload nonce equal to the current session nonce, and a sender machine ID equal
+to the stored peer identity. A lower generation is stale and does not extend
+freshness. A changed snapshot at the same generation is rejected. Accepted
+snapshots expire after five seconds unless an identical or newer canonical
+snapshot refreshes them; the Windows runtime publishes at most every two
+seconds and immediately after a material topology generation change. Timeout,
+malformation, wrong identity/nonce, or rejection can never produce a
+route-ready state. Rejected state requires a fresh authenticated connection.
 
 ---
 

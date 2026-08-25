@@ -16,7 +16,6 @@ namespace {
 
 constexpr std::uint32_t kTrustMagic = 0x444C5453u; // DLTS
 constexpr std::uint16_t kTrustVersion = 1;
-constexpr std::uint64_t kKnownCapabilityBits = (1ull << 12u) - 1u;
 constexpr std::size_t kMaximumProtectedStoreSize = 1024u * 1024u;
 constexpr std::string_view kDpapiEntropy = "DeskLink-Trust-Store-v1";
 

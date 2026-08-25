@@ -25,11 +25,14 @@ std::uint32_t EffectiveLease(std::uint32_t Requested) {
 AgentSession::AgentSession(std::shared_ptr<ITransportEndpoint> transport,
                            AgentCoordinator& coordinator,
                            const ITrustStore& TrustStore,
-                           std::uint64_t session_nonce) noexcept
+                           std::uint64_t session_nonce,
+                           DisplayTopologyExchangeOptions TopologyOptions) noexcept
     : transport_(std::move(transport)),
       coordinator_(coordinator),
       trust_store_(TrustStore),
-      session_nonce_(session_nonce) {}
+      session_nonce_(session_nonce),
+      TopologyOptions_(TopologyOptions),
+      TopologyExchange_(TopologyOptions.Clock) {}
 
 AgentSession::~AgentSession() { stop(); }
 
@@ -41,6 +44,11 @@ bool AgentSession::start() {
     PeerCapabilities_ = Trusted->Capabilities;
     coordinator_.set_peer_capabilities(Trusted->Capabilities);
 
+    TopologyExchange_.Begin(
+        Trusted->Identity.machine_id,
+        session_nonce_,
+        TopologyOptions_.Enabled,
+        PeerCapabilities_.contains(Capability::DisplayTopologyExchange));
     transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
     transport_->set_datagram_handler([this](ByteBuffer packet) { on_datagram(std::move(packet)); });
     started_ = true;
@@ -54,6 +62,9 @@ void AgentSession::stop() noexcept {
     transport_->close();
     PeerCapabilities_ = {};
     AudioDatagramSequence_ = 1;
+    TopologyExchange_.Stop();
+    LocalTopologyMachine_.reset();
+    TopologySequence_ = 1;
     started_ = false;
 }
 
@@ -104,6 +115,43 @@ bool AgentSession::SendAudioFrame(AudioFrameMessage Frame) {
     return true;
 }
 
+bool AgentSession::PublishDisplayTopology(
+    const MachineId& LocalMachine,
+    const DisplayTopologySnapshot& Topology) {
+    std::scoped_lock Lock(Mutex_);
+    DisplayTopologySnapshotMessage Message{LocalMachine, session_nonce_, Topology};
+    if (!started_ || !TopologyOptions_.Enabled ||
+        !PeerCapabilities_.contains(Capability::DisplayTopologyExchange) ||
+        (LocalTopologyMachine_ && *LocalTopologyMachine_ != LocalMachine) ||
+        !IsValidDisplayTopologySnapshotMessage(Message)) {
+        ++stats_.TopologySendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = session_nonce_;
+    Header.sequence = TopologySequence_++;
+    if (TopologySequence_ == 0) ++TopologySequence_;
+    if (!transport_->send_reliable(encode_packet(Header, Message))) {
+        ++stats_.TopologySendRejected;
+        return false;
+    }
+    LocalTopologyMachine_ = LocalMachine;
+    ++stats_.TopologySent;
+    return true;
+}
+
+DisplayTopologyExchangeStatus
+AgentSession::DisplayTopologyStatus() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return TopologyExchange_.Status();
+}
+
+std::optional<DisplayTopologySnapshot>
+AgentSession::RemoteDisplayTopology() const {
+    std::scoped_lock Lock(Mutex_);
+    return TopologyExchange_.Snapshot();
+}
+
 SessionStats AgentSession::stats() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return stats_;
@@ -126,14 +174,38 @@ void AgentSession::count_decision(AgentDecision decision) noexcept {
 void AgentSession::on_reliable(ByteBuffer packet) {
     std::scoped_lock Lock(Mutex_);
     ++stats_.reliable_received;
+    const bool TopologyEnvelope =
+        PeekMessageType(packet) == MessageType::DisplayTopologySnapshot;
     auto decoded = decode_packet(packet, false);
     if (!decoded.packet) {
         ++stats_.decode_rejected;
+        if (TopologyEnvelope) {
+            ++stats_.TopologyRejected;
+            TopologyExchange_.RejectMalformed();
+        }
         return;
     }
-    if (!validate_session(*decoded.packet)) return;
+    if (!validate_session(*decoded.packet)) {
+        if (TopologyEnvelope) {
+            ++stats_.TopologyRejected;
+            TopologyExchange_.RejectMalformed();
+        }
+        return;
+    }
 
     const auto type = decoded.packet->header.type;
+    if (type == MessageType::DisplayTopologySnapshot) {
+        ++stats_.TopologyReceived;
+        if (TopologyExchange_.Admit(
+                decoded.packet->header,
+                std::get<DisplayTopologySnapshotMessage>(
+                    decoded.packet->message))) {
+            ++stats_.TopologyAccepted;
+        } else {
+            ++stats_.TopologyRejected;
+        }
+        return;
+    }
     const auto decision = coordinator_.handle(*decoded.packet);
     count_decision(decision);
 
@@ -166,13 +238,16 @@ HostSession::HostSession(std::shared_ptr<ITransportEndpoint> transport,
                          const ITrustStore& TrustStore,
                          std::uint64_t session_nonce,
                          std::function<void()> FocusReadyHandler,
-                         AudioReceiver* Receiver) noexcept
+                         AudioReceiver* Receiver,
+                         DisplayTopologyExchangeOptions TopologyOptions) noexcept
     : transport_(std::move(transport)),
       coordinator_(coordinator),
       trust_store_(TrustStore),
       session_nonce_(session_nonce),
       FocusReadyHandler_(std::move(FocusReadyHandler)),
-      AudioReceiver_(Receiver) {}
+      AudioReceiver_(Receiver),
+      TopologyOptions_(TopologyOptions),
+      TopologyExchange_(TopologyOptions.Clock) {}
 
 HostSession::~HostSession() { stop(); }
 
@@ -182,6 +257,11 @@ bool HostSession::start() {
     const auto Trusted = GetTrustedTransportPeer(transport_, trust_store_);
     if (!Trusted) return false;
     PeerCapabilities_ = Trusted->Capabilities;
+    TopologyExchange_.Begin(
+        Trusted->Identity.machine_id,
+        session_nonce_,
+        TopologyOptions_.Enabled,
+        PeerCapabilities_.contains(Capability::DisplayTopologyExchange));
     transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
     transport_->set_datagram_handler([this](ByteBuffer packet) { on_datagram(std::move(packet)); });
     started_ = true;
@@ -195,6 +275,9 @@ void HostSession::stop() noexcept {
     transport_->close();
     if (AudioReceiver_) AudioReceiver_->Reset();
     PeerCapabilities_ = {};
+    TopologyExchange_.Stop();
+    LocalTopologyMachine_.reset();
+    TopologySequence_ = 1;
     started_ = false;
 }
 
@@ -203,13 +286,36 @@ void HostSession::on_reliable(ByteBuffer packet) {
     {
         std::scoped_lock Lock(Mutex_);
         ++stats_.reliable_received;
+        const bool TopologyEnvelope =
+            PeekMessageType(packet) == MessageType::DisplayTopologySnapshot;
         auto decoded = decode_packet(packet, false);
         if (!decoded.packet) {
             ++stats_.decode_rejected;
+            if (TopologyEnvelope) {
+                ++stats_.TopologyRejected;
+                TopologyExchange_.RejectMalformed();
+            }
             return;
         }
         if (decoded.packet->header.session_nonce != session_nonce_) {
             ++stats_.session_rejected;
+            if (TopologyEnvelope) {
+                ++stats_.TopologyRejected;
+                TopologyExchange_.RejectMalformed();
+            }
+            return;
+        }
+        if (decoded.packet->header.type ==
+            MessageType::DisplayTopologySnapshot) {
+            ++stats_.TopologyReceived;
+            if (TopologyExchange_.Admit(
+                    decoded.packet->header,
+                    std::get<DisplayTopologySnapshotMessage>(
+                        decoded.packet->message))) {
+                ++stats_.TopologyAccepted;
+            } else {
+                ++stats_.TopologyRejected;
+            }
             return;
         }
         if (decoded.packet->header.type == MessageType::FocusReady) {
@@ -334,6 +440,43 @@ bool HostSession::CanReceiveAudio() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return started_ && AudioReceiver_ != nullptr &&
         PeerCapabilities_.contains(Capability::AudioSend);
+}
+
+bool HostSession::PublishDisplayTopology(
+    const MachineId& LocalMachine,
+    const DisplayTopologySnapshot& Topology) {
+    std::scoped_lock Lock(Mutex_);
+    DisplayTopologySnapshotMessage Message{LocalMachine, session_nonce_, Topology};
+    if (!started_ || !TopologyOptions_.Enabled ||
+        !PeerCapabilities_.contains(Capability::DisplayTopologyExchange) ||
+        (LocalTopologyMachine_ && *LocalTopologyMachine_ != LocalMachine) ||
+        !IsValidDisplayTopologySnapshotMessage(Message)) {
+        ++stats_.TopologySendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = session_nonce_;
+    Header.sequence = TopologySequence_++;
+    if (TopologySequence_ == 0) ++TopologySequence_;
+    if (!transport_->send_reliable(encode_packet(Header, Message))) {
+        ++stats_.TopologySendRejected;
+        return false;
+    }
+    LocalTopologyMachine_ = LocalMachine;
+    ++stats_.TopologySent;
+    return true;
+}
+
+DisplayTopologyExchangeStatus
+HostSession::DisplayTopologyStatus() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return TopologyExchange_.Status();
+}
+
+std::optional<DisplayTopologySnapshot>
+HostSession::RemoteDisplayTopology() const {
+    std::scoped_lock Lock(Mutex_);
+    return TopologyExchange_.Snapshot();
 }
 
 SessionStats HostSession::stats() const noexcept {

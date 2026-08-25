@@ -208,17 +208,18 @@ DPAPI-protected trust store in `%LOCALAPPDATA%\DeskLink`, and runs one explicit
 five-minute pairing operation over `desklink/pair/1`.
 
 ```powershell
-# PC that will accept the connection and grant remote input injection
-desklink_pair.exe listen 43821 --grant-input
+# PC that will accept the connection and grant remote input/topology exchange
+desklink_pair.exe listen 43821 --grant-input --grant-topology
 
-# Other PC; no capability is granted locally unless the flag is also supplied
-desklink_pair.exe pair 192.168.1.25 43821
+# Other PC grants the reciprocal topology exchange explicitly
+desklink_pair.exe pair 192.168.1.25 43821 --grant-topology
 ```
 
 Each side independently displays the remote display name, the transcript-derived
-six-digit code, and the exact input capability consequence. The default button
-is No. Confirmation never occurs automatically, and dismissing either prompt
+six-digit code, and the exact input/audio/topology capability consequences. The
+default button is No. Confirmation never occurs automatically, and dismissing either prompt
 rejects the provisional connection. A local Yes sends a bounded mutual-
 confirmation frame; neither side reports success or persists new trust until it
 also receives the peer's confirmation. The tool does not create a firewall rule
-or listen beyond the bounded pairing operation.
+or listen beyond the bounded pairing operation. Existing trust records are not
+migrated to `DisplayTopologyExchange`; re-pair both sides to add it.

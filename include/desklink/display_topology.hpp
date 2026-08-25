@@ -70,6 +70,8 @@ struct DiscoveredDisplay {
     std::uint16_t PhysicalHeightMillimeters{};
     PhysicalSizeSource PhysicalSize{PhysicalSizeSource::Unknown};
     DisplayOrientation Orientation{DisplayOrientation::Landscape};
+
+    [[nodiscard]] bool operator==(const DiscoveredDisplay&) const noexcept = default;
 };
 
 struct DisplayDescriptor {
@@ -85,6 +87,8 @@ struct DisplayDescriptor {
     std::uint16_t PhysicalHeightMillimeters{};
     PhysicalSizeSource PhysicalSize{PhysicalSizeSource::Unknown};
     DisplayOrientation Orientation{DisplayOrientation::Landscape};
+
+    [[nodiscard]] bool operator==(const DisplayDescriptor&) const noexcept = default;
 };
 
 struct DisplayTopologySnapshot {
@@ -95,6 +99,8 @@ struct DisplayTopologySnapshot {
     [[nodiscard]] const DisplayDescriptor* Find(DisplayId Id) const noexcept;
     [[nodiscard]] const DisplayDescriptor* FindStableIdentity(
         std::string_view StableIdentity) const noexcept;
+    [[nodiscard]] bool operator==(
+        const DisplayTopologySnapshot&) const noexcept = default;
 };
 
 enum class DisplayTopologyUpdate {
@@ -108,6 +114,8 @@ enum class DisplayTopologyUpdate {
     ByteSpan Edid) noexcept;
 [[nodiscard]] std::optional<PhysicalDisplaySize> OrientPhysicalDisplaySize(
     PhysicalDisplaySize Size, DisplayOrientation Orientation) noexcept;
+[[nodiscard]] bool IsValidDisplayTopologySnapshot(
+    const DisplayTopologySnapshot& Snapshot);
 [[nodiscard]] std::optional<NormalizedDisplayPoint> MapDisplayPointToVirtualDesktop(
     const DisplayRect& DisplayBounds,
     const DisplayRect& VirtualBounds,
