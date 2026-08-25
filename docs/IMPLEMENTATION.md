@@ -172,8 +172,10 @@ are required for each one-block decrease. Backward/reordered timestamp samples
 do not update the estimator. A separate occupancy controller observes 400
 five-millisecond pump samples before each 50 ppm correction step, clamps the
 linear asynchronous resampler to ±1000 ppm, and resets on timing/target/session/
-endpoint discontinuity. Peer timestamps do not directly set its ratio. Per-peer
-gain/mute remains outside this slice. Audio failure has no input-mode authority.
+endpoint discontinuity. Peer timestamps do not directly set its ratio. The
+active Host applies bounded per-peer attenuation/mute after drift correction,
+with one-block ramps and settings preserved through audio-only recovery. Audio
+failure and render policy have no input-mode authority.
 
 ### `transport.hpp` / `in_memory_transport.cpp`
 
@@ -441,8 +443,9 @@ and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
 capture/render foundation, exact V1 block assembler, complementary audio grants,
 session/datagram admission, receiver jitter/render pump, audio-only endpoint
 recovery, bounded adaptive jitter targeting, and bounded asynchronous clock-
-drift correction are now implemented. Edge roaming remains gated on the
-physical matrix; the next unblocked audio item is per-peer gain/mute.
+drift correction and per-peer gain/mute are now implemented. Edge roaming
+remains gated on the physical matrix; the monitor graph and configurator are
+the next design slice.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

@@ -275,8 +275,10 @@ portable receiver enforces format, stream, sequence, and jitter bounds before a
 five-millisecond pump submits to WASAPI. Capture/arrival delta variation and
 concealment raise an adaptive 2-12 block target immediately; each downward
 step requires 200 stable samples, and target growth enters a bounded rebuffer
-state. Bounded clock-drift resampling follows concealment; gain/mute remains
-future work.
+state. Bounded clock-drift resampling follows concealment. Per-peer gain/mute
+then applies at the portable receiver boundary with a one-block transition
+before WASAPI submission; endpoint recovery preserves the setting and no
+Windows mixer or endpoint volume is modified.
 
 ---
 
@@ -352,6 +354,7 @@ five-second requested timeout.
 
 The pipe protocol uses exact bounded typed commands and never exposes arbitrary
 transport packets, input injection, OS commands, or module loading. `GetState`
-and `SetDesiredMode` are implemented. `FocusMachine`, `SetAudioGain`, and
-`ToggleAudioMute` have reserved typed encodings but return `Unsupported` until
-their owning subsystems exist.
+and `SetDesiredMode` are implemented. `FocusMachine` has a reserved typed
+encoding and returns `Unsupported` until
+persistent host orchestration exists. `SetAudioGain` and `ToggleAudioMute`
+operate only on an active Host receiver and otherwise return `NotReady`.

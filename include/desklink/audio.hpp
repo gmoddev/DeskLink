@@ -29,6 +29,7 @@ inline constexpr std::size_t kDeskLinkAudioMaximumAdaptiveTargetFrames = 12;
 inline constexpr std::int32_t kDeskLinkAudioMaximumClockDriftPpm = 1'000;
 inline constexpr std::size_t kDeskLinkAudioDriftObservationSamples = 400;
 inline constexpr std::int32_t kDeskLinkAudioDriftAdjustmentPpm = 50;
+inline constexpr std::uint16_t kDeskLinkAudioMaximumGainPermyriad = 10'000;
 
 [[nodiscard]] bool IsDeskLinkAudioFrame(
     const AudioFrameMessage& Frame) noexcept;
@@ -237,11 +238,18 @@ public:
                               AudioFrameMessage Frame,
                               std::uint64_t ArrivalTimestampUs) noexcept;
     [[nodiscard]] AudioPumpResult Pump() noexcept;
+    [[nodiscard]] bool SetGainPermyriad(std::uint16_t Gain) noexcept;
+    [[nodiscard]] bool ToggleMuted() noexcept;
+    void SetMuted(bool Muted) noexcept;
+    [[nodiscard]] std::uint16_t GainPermyriad() const noexcept;
+    [[nodiscard]] bool Muted() const noexcept;
     void Reset() noexcept;
     [[nodiscard]] bool Failed() const noexcept;
     [[nodiscard]] AudioReceiverStats Stats() const noexcept;
 
 private:
+    void ApplyGain(AudioFrameMessage& Frame) noexcept;
+
     RenderHandler Renderer_;
     AudioJitterBuffer Buffer_;
     AudioAdaptiveJitterController JitterController_;
@@ -251,6 +259,9 @@ private:
     std::optional<std::uint32_t> StreamId_;
     std::optional<std::uint64_t> LastCaptureTimestampUs_;
     AudioReceiverStats Stats_;
+    std::uint16_t GainPermyriad_{kDeskLinkAudioMaximumGainPermyriad};
+    std::uint16_t AppliedGainPermyriad_{kDeskLinkAudioMaximumGainPermyriad};
+    bool Muted_{};
     bool PlayoutStarted_{};
     bool Failed_{};
 };

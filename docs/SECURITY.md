@@ -386,8 +386,8 @@ The API defines high-level operations only:
 GetState             implemented
 SetDesiredMode       implemented
 FocusMachine         typed, currently unsupported
-SetAudioGain         typed, currently unsupported
-ToggleAudioMute      typed, currently unsupported
+SetAudioGain         implemented as local bounded render policy
+ToggleAudioMute      implemented as local bounded render policy
 ```
 
 It must not expose a generic transport passthrough or arbitrary input-injection primitive.
@@ -396,6 +396,10 @@ Local restrictive `Game`/`LockPc1` policy takes precedence over a remote
 `Roam` request. Restrictive changes release DeskLink-owned state and disable
 capture locally. A control client never receives input contents, certificate
 private-key material, trust-store secrets, or raw transport frames.
+Gain and mute are applied only after peer/session/audio admission and cannot
+grant a capability, admit traffic, select a TLS provider, or change system
+audio settings. The bounded `0..10000` gain cannot amplify PCM beyond its
+admitted level.
 
 ---
 

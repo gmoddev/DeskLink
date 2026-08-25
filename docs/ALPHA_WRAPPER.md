@@ -34,6 +34,8 @@ store, and does not implement a second connection or pairing stack.
    **Pointer gain** defaults to 100%. **Mouse DPI** defaults to 0, which keeps
    raw device counts. If the physical mouse DPI is known, entering 100..32000
    normalizes it to an 800-DPI reference before gain is applied.
+   **Peer audio %** applies 0-100% attenuation to audio rendered from this peer;
+   **Mute** toggles that receiver without changing the Windows system volume.
 8. The controller connects in **Local** mode. Confirm that status reports an
    authenticated connected peer, then select **Focus remote**.
 9. Select **RETURN LOCAL** before stopping a session. The physical emergency
