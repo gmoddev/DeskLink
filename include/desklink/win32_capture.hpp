@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace desklink {
@@ -16,6 +17,40 @@ enum class Win32HookDecision {
     Pass,
     Suppress,
     Emergency,
+};
+
+inline constexpr std::uint16_t kMinimumPointerGainPercent = 25;
+inline constexpr std::uint16_t kMaximumPointerGainPercent = 400;
+inline constexpr std::uint16_t kMinimumPointerDpi = 100;
+inline constexpr std::uint16_t kMaximumPointerDpi = 32'000;
+inline constexpr std::uint16_t kReferencePointerDpi = 800;
+
+struct Win32PointerCalibration {
+    std::uint16_t GainPercent{100};
+    // Zero preserves raw device counts. A non-zero value normalizes physical
+    // motion to the 800-DPI reference before applying GainPercent.
+    std::uint16_t SourceDpi{};
+};
+
+[[nodiscard]] bool IsValidWin32PointerCalibration(
+    const Win32PointerCalibration& Calibration) noexcept;
+
+class PointerMotionScaler final {
+public:
+    explicit PointerMotionScaler(Win32PointerCalibration Calibration) noexcept;
+
+    // A successful call may intentionally produce no packet while a fractional
+    // count is retained for the next sample.
+    [[nodiscard]] bool Scale(
+        std::int32_t RawX,
+        std::int32_t RawY,
+        std::optional<PointerMotionMessage>& Motion) noexcept;
+    void Reset() noexcept;
+
+private:
+    Win32PointerCalibration Calibration_;
+    std::int64_t ResidualX_{};
+    std::int64_t ResidualY_{};
 };
 
 class Win32SuppressionGate final {
@@ -36,6 +71,7 @@ struct Win32CaptureHandlers {
     std::function<void(KeyEventMessage)> Key;
     std::function<void(MouseButtonMessage)> Button;
     std::function<void(PointerPositionMessage)> Pointer;
+    std::function<void(PointerMotionMessage)> PointerMotion;
     std::function<void(MouseWheelMessage)> Wheel;
     std::function<void()> Emergency;
     std::function<void(std::string)> Failed;
@@ -45,7 +81,9 @@ class Win32InputCapture final {
 public:
     struct State;
 
-    explicit Win32InputCapture(Win32CaptureHandlers Handlers);
+    explicit Win32InputCapture(
+        Win32CaptureHandlers Handlers,
+        Win32PointerCalibration Calibration = {});
     ~Win32InputCapture();
 
     Win32InputCapture(const Win32InputCapture&) = delete;

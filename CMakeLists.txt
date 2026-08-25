@@ -58,7 +58,7 @@ add_library(desklink_core
 
 target_include_directories(desklink_core PUBLIC include)
 
-target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=1)
+target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=2)
 
 if(MSVC)
     target_compile_options(desklink_core PRIVATE /W4 /permissive-)
@@ -248,6 +248,7 @@ endif()
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
         src/win32_control.cpp
+        src/win32_launcher.cpp
         src/win32_display_topology.cpp
         src/win32_discovery.cpp
         src/win32_foreground.cpp
@@ -265,6 +266,44 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         target_compile_options(desklink_windows PRIVATE
             -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
     endif()
+endif()
+
+if(WIN32 AND DESKLINK_BUILD_MSQUIC)
+    add_executable(desklink_alpha WIN32 apps/desklink_alpha.cpp)
+    target_link_libraries(desklink_alpha PRIVATE desklink_windows comctl32)
+    add_dependencies(desklink_alpha desklink_pair)
+    target_compile_definitions(desklink_alpha PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(desklink_alpha PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(desklink_alpha PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    endif()
+    if(MINGW)
+        target_link_options(desklink_alpha PRIVATE
+            -municode -static -static-libgcc -static-libstdc++)
+    endif()
+    DeskLinkStageSchannelRuntime(desklink_alpha)
+
+    install(TARGETS desklink_alpha desklink_pair
+        RUNTIME DESTINATION . COMPONENT Alpha)
+    install(FILES "${DESKLINK_MSQUIC_SCHANNEL_DLL}"
+        DESTINATION runtime/schannel COMPONENT Alpha)
+    install(FILES LICENSE docs/ALPHA_WRAPPER.md
+        DESTINATION . COMPONENT Alpha)
+
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT Alpha)
+    include(InstallRequiredSystemLibraries)
+
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_PACKAGE_NAME "DeskLink-Alpha")
+    set(CPACK_PACKAGE_VENDOR "DeskLink")
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_PACKAGE_FILE_NAME
+        "DeskLink-Alpha-${PROJECT_VERSION}-windows-x64")
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+    include(CPack)
 endif()
 
 if(DESKLINK_BUILD_SIM)

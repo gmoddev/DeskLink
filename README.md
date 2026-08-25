@@ -16,7 +16,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Epoch-based stale-input rejection
 - Fail-local emergency state
 - Owned input-state cleanup callback
-- Absolute normalized pointer messages
+- Relative pointer-motion datagrams for ordinary Raw Input plus absolute,
+  display-aware pointer messages for monitor transitions/resynchronization
 - Bounded reliable vertical/horizontal mouse-wheel messages
 - PCM audio frame format
 - Exact 48 kHz/stereo/PCM16/5 ms audio block assembler
@@ -44,6 +45,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
 - Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
+- Bounded pointer gain (25-400%) and optional source-DPI normalization without
+  changing either PC's Windows mouse settings
 - Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
 - Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
 - Guarded two-PC reconciliation fault validation with a non-production-only control
@@ -55,6 +58,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture
 - Production Host profile CLI and serialized live mode-event runtime
+- Native Windows alpha launcher with bounded pairing/session controls,
+  authenticated status/mode IPC, graceful child lifecycle, and Schannel-only ZIP
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -68,7 +73,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Clock-drift resampling
-- UI and Stream Deck plugin
+- Final tray/onboarding UI, installer/update flow, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 
@@ -112,6 +117,22 @@ Compatibility builds may explicitly set
 `desklink_pair_validation.exe`. That separately named control is not built by
 default and is not a production artifact. It exposes only bounded Stage 5 fault
 probes; the normal `desklink_pair.exe` rejects those options.
+
+### Native alpha wrapper
+
+Windows MsQuic builds produce `desklink_alpha.exe`, a minimal launcher around
+the existing `desklink_pair.exe` runtime. It exposes bounded address, port,
+pairing-grant, input-capture, and audio-startup controls; reads runtime status
+through the existing same-user control pipe; and keeps diagnostics in memory.
+It does not duplicate pairing, TLS, trust, or session logic.
+
+Controller sessions always start in `lock-pc1` and require an explicit
+**Focus remote** action. **RETURN LOCAL** applies `LockPc1` through the
+authenticated control pipe, while Ctrl+Alt+Pause/Break remains the independent
+physical emergency path. The alpha package is Schannel-only and supports the
+Windows 11 / Server 2022+ production baseline. See
+[`docs/ALPHA_WRAPPER.md`](docs/ALPHA_WRAPPER.md) for the workflow and packaging
+command.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 
@@ -190,6 +211,11 @@ low-level hook and mouse events from Raw Input, and suppresses corresponding
 local input until Enter is pressed. Ctrl+Alt+Pause (including Windows'
 Ctrl+Break representation) immediately disables suppression and fails local.
 Omitting `--capture` retains the manual control-plane-only check.
+Ordinary motion is transported as relative Raw Input counts, avoiding any
+dependency on the controlling PC's total virtual-desktop width. Optional
+`--pointer-gain 25..400` and `--pointer-dpi 100..32000` calibrate those counts;
+omitting DPI preserves raw counts. DeskLink never changes global Windows mouse
+speed, acceleration, or device settings.
 
 Audio is separately opt-in and requires complementary grants on both PCs. To
 send PC2's system mix to PC1, pair PC1 with `--grant-audio-send` and pair PC2

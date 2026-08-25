@@ -9,6 +9,10 @@
 - opt-in low-level keyboard/Raw Input mouse capture, fail-local suppression,
   and `SendInput` injection
 - periodic reliable input-state reconciliation with owned-state convergence
+- protocol-v2 relative pointer motion with bounded gain/DPI calibration, while
+  retaining absolute display packets for future edge transitions
+- mixed-provider physical pointer feel validated at 100% gain with raw DPI;
+  source virtual-desktop width no longer affects remote motion speed
 
 ## Current roadmap
 
@@ -72,7 +76,12 @@ Work proceeds in this order:
     capture and steady arrival deltas, raises the 2-12 block target immediately
     on spikes/concealment, enters an explicit rebuffer state when latency must
     grow, and requires 200 stable samples for each one-block decrease.
-14. **Next unblocked slice:** bounded clock-drift correction while edge roaming
+14. **Complete:** native Windows engineering-alpha wrapper and portable ZIP.
+    Typed fields launch the existing pairing/session executable without a shell;
+    controller sessions start Local, runtime status and mode use the same-user
+    control pipe, diagnostics remain bounded/in-memory, and the package contains
+    only the Schannel production runtime.
+15. **Next unblocked slice:** bounded clock-drift correction while edge roaming
     remains gated on the deferred Windows 11 physical matrix.
 
 Edge roaming does not begin until snapshot reconciliation and the real two-PC
@@ -82,7 +91,7 @@ failure matrix pass.
 
 - monitor edge graph, crossing hysteresis, and roaming policy
 - clock-drift correction and per-peer gain/mute
-- UI, Stream Deck integration, installer, and update flow
+- final tray/onboarding UI, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project
 

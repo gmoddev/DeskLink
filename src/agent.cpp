@@ -65,7 +65,8 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     }
 
     if (type == MessageType::KeyEvent || type == MessageType::MouseButton ||
-        type == MessageType::PointerPosition || type == MessageType::InputStateSnapshot ||
+        type == MessageType::PointerPosition || type == MessageType::PointerMotion ||
+        type == MessageType::InputStateSnapshot ||
         type == MessageType::MouseWheel) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
@@ -79,10 +80,18 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
                 return injector_.inject_button(std::get<MouseButtonMessage>(packet.message))
                     ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
             case MessageType::PointerPosition:
+            case MessageType::PointerMotion:
                 if (packet.header.sequence <= last_pointer_sequence_) {
                     return AgentDecision::RejectedSequence;
                 }
-                if (!injector_.inject_pointer(std::get<PointerPositionMessage>(packet.message))) {
+                if (type == MessageType::PointerPosition &&
+                    !injector_.inject_pointer(
+                        std::get<PointerPositionMessage>(packet.message))) {
+                    return AgentDecision::RejectedMalformed;
+                }
+                if (type == MessageType::PointerMotion &&
+                    !injector_.InjectPointerMotion(
+                        std::get<PointerMotionMessage>(packet.message))) {
                     return AgentDecision::RejectedMalformed;
                 }
                 last_pointer_sequence_ = packet.header.sequence;

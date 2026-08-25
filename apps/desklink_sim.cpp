@@ -35,6 +35,11 @@ public:
                   << " x=" << event.normalized_x << " y=" << event.normalized_y << '\n';
         return true;
     }
+    bool InjectPointerMotion(const desklink::PointerMotionMessage& Message) override {
+        std::cout << "agent: pointer motion x=" << Message.DeltaX
+                  << " y=" << Message.DeltaY << '\n';
+        return true;
+    }
     bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
         std::cout << "agent: mouse wheel axis="
                   << static_cast<int>(Message.Axis)

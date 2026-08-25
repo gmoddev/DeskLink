@@ -37,6 +37,7 @@ It uses `SendInput` with:
 - `KEYEVENTF_KEYUP` for release
 - mouse down/up flags for buttons
 - `MOUSEEVENTF_WHEEL` / `MOUSEEVENTF_HWHEEL` for bounded signed wheel deltas
+- `MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE` for ordinary relative motion
 - `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK` for absolute pointer movement
 
 The injector tracks DeskLink-owned pressed keys/buttons and releases only those states during cleanup.
@@ -69,8 +70,13 @@ Responsibilities:
 Raw input should feed a bounded in-process queue.
 
 The current adapter registers the mouse `RIDEV_INPUTSINK` device against a
-message-only window. It feeds a 1024-event queue, coalesces adjacent pointer
-positions, and disables routing on overflow.
+message-only window. It feeds a 1024-event queue, coalesces adjacent bounded
+relative-motion samples, and disables routing on overflow. Relative counts are
+not normalized through the source virtual-desktop dimensions. Optional
+fixed-point gain and source-DPI normalization retain fractional counts and do
+not modify global Windows settings. Absolute input devices establish a first
+sample baseline and are converted to relative screen-pixel deltas rather than
+jumping the receiving cursor.
 
 Physical wheel messages are the deliberate exception to Raw Input authority:
 the low-level mouse hook must enqueue each cumulative wheel delta before it can
@@ -175,7 +181,7 @@ capture threads and hooks, then
 applies `GAME`/`LOCK_PC1`. On exit it requests a new focus transaction and does
 not restart or enable capture until `FocusReady` and the initial state snapshot
 succeed. `Win32InputCapture` resets its queues, worker stop state, hook handles,
-window, and pointer accumulators before a restart.
+window, pointer-calibration residuals, and absolute-device baseline before a restart.
 
 ---
 

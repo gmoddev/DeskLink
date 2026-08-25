@@ -83,13 +83,16 @@ jobs:
       - name: Build adapter, pairing control, and native loopback
         run: >-
           cmake --build build-msquic --config Release
-          --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair
+          --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair desklink_alpha
           --parallel 2
 
       - name: Run pinned-runtime and native MsQuic loopback tests
         run: >-
           ctest --test-dir build-msquic -C Release
           -R "desklink_msquic_(runtime|loopback)_tests" --output-on-failure
+
+      - name: Package native alpha wrapper
+        run: cpack --config build-msquic/CPackConfig.cmake -C Release
 
   Windows10Prototype:
     name: Windows 10 opaque CNG prototype

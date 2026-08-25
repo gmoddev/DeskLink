@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -33,6 +34,7 @@ constexpr wchar_t kCaptureWindowClass[] = L"DeskLink.RawInputCapture.v1";
 
 using CapturedEvent = std::variant<
     KeyEventMessage, MouseButtonMessage, PointerPositionMessage,
+    PointerMotionMessage,
     MouseWheelMessage>;
 
 std::atomic<Win32InputCapture::State*> ActiveState{};
@@ -69,10 +71,12 @@ std::optional<MouseButtonMessage> GetButton(const RAWMOUSE& Mouse,
 } // namespace
 
 struct Win32InputCapture::State {
-    explicit State(Win32CaptureHandlers OwnedHandlers)
-        : Handlers(std::move(OwnedHandlers)) {}
+    State(Win32CaptureHandlers OwnedHandlers,
+          Win32PointerCalibration Calibration)
+        : Handlers(std::move(OwnedHandlers)), MotionScaler(Calibration) {}
 
     Win32CaptureHandlers Handlers;
+    PointerMotionScaler MotionScaler;
     Win32SuppressionGate Gate;
     std::thread CaptureThread;
     std::thread WorkerThread;
@@ -87,6 +91,9 @@ struct Win32InputCapture::State {
     HHOOK MouseHook{};
     std::int64_t PointerX{};
     std::int64_t PointerY{};
+    std::int32_t AbsolutePointerX{};
+    std::int32_t AbsolutePointerY{};
+    bool AbsolutePointerInitialized{};
     bool StartComplete{};
     bool StartSucceeded{};
     bool StopWorker{};
@@ -115,6 +122,28 @@ struct Win32InputCapture::State {
             Queue.back() = std::move(Event);
             QueueChanged.notify_one();
             return true;
+        }
+        if (std::holds_alternative<PointerMotionMessage>(Event) && !Queue.empty() &&
+            std::holds_alternative<PointerMotionMessage>(Queue.back())) {
+            const auto& Incoming = std::get<PointerMotionMessage>(Event);
+            const auto& Existing = std::get<PointerMotionMessage>(Queue.back());
+            const auto DeltaX = static_cast<std::int64_t>(Existing.DeltaX) +
+                                Incoming.DeltaX;
+            const auto DeltaY = static_cast<std::int64_t>(Existing.DeltaY) +
+                                Incoming.DeltaY;
+            if (DeltaX >= std::numeric_limits<std::int32_t>::min() &&
+                DeltaX <= std::numeric_limits<std::int32_t>::max() &&
+                DeltaY >= std::numeric_limits<std::int32_t>::min() &&
+                DeltaY <= std::numeric_limits<std::int32_t>::max()) {
+                const PointerMotionMessage Combined{
+                    static_cast<std::int32_t>(DeltaX),
+                    static_cast<std::int32_t>(DeltaY)};
+                if (IsValidPointerMotionMessage(Combined)) {
+                    Queue.back() = Combined;
+                    QueueChanged.notify_one();
+                    return true;
+                }
+            }
         }
         if (Queue.size() >= kMaximumQueuedEvents) return false;
         Queue.push_back(std::move(Event));
@@ -166,24 +195,40 @@ struct Win32InputCapture::State {
             }
         }
 
+        std::int32_t RawX{};
+        std::int32_t RawY{};
         if ((Mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0) {
-            PointerX = std::clamp<std::int64_t>(Mouse.lLastX, 0, 65'535);
-            PointerY = std::clamp<std::int64_t>(Mouse.lLastY, 0, 65'535);
-        } else if (Mouse.lLastX != 0 || Mouse.lLastY != 0) {
+            const auto CurrentX = std::clamp<std::int32_t>(Mouse.lLastX, 0, 65'535);
+            const auto CurrentY = std::clamp<std::int32_t>(Mouse.lLastY, 0, 65'535);
+            if (!AbsolutePointerInitialized) {
+                AbsolutePointerX = CurrentX;
+                AbsolutePointerY = CurrentY;
+                AbsolutePointerInitialized = true;
+                return;
+            }
             const auto Width = std::max(GetSystemMetrics(SM_CXVIRTUALSCREEN), 1);
             const auto Height = std::max(GetSystemMetrics(SM_CYVIRTUALSCREEN), 1);
-            PointerX = std::clamp<std::int64_t>(
-                PointerX + static_cast<std::int64_t>(Mouse.lLastX) * 65'535 / Width,
-                0, 65'535);
-            PointerY = std::clamp<std::int64_t>(
-                PointerY + static_cast<std::int64_t>(Mouse.lLastY) * 65'535 / Height,
-                0, 65'535);
+            RawX = static_cast<std::int32_t>(
+                static_cast<std::int64_t>(CurrentX - AbsolutePointerX) * Width /
+                65'535);
+            RawY = static_cast<std::int32_t>(
+                static_cast<std::int64_t>(CurrentY - AbsolutePointerY) * Height /
+                65'535);
+            AbsolutePointerX = CurrentX;
+            AbsolutePointerY = CurrentY;
+        } else if (Mouse.lLastX != 0 || Mouse.lLastY != 0) {
+            RawX = Mouse.lLastX;
+            RawY = Mouse.lLastY;
         } else {
             return;
         }
-        if (!Enqueue(PointerPositionMessage{
-                0, static_cast<std::uint16_t>(PointerX),
-                static_cast<std::uint16_t>(PointerY)})) {
+        std::optional<PointerMotionMessage> Motion;
+        if (!MotionScaler.Scale(RawX, RawY, Motion)) {
+            Fail("pointer calibration produced an invalid relative delta");
+            return;
+        }
+        if (!Motion) return;
+        if (!Enqueue(*Motion)) {
             Gate.SetRemoteRouting(false);
             PostThreadMessageW(CaptureThreadId, kQueueOverflowMessage, 0, 0);
         }
@@ -314,8 +359,63 @@ Win32HookDecision Win32SuppressionGate::HandleMouse(bool Injected) const noexcep
         ? Win32HookDecision::Suppress : Win32HookDecision::Pass;
 }
 
-Win32InputCapture::Win32InputCapture(Win32CaptureHandlers Handlers)
-    : State_(std::make_unique<State>(std::move(Handlers))) {}
+bool IsValidWin32PointerCalibration(
+    const Win32PointerCalibration& Calibration) noexcept {
+    return Calibration.GainPercent >= kMinimumPointerGainPercent &&
+           Calibration.GainPercent <= kMaximumPointerGainPercent &&
+           (Calibration.SourceDpi == 0 ||
+            (Calibration.SourceDpi >= kMinimumPointerDpi &&
+             Calibration.SourceDpi <= kMaximumPointerDpi));
+}
+
+PointerMotionScaler::PointerMotionScaler(
+    Win32PointerCalibration Calibration) noexcept
+    : Calibration_(Calibration) {}
+
+bool PointerMotionScaler::Scale(
+    std::int32_t RawX,
+    std::int32_t RawY,
+    std::optional<PointerMotionMessage>& Motion) noexcept {
+    Motion.reset();
+    if (!IsValidWin32PointerCalibration(Calibration_)) return false;
+    const auto DpiFactor = Calibration_.SourceDpi == 0
+        ? 1ll : static_cast<std::int64_t>(kReferencePointerDpi);
+    const auto Divisor = static_cast<std::int64_t>(100) *
+        (Calibration_.SourceDpi == 0 ? 1 : Calibration_.SourceDpi);
+    const auto ScaleAxis = [&](std::int32_t Raw, std::int64_t& Residual) {
+        const auto Numerator = static_cast<std::int64_t>(Raw) *
+            Calibration_.GainPercent * DpiFactor + Residual;
+        const auto Scaled = Numerator / Divisor;
+        Residual = Numerator - Scaled * Divisor;
+        return Scaled;
+    };
+    const auto DeltaX = ScaleAxis(RawX, ResidualX_);
+    const auto DeltaY = ScaleAxis(RawY, ResidualY_);
+    if (DeltaX < std::numeric_limits<std::int32_t>::min() ||
+        DeltaX > std::numeric_limits<std::int32_t>::max() ||
+        DeltaY < std::numeric_limits<std::int32_t>::min() ||
+        DeltaY > std::numeric_limits<std::int32_t>::max()) {
+        return false;
+    }
+    PointerMotionMessage Result{
+        static_cast<std::int32_t>(DeltaX),
+        static_cast<std::int32_t>(DeltaY)};
+    if (Result.DeltaX == 0 && Result.DeltaY == 0) return true;
+    if (!IsValidPointerMotionMessage(Result)) return false;
+    Motion = Result;
+    return true;
+}
+
+void PointerMotionScaler::Reset() noexcept {
+    ResidualX_ = 0;
+    ResidualY_ = 0;
+}
+
+Win32InputCapture::Win32InputCapture(
+    Win32CaptureHandlers Handlers,
+    Win32PointerCalibration Calibration)
+    : State_(std::make_unique<State>(
+          std::move(Handlers), Calibration)) {}
 
 Win32InputCapture::~Win32InputCapture() { Stop(); }
 
@@ -333,6 +433,10 @@ bool Win32InputCapture::Start() {
     State_->MouseHook = nullptr;
     State_->PointerX = 0;
     State_->PointerY = 0;
+    State_->AbsolutePointerX = 0;
+    State_->AbsolutePointerY = 0;
+    State_->AbsolutePointerInitialized = false;
+    State_->MotionScaler.Reset();
     State_->StartComplete = false;
     State_->StartSucceeded = false;
     State_->WorkerThread = std::thread([State = State_.get()] {
@@ -356,6 +460,10 @@ bool Win32InputCapture::Start() {
                         if (State->Handlers.Button) State->Handlers.Button(Value);
                     } else if constexpr (std::is_same_v<ValueType, PointerPositionMessage>) {
                         if (State->Handlers.Pointer) State->Handlers.Pointer(Value);
+                    } else if constexpr (std::is_same_v<ValueType, PointerMotionMessage>) {
+                        if (State->Handlers.PointerMotion) {
+                            State->Handlers.PointerMotion(Value);
+                        }
                     } else if constexpr (std::is_same_v<ValueType, MouseWheelMessage>) {
                         if (State->Handlers.Wheel) State->Handlers.Wheel(Value);
                     }

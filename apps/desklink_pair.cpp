@@ -76,6 +76,7 @@ struct CommandLine {
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    desklink::Win32PointerCalibration PointerCalibration;
     bool ConsoleConfirm{};
     bool ProfileConfigurationSeen{};
     desklink::DeskMode ProfileDefaultMode{desklink::DeskMode::Roam};
@@ -163,6 +164,21 @@ std::optional<std::uint32_t> ParseDiscoveryDuration(
     return Seconds * 1'000u;
 }
 
+std::optional<std::uint16_t> ParseBoundedUnsigned(
+    std::wstring_view Value,
+    std::uint16_t Minimum,
+    std::uint16_t Maximum) {
+    if (Value.empty() || Value.size() > 5) return std::nullopt;
+    std::uint32_t Parsed = 0;
+    for (const auto Character : Value) {
+        if (Character < L'0' || Character > L'9') return std::nullopt;
+        Parsed = Parsed * 10u + static_cast<std::uint32_t>(Character - L'0');
+        if (Parsed > Maximum) return std::nullopt;
+    }
+    if (Parsed < Minimum) return std::nullopt;
+    return static_cast<std::uint16_t>(Parsed);
+}
+
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
 std::optional<std::uint32_t> ParseValidationDuration(std::wstring_view Value) {
     if (Value.empty() || Value.size() > 5) return std::nullopt;
@@ -198,7 +214,7 @@ void PrintUsage() {
         << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive]\n"
         << L"  desklink_pair serve [port] [--send-audio]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--receive-audio]\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
@@ -207,6 +223,8 @@ void PrintUsage() {
         << L"--send-audio explicitly starts loopback capture for authorized peers.\n"
         << L"--receive-audio explicitly starts shared-mode rendering for an authorized peer.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
+        << L"--pointer-gain scales relative motion; 100 preserves raw counts.\n"
+        << L"--pointer-dpi normalizes a known source DPI to an 800-DPI reference.\n"
         << L"focus --default-mode roam|lock-pc1|lock-pc2|game sets the fallback policy.\n"
         << L"focus --profile <exe>=<mode> adds an exact executable-name rule.\n"
         << L"focus --profile-fullscreen <exe>=<mode> requires a fullscreen match.\n"
@@ -294,6 +312,8 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     bool PortSeen = false;
     bool ProviderSeen = false;
     bool DefaultModeSeen = false;
+    bool PointerGainSeen = false;
+    bool PointerDpiSeen = false;
     for (; Index < ArgumentCount; ++Index) {
         const std::wstring_view Argument(Arguments[Index]);
         if (Argument == L"--grant-input") {
@@ -314,6 +334,30 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--capture") {
             if (Result.CaptureInput) return std::nullopt;
             Result.CaptureInput = true;
+            continue;
+        }
+        if (Argument == L"--pointer-gain") {
+            if (PointerGainSeen || Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            PointerGainSeen = true;
+            const auto Gain = ParseBoundedUnsigned(
+                Arguments[++Index], desklink::kMinimumPointerGainPercent,
+                desklink::kMaximumPointerGainPercent);
+            if (!Gain) return std::nullopt;
+            Result.PointerCalibration.GainPercent = *Gain;
+            continue;
+        }
+        if (Argument == L"--pointer-dpi") {
+            if (PointerDpiSeen || Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            PointerDpiSeen = true;
+            const auto Dpi = ParseBoundedUnsigned(
+                Arguments[++Index], desklink::kMinimumPointerDpi,
+                desklink::kMaximumPointerDpi);
+            if (!Dpi) return std::nullopt;
+            Result.PointerCalibration.SourceDpi = *Dpi;
             continue;
         }
         if (Argument == L"--send-audio") {
@@ -439,6 +483,14 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         return std::nullopt;
     }
     if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    if ((PointerGainSeen || PointerDpiSeen) &&
+        (Result.Mode != Operation::Focus || !Result.CaptureInput)) {
+        return std::nullopt;
+    }
+    if (!desklink::IsValidWin32PointerCalibration(
+            Result.PointerCalibration)) {
+        return std::nullopt;
+    }
     if (Result.SendAudio && Result.Mode != Operation::Serve) return std::nullopt;
     if (Result.ReceiveAudio && Result.Mode != Operation::Focus) return std::nullopt;
     if (Result.ProfileConfigurationSeen && Result.Mode != Operation::Focus) {
@@ -867,6 +919,11 @@ public:
 
     bool inject_pointer(const desklink::PointerPositionMessage& Event) override {
         return Injector_.inject_pointer(Event);
+    }
+
+    bool InjectPointerMotion(
+        const desklink::PointerMotionMessage& Message) override {
+        return Injector_.InjectPointerMotion(Message);
     }
 
     bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
@@ -1330,11 +1387,13 @@ public:
                      std::shared_ptr<TrustedResult> Result,
                      desklink::DeskMode DefaultMode,
                      std::vector<desklink::ForegroundProfileRule> Rules,
-                     bool CaptureRequested)
+                     bool CaptureRequested,
+                     desklink::Win32PointerCalibration PointerCalibration)
         : Host_(std::move(Host)),
           Result_(std::move(Result)),
           Profiles_(DefaultMode),
           Lifecycle_(*this, CaptureRequested),
+          PointerCalibration_(PointerCalibration),
           ConfigurationValid_(Profiles_.SetRules(std::move(Rules))) {}
 
     ~HostInputRuntime() override { Stop(); }
@@ -1531,6 +1590,12 @@ public:
             Handlers.Pointer = [Weak](desklink::PointerPositionMessage Event) {
                 if (const auto Runtime = Weak.lock()) Runtime->ForwardPointer(Event);
             };
+            Handlers.PointerMotion = [Weak](
+                desklink::PointerMotionMessage Message) {
+                if (const auto Runtime = Weak.lock()) {
+                    Runtime->ForwardPointerMotion(Message);
+                }
+            };
             Handlers.Wheel = [Weak](desklink::MouseWheelMessage Message) {
                 if (const auto Runtime = Weak.lock()) Runtime->ForwardWheel(Message);
             };
@@ -1544,7 +1609,7 @@ public:
             };
 
             Capture_ = std::make_unique<desklink::Win32InputCapture>(
-                std::move(Handlers));
+                std::move(Handlers), PointerCalibration_);
             if (!Capture_->Start()) {
                 Capture_.reset();
                 LastBackendFailure_ = BackendFailure::StartCapture;
@@ -1574,7 +1639,13 @@ public:
             CaptureActive_.store(true);
             std::cout
                 << "[Input:Capture] physical input is routed remotely\n"
-                << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n";
+                << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n"
+                << "[Input:Pointer] relative gain="
+                << PointerCalibration_.GainPercent << "% source_dpi="
+                << (PointerCalibration_.SourceDpi == 0
+                        ? std::string("raw")
+                        : std::to_string(PointerCalibration_.SourceDpi))
+                << '\n';
         } catch (...) {
             CaptureActive_.store(false);
         }
@@ -1907,6 +1978,20 @@ private:
         }
     }
 
+    void ForwardPointerMotion(desklink::PointerMotionMessage Message) noexcept {
+        PointerEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
+        bool Sent = false;
+        try {
+            Sent = Host_->Session.SendPointerMotion(Message);
+        } catch (...) {
+        }
+        if (Sent) {
+            PointerEventsForwarded_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            CaptureTransportFailed("relative pointer forwarding failed");
+        }
+    }
+
     void ForwardWheel(desklink::MouseWheelMessage Message) noexcept {
         WheelEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
         bool Sent = false;
@@ -1974,6 +2059,7 @@ private:
     std::shared_ptr<TrustedResult> Result_;
     desklink::ForegroundProfileEngine Profiles_;
     desklink::HostInputLifecycle Lifecycle_;
+    desklink::Win32PointerCalibration PointerCalibration_;
     bool ConfigurationValid_{};
     std::optional<desklink::ProfileModeDecision> LastDecision_;
     BackendFailure LastBackendFailure_{BackendFailure::None};
@@ -2202,7 +2288,8 @@ int RunTrusted(const CommandLine& Command,
             }
             auto Input = std::make_shared<HostInputRuntime>(
                 Runtime, Result, Command.ProfileDefaultMode,
-                Command.ProfileRules, Command.CaptureInput);
+                Command.ProfileRules, Command.CaptureInput,
+                Command.PointerCalibration);
             *FocusTarget = Input;
             {
                 std::scoped_lock Lock(RuntimesMutex);
@@ -2653,6 +2740,11 @@ int Run(const CommandLine& Command) {
 } // namespace
 
 int wmain(int ArgumentCount, wchar_t** Arguments) {
+    // The native alpha wrapper captures these streams through anonymous pipes.
+    // Immediate flushing keeps diagnostics observable without changing any
+    // transport, credential, or admission behavior.
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
     const auto Command = ParseCommandLine(ArgumentCount, Arguments);
     if (!Command) {
         PrintUsage();

@@ -21,6 +21,7 @@ public:
             bytes_.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
         }
     }
+    void i32(std::int32_t Value) { u32(static_cast<std::uint32_t>(Value)); }
     void u64(std::uint64_t value) {
         for (int shift = 56; shift >= 0; shift -= 8) {
             bytes_.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
@@ -68,6 +69,16 @@ public:
             out = (out << 8) | bytes_[offset_ + static_cast<std::size_t>(i)];
         }
         offset_ += 4;
+        return true;
+    }
+
+    [[nodiscard]] bool i32(std::int32_t& Out) {
+        std::uint32_t Raw{};
+        if (!u32(Raw)) return false;
+        const auto Signed = Raw <= 0x7fffffffu
+            ? static_cast<std::int64_t>(Raw)
+            : static_cast<std::int64_t>(Raw) - 0x1'0000'0000ll;
+        Out = static_cast<std::int32_t>(Signed);
         return true;
     }
 
@@ -138,6 +149,9 @@ ByteBuffer encode_payload(const Message& message) {
             w.u16(value.display_id);
             w.u16(value.normalized_x);
             w.u16(value.normalized_y);
+        } else if constexpr (std::is_same_v<T, PointerMotionMessage>) {
+            w.i32(value.DeltaX);
+            w.i32(value.DeltaY);
         } else if constexpr (std::is_same_v<T, InputStateSnapshotMessage>) {
             w.raw(value.KeyBitmap);
             w.raw(value.ExtendedKeyBitmap);
@@ -246,6 +260,14 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
                 r.remaining() != 0) return std::nullopt;
             return m;
         }
+        case MessageType::PointerMotion: {
+            PointerMotionMessage Message;
+            if (!r.i32(Message.DeltaX) || !r.i32(Message.DeltaY) ||
+                r.remaining() != 0 || !IsValidPointerMotionMessage(Message)) {
+                return std::nullopt;
+            }
+            return Message;
+        }
         case MessageType::InputStateSnapshot: {
             InputStateSnapshotMessage m;
             if (!r.raw(m.KeyBitmap) || !r.raw(m.ExtendedKeyBitmap) ||
@@ -312,6 +334,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::KeyEvent:
         case MessageType::MouseButton:
         case MessageType::PointerPosition:
+        case MessageType::PointerMotion:
         case MessageType::InputStateSnapshot:
         case MessageType::MouseWheel:
         case MessageType::SetAudioGain:
@@ -338,6 +361,7 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, KeyEventMessage>) return MessageType::KeyEvent;
         else if constexpr (std::is_same_v<T, MouseButtonMessage>) return MessageType::MouseButton;
         else if constexpr (std::is_same_v<T, PointerPositionMessage>) return MessageType::PointerPosition;
+        else if constexpr (std::is_same_v<T, PointerMotionMessage>) return MessageType::PointerMotion;
         else if constexpr (std::is_same_v<T, InputStateSnapshotMessage>) return MessageType::InputStateSnapshot;
         else if constexpr (std::is_same_v<T, MouseWheelMessage>) return MessageType::MouseWheel;
         else if constexpr (std::is_same_v<T, SetAudioGainMessage>) return MessageType::SetAudioGain;
@@ -347,7 +371,9 @@ MessageType message_type(const Message& message) noexcept {
 }
 
 bool is_datagram_message(MessageType type) noexcept {
-    return type == MessageType::PointerPosition || type == MessageType::AudioFrame;
+    return type == MessageType::PointerPosition ||
+           type == MessageType::PointerMotion ||
+           type == MessageType::AudioFrame;
 }
 
 bool SetInputSnapshotKey(InputStateSnapshotMessage& Snapshot,
@@ -397,6 +423,14 @@ bool IsValidMouseWheelMessage(const MouseWheelMessage& Message) noexcept {
     return ValidWheelAxis(Axis) && Message.Delta != 0 &&
            Message.Delta >= -kMaximumMouseWheelDelta &&
            Message.Delta <= kMaximumMouseWheelDelta;
+}
+
+bool IsValidPointerMotionMessage(const PointerMotionMessage& Message) noexcept {
+    return (Message.DeltaX != 0 || Message.DeltaY != 0) &&
+           Message.DeltaX >= -kMaximumPointerMotionDelta &&
+           Message.DeltaX <= kMaximumPointerMotionDelta &&
+           Message.DeltaY >= -kMaximumPointerMotionDelta &&
+           Message.DeltaY <= kMaximumPointerMotionDelta;
 }
 
 ByteBuffer encode_packet(const EnvelopeHeader& requested_header, const Message& message) {
