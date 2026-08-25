@@ -60,6 +60,15 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Explicit capability-gated display-topology exchange over the authenticated
   reliable session, with nonce/machine binding, five-second freshness, and
   fail-closed route readiness
+- Bounded same-user topology inspection for the companion UI; canonical remote
+  snapshots remain authenticated-session data and expire with normal topology
+  readiness
+- Native monitor configurator with per-PC physical-size canvas, offline states,
+  explicit bidirectional adjacency suggestions, one-way/partial-edge advanced
+  editing, atomic save, and five-second click-through local Identify overlays
+- Single-instance Windows companion lifecycle with first-run guidance,
+  close-to-tray, tray Open/Return Local/Exit, and optional current-user sign-in
+  startup
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
 - Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
@@ -77,10 +86,10 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Monitor configurator UI, Identify overlays, and physical edge roaming
+- Physical edge roaming, crossing intent, landing, and hysteresis
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
-- Final tray/onboarding UI, installer/update flow, and Stream Deck plugin
+- Final product polish, installer/update flow, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 

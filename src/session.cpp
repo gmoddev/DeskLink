@@ -94,6 +94,11 @@ bool AgentSession::CanSendAudio() const noexcept {
         PeerCapabilities_.contains(Capability::AudioReceive);
 }
 
+bool AgentSession::PeerHasCapability(Capability Value) const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return started_ && PeerCapabilities_.contains(Value);
+}
+
 bool AgentSession::SendAudioFrame(AudioFrameMessage Frame) {
     std::scoped_lock Lock(Mutex_);
     if (!started_ ||
@@ -440,6 +445,11 @@ bool HostSession::CanReceiveAudio() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return started_ && AudioReceiver_ != nullptr &&
         PeerCapabilities_.contains(Capability::AudioSend);
+}
+
+bool HostSession::PeerHasCapability(Capability Value) const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return started_ && PeerCapabilities_.contains(Value);
 }
 
 bool HostSession::PublishDisplayTopology(

@@ -283,6 +283,22 @@ the connection usable for already-authorized modules but the affected roaming
 route remains unavailable. Recovery from rejection requires a fresh
 authenticated connection and nonce.
 
+Phase 3 exposes this state to the companion only through the existing
+current-user named pipe. The one-user DACL, remote-client rejection, and mutual
+process-token SID checks remain mandatory. `GetDisplayTopologies` is read-only,
+contains exactly one local entry and at most seven peer entries, is capped at
+512 KiB, revalidates every embedded canonical snapshot, rejects duplicate
+machines, and permits a snapshot only for `Ready`. It cannot request focus,
+change mode, grant a capability, write trust, or replace identity.
+
+Configurator drag geometry is untrusted presentation state. It can create only
+a visible suggestion; the user must confirm an explicit link. Before atomic
+replacement the full candidate graph is validated and the companion confirms
+that remote focus and capture are both inactive. Failure to confirm Local or to
+replace the file leaves the previous graph unchanged. Identify overlays are
+local, click-through, no-activate windows and never install capture or input
+suppression.
+
 ---
 
 ## 8. Protocol hardening

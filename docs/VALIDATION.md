@@ -146,6 +146,23 @@ fresh connection and session nonce after rejection. Existing tests continue to
 prove that pre-validation MsQuic stream traffic is unavailable. Phase 2 does
 not request focus, enable capture, or switch an edge.
 
+### Phase 3 configurator validation
+
+Portable tests build EDID-sized and DPI-estimated display cards, retain saved
+missing displays as offline, honor exact saved canvas coordinates, reject
+invalid/duplicate machines, and produce a full-edge bidirectional suggestion
+only for compatible adjacent displays on different PCs. Moving cards removes
+or changes only the suggestion; the same stable-identity link continues to
+resolve against current topology, proving canvas geometry is not routing input.
+
+Control-codec tests round-trip canonical topology state, require one unique
+local machine, enforce `Ready`/snapshot correspondence, reject simultaneous
+state/topology response payloads, and exercise the larger response through the
+same-user Windows named pipe. Windows tests also verify strict atomic companion
+preference persistence and malformed/trailing-data rejection. The configurator
+and Identify surface compiles under `/W4 /permissive-`; physical edge movement
+is intentionally absent until Phase 4.
+
 ---
 
 ## LAN DNS-SD/mDNS discovery

@@ -226,6 +226,21 @@ the transport's `PeerValidated` gate and the session's trust, expected-machine,
 and fresh-nonce checks. Invalid or five-second-stale topology leaves routes
 unready without affecting focus, input cleanup, or the persisted graph.
 
+Phase 3 adds a native configurator backed by the same `Win32DisplayTopology`
+descriptors and atomic roaming store. The canvas groups displays by machine,
+scales exact EDID sizes relative to one another, marks DPI/unknown sizes as
+estimated, retains unresolved saved identities as offline cards, and shows
+route resolution independently of peer status. Dragging may propose an
+opposing-edge full link, but only explicit confirmation adds it; the advanced
+editor supports normalized partial segments and one-way modes.
+
+`Identify displays` creates a borderless topmost/no-activate/click-through
+overlay near the top-left of each active local display. It shows display number,
+PC, resolution, refresh, and estimate state, destroys itself after five seconds,
+and does not interact with capture. The companion refreshes authenticated peer
+topology asynchronously through bounded same-SID IPC so the UI thread does not
+wait for network synchronization.
+
 The Host UI should store edge adjacency, for example:
 
 ```text

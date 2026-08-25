@@ -53,6 +53,7 @@ public:
     [[nodiscard]] DeskMode DesiredMode() const noexcept;
     [[nodiscard]] bool RemoteFocused() const noexcept;
     [[nodiscard]] bool CanSendAudio() const noexcept;
+    [[nodiscard]] bool PeerHasCapability(Capability Value) const noexcept;
     [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
     [[nodiscard]] bool PublishDisplayTopology(
         const MachineId& LocalMachine,
@@ -112,6 +113,7 @@ public:
     [[nodiscard]] bool RemoteFocused() const noexcept;
     [[nodiscard]] DeskMode DesiredMode() const noexcept;
     [[nodiscard]] bool CanReceiveAudio() const noexcept;
+    [[nodiscard]] bool PeerHasCapability(Capability Value) const noexcept;
     [[nodiscard]] bool PublishDisplayTopology(
         const MachineId& LocalMachine,
         const DisplayTopologySnapshot& Topology);

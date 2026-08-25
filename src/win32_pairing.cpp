@@ -87,6 +87,12 @@ bool ReadFileBytes(const std::filesystem::path& Path, ByteBuffer& Bytes) {
 }
 
 bool WriteFileBytesAtomic(const std::filesystem::path& Path, ByteSpan Bytes) {
+    std::error_code Error;
+    const auto Parent = Path.parent_path();
+    if (!Parent.empty()) {
+        std::filesystem::create_directories(Parent, Error);
+        if (Error) return false;
+    }
     auto Temporary = Path;
     Temporary += L".tmp";
     const auto File = CreateFileW(Temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,

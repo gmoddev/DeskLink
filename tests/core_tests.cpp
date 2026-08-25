@@ -7,6 +7,7 @@
 #include "desklink/host.hpp"
 #include "desklink/host_input_lifecycle.hpp"
 #include "desklink/input.hpp"
+#include "desklink/monitor_configurator.hpp"
 #include "desklink/pairing.hpp"
 #include "desklink/pairing_wire.hpp"
 #include "desklink/profile.hpp"
@@ -18,6 +19,7 @@
 #include "desklink/types.hpp"
 #ifdef _WIN32
 #include "desklink/win32_audio.hpp"
+#include "desklink/win32_application_settings.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
@@ -255,13 +257,14 @@ void PointerMotionRoundTripAndValidation() {
 void ControlProtocolRoundTripAndValidation() {
     using namespace desklink;
 
-    const std::array<ControlRequest, 5> Requests{
+    const std::array<ControlRequest, 6> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
             MachineId{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}}},
         ControlRequest{4, SetAudioGainControlRequest{7'500}},
         ControlRequest{5, ToggleAudioMuteControlRequest{}},
+        ControlRequest{6, GetDisplayTopologiesControlRequest{}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -293,6 +296,29 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(Response.Decoded->State->FocusedMachine == State.FocusedMachine);
     CHECK(Response.Decoded->State->CaptureActive);
 
+    ControlTopologyState TopologyState;
+    TopologyState.Machines.push_back(ControlMachineTopology{
+        MakeMachineId(1), DisplayTopologyExchangeStatus::Ready,
+        MakeDisplayTopology("control-local", "Local display"), true, false});
+    TopologyState.Machines.push_back(ControlMachineTopology{
+        MakeMachineId(2), DisplayTopologyExchangeStatus::Ready,
+        MakeDisplayTopology("control-peer", "Peer display"), false, true});
+    const auto TopologyResponseFrame = EncodeControlResponse(
+        ControlResponse{11, ControlStatus::Ok, std::nullopt, TopologyState});
+    CHECK(TopologyResponseFrame.has_value());
+    const auto TopologyResponse = DecodeControlResponse(*TopologyResponseFrame);
+    CHECK(TopologyResponse.Decoded.has_value());
+    CHECK(!TopologyResponse.Decoded->State.has_value());
+    CHECK(TopologyResponse.Decoded->Topologies == TopologyState);
+    auto MissingLocal = TopologyState;
+    MissingLocal.Machines.erase(MissingLocal.Machines.begin());
+    CHECK(!IsValidControlTopologyState(MissingLocal));
+    auto ReadyWithoutSnapshot = TopologyState;
+    ReadyWithoutSnapshot.Machines[1].Topology.reset();
+    CHECK(!IsValidControlTopologyState(ReadyWithoutSnapshot));
+    CHECK(!EncodeControlResponse(ControlResponse{
+        12, ControlStatus::Ok, State, TopologyState}).has_value());
+
     CHECK(!EncodeControlRequest(ControlRequest{}).has_value());
     CHECK(!EncodeControlRequest(ControlRequest{
         6, SetDesiredModeControlRequest{static_cast<DeskMode>(99)}}).has_value());
@@ -310,10 +336,12 @@ void ControlProtocolRoundTripAndValidation() {
           ControlDecodeError::InvalidHeader);
 
     auto Oversized = *EncodeControlRequest(Requests[0]);
-    Oversized[16] = 0;
-    Oversized[17] = 0;
-    Oversized[18] = 0;
-    Oversized[19] = static_cast<std::uint8_t>(kMaximumControlPayload + 1);
+    const auto OversizedPayload = static_cast<std::uint32_t>(
+        kMaximumControlPayload + 1);
+    Oversized[16] = static_cast<std::uint8_t>(OversizedPayload >> 24u);
+    Oversized[17] = static_cast<std::uint8_t>(OversizedPayload >> 16u);
+    Oversized[18] = static_cast<std::uint8_t>(OversizedPayload >> 8u);
+    Oversized[19] = static_cast<std::uint8_t>(OversizedPayload);
     CHECK(!DecodeControlRequest(Oversized).Decoded.has_value());
     CHECK(DecodeControlRequest(Oversized).Error == ControlDecodeError::Oversized);
 
@@ -606,6 +634,81 @@ void RoamingGraphValidationAndCodecAreStrict() {
     Invalid = Configuration;
     Invalid.CanvasLayout[0].StableDisplayIdentity.push_back('\0');
     CHECK(!IsValidRoamingConfiguration(Invalid));
+}
+
+void MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks() {
+    using namespace desklink;
+    DisplayTopologyMap LocalTopology;
+    DiscoveredDisplay LocalDisplay{
+        "local-display", "LG UltraGear 27", {0, 0, 2560, 1440}, true};
+    LocalDisplay.PixelWidth = 2560;
+    LocalDisplay.PixelHeight = 1440;
+    LocalDisplay.RefreshMilliHertz = 177'000;
+    LocalDisplay.PhysicalWidthMillimeters = 600;
+    LocalDisplay.PhysicalHeightMillimeters = 340;
+    LocalDisplay.PhysicalSize = PhysicalSizeSource::Edid;
+    CHECK(LocalTopology.Update({LocalDisplay}) ==
+          DisplayTopologyUpdate::Changed);
+
+    DisplayTopologyMap PeerTopology;
+    DiscoveredDisplay PeerDisplay{
+        "peer-display", "Peer monitor", {0, 0, 1920, 1080}, true};
+    PeerDisplay.PixelWidth = 1920;
+    PeerDisplay.PixelHeight = 1080;
+    PeerDisplay.RefreshMilliHertz = 60'000;
+    PeerDisplay.PhysicalWidthMillimeters = 510;
+    PeerDisplay.PhysicalHeightMillimeters = 290;
+    PeerDisplay.PhysicalSize = PhysicalSizeSource::RawDpiEstimate;
+    CHECK(PeerTopology.Update({PeerDisplay}) ==
+          DisplayTopologyUpdate::Changed);
+
+    RoamingConfiguration Configuration;
+    Configuration.CanvasLayout.push_back(
+        {MakeMachineId(1), "local-display", 10, 20});
+    Configuration.CanvasLayout.push_back(
+        {MakeMachineId(3), "offline-display", 900, 40});
+    const std::array Machines{
+        MonitorCanvasMachine{
+            MakeMachineId(1), "This PC", LocalTopology.Current(),
+            DisplayTopologyExchangeStatus::Ready, true, false},
+        MonitorCanvasMachine{
+            MakeMachineId(2), "Peer PC", PeerTopology.Current(),
+            DisplayTopologyExchangeStatus::Ready, false, true},
+    };
+    const auto Model = BuildMonitorCanvasModel(Machines, Configuration);
+    CHECK(Model.has_value());
+    CHECK(Model->Tiles.size() == 3);
+    CHECK(Model->Tiles[0].Rect.X == 10);
+    CHECK(Model->Tiles[0].Rect.Y == 20);
+    CHECK(Model->Tiles[0].Rect.Width == 270);
+    CHECK(!Model->Tiles[0].SizeEstimated);
+    CHECK(Model->Tiles[1].SizeEstimated);
+    CHECK(!Model->Tiles[2].Online);
+    CHECK(Model->Tiles[2].FriendlyName == "Offline display");
+
+    auto Adjacent = Model->Tiles;
+    Adjacent[0].Rect = {10, 20, 270, 153};
+    Adjacent[1].Rect = {284, 20, 230, 131};
+    const auto Suggestion = BuildRoamingLinkSuggestion(Adjacent, 0, 1);
+    CHECK(Suggestion.has_value());
+    CHECK(Suggestion->Link.Direction == RoamingDirectionMode::Bidirectional);
+    CHECK(Suggestion->Link.EndpointA.Side == DisplayEdgeSide::Right);
+    CHECK(Suggestion->Link.EndpointB.Side == DisplayEdgeSide::Left);
+    CHECK(Suggestion->Link.EndpointA.SegmentStartPermyriad == 0);
+    CHECK(Suggestion->Link.EndpointA.SegmentEndPermyriad == 10'000);
+    CHECK(IsValidRoamingConfiguration(
+        RoamingConfiguration{{}, {Suggestion->Link}, {}}));
+
+    // Canvas movement changes only the suggestion. Stable route resolution is
+    // independent of every presentation coordinate.
+    Adjacent[0].Rect.X = -500'000;
+    CHECK(!BuildRoamingLinkSuggestion(Adjacent, 0, 1).has_value());
+    std::array<MachineDisplayTopology, 2> Topologies{
+        MachineDisplayTopology{MakeMachineId(1), &LocalTopology.Current()},
+        MachineDisplayTopology{MakeMachineId(2), &PeerTopology.Current()},
+    };
+    CHECK(ResolveRoamingLink(Suggestion->Link, Topologies).Ready());
+    CHECK(!BuildRoamingLinkSuggestion(Model->Tiles, 0, 2).has_value());
 }
 
 void RoamingEndpointsResolveAgainstCurrentStableTopologies() {
@@ -2364,11 +2467,21 @@ void WindowsCurrentUserControlPipeRoundTrip() {
     State.Role = ControlRole::Agent;
     State.DesiredMode = DeskMode::Roam;
     State.ConnectedPeerCount = 2;
+    ControlTopologyState Topologies;
+    Topologies.Machines.push_back(ControlMachineTopology{
+        State.LocalMachine, DisplayTopologyExchangeStatus::Ready,
+        MakeDisplayTopology("pipe-local", "Pipe local display"), true, false});
     Win32ControlPipeServer Server(
-        [State](const ControlRequest& Request) {
+        [State, Topologies](const ControlRequest& Request) {
             if (std::holds_alternative<GetStateControlRequest>(Request.Payload)) {
                 return ControlResponse{
                     Request.RequestId, ControlStatus::Ok, State};
+            }
+            if (std::holds_alternative<GetDisplayTopologiesControlRequest>(
+                    Request.Payload)) {
+                return ControlResponse{
+                    Request.RequestId, ControlStatus::Ok, std::nullopt,
+                    Topologies};
             }
             return ControlResponse{
                 Request.RequestId, ControlStatus::Unsupported, std::nullopt};
@@ -2390,6 +2503,12 @@ void WindowsCurrentUserControlPipeRoundTrip() {
     CHECK(Response->State.has_value());
     CHECK(Response->State->LocalMachine == State.LocalMachine);
     CHECK(Response->State->ConnectedPeerCount == 2);
+
+    const auto TopologyResponse = Win32ControlPipeClient::Send(
+        ControlRequest{104, GetDisplayTopologiesControlRequest{}}, Instance);
+    CHECK(TopologyResponse.has_value());
+    CHECK(TopologyResponse->Status == ControlStatus::Ok);
+    CHECK(TopologyResponse->Topologies == Topologies);
 
     const auto Unsupported = Win32ControlPipeClient::Send(
         ControlRequest{102, ToggleAudioMuteControlRequest{}}, Instance);
@@ -2754,6 +2873,39 @@ void WindowsRoamingSettingsAreAtomicAndStrict() {
     CHECK(!Second.Current().has_value());
     std::filesystem::remove_all(Directory, Ignored);
 }
+
+void WindowsApplicationSettingsAreAtomicAndStrict() {
+    using namespace desklink;
+    const auto Directory = std::filesystem::temp_directory_path() /
+        ("desklink-application-test-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto Path = Directory / "application.bin";
+    std::error_code Ignored;
+    std::filesystem::remove_all(Directory, Ignored);
+
+    Win32ApplicationSettingsStore First(Path);
+    CHECK(First.Load());
+    CHECK(First.Current() == Win32ApplicationSettings{});
+    const Win32ApplicationSettings Settings{false, true, true};
+    CHECK(First.Save(Settings));
+    CHECK(First.Current() == Settings);
+    auto Temporary = Path;
+    Temporary += L".tmp";
+    CHECK(!std::filesystem::exists(Temporary));
+
+    Win32ApplicationSettingsStore Second(Path);
+    CHECK(Second.Load());
+    CHECK(Second.Current() == Settings);
+    {
+        std::ofstream Output(Path, std::ios::binary | std::ios::app);
+        CHECK(Output.good());
+        Output.put('\0');
+    }
+    Win32ApplicationSettingsStore Trailing(Path);
+    CHECK(!Trailing.Load());
+    CHECK(!Trailing.Current().has_value());
+    std::filesystem::remove_all(Directory, Ignored);
+}
 #endif
 
 void DiscoveryPropertiesAreStrictAndRoundTrip() {
@@ -2935,6 +3087,7 @@ int main() {
     DisplayMetadataIsBoundedAndDoesNotChangeRoutingGeneration();
     EdidPhysicalSizeParsingIsStrictAndBounded();
     RoamingGraphValidationAndCodecAreStrict();
+    MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks();
     RoamingEndpointsResolveAgainstCurrentStableTopologies();
     DisplayTopologyProtocolIsBoundedAndStrict();
     DisplayTopologyAdmissionFailsClosedAndRecoversOnReconnect();
@@ -2972,6 +3125,7 @@ int main() {
     WindowsWasapiSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
     WindowsRoamingSettingsAreAtomicAndStrict();
+    WindowsApplicationSettingsAreAtomicAndStrict();
 #endif
     in_memory_transport_preserves_security_metadata();
     std::cout << "All DeskLink foundation tests passed.\n";

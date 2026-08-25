@@ -158,8 +158,11 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
         } else if constexpr (std::is_same_v<ValueType,
                                              SetAudioGainControlRequest>) {
             return ControlCommand::SetAudioGain;
-        } else {
+        } else if constexpr (std::is_same_v<ValueType,
+                                             ToggleAudioMuteControlRequest>) {
             return ControlCommand::ToggleAudioMute;
+        } else {
+            return ControlCommand::GetDisplayTopologies;
         }
     }, Payload);
 }
@@ -217,6 +220,9 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::ToggleAudioMute:
             if (Input.Remaining() != 0) return std::nullopt;
             return ToggleAudioMuteControlRequest{};
+        case ControlCommand::GetDisplayTopologies:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return GetDisplayTopologiesControlRequest{};
         default:
             return std::nullopt;
     }
@@ -254,6 +260,97 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.AudioMuted = (Flags & 0x04u) != 0;
     if ((Flags & 0xf8u) != 0 || !IsValidControlState(State)) return std::nullopt;
     return State;
+}
+
+bool IsKnownTopologyStatus(DisplayTopologyExchangeStatus Status) noexcept {
+    switch (Status) {
+        case DisplayTopologyExchangeStatus::Offline:
+        case DisplayTopologyExchangeStatus::Disabled:
+        case DisplayTopologyExchangeStatus::CapabilityMissing:
+        case DisplayTopologyExchangeStatus::Synchronizing:
+        case DisplayTopologyExchangeStatus::Ready:
+        case DisplayTopologyExchangeStatus::TimedOut:
+        case DisplayTopologyExchangeStatus::Rejected:
+            return true;
+    }
+    return false;
+}
+
+void EncodeTopologyState(Writer& Output, const ControlTopologyState& State) {
+    Output.U8(static_cast<std::uint8_t>(State.Machines.size()));
+    std::uint64_t Sequence = 1;
+    for (const auto& Machine : State.Machines) {
+        Output.Raw(Machine.Machine);
+        Output.U8(static_cast<std::uint8_t>(Machine.Status));
+        std::uint8_t Flags = 0;
+        if (Machine.Local) Flags |= 0x01u;
+        if (Machine.PeerInputAllowed) Flags |= 0x02u;
+        Output.U8(Flags);
+        Output.U8(Machine.Topology.has_value() ? 1u : 0u);
+        if (!Machine.Topology) continue;
+
+        EnvelopeHeader Header;
+        Header.session_nonce = 1;
+        Header.sequence = Sequence++;
+        const auto Packet = encode_packet(
+            Header,
+            DisplayTopologySnapshotMessage{
+                Machine.Machine, 1, *Machine.Topology});
+        Output.U32(static_cast<std::uint32_t>(Packet.size()));
+        Output.Raw(Packet);
+    }
+}
+
+std::optional<ControlTopologyState> DecodeTopologyState(Reader& Input) {
+    std::uint8_t Count{};
+    if (!Input.U8(Count) || Count == 0 ||
+        Count > kMaximumControlTopologyMachines) {
+        return std::nullopt;
+    }
+    ControlTopologyState Result;
+    Result.Machines.reserve(Count);
+    for (std::size_t Index = 0; Index < Count; ++Index) {
+        ControlMachineTopology Machine;
+        std::uint8_t RawStatus{};
+        std::uint8_t Flags{};
+        std::uint8_t HasTopology{};
+        if (!Input.Raw(Machine.Machine) || !Input.U8(RawStatus) ||
+            !Input.U8(Flags) || !Input.U8(HasTopology) ||
+            (Flags & 0xfcu) != 0 || HasTopology > 1) {
+            return std::nullopt;
+        }
+        Machine.Status = static_cast<DisplayTopologyExchangeStatus>(RawStatus);
+        Machine.Local = (Flags & 0x01u) != 0;
+        Machine.PeerInputAllowed = (Flags & 0x02u) != 0;
+        if (HasTopology != 0) {
+            std::uint32_t PacketSize{};
+            if (!Input.U32(PacketSize) || PacketSize == 0 ||
+                PacketSize > kMaxReliablePayload + 36u ||
+                Input.Remaining() < PacketSize) {
+                return std::nullopt;
+            }
+            ByteBuffer Packet(PacketSize);
+            if (!Input.Raw(Packet)) return std::nullopt;
+            const auto Decoded = decode_packet(Packet, false);
+            if (!Decoded.packet ||
+                Decoded.packet->header.type !=
+                    MessageType::DisplayTopologySnapshot ||
+                Decoded.packet->header.session_nonce != 1 ||
+                Decoded.packet->header.epoch != 0 ||
+                Decoded.packet->header.sequence == 0) {
+                return std::nullopt;
+            }
+            const auto& Message = std::get<DisplayTopologySnapshotMessage>(
+                Decoded.packet->message);
+            if (Message.Machine != Machine.Machine || Message.SessionNonce != 1) {
+                return std::nullopt;
+            }
+            Machine.Topology = Message.Topology;
+        }
+        Result.Machines.push_back(std::move(Machine));
+    }
+    if (!IsValidControlTopologyState(Result)) return std::nullopt;
+    return Result;
 }
 
 bool IsKnownStatus(ControlStatus Status) noexcept {
@@ -300,12 +397,48 @@ bool IsValidControlState(const ControlState& State) noexcept {
     return true;
 }
 
-bool IsValidControlResponse(const ControlResponse& Response) noexcept {
-    if (Response.RequestId == 0 || !IsKnownStatus(Response.Status)) return false;
-    if (Response.Status != ControlStatus::Ok && Response.State.has_value()) {
+bool IsValidControlTopologyState(const ControlTopologyState& State) {
+    if (State.Machines.empty() ||
+        State.Machines.size() > kMaximumControlTopologyMachines) {
         return false;
     }
-    return !Response.State || IsValidControlState(*Response.State);
+    std::size_t LocalCount = 0;
+    for (std::size_t Index = 0; Index < State.Machines.size(); ++Index) {
+        const auto& Machine = State.Machines[Index];
+        if (!IsNonzeroMachine(Machine.Machine) ||
+            !IsKnownTopologyStatus(Machine.Status) ||
+            (Machine.Local &&
+             Machine.Status != DisplayTopologyExchangeStatus::Ready) ||
+            (Machine.Local && Machine.PeerInputAllowed)) {
+            return false;
+        }
+        if (Machine.Local) ++LocalCount;
+        const bool Ready =
+            Machine.Status == DisplayTopologyExchangeStatus::Ready;
+        if (Ready != Machine.Topology.has_value() ||
+            (Machine.Topology &&
+             !IsValidDisplayTopologySnapshot(*Machine.Topology))) {
+            return false;
+        }
+        for (std::size_t Previous = 0; Previous < Index; ++Previous) {
+            if (State.Machines[Previous].Machine == Machine.Machine) {
+                return false;
+            }
+        }
+    }
+    return LocalCount == 1;
+}
+
+bool IsValidControlResponse(const ControlResponse& Response) {
+    if (Response.RequestId == 0 || !IsKnownStatus(Response.Status)) return false;
+    if (Response.Status != ControlStatus::Ok &&
+        (Response.State.has_value() || Response.Topologies.has_value())) {
+        return false;
+    }
+    if (Response.State && Response.Topologies) return false;
+    return (!Response.State || IsValidControlState(*Response.State)) &&
+           (!Response.Topologies ||
+            IsValidControlTopologyState(*Response.Topologies));
 }
 
 std::optional<ByteBuffer> EncodeControlRequest(const ControlRequest& Request) {
@@ -335,8 +468,13 @@ std::optional<ByteBuffer> EncodeControlResponse(const ControlResponse& Response)
     if (!IsValidControlResponse(Response)) return std::nullopt;
     Writer Payload;
     Payload.U16(static_cast<std::uint16_t>(Response.Status));
-    Payload.U8(Response.State.has_value() ? 1u : 0u);
-    if (Response.State) EncodeState(Payload, *Response.State);
+    const auto PayloadKind = Response.State ? 1u : Response.Topologies ? 2u : 0u;
+    Payload.U8(static_cast<std::uint8_t>(PayloadKind));
+    if (Response.State) {
+        EncodeState(Payload, *Response.State);
+    } else if (Response.Topologies) {
+        EncodeTopologyState(Payload, *Response.Topologies);
+    }
     auto PayloadBytes = Payload.Take();
     if (PayloadBytes.size() > kMaximumControlPayload) return std::nullopt;
     Writer Output;
@@ -351,16 +489,21 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
     if (!Header.Decoded) return {std::nullopt, Header.Error};
     Reader Input(Frame.subspan(kControlFrameHeaderSize));
     std::uint16_t RawStatus{};
-    std::uint8_t HasState{};
-    if (!Input.U16(RawStatus) || !Input.U8(HasState) || HasState > 1) {
+    std::uint8_t PayloadKind{};
+    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 2) {
         return {std::nullopt, ControlDecodeError::InvalidPayload};
     }
     ControlResponse Response;
     Response.RequestId = Header.Decoded->RequestId;
     Response.Status = static_cast<ControlStatus>(RawStatus);
-    if (HasState != 0) {
+    if (PayloadKind == 1) {
         Response.State = DecodeState(Input);
         if (!Response.State) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+    } else if (PayloadKind == 2) {
+        Response.Topologies = DecodeTopologyState(Input);
+        if (!Response.Topologies) {
             return {std::nullopt, ControlDecodeError::InvalidPayload};
         }
     }

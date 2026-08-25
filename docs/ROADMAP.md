@@ -42,62 +42,69 @@ Work proceeds in this order:
    capability-gated topology snapshots now use the authenticated reliable
    session, bind to the current peer/machine/nonce, expire after five seconds,
    and keep routes unready on missing, stale, malformed, oversized, or rejected
-   state. **Next:** Phase 3 configurator, tray integration, and Identify overlays.
-6. **Complete:** bounded LAN DNS-SD/mDNS discovery. `listen` and `serve`
+   state.
+6. **Phase 3 complete:** the native companion now exposes a presentation-only,
+   physical-size-scaled per-PC canvas, saved/offline displays, explicit
+   bidirectional adjacency suggestions, advanced one-way/partial-edge editing,
+   route-resolution status, atomic Local-before-save replacement, and
+   five-second local Identify overlays. Bounded read-only topology IPC remains
+   same-SID and does not expose focus or trust mutation. Single-instance,
+   first-run, tray, close-to-background, ordered exit, and user-scoped sign-in
+   startup behavior are also implemented. **Next:** Phase 4 controlled roaming.
+7. **Complete:** bounded LAN DNS-SD/mDNS discovery. `listen` and `serve`
    advertise `_desklink._udp.local`; `discover [1..30 seconds]` reports strict,
    expiring, deterministic candidates without connecting, pairing, granting a
    capability, or writing trust. Conflicting duplicate identities are marked
    ambiguous.
-7. **Complete foundation:** bounded foreground profile evaluation and native
+8. **Complete foundation:** bounded foreground profile evaluation and native
    Windows foreground observation. Rules match exact executable basenames with
    an optional fullscreen requirement; precedence is emergency, manual,
    profile, then default. A configured but uninspectable foreground produces a
    fail-local decision. The WinEvent source owns its message-loop thread and
    unhooks on that same thread.
-8. **Complete safety boundary:** the portable Host lifecycle disables routing,
+9. **Complete safety boundary:** the portable Host lifecycle disables routing,
    releases remote focus, synchronously tears down capture hooks, and then
    enters `GAME`/`LOCK_PC1`. Leaving a restricted mode requests a fresh focus
    transaction; capture cannot restart or enable until `FocusReady` and the
    initial state snapshot succeed. Win32 capture is restart-safe.
-9. **Complete:** foreground/profile decisions and bounded profile configuration
+10. **Complete:** foreground/profile decisions and bounded profile configuration
    are wired into the production Host CLI through one serialized lifecycle
    owner. Exact `exe=mode` rules, fullscreen-only rules, current-user manual
    overrides, `FocusReady`, renewal, and capture failures share the same ordered
    event boundary. Renewal and reconciliation run only while Remote.
-10. **Complete foundation:** event-driven shared-mode WASAPI loopback capture
+11. **Complete foundation:** event-driven shared-mode WASAPI loopback capture
     and render adapters normalize to exact 48 kHz/stereo/PCM16/5 ms blocks.
     Capture packet handling, renderer submission, and renderer buffering are
     bounded; silence, discontinuity, underrun, and module-local failure paths
     are explicit.
-11. **Complete:** capability-gated audio session/datagram wiring and receiver
+12. **Complete:** capability-gated audio session/datagram wiring and receiver
     jitter/render pumping. Sender and receiver require complementary local trust
     grants plus explicit runtime opt-in after `PeerValidated`; nonce, format,
     stream, sequence, and bounded queue checks precede playout.
-12. **Complete:** audio endpoint-loss/recovery with audio-only restart
+13. **Complete:** audio endpoint-loss/recovery with audio-only restart
     semantics. Scoped endpoint notifications stop stale WASAPI workers;
     restart-safe adapters reopen the current default endpoint with capped
     250 ms to 5 s backoff while the admitted session and input remain intact.
     Client/send rejection never triggers reopen.
-13. **Complete:** bounded adaptive jitter targeting. The receiver compares
+14. **Complete:** bounded adaptive jitter targeting. The receiver compares
     capture and steady arrival deltas, raises the 2-12 block target immediately
     on spikes/concealment, enters an explicit rebuffer state when latency must
     grow, and requires 200 stable samples for each one-block decrease.
-14. **Complete:** native Windows engineering-alpha wrapper and portable ZIP.
+15. **Complete:** native Windows engineering-alpha wrapper and portable ZIP.
     Typed fields launch the existing pairing/session executable without a shell;
     controller sessions start Local, runtime status and mode use the same-user
     control pipe, diagnostics remain bounded/in-memory, and the package contains
     only the Schannel production runtime.
-15. **Complete:** bounded clock-drift correction. A 400-sample occupancy window
+16. **Complete:** bounded clock-drift correction. A 400-sample occupancy window
     slews an asynchronous linear resampler in 50 ppm steps within a hard
     ±1000 ppm bound; source buffering remains capped at four blocks and
     discontinuities clear correction state.
-16. **Complete:** per-peer audio gain/mute. The active Host receiver applies
+17. **Complete:** per-peer audio gain/mute. The active Host receiver applies
     bounded attenuation after drift correction, ramps changes over one block,
     preserves policy across audio-only recovery, and exposes typed CLI/wrapper
     controls without changing the system mixer.
-17. **Implementation staged:** roaming Phases 1 and 2 are complete. The
-    configurator and Identify overlays follow in Phase 3, then controlled
-    experimental switching in Phase 4.
+18. **Implementation staged:** roaming Phases 1-3 are complete. Controlled
+    experimental switching follows in Phase 4.
 
 The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
@@ -105,8 +112,8 @@ work does not wait for unavailable hardware.
 
 ## Later milestones
 
-- configurator, Identify overlays, crossing hysteresis, and roaming policy
-- final tray/onboarding UI, Stream Deck integration, installer, and update flow
+- crossing hysteresis, landing, and roaming policy
+- final product polish, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project
 

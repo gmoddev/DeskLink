@@ -1,13 +1,21 @@
 #include "desklink/control.hpp"
+#include "desklink/pairing.hpp"
 #include "desklink/profile.hpp"
+#include "desklink/win32_application_settings.hpp"
 #include "desklink/win32_control.hpp"
+#include "desklink/win32_device_certificate.hpp"
+#include "desklink/win32_display_topology.hpp"
 #include "desklink/win32_launcher.hpp"
+#include "desklink/win32_monitor_configurator.hpp"
+#include "desklink/win32_pairing.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <array>
@@ -31,13 +39,21 @@ constexpr wchar_t kWindowClass[] = L"DeskLinkAlphaWindow.v1";
 constexpr UINT kStatusTimer = 1;
 constexpr UINT kProcessLogMessage = WM_APP + 1;
 constexpr UINT kProcessExitedMessage = WM_APP + 2;
+constexpr UINT kTrayMessage = WM_APP + 3;
+constexpr UINT kActivateMessage = WM_APP + 4;
+constexpr UINT kTrayIconId = 1;
+constexpr UINT kTrayOpen = 5'001;
+constexpr UINT kTrayReturnLocal = 5'002;
+constexpr UINT kTrayExit = 5'003;
 constexpr std::size_t kMaximumLogCharacters = 200'000;
 constexpr std::size_t kRetainedLogCharacters = 120'000;
+constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
 
 enum ControlId : int {
     StatusText = 100,
     RefreshStatus,
     ShowIdentity,
+    ArrangeMonitors,
     PeerAddress,
     PeerPort,
     DiscoverPeers,
@@ -62,6 +78,8 @@ enum ControlId : int {
     StopProcess,
     DiagnosticLog,
     ClearLog,
+    KeepRunningOnClose,
+    StartWithWindows,
 };
 
 struct HandleCloser {
@@ -90,6 +108,21 @@ std::optional<std::wstring> GetExecutablePath() {
         if (Buffer.size() >= 32'768) return std::nullopt;
         Buffer.resize(Buffer.size() * 2);
     }
+}
+
+std::optional<std::filesystem::path> GetDataDirectory() {
+    PWSTR RawPath{};
+    if (FAILED(SHGetKnownFolderPath(
+            FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &RawPath)) ||
+        !RawPath) {
+        return std::nullopt;
+    }
+    std::filesystem::path Result(RawPath);
+    CoTaskMemFree(RawPath);
+    Result /= L"DeskLink";
+    std::error_code Error;
+    std::filesystem::create_directories(Result, Error);
+    return Error ? std::nullopt : std::optional(Result);
 }
 
 std::wstring DecodeProcessOutput(std::span<const char> Bytes) {
@@ -152,9 +185,22 @@ std::wstring_view ModeName(desklink::DeskMode Mode) noexcept {
 class AlphaWindow final {
 public:
     explicit AlphaWindow(HINSTANCE Instance) : Instance_(Instance) {}
-    ~AlphaWindow() { ShutDownProcess(); }
+    ~AlphaWindow() {
+        RemoveTrayIcon();
+        ShutDownProcess();
+    }
 
-    bool Create(int ShowCommand) {
+    bool Create(int ShowCommand, bool StartInBackground) {
+        const auto DataDirectory = GetDataDirectory();
+        if (!DataDirectory) return false;
+        RoamingSettingsPath_ = *DataDirectory / L"roaming.settings";
+        ApplicationSettingsStore_ =
+            std::make_unique<desklink::Win32ApplicationSettingsStore>(
+                *DataDirectory / L"application.settings");
+        if (!ApplicationSettingsStore_->Load()) return false;
+        ApplicationSettings_ = ApplicationSettingsStore_->Current().value_or(
+            desklink::Win32ApplicationSettings{});
+
         WNDCLASSEXW Class{};
         Class.cbSize = sizeof(Class);
         Class.hInstance = Instance_;
@@ -170,10 +216,24 @@ public:
         Window_ = CreateWindowExW(
             0, kWindowClass, L"DeskLink Alpha", WS_OVERLAPPED | WS_CAPTION |
             WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT,
-            940, 810, nullptr, nullptr, Instance_, this);
+            940, 890, nullptr, nullptr, Instance_, this);
         if (!Window_) return false;
-        ShowWindow(Window_, ShowCommand);
-        UpdateWindow(Window_);
+        if (!AddTrayIcon()) {
+            DestroyWindow(Window_);
+            return false;
+        }
+        const bool FirstRun = !ApplicationSettings_.FirstRunComplete;
+        ShowWindow(
+            Window_, StartInBackground && !FirstRun ? SW_HIDE : ShowCommand);
+        if (IsWindowVisible(Window_)) UpdateWindow(Window_);
+        if (FirstRun) {
+            MessageBoxW(
+                Window_,
+                L"Welcome to DeskLink.\n\n1. Pair this PC with a nearby PC.\n2. Start a receiver or controller session.\n3. Open Arrange monitors to identify displays and create explicit edge connections.\n\nDeskLink always starts with input Local.",
+                L"DeskLink first run", MB_OK | MB_ICONINFORMATION);
+            ApplicationSettings_.FirstRunComplete = true;
+            (void)ApplicationSettingsStore_->Save(ApplicationSettings_);
+        }
         return true;
     }
 
@@ -212,7 +272,29 @@ private:
             case kProcessExitedMessage:
                 FinishProcess(static_cast<DWORD>(WParam));
                 return 0;
+            case kTrayMessage:
+                HandleTrayMessage(static_cast<UINT>(LParam));
+                return 0;
+            case kActivateMessage:
+                RestoreWindow();
+                return 0;
+            case WM_QUERYENDSESSION:
+                return TRUE;
+            case WM_ENDSESSION:
+                if (WParam != FALSE) {
+                    ExitRequested_ = true;
+                    ReturnLocal(false);
+                    StopProcessGracefully();
+                    DestroyWindow(Window_);
+                }
+                return 0;
             case WM_CLOSE:
+                if (!ExitRequested_ && ApplicationSettings_.CloseToTray) {
+                    ShowWindow(Window_, SW_HIDE);
+                    AppendLog(
+                        L"[App:Lifecycle] window hidden; DeskLink remains active\r\n");
+                    return 0;
+                }
                 if (ActiveProcess_ && MessageBoxW(
                         Window_,
                         L"DeskLink will return input local and stop the active operation. Continue?",
@@ -226,6 +308,7 @@ private:
                 return 0;
             case WM_DESTROY:
                 KillTimer(Window_, kStatusTimer);
+                RemoveTrayIcon();
                 ShutDownProcess();
                 if (TitleFont_) DeleteObject(TitleFont_);
                 if (Font_) DeleteObject(Font_);
@@ -279,6 +362,8 @@ private:
                       700, 76, 95, 30, RefreshStatus);
         CreateControl(L"BUTTON", L"Identity", BS_PUSHBUTTON,
                       805, 76, 95, 30, ShowIdentity);
+        CreateControl(L"BUTTON", L"Arrange monitors", BS_PUSHBUTTON,
+                      700, 112, 200, 28, ArrangeMonitors);
 
         CreateControl(L"BUTTON", L"Peer", BS_GROUPBOX,
                       15, 160, 900, 85);
@@ -373,8 +458,28 @@ private:
         CreateControl(L"BUTTON", L"Clear", BS_PUSHBUTTON,
                       825, 580, 72, 30, ClearLog);
 
+        CreateControl(L"BUTTON", L"Application", BS_GROUPBOX,
+                      15, 735, 900, 78);
+        CreateControl(
+            L"BUTTON", L"Keep DeskLink running when I close the window",
+            BS_AUTOCHECKBOX | WS_TABSTOP, 32, 758, 370, 24,
+            KeepRunningOnClose);
+        CreateControl(
+            L"BUTTON", L"Start DeskLink when I sign in to Windows",
+            BS_AUTOCHECKBOX | WS_TABSTOP, 430, 758, 340, 24,
+            StartWithWindows);
+        CreateControl(
+            L"STATIC", L"Use the tray menu to open DeskLink, return Local, or exit.",
+            SS_LEFT, 32, 787, 700, 20);
+
         CheckDlgButton(Window_, GrantInput, BST_CHECKED);
         CheckDlgButton(Window_, GrantTopology, BST_CHECKED);
+        CheckDlgButton(
+            Window_, KeepRunningOnClose,
+            ApplicationSettings_.CloseToTray ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(
+            Window_, StartWithWindows,
+            ApplicationSettings_.RunAtLogin ? BST_CHECKED : BST_UNCHECKED);
         SetTimer(Window_, kStatusTimer, 1'000, nullptr);
         RefreshRuntimeStatus();
         UpdateButtons();
@@ -387,6 +492,7 @@ private:
         switch (Id) {
             case RefreshStatus: RefreshRuntimeStatus(); break;
             case ShowIdentity: StartSimple(desklink::LauncherOperation::Identity); break;
+            case ArrangeMonitors: OpenMonitorConfigurator(); break;
             case DiscoverPeers: StartSimple(desklink::LauncherOperation::Discover); break;
             case OpenPairing: StartPairing(false); break;
             case PairPeer: StartPairing(true); break;
@@ -398,6 +504,13 @@ private:
             case ApplyAudioGain: SendAudioGain(); break;
             case ToggleAudioMute: SendAudioMute(); break;
             case ClearLog: SetWindowTextW(LogControl_, L""); break;
+            case KeepRunningOnClose:
+            case StartWithWindows:
+                SaveApplicationSettings();
+                break;
+            case kTrayOpen: RestoreWindow(); break;
+            case kTrayReturnLocal: ReturnLocal(true); break;
+            case kTrayExit: ExitFromTray(); break;
             default: break;
         }
     }
@@ -446,6 +559,174 @@ private:
         if (Copied != Length) return std::nullopt;
         Result.resize(static_cast<std::size_t>(Copied));
         return Result;
+    }
+
+    std::optional<desklink::ControlTopologyState> QueryDisplayTopologies() {
+        const auto Response = SendControl(
+            desklink::GetDisplayTopologiesControlRequest{},
+            std::chrono::milliseconds{750});
+        if (Response && Response->Status == desklink::ControlStatus::Ok &&
+            Response->Topologies) {
+            return Response->Topologies;
+        }
+
+        try {
+            desklink::BCryptPairingCrypto Crypto;
+            auto Certificate = desklink::Win32DeviceCertificate::LoadOrCreate(
+                kDeviceKeyName, Crypto);
+            desklink::Win32DisplayTopology Topology;
+            if (!Certificate || !Topology.Refresh()) return std::nullopt;
+            desklink::MachineId LocalMachine{};
+            std::copy_n(
+                Certificate->CertificatePin().begin(), LocalMachine.size(),
+                LocalMachine.begin());
+            desklink::ControlTopologyState State;
+            State.Machines.push_back(desklink::ControlMachineTopology{
+                LocalMachine,
+                desklink::DisplayTopologyExchangeStatus::Ready,
+                Topology.Current(), true, false});
+            return desklink::IsValidControlTopologyState(State)
+                ? std::optional(std::move(State))
+                : std::nullopt;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    bool EnsureLocalForConfigurationSave() {
+        const bool Session = ActiveOperation_ ==
+                desklink::LauncherOperation::Serve ||
+            ActiveOperation_ == desklink::LauncherOperation::Focus;
+        if (!ActiveProcess_ || !Session) return true;
+        const auto Before = SendControl(
+            desklink::GetStateControlRequest{},
+            std::chrono::milliseconds{500});
+        if (!Before || Before->Status != desklink::ControlStatus::Ok ||
+            !Before->State) {
+            return false;
+        }
+        if (Before->State->RemoteFocused || Before->State->CaptureActive) {
+            if (!SendMode(desklink::DeskMode::LockPc1, true)) return false;
+        }
+        const auto After = SendControl(
+            desklink::GetStateControlRequest{},
+            std::chrono::milliseconds{500});
+        return After && After->Status == desklink::ControlStatus::Ok &&
+               After->State && !After->State->RemoteFocused &&
+               !After->State->CaptureActive;
+    }
+
+    void OpenMonitorConfigurator() {
+        const auto Saved = desklink::ShowWin32MonitorConfigurator(
+            Window_, RoamingSettingsPath_,
+            desklink::Win32MonitorConfiguratorCallbacks{
+                [this] { return QueryDisplayTopologies(); },
+                [this] { return EnsureLocalForConfigurationSave(); },
+            });
+        AppendLog(Saved
+            ? L"[Roaming:Configurator] monitor graph saved; edge switching remains disabled\r\n"
+            : L"[Roaming:Configurator] configurator closed without a new saved graph\r\n");
+    }
+
+    void SaveApplicationSettings() {
+        if (!ApplicationSettingsStore_) return;
+        const auto Previous = ApplicationSettings_;
+        auto Candidate = Previous;
+        Candidate.CloseToTray = IsChecked(KeepRunningOnClose);
+        Candidate.RunAtLogin = IsChecked(StartWithWindows);
+        const auto Executable = GetExecutablePath();
+        if (!Executable || !desklink::SetWin32RunAtLogin(
+                Candidate.RunAtLogin, *Executable) ||
+            !ApplicationSettingsStore_->Save(Candidate)) {
+            if (Executable) {
+                (void)desklink::SetWin32RunAtLogin(
+                    Previous.RunAtLogin, *Executable);
+            }
+            CheckDlgButton(
+                Window_, KeepRunningOnClose,
+                Previous.CloseToTray ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(
+                Window_, StartWithWindows,
+                Previous.RunAtLogin ? BST_CHECKED : BST_UNCHECKED);
+            MessageBoxW(
+                Window_, L"The application preference could not be saved.",
+                L"DeskLink settings", MB_OK | MB_ICONERROR);
+            return;
+        }
+        ApplicationSettings_ = Candidate;
+        AppendLog(L"[App:Settings] application preferences saved\r\n");
+    }
+
+    bool AddTrayIcon() {
+        TrayIcon_ = {};
+        TrayIcon_.cbSize = sizeof(TrayIcon_);
+        TrayIcon_.hWnd = Window_;
+        TrayIcon_.uID = kTrayIconId;
+        TrayIcon_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        TrayIcon_.uCallbackMessage = kTrayMessage;
+        TrayIcon_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        wcscpy_s(TrayIcon_.szTip, L"DeskLink — Local");
+        TrayActive_ = Shell_NotifyIconW(NIM_ADD, &TrayIcon_) != FALSE;
+        return TrayActive_;
+    }
+
+    void RemoveTrayIcon() noexcept {
+        if (!TrayActive_) return;
+        (void)Shell_NotifyIconW(NIM_DELETE, &TrayIcon_);
+        TrayActive_ = false;
+    }
+
+    void UpdateTrayIcon() {
+        if (!TrayActive_) return;
+        const wchar_t* Status = RuntimeAvailable_
+            ? L"DeskLink — Connected / Local"
+            : ActiveProcess_
+                ? L"DeskLink — Connecting"
+                : L"DeskLink — Local";
+        wcscpy_s(TrayIcon_.szTip, Status);
+        TrayIcon_.uFlags = NIF_TIP;
+        (void)Shell_NotifyIconW(NIM_MODIFY, &TrayIcon_);
+    }
+
+    void RestoreWindow() {
+        ShowWindow(Window_, SW_RESTORE);
+        SetForegroundWindow(Window_);
+    }
+
+    void HandleTrayMessage(UINT Message) {
+        if (Message == WM_LBUTTONUP || Message == WM_LBUTTONDBLCLK) {
+            RestoreWindow();
+            return;
+        }
+        if (Message != WM_RBUTTONUP && Message != WM_CONTEXTMENU) return;
+        const auto Menu = CreatePopupMenu();
+        if (!Menu) return;
+        const wchar_t* Status = RuntimeAvailable_
+            ? L"Status: connected"
+            : ActiveProcess_ ? L"Status: connecting" : L"Status: local / idle";
+        AppendMenuW(Menu, MF_STRING | MF_DISABLED, 0, Status);
+        AppendMenuW(Menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(Menu, MF_STRING, kTrayOpen, L"Open DeskLink");
+        AppendMenuW(
+            Menu, MF_STRING | (ActiveProcess_ ? MF_ENABLED : MF_GRAYED),
+            kTrayReturnLocal, L"Return Local");
+        AppendMenuW(Menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(Menu, MF_STRING, kTrayExit, L"Exit DeskLink");
+        POINT Cursor{};
+        GetCursorPos(&Cursor);
+        SetForegroundWindow(Window_);
+        const auto Command = TrackPopupMenu(
+            Menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            Cursor.x, Cursor.y, 0, Window_, nullptr);
+        DestroyMenu(Menu);
+        if (Command != 0) HandleCommand(static_cast<int>(Command));
+    }
+
+    void ExitFromTray() {
+        ExitRequested_ = true;
+        ReturnLocal(false);
+        StopProcessGracefully();
+        DestroyWindow(Window_);
     }
 
     std::optional<desklink::LauncherRequest> BaseNetworkRequest() const {
@@ -880,6 +1161,7 @@ private:
         EnableWindow(GetDlgItem(Window_, ToggleAudioMute),
                      Controller && RuntimeAvailable_);
         if (!Busy) RuntimeAvailable_ = false;
+        UpdateTrayIcon();
     }
 
     HINSTANCE Instance_{};
@@ -900,18 +1182,37 @@ private:
     std::jthread ProcessThread_;
     std::optional<desklink::LauncherOperation> ActiveOperation_;
     std::atomic_uint64_t RequestId_{1};
+    std::filesystem::path RoamingSettingsPath_;
+    std::unique_ptr<desklink::Win32ApplicationSettingsStore>
+        ApplicationSettingsStore_;
+    desklink::Win32ApplicationSettings ApplicationSettings_;
+    NOTIFYICONDATAW TrayIcon_{};
     bool RuntimeAvailable_{};
+    bool TrayActive_{};
+    bool ExitRequested_{};
 };
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, PWSTR, int ShowCommand) {
+int WINAPI wWinMain(
+    HINSTANCE Instance, HINSTANCE, PWSTR CommandLine, int ShowCommand) {
     INITCOMMONCONTROLSEX Controls{sizeof(Controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&Controls);
     (void)SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    const auto InstanceMutex = TakeHandle(CreateMutexW(
+        nullptr, FALSE, L"Local\\DeskLink.Alpha.v1"));
+    if (!InstanceMutex) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        const auto Existing = FindWindowW(kWindowClass, nullptr);
+        if (Existing) PostMessageW(Existing, kActivateMessage, 0, 0);
+        return 0;
+    }
+    const bool StartInBackground = CommandLine &&
+        std::wstring_view(CommandLine) == L"--background";
+
     AlphaWindow Window(Instance);
-    if (!Window.Create(ShowCommand)) {
+    if (!Window.Create(ShowCommand, StartInBackground)) {
         MessageBoxW(nullptr, L"DeskLink Alpha could not create its window.",
                     L"DeskLink Alpha", MB_OK | MB_ICONERROR);
         return 1;

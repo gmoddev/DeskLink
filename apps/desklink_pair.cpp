@@ -2271,6 +2271,75 @@ int RunTrusted(const CommandLine& Command,
 
     desklink::Win32ControlPipeServer ControlServer(
         [&](const desklink::ControlRequest& Request) {
+            if (std::holds_alternative<
+                    desklink::GetDisplayTopologiesControlRequest>(
+                    Request.Payload)) {
+                desklink::Win32DisplayTopology LocalTopology;
+                if (!LocalTopology.Refresh()) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady,
+                        std::nullopt, std::nullopt};
+                }
+
+                desklink::ControlTopologyState State;
+                State.Machines.push_back(desklink::ControlMachineTopology{
+                    LocalIdentity.machine_id,
+                    desklink::DisplayTopologyExchangeStatus::Ready,
+                    LocalTopology.Current(), true, false});
+
+                std::vector<std::shared_ptr<AgentRuntime>> Agents;
+                std::shared_ptr<HostRuntime> ActiveHost;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    Agents = AgentRuntimes;
+                    ActiveHost = Host;
+                }
+                std::sort(
+                    Agents.begin(), Agents.end(),
+                    [](const auto& Left, const auto& Right) {
+                        return Left->PeerMachine < Right->PeerMachine;
+                    });
+                const auto AppendRemote = [&](const auto& Runtime) {
+                    if (State.Machines.size() >=
+                        desklink::kMaximumControlTopologyMachines) {
+                        return;
+                    }
+                    auto Status = Runtime->Session.DisplayTopologyStatus();
+                    auto Topology = Runtime->Session.RemoteDisplayTopology();
+                    if (Topology) {
+                        Status = desklink::DisplayTopologyExchangeStatus::Ready;
+                    } else if (Status ==
+                               desklink::DisplayTopologyExchangeStatus::Ready) {
+                        Status = desklink::DisplayTopologyExchangeStatus::Synchronizing;
+                    }
+                    State.Machines.push_back(desklink::ControlMachineTopology{
+                        Runtime->PeerMachine, Status, std::move(Topology), false,
+                        Runtime->Session.PeerHasCapability(
+                            desklink::Capability::InputInject)});
+                };
+                if (Command.Mode == Operation::Serve) {
+                    for (const auto& Runtime : Agents) AppendRemote(Runtime);
+                } else if (ActiveHost) {
+                    AppendRemote(ActiveHost);
+                }
+
+                std::sort(
+                    State.Machines.begin() + 1, State.Machines.end(),
+                    [](const auto& Left, const auto& Right) {
+                        return Left.Machine < Right.Machine;
+                    });
+                if (State.Machines.size() >
+                        desklink::kMaximumControlTopologyMachines ||
+                    !desklink::IsValidControlTopologyState(State)) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::Failed,
+                        std::nullopt, std::nullopt};
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Ok,
+                    std::nullopt, std::move(State)};
+            }
+
             if (std::holds_alternative<desklink::GetStateControlRequest>(
                     Request.Payload)) {
                 desklink::ControlState State;

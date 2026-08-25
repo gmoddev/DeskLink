@@ -35,8 +35,11 @@ The current build proves the core invariants independently of Windows networking
 | Roaming preference persistence | Done | Versioned 512 KiB-bounded exact codec and atomic current-user replacement; canvas positions remain presentation-only and trust/identity stay in security stores |
 | Authenticated topology exchange | Done | Explicit trust grant; reliable snapshot bound to PeerValidated session, expected machine, and fresh nonce; canonical 64-display/64 KiB bounds; two-second refresh and five-second fail-closed freshness |
 | Roaming connection/route status | Done | Peer and route state are separate; missing capability/display, unsupported direction, invalid snapshot, and topology synchronization cannot report Ready |
+| Monitor configurator | Done | Native per-PC physical-size canvas; estimated/offline states; explicit bidirectional suggestions; manual one-way/partial segments; complete-graph validation and atomic Local-before-save replacement |
+| Identify overlays | Done | One five-second topmost/no-activate/click-through overlay per active local display; resolution, refresh, PC, and estimate status; no capture or suppression |
+| Companion lifecycle | Done | Single instance; first-run guidance; close-to-tray default; tray Open/Return Local/Exit; ordered shutdown; atomic preferences and optional current-user sign-in startup |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
-| Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode`/audio gain/mute |
+| Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded typed state/mode/audio plus read-only canonical topology snapshots for at most eight machines/512 KiB |
 | LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
 | Foreground profile foundation | Done | At most 32 exact executable-name rules; optional fullscreen match; emergency/manual/profile/default precedence; uninspectable configured foreground fails local |
 | Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
@@ -143,6 +146,10 @@ The current test suite verifies:
 59. pre-admission refusal and end-to-end bidirectional HostSession/AgentSession topology exchange, local-machine pinning, stale generation handling, malformed traffic invalidation, nonce rejection, and fresh reconnect recovery
 60. route status remains unready for authenticating peers, synchronization, missing grants/displays, unsupported directions, and rejected topology
 61. alpha launcher forwards the explicit topology grant while retaining production Schannel pinning
+62. bounded control-topology codec and same-user named-pipe round trip, including local-machine uniqueness, Ready/snapshot correspondence, and mutually exclusive response payloads
+63. physical-size canvas construction, estimate/offline presentation, explicit bidirectional adjacency suggestion, and proof that canvas movement cannot affect stable route resolution
+64. strict atomic application-preference persistence with malformed/trailing-data rejection
+65. first-save DPAPI trust persistence creates only the exact configured parent directory before atomic replacement
 
 Build/test result in the creation environment:
 
@@ -166,7 +173,7 @@ Build/test result in the creation environment:
 
 ### P2 — final product surface
 
-- tray/onboarding UI beyond the completed engineering-alpha wrapper
+- final onboarding and tray visual polish beyond the completed companion lifecycle
 - Stream Deck plugin
 - installer/update flow
 - diagnostics/telemetry that never logs input content
@@ -230,13 +237,15 @@ Bounded adaptive jitter targeting, rebuffer accounting, and asynchronous clock-
 drift correction and per-peer gain/mute are complete. Roaming Phase 1 adds
 bounded display presentation metadata, the strict persisted directional graph,
 current-topology stable-identity resolution, and atomic preferences without
-allowing canvas geometry to influence routing. Phase 2 now adds the explicit
+allowing canvas geometry to influence routing. Phase 2 adds the explicit
 topology capability, bounded reliable snapshots, peer/machine/nonce admission,
 freshness timeout, and separate peer/route readiness without edge switching.
-The configurator and Identify overlays are the next roaming slice. The
-native Windows alpha wrapper is complete
-and provides the manual pairing/session/status surface used for future physical
-validation without changing any trust or transport boundary.
+Phase 3 adds the native presentation-only configurator, explicit edge editing,
+offline/route status, Local-before-save atomic replacement, Identify overlays,
+and the single-instance tray/startup lifecycle. Phase 4 controlled crossing is
+next. The native Windows alpha wrapper provides the manual pairing, session,
+status, and configuration surface used for physical validation without changing
+any trust or transport boundary.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work
