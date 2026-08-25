@@ -1,4 +1,4 @@
-# DeskLink Wire Protocol V1
+# DeskLink Wire Protocol V2
 
 ## 1. Scope
 
@@ -17,7 +17,7 @@ Every message has a 36-byte envelope:
 | Field | Size | Description |
 |---|---:|---|
 | magic | 4 | `DLNK` / `0x444C4E4B` |
-| version | 2 | protocol version, currently `1` |
+| version | 2 | protocol version, currently `2` |
 | message_type | 2 | `MessageType` |
 | payload_size | 4 | bytes following envelope |
 | session_nonce | 8 | local logical session identifier |
@@ -52,6 +52,7 @@ Heartbeat
 
 ```text
 PointerPosition
+PointerMotion
 AudioFrame
 ```
 
@@ -195,7 +196,21 @@ Axes are `1` for vertical and `2` for horizontal. Delta uses network byte
 order, must be nonzero, and is bounded to `-1200..1200`. Positive and negative
 values retain Windows' native vertical/horizontal wheel direction semantics.
 Wheel events use the reliable ordered lane because deltas are cumulative and
-must not be dropped or reordered like latest-state pointer positions.
+must not be dropped or reordered.
+
+### PointerMotion — type 25
+
+```text
+delta_x                  i32
+delta_y                  i32
+```
+
+Ordinary Raw Input movement uses signed relative device counts rather than a
+coordinate normalized to the controlling PC's virtual desktop. At least one
+axis must be nonzero and each axis is bounded to `-1000000..1000000`.
+`PointerPosition` remains the absolute display-aware message for explicit
+monitor transitions and resynchronization. Both pointer message types share
+one monotonic datagram sequence gate for the current focus epoch.
 
 ### SetAudioGain — type 30
 
@@ -217,7 +232,7 @@ capture_timestamp_us    u64
 pcm                      remaining payload
 ```
 
-V1 recommendation:
+V2 recommendation:
 
 ```text
 sample_rate = 48000
@@ -248,7 +263,7 @@ Host                              Agent
   │                                 │
   │ KeyEvent(epoch=E)               │
   ├────────────────────────────────>│
-  │ PointerPosition(epoch=E)        │
+  │ PointerMotion(epoch=E)          │
   ╞════════════════════════════════>│
   │ FocusRenew(epoch=E)             │
   ├────────────────────────────────>│
@@ -260,7 +275,9 @@ On lease expiry the Agent invalidates E.
 
 ## 6. Session nonce
 
-The V1 envelope includes a 64-bit logical session nonce. In production it should be generated from a cryptographically strong random source when a DeskLink logical session is established and checked consistently by the Host/Agent session binding layer.
+The V2 envelope includes a 64-bit logical session nonce. It is generated from
+a cryptographically strong random source when a DeskLink logical session is
+established and checked consistently by the Host/Agent session binding layer.
 
 It does not replace QUIC/TLS anti-replay or authentication.
 
@@ -268,7 +285,7 @@ It does not replace QUIC/TLS anti-replay or authentication.
 
 ## 7. Versioning policy
 
-V1 is strict. Unknown message types and unsupported envelope versions are rejected.
+V2 is strict. Unknown message types and unsupported envelope versions are rejected.
 
 Future compatibility should be introduced deliberately, preferably using:
 
@@ -289,7 +306,10 @@ Production adapters must not read an attacker-provided length and allocate arbit
 
 ## 9. Realtime sequence semantics
 
-Pointer datagram sequence numbers are monotonic within a focus epoch. The Agent rejects a pointer packet whose sequence is less than or equal to the most recently accepted pointer sequence for that epoch. This prevents datagram reordering from moving the cursor backward.
+Pointer datagram sequence numbers are monotonic within a focus epoch. Absolute
+position and relative motion messages share the same newest-accepted sequence.
+The Agent rejects an older or duplicate pointer packet, preventing reordered
+motion from being applied after a newer position or motion event.
 
 Audio sequence numbers are consumed by the jitter buffer, which intentionally supports limited reordering rather than strict newest-only semantics.
 

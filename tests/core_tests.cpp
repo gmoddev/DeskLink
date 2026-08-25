@@ -21,6 +21,7 @@
 #include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_display_topology.hpp"
 #include "desklink/win32_foreground.hpp"
+#include "desklink/win32_launcher.hpp"
 #include "desklink/win32_pairing.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -92,6 +93,10 @@ public:
     bool inject_pointer(const desklink::PointerPositionMessage& event) override {
         pointers.push_back(event); return true;
     }
+    bool InjectPointerMotion(
+        const desklink::PointerMotionMessage& Message) override {
+        motions.push_back(Message); return true;
+    }
     bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
         wheels.push_back(Message); return true;
     }
@@ -103,6 +108,7 @@ public:
     std::vector<desklink::KeyEventMessage> keys;
     std::vector<desklink::MouseButtonMessage> buttons;
     std::vector<desklink::PointerPositionMessage> pointers;
+    std::vector<desklink::PointerMotionMessage> motions;
     std::vector<desklink::MouseWheelMessage> wheels;
     std::vector<desklink::InputStateSnapshotMessage> snapshots;
     bool ReconcileSucceeds{true};
@@ -184,6 +190,27 @@ void protocol_round_trip() {
     CHECK(got.display_id == 3);
     CHECK(got.normalized_x == 12345);
     CHECK(got.normalized_y == 54321);
+}
+
+void PointerMotionRoundTripAndValidation() {
+    using namespace desklink;
+    EnvelopeHeader Header;
+    Header.session_nonce = 44;
+    Header.epoch = 9;
+    Header.sequence = 101;
+    const auto Bytes = encode_packet(Header, PointerMotionMessage{-321, 654});
+    const auto Decoded = decode_packet(Bytes, true);
+    CHECK(Decoded.packet.has_value());
+    const auto& Motion = std::get<PointerMotionMessage>(Decoded.packet->message);
+    CHECK(Motion.DeltaX == -321);
+    CHECK(Motion.DeltaY == 654);
+    CHECK(!decode_packet(Bytes, false).packet.has_value());
+
+    const auto Zero = encode_packet(Header, PointerMotionMessage{});
+    CHECK(!decode_packet(Zero, true).packet.has_value());
+    const auto Oversized = encode_packet(
+        Header, PointerMotionMessage{kMaximumPointerMotionDelta + 1, 0});
+    CHECK(!decode_packet(Oversized, true).packet.has_value());
 }
 
 void ControlProtocolRoundTripAndValidation() {
@@ -607,6 +634,14 @@ void host_agent_focus_transaction() {
     CHECK(agent.handle(*pointer.packet) == AgentDecision::Accepted);
     CHECK(injector.pointers.size() == 1);
 
+    CHECK(!host.PointerMotion(PointerMotionMessage{}).has_value());
+    auto MotionBytes = host.PointerMotion(PointerMotionMessage{25, -12});
+    CHECK(MotionBytes.has_value());
+    auto Motion = decode_packet(*MotionBytes, true);
+    CHECK(Motion.packet.has_value());
+    CHECK(agent.handle(*Motion.packet) == AgentDecision::Accepted);
+    CHECK(injector.motions.size() == 1);
+
     auto WheelBytes = host.MouseWheel(
         MouseWheelMessage{MouseWheelAxis::Vertical, 120});
     CHECK(WheelBytes.has_value());
@@ -850,7 +885,8 @@ void out_of_order_pointer_rejected() {
     EnvelopeHeader newest_h;
     newest_h.epoch = epoch;
     newest_h.sequence = 20;
-    auto newest = decode_packet(encode_packet(newest_h, PointerPositionMessage{0, 50000, 50000}), true);
+    auto newest = decode_packet(
+        encode_packet(newest_h, PointerMotionMessage{50, -20}), true);
     CHECK(newest.packet.has_value());
     CHECK(agent.handle(*newest.packet) == AgentDecision::Accepted);
 
@@ -860,7 +896,8 @@ void out_of_order_pointer_rejected() {
     auto old = decode_packet(encode_packet(old_h, PointerPositionMessage{0, 100, 100}), true);
     CHECK(old.packet.has_value());
     CHECK(agent.handle(*old.packet) == AgentDecision::RejectedSequence);
-    CHECK(injector.pointers.size() == 1);
+    CHECK(injector.motions.size() == 1);
+    CHECK(injector.pointers.empty());
 }
 
 void stale_focus_ready_cannot_win_new_transaction() {
@@ -965,6 +1002,7 @@ void secure_session_end_to_end() {
     CHECK(host.send_button(MouseButtonMessage{MouseButtonId::X1, true}));
     CHECK(host.SendInputStateSnapshot());
     CHECK(host.send_pointer(PointerPositionMessage{0, 30000, 31000}));
+    CHECK(host.SendPointerMotion(PointerMotionMessage{18, -7}));
     CHECK(host.SendWheel(MouseWheelMessage{MouseWheelAxis::Horizontal, -120}));
     CHECK(injector.keys.size() == 2);
     CHECK(injector.buttons.size() == 1);
@@ -973,6 +1011,7 @@ void secure_session_end_to_end() {
     CHECK(InputSnapshotKeyDown(injector.snapshots.back(), 0x1D, true));
     CHECK(InputSnapshotButtonDown(injector.snapshots.back(), MouseButtonId::X1));
     CHECK(injector.pointers.size() == 1);
+    CHECK(injector.motions.size() == 1);
     CHECK(injector.wheels.size() == 1);
 
     clock.advance(std::chrono::milliseconds(800));
@@ -1597,6 +1636,100 @@ void WindowsCurrentUserControlPipeRoundTrip() {
         std::chrono::milliseconds{25}).has_value());
 }
 
+void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
+    using namespace desklink;
+
+    LauncherRequest Focus;
+    Focus.Operation = LauncherOperation::Focus;
+    Focus.Host = L"desklink-peer.local";
+    Focus.Port = 43'821;
+    Focus.CaptureInput = true;
+    Focus.ReceiveAudio = true;
+    const auto FocusArguments = BuildLauncherArguments(Focus);
+    CHECK(FocusArguments.has_value());
+    const std::vector<std::wstring> ExpectedFocus{
+        L"focus", L"desklink-peer.local", L"43821", L"--capture",
+        L"--receive-audio", L"--default-mode", L"lock-pc1",
+        L"--tls-provider", L"schannel"};
+    CHECK(*FocusArguments == ExpectedFocus);
+
+    Focus.PointerCalibration.GainPercent = 175;
+    Focus.PointerCalibration.SourceDpi = 1'600;
+    const auto CalibratedFocusArguments = BuildLauncherArguments(Focus);
+    CHECK(CalibratedFocusArguments.has_value());
+    const std::vector<std::wstring> ExpectedCalibratedFocus{
+        L"focus", L"desklink-peer.local", L"43821", L"--capture",
+        L"--pointer-gain", L"175", L"--pointer-dpi", L"1600",
+        L"--receive-audio", L"--default-mode", L"lock-pc1",
+        L"--tls-provider", L"schannel"};
+    CHECK(*CalibratedFocusArguments == ExpectedCalibratedFocus);
+    Focus.PointerCalibration = {};
+
+    LauncherRequest Pair;
+    Pair.Operation = LauncherOperation::PairListen;
+    Pair.GrantInput = true;
+    Pair.GrantAudioReceive = true;
+    const auto PairArguments = BuildLauncherArguments(Pair);
+    CHECK(PairArguments.has_value());
+    const std::vector<std::wstring> ExpectedPair{
+        L"listen", L"43821", L"--grant-input",
+        L"--grant-audio-receive", L"--tls-provider", L"schannel"};
+    CHECK(*PairArguments == ExpectedPair);
+
+    Focus.Host = L"host with spaces";
+    CHECK(!BuildLauncherArguments(Focus).has_value());
+    Focus.Host = L"192.168.0.108:43821";
+    CHECK(!BuildLauncherArguments(Focus).has_value());
+    Focus.Host = L"[::1]:43821";
+    CHECK(!BuildLauncherArguments(Focus).has_value());
+    Focus.Host = L"[::1]";
+    CHECK(BuildLauncherArguments(Focus).has_value());
+    Focus.Host = L"desklink-peer.local";
+    Focus.GrantInput = true;
+    CHECK(!BuildLauncherArguments(Focus).has_value());
+
+    CHECK(QuoteWindowsCommandArgument(L"plain") == L"plain");
+    CHECK(QuoteWindowsCommandArgument(L"") == L"\"\"");
+    CHECK(QuoteWindowsCommandArgument(L"two words") == L"\"two words\"");
+    CHECK(QuoteWindowsCommandArgument(L"a\"b") == L"\"a\\\"b\"");
+    CHECK(QuoteWindowsCommandArgument(L"C:\\Program Files\\") ==
+          L"\"C:\\Program Files\\\\\"");
+    const auto CommandLine = BuildWindowsCommandLine(
+        L"C:\\Program Files\\DeskLink\\desklink_pair.exe",
+        *PairArguments);
+    CHECK(CommandLine.has_value());
+    CHECK(CommandLine->find(L"--tls-provider schannel") != std::wstring::npos);
+}
+
+void WindowsPointerMotionScalingIsBoundedAndRetainsFractions() {
+    using namespace desklink;
+    std::optional<PointerMotionMessage> Motion;
+
+    PointerMotionScaler Raw({100, 0});
+    CHECK(Raw.Scale(12, -7, Motion));
+    CHECK(Motion.has_value());
+    CHECK(Motion->DeltaX == 12 && Motion->DeltaY == -7);
+
+    PointerMotionScaler Doubled({200, 0});
+    CHECK(Doubled.Scale(12, -7, Motion));
+    CHECK(Motion->DeltaX == 24 && Motion->DeltaY == -14);
+
+    PointerMotionScaler Normalized({100, 1'600});
+    CHECK(Normalized.Scale(12, -8, Motion));
+    CHECK(Motion->DeltaX == 6 && Motion->DeltaY == -4);
+
+    PointerMotionScaler Fractional({25, 0});
+    for (int Index = 0; Index < 3; ++Index) {
+        CHECK(Fractional.Scale(1, 0, Motion));
+        CHECK(!Motion.has_value());
+    }
+    CHECK(Fractional.Scale(1, 0, Motion));
+    CHECK(Motion.has_value() && Motion->DeltaX == 1);
+
+    PointerMotionScaler Invalid({24, 0});
+    CHECK(!Invalid.Scale(1, 0, Motion));
+}
+
 void WindowsDisplayTopologyEnumeratesWhenAvailable() {
     using namespace desklink;
 
@@ -1831,7 +1964,7 @@ void DiscoveryPropertiesAreStrictAndRoundTrip() {
                .has_value());
 
     auto WrongVersion = *Properties;
-    WrongVersion[1].second = "2";
+    WrongVersion[1].second = std::to_string(kProtocolVersion + 1u);
     CHECK(!DecodeDiscoveryProperties(
                WrongVersion, "DeskLink test PC._desklink._udp.local",
                "desklink-test.local", Advertisement.Port, 7)
@@ -1964,6 +2097,7 @@ int main() {
     DiscoveryPropertiesAreStrictAndRoundTrip();
     DiscoveryCacheExpiresAndFlagsConflicts();
     protocol_round_trip();
+    PointerMotionRoundTripAndValidation();
     ControlProtocolRoundTripAndValidation();
     MouseWheelRoundTripAndValidation();
     DisplayTopologyMappingIsStableAndInvalidates();
@@ -1991,6 +2125,8 @@ int main() {
 #ifdef _WIN32
     WindowsForegroundMonitorPublishesBoundedSnapshot();
     WindowsCurrentUserControlPipeRoundTrip();
+    WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned();
+    WindowsPointerMotionScalingIsBoundedAndRetainsFractions();
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();

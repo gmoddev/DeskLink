@@ -23,6 +23,7 @@ enum class MessageType : std::uint16_t {
     PointerPosition    = 22,
     InputStateSnapshot = 23,
     MouseWheel         = 24,
+    PointerMotion      = 25,
     SetAudioGain       = 30,
     AudioFrame         = 31,
     Heartbeat          = 40,
@@ -49,6 +50,7 @@ enum class MouseWheelAxis : std::uint8_t {
 };
 
 inline constexpr std::int16_t kMaximumMouseWheelDelta = 1200;
+inline constexpr std::int32_t kMaximumPointerMotionDelta = 1'000'000;
 
 struct EnvelopeHeader {
     std::uint32_t magic{kWireMagic};
@@ -98,6 +100,13 @@ struct PointerPositionMessage {
     std::uint16_t normalized_y{};
 };
 
+// Relative Raw Input motion. PointerPosition remains reserved for explicit
+// display mapping/warps and must not be used for ordinary mouse movement.
+struct PointerMotionMessage {
+    std::int32_t DeltaX{};
+    std::int32_t DeltaY{};
+};
+
 struct MouseWheelMessage {
     MouseWheelAxis Axis{MouseWheelAxis::Vertical};
     std::int16_t Delta{};
@@ -134,6 +143,7 @@ using Message = std::variant<
     KeyEventMessage,
     MouseButtonMessage,
     PointerPositionMessage,
+    PointerMotionMessage,
     InputStateSnapshotMessage,
     MouseWheelMessage,
     SetAudioGainMessage,
@@ -178,6 +188,8 @@ struct DecodeResult {
                                            MouseButtonId Button) noexcept;
 [[nodiscard]] bool IsValidMouseWheelMessage(
     const MouseWheelMessage& Message) noexcept;
+[[nodiscard]] bool IsValidPointerMotionMessage(
+    const PointerMotionMessage& Message) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);
 [[nodiscard]] DecodeResult decode_packet(ByteSpan bytes, bool datagram);
 

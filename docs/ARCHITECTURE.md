@@ -283,31 +283,30 @@ misreported as renewal failures.
 
 ## 7. Pointer semantics
 
-Pointer datagrams carry the latest absolute normalized position rather than raw deltas:
+Protocol v2 separates ordinary physical motion from explicit display mapping:
 
 ```cpp
-PointerPositionMessage {
-    uint16 display_id;
-    uint16 normalized_x;
-    uint16 normalized_y;
-}
+PointerMotionMessage { int32 DeltaX; int32 DeltaY; }
+PointerPositionMessage { uint16 DisplayId; uint16 NormalizedX; uint16 NormalizedY; }
 ```
 
-`0..65535` maps to the target display coordinate range. Display ID zero is the
-legacy whole-virtual-desktop path. Nonzero IDs are derived from stable Windows
-DisplayConfig target device paths and map through the selected monitor's
-rectangle into Windows virtual-desktop absolute coordinates.
+Raw Input movement is sent as bounded relative device counts and injected with
+relative `SendInput`. It is therefore independent of the controlling PC's
+virtual-desktop width. The Host may apply bounded 25-400% fixed-point gain and,
+when the physical DPI is known, normalize 100-32000 DPI to an 800-DPI reference.
+Fractional counts are retained between samples. DeskLink does not change global
+Windows mouse settings.
 
-This prevents permanent cursor divergence after datagram loss. If packet 101 is lost, packet 102 still expresses the newest desired location. The Agent also rejects pointer datagrams whose sequence is older than or equal to the newest accepted pointer packet within the current focus epoch, preventing reordering from jumping the cursor backward.
+Absolute `PointerPosition` remains available for monitor-edge transitions and
+resynchronization. `0..65535` maps to the target display coordinate range.
+Display ID zero is the legacy whole-virtual-desktop path; nonzero IDs map a
+stable DisplayConfig target through its rectangle. The injector pins topology
+generation for the focus lifetime and rejects unknown, ambiguous, colliding, or
+stale mappings.
 
-The Windows injector maps display zero directly to the virtual desktop for
-protocol compatibility. For a nonzero display ID it refreshes the active
-topology at a bounded interval, pins the first valid topology generation for
-the focus lifetime, transforms the point through that display rectangle, and
-uses `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`. An unknown display,
-ambiguous identity, ID collision, enumeration failure, or topology-generation
-change rejects injection. Releasing focus clears the generation pin so a new
-focus can select the refreshed topology.
+Both pointer datagram types share a monotonic sequence gate within the active
+focus epoch. Older or duplicate datagrams are rejected, so delayed relative
+motion cannot be applied after a newer motion or absolute transition.
 
 ---
 

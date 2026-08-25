@@ -83,6 +83,15 @@ std::optional<ByteBuffer> HostCoordinator::pointer_position(PointerPositionMessa
     return encode_packet(header, event);
 }
 
+std::optional<ByteBuffer> HostCoordinator::PointerMotion(
+    PointerMotionMessage Message) {
+    if (remote_epoch_ == 0 || !IsValidPointerMotionMessage(Message)) {
+        return std::nullopt;
+    }
+    auto Header = next_header(remote_epoch_, true);
+    return encode_packet(Header, Message);
+}
+
 std::optional<ByteBuffer> HostCoordinator::MouseWheel(MouseWheelMessage Message) {
     if (remote_epoch_ == 0 || !IsValidMouseWheelMessage(Message)) {
         return std::nullopt;

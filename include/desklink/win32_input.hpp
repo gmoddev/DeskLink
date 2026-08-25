@@ -16,6 +16,7 @@ public:
     bool inject_key(const KeyEventMessage& event) override;
     bool inject_button(const MouseButtonMessage& event) override;
     bool inject_pointer(const PointerPositionMessage& event) override;
+    bool InjectPointerMotion(const PointerMotionMessage& Message) override;
     bool InjectWheel(const MouseWheelMessage& Message) override;
     bool ReconcileState(const InputStateSnapshotMessage& Snapshot) override;
     void release_owned_state() noexcept override;

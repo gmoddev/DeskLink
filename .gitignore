@@ -1,5 +1,6 @@
 # CMake build trees and generated files
 /build/
+/build-alpha/
 /out/
 /cmake-build-*/
 CMakeCache.txt
@@ -21,6 +22,8 @@ compile_commands.json
 *.exe
 *.dll
 *.lib
+/DeskLink-Alpha-*.zip
+/_CPack_Packages/
 /Debug/
 /Release/
 /x64/

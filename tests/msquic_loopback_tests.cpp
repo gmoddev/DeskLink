@@ -506,18 +506,54 @@ void RunLoopback(const std::wstring& FirstKeyName,
     CHECK(Second->ConnectTrusted(
         "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id));
     CHECK(WaitFor(Shared, 0, 2, std::chrono::seconds(10)));
+    std::uint64_t ReconnectNonce{};
     {
         std::scoped_lock Lock(Shared.Mutex);
         CHECK(Shared.TrustedSessions.size() == 2);
-        const auto ReconnectNonce = Shared.TrustedSessions.front().SessionNonce;
+        ReconnectNonce = Shared.TrustedSessions.front().SessionNonce;
         CHECK(ReconnectNonce != 0);
         CHECK(ReconnectNonce != SessionNonce);
         for (const auto& Session : Shared.TrustedSessions) {
             CHECK(Session.SessionNonce == ReconnectNonce);
-            Session.Endpoint->close();
+            const auto Peer = Session.Endpoint->peer_info();
+            if (Peer.identity.machine_id == SecondIdentity.machine_id) {
+                FirstEndpoint = Session.Endpoint;
+            } else if (Peer.identity.machine_id == FirstIdentity.machine_id) {
+                SecondEndpoint = Session.Endpoint;
+            }
         }
         Shared.TrustedSessions.clear();
     }
+    CHECK(FirstEndpoint);
+    CHECK(SecondEndpoint);
+    {
+        std::scoped_lock Lock(ReceiveMutex);
+        Received = false;
+    }
+    FirstEndpoint->set_reliable_handler([&](ByteBuffer Bytes) {
+        const auto Decoded = decode_packet(Bytes, false);
+        {
+            std::scoped_lock Lock(ReceiveMutex);
+            Received = Decoded.packet.has_value() &&
+                       Decoded.packet->header.session_nonce == ReconnectNonce &&
+                       std::holds_alternative<KeyEventMessage>(
+                           Decoded.packet->message);
+        }
+        ReceiveChanged.notify_all();
+    });
+    Header.session_nonce = ReconnectNonce;
+    Header.sequence = 2;
+    CHECK(SecondEndpoint->send_reliable(
+        encode_packet(Header, KeyEventMessage{30, false, false})));
+    {
+        std::unique_lock Lock(ReceiveMutex);
+        CHECK(ReceiveChanged.wait_for(
+            Lock, std::chrono::seconds(5), [&] { return Received; }));
+    }
+    FirstEndpoint->close();
+    SecondEndpoint->close();
+    FirstEndpoint.reset();
+    SecondEndpoint.reset();
     First->Close();
     Second->Close();
     First.reset();

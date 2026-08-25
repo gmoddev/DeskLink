@@ -24,10 +24,11 @@ The current build proves the core invariants independently of Windows networking
 | Emergency fail-local | Done | Explicit state transition |
 | Input cleanup contract | Done | Backend callback on failure/release |
 | Windows SendInput injector | Done | Built only on Windows |
-| Windows physical input capture | Done | Low-level non-injected keyboard scan codes plus Raw Input mouse, bounded 1024-event queue, pointer coalescing |
+| Windows physical input capture | Done | Low-level non-injected keyboard scan codes plus Raw Input mouse, bounded 1024-event queue, relative-motion coalescing |
 | Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause/Break fail-local |
 | Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
-| Pointer format | Done | Absolute normalized datagram |
+| Pointer format | Done | Protocol v2 relative-motion datagrams for ordinary movement; absolute display-aware datagrams retained for monitor transitions/resync; shared monotonic sequence gate |
+| Pointer calibration | Done | 25-400% fixed-point gain with fractional-count retention; optional 100-32000 source-DPI normalization; no global Windows setting changes |
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode` |
@@ -36,6 +37,7 @@ The current build proves the core invariants independently of Windows networking
 | Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
 | Host input lifecycle safety boundary | Done | Disable capture, release focus, synchronously stop hooks, then enter GAME/LOCK_PC1; exit requires fresh FocusReady + initial snapshot before capture restart/enable |
 | Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
+| Native Windows alpha wrapper | Done | Schannel-only typed launcher; manual pairing/session controls; Local-first controller; bounded gain/DPI controls; host-with-port rejection; same-user status/mode IPC; bounded in-memory diagnostics; portable ZIP |
 | PCM audio frame | Done | Bounded wire representation |
 | Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment; adaptive 2-12 block target; immediate bounded increases, 200-sample downward hysteresis, explicit rebuffer accounting |
@@ -61,7 +63,7 @@ The current build proves the core invariants independently of Windows networking
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
 | Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
-| Windows 10 physical compatibility | R&D Stage 5 complete | Pairing, reconnect, nonce rotation, physical forwarding, `SendInput`, snapshot recovery, emergency release, process termination, scoped network interruption, and live stale epoch/session rejection passed |
+| Windows 10 physical compatibility | R&D Stage 5 complete | Pairing, reconnect, nonce rotation, protocol-v2 relative pointer feel at 100%/raw DPI, physical forwarding, `SendInput`, snapshot recovery, emergency release, process termination, scoped network interruption, and live stale epoch/session rejection passed |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
 | In-memory transport | Done | Deterministic test adapter |
 | Simulation CLI | Done | Host -> Agent focus/injection flow |
@@ -120,6 +122,10 @@ The current test suite verifies:
 45. native Windows foreground-hook startup, initial bounded snapshot delivery, and same-thread teardown
 46. ordered GAME/LOCK_PC1 teardown, stale FocusReady rejection, fresh-focus capture recreation, and fail-local snapshot/start failure handling
 47. exact profile-spec parsing, all four mode names, invalid-path/mode rejection, and case-normalized duplicate rejection
+48. protocol-v2 signed relative-motion codec bounds, wrong-lane rejection, shared pointer sequence gating, and end-to-end admission
+49. fixed-point pointer gain/DPI scaling, including fractional-count retention and invalid calibration rejection
+50. alpha-launcher typed argument bounds, Schannel pinning, gain/DPI forwarding, and duplicated endpoint-port rejection
+51. trusted reconnect with fresh nonce plus successfully decoded application traffic before graceful close
 
 Build/test result in the creation environment:
 
@@ -147,9 +153,9 @@ Build/test result in the creation environment:
 - clock drift resampler
 - gain/mute state
 
-### P2 — product surface
+### P2 — final product surface
 
-- UI
+- tray/onboarding UI beyond the completed engineering-alpha wrapper
 - Stream Deck plugin
 - installer/update flow
 - diagnostics/telemetry that never logs input content
@@ -209,7 +215,9 @@ capability/session datagram gates, and receiver jitter/render pump are complete.
 Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
 Bounded adaptive jitter targeting and rebuffer accounting are complete. Edge
 roaming remains gated on the deferred physical matrix; the next unblocked slice
-is bounded clock-drift correction.
+is bounded clock-drift correction. The native Windows alpha wrapper is complete
+and provides the manual pairing/session/status surface used for future physical
+validation without changing any trust or transport boundary.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

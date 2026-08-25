@@ -299,6 +299,13 @@ bool HostSession::send_pointer(PointerPositionMessage event) {
     return packet.has_value() && transport_->send_datagram(std::move(*packet));
 }
 
+bool HostSession::SendPointerMotion(PointerMotionMessage Message) {
+    std::scoped_lock Lock(Mutex_);
+    if (!started_) return false;
+    auto Packet = coordinator_.PointerMotion(Message);
+    return Packet.has_value() && transport_->send_datagram(std::move(*Packet));
+}
+
 bool HostSession::SendWheel(MouseWheelMessage Message) {
     std::scoped_lock Lock(Mutex_);
     if (!started_) return false;
