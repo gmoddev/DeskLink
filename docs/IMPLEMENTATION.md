@@ -137,6 +137,10 @@ It:
 - estimates arrival variation from capture/arrival timestamp deltas
 - raises a bounded playout target immediately and lowers it with hysteresis
 - enters an explicit rebuffer state when a larger target must add latency
+- tracks sustained total source occupancy around the adaptive target
+- applies linear asynchronous resampling in 50 ppm steps, capped at ±1000 ppm
+- retains at most four source blocks and emits only canonical 240-frame blocks
+- clears correction state on timing, target, session, and endpoint discontinuity
 - limits buffered frame count
 - fixes one nonzero stream ID for each admitted receiver
 - fails the audio receiver closed when the render callback rejects a block
@@ -165,8 +169,11 @@ is non-recoverable and stops capture rather than retrying an authorization or
 transport failure. The receiver's adaptive target is 2-12 blocks (10-60 ms):
 arrival spikes and concealment raise it immediately, while 200 stable samples
 are required for each one-block decrease. Backward/reordered timestamp samples
-do not update the estimator. Gain/mute and clock-drift correction remain
-outside this slice. Audio failure has no input-mode authority.
+do not update the estimator. A separate occupancy controller observes 400
+five-millisecond pump samples before each 50 ppm correction step, clamps the
+linear asynchronous resampler to ±1000 ppm, and resets on timing/target/session/
+endpoint discontinuity. Peer timestamps do not directly set its ratio. Per-peer
+gain/mute remains outside this slice. Audio failure has no input-mode authority.
 
 ### `transport.hpp` / `in_memory_transport.cpp`
 
@@ -433,9 +440,9 @@ It enforces fail-local GAME/LOCK_PC1 transitions, fresh-focus capture admission,
 and restart-safe Win32 capture teardown/recreation. The bounded WASAPI
 capture/render foundation, exact V1 block assembler, complementary audio grants,
 session/datagram admission, receiver jitter/render pump, audio-only endpoint
-recovery, and bounded adaptive jitter targeting are now implemented.
-Edge roaming remains gated on the physical matrix; the next unblocked roadmap
-item is bounded clock-drift correction.
+recovery, bounded adaptive jitter targeting, and bounded asynchronous clock-
+drift correction are now implemented. Edge roaming remains gated on the
+physical matrix; the next unblocked audio item is per-peer gain/mute.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

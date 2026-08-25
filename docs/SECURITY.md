@@ -235,6 +235,15 @@ five-millisecond blocks. A peer can therefore cause at most bounded audio-only
 latency/rebuffering, not unbounded allocation, identity/provider changes,
 session admission, focus, capture authority, or input state changes.
 
+Clock-drift correction is driven only by already-admitted bounded source
+occupancy, never directly by a peer timestamp. It observes 400 pump samples,
+uses a quarter-block deadband, changes by only 50 ppm per window, clamps the
+linear resampler to ±1000 ppm, and retains at most four source blocks. Timing or
+adaptive-target discontinuity, reconnect/session reset, renderer rejection, and
+endpoint recovery clear correction state. Invalid or adversarial timing can
+therefore cause only bounded audio-module resampling/buffering and cannot alter
+transport, identity, admission, focus, capture, or input authority.
+
 The selected/default render endpoint is watched by a scoped
 `IMMNotificationClient`. Endpoint change, removal, disablement, property/format
 change, or operational WASAPI failure stops the old worker, drops queued audio,

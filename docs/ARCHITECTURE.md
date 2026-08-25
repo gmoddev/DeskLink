@@ -389,8 +389,13 @@ validation. A bounded estimator raises the playout target immediately on an
 arrival spike or concealment, but lowers it by only one block after 200 stable
 samples. An increase can deliberately rebuffer before the next block; the
 target is clamped to 2-12 five-millisecond blocks (10-60 ms) and cannot affect
-the admitted session, transport, identity, or input lifecycle. Gain/mute and
-clock-drift compensation remain separate integration work.
+the admitted session, transport, identity, or input lifecycle. A separate
+controller averages total jitter-plus-resampler source occupancy over 400 pump
+samples, changes the source-consumption ratio by at most 50 ppm per window, and
+clamps correction to ±1000 ppm. The streaming linear resampler retains no more
+than four source blocks and still emits exact canonical blocks. Target/timing
+discontinuity, reconnect, and endpoint recovery clear the correction; peer
+timestamps never directly choose a ratio. Gain/mute remains separate work.
 
 ---
 

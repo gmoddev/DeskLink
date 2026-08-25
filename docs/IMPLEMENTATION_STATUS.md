@@ -44,6 +44,7 @@ The current build proves the core invariants independently of Windows networking
 | WASAPI capture/render foundation | Done | Event-driven shared-mode loopback capture and shared render; 64-frame render queue; silence underrun; explicit start/stop and failure isolation |
 | Audio session/datagram wiring | Done | Explicit runtime opt-in; complementary AudioReceive/AudioSend grants; PeerValidated transport, nonce, format, stream, sequence, and bounded receiver/render admission |
 | Audio endpoint recovery | Done | Scoped endpoint notifications; restart-safe adapters; audio-only 250 ms to 5 s capped retry; buffered audio reset; client/send rejection is not retried |
+| Audio clock-drift correction | Done | 400-sample occupancy windows; 50 ppm slew steps; ±1000 ppm cap; four-block source bound; exact-block linear resampling; discontinuity reset |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
 | Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
@@ -150,7 +151,6 @@ Build/test result in the creation environment:
 
 ### P1 — required for useful audio
 
-- clock drift resampler
 - gain/mute state
 
 ### P2 — final product surface
@@ -213,9 +213,10 @@ renews/reconciles only while Remote. The bounded event-driven WASAPI
 capture/render foundation, exact V1 audio block assembler, complementary
 capability/session datagram gates, and receiver jitter/render pump are complete.
 Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
-Bounded adaptive jitter targeting and rebuffer accounting are complete. Edge
-roaming remains gated on the deferred physical matrix; the next unblocked slice
-is bounded clock-drift correction. The native Windows alpha wrapper is complete
+Bounded adaptive jitter targeting, rebuffer accounting, and asynchronous clock-
+drift correction are complete. Edge roaming remains gated on the deferred
+physical matrix; the next unblocked audio slice is per-peer gain/mute. The
+native Windows alpha wrapper is complete
 and provides the manual pairing/session/status surface used for future physical
 validation without changing any trust or transport boundary.
 See [`ROADMAP.md`](ROADMAP.md).
