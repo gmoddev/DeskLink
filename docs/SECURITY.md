@@ -256,7 +256,36 @@ recovery.
 
 ---
 
-## 7. Protocol hardening
+## 7. Authenticated topology exchange
+
+Display topology is untrusted peer metadata even after TLS. It is accepted only
+on the reliable lane after `PeerValidated`, encrypted/authenticated transport,
+normal trust lookup, fresh session-nonce negotiation, and an explicit
+`DisplayTopologyExchange` grant in the local trust record. The payload repeats
+both the sender machine ID and session nonce; they must exactly match the stored
+peer and envelope nonce. Existing peers are never granted this capability by a
+trust-store migration.
+
+The decoder validates exact framing, one to 64 canonical descriptors, stable-ID
+derivation/collision freedom, one primary display, virtual bounds, strings,
+dimensions, physical-size source, orientation, and the aggregate 64 KiB
+reliable ceiling before state replacement. A lower generation is ignored
+without extending freshness. A different snapshot at the same generation,
+malformed topology framing, wrong machine, or wrong nonce invalidates topology
+readiness for that connection. Accepted state expires after five seconds;
+timeout never falls back to stale topology.
+
+Topology messages cannot grant capabilities, write trust, modify the saved
+roaming graph, acquire focus, open streams, inject input, or enable capture.
+Route Ready is derived separately from connection state and requires current
+validated topologies plus explicit direction/capability checks. Failure leaves
+the connection usable for already-authorized modules but the affected roaming
+route remains unavailable. Recovery from rejection requires a fresh
+authenticated connection and nonce.
+
+---
+
+## 8. Protocol hardening
 
 The current codec performs bounded parsing before constructing messages.
 
@@ -288,7 +317,7 @@ Production transport parsing must preserve these limits before allocating large 
 
 ---
 
-## 8. Transport security requirements
+## 9. Transport security requirements
 
 `ITransportEndpoint` exposes whether the peer is authenticated/encrypted. The in-memory transport is only a deterministic test adapter.
 
@@ -318,7 +347,7 @@ Recommended production defaults:
 
 ---
 
-## 9. Windows privilege boundary
+## 10. Windows privilege boundary
 
 The Agent should run at normal user integrity.
 
@@ -330,7 +359,7 @@ If elevated injection is ever required, implement it as a separately installed, 
 
 ---
 
-## 10. Logging policy
+## 11. Logging policy
 
 DeskLink logs operational/security metadata, not user content.
 
@@ -363,7 +392,7 @@ Debug builds should follow the same rule unless a user explicitly opts into a na
 
 ---
 
-## 11. Local IPC security
+## 12. Local IPC security
 
 The Host/Agent control API uses a versioned named pipe suffixed with the active
 DeskLink user SID. It does not rely on the default named-pipe ACL: creation
@@ -403,7 +432,7 @@ admitted level.
 
 ---
 
-## 12. Dependency policy
+## 13. Dependency policy
 
 DeskLink's most security-sensitive dependencies are transport/TLS, Windows bindings, and any future codec libraries.
 
@@ -440,7 +469,7 @@ separate production-admission and release-integration review. See
 
 ---
 
-## 13. Security invariants to keep in tests
+## 14. Security invariants to keep in tests
 
 The following must remain regression-tested:
 
@@ -477,3 +506,11 @@ The following must remain regression-tested:
     and render rejection cannot reach audio playout
 26. endpoint recovery drops queued audio, preserves identity/session/input
     authority, caps retry rate, and never retries client/send rejection
+27. topology exchange requires the explicit trust grant and cannot occur before
+    trusted session admission
+28. topology machine and both nonce bindings must match the authenticated peer
+    and current connection
+29. malformed, oversized, stale, conflicting, rejected, or timed-out topology
+    can never make a route Ready
+30. topology exchange cannot grant focus/input authority or mutate the saved
+    roaming graph

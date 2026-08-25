@@ -1,5 +1,6 @@
 #pragma once
 
+#include "desklink/display_topology.hpp"
 #include "desklink/types.hpp"
 
 #include <cstdint>
@@ -27,6 +28,7 @@ enum class MessageType : std::uint16_t {
     SetAudioGain       = 30,
     AudioFrame         = 31,
     Heartbeat          = 40,
+    DisplayTopologySnapshot = 50,
 };
 
 enum class DeskMode : std::uint8_t {
@@ -132,6 +134,15 @@ struct AudioFrameMessage {
     ByteBuffer pcm;
 };
 
+struct DisplayTopologySnapshotMessage {
+    MachineId Machine{};
+    std::uint64_t SessionNonce{};
+    DisplayTopologySnapshot Topology;
+
+    [[nodiscard]] bool operator==(
+        const DisplayTopologySnapshotMessage&) const noexcept = default;
+};
+
 using Message = std::variant<
     HelloMessage,
     CapabilityGrantMessage,
@@ -148,7 +159,8 @@ using Message = std::variant<
     MouseWheelMessage,
     SetAudioGainMessage,
     AudioFrameMessage,
-    HeartbeatMessage>;
+    HeartbeatMessage,
+    DisplayTopologySnapshotMessage>;
 
 struct DecodedPacket {
     EnvelopeHeader header;
@@ -190,6 +202,10 @@ struct DecodeResult {
     const MouseWheelMessage& Message) noexcept;
 [[nodiscard]] bool IsValidPointerMotionMessage(
     const PointerMotionMessage& Message) noexcept;
+[[nodiscard]] bool IsValidDisplayTopologySnapshotMessage(
+    const DisplayTopologySnapshotMessage& Message);
+[[nodiscard]] std::optional<MessageType> PeekMessageType(
+    ByteSpan Bytes) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);
 [[nodiscard]] DecodeResult decode_packet(ByteSpan bytes, bool datagram);
 

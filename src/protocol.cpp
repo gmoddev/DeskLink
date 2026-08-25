@@ -28,6 +28,12 @@ public:
         }
     }
     void raw(ByteSpan bytes) { bytes_.insert(bytes_.end(), bytes.begin(), bytes.end()); }
+    void string(std::string_view Value) {
+        u16(static_cast<std::uint16_t>(Value.size()));
+        raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(Value.data()),
+            Value.size()});
+    }
     [[nodiscard]] ByteBuffer take() && { return std::move(bytes_); }
 
 private:
@@ -108,6 +114,19 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool string(std::string& Out, std::size_t Maximum,
+                              bool AllowEmpty) {
+        std::uint16_t Length{};
+        if (!u16(Length) || Length > Maximum ||
+            (!AllowEmpty && Length == 0) || remaining() < Length) {
+            return false;
+        }
+        Out.assign(
+            reinterpret_cast<const char*>(bytes_.data() + offset_), Length);
+        offset_ += Length;
+        return Out.find('\0') == std::string::npos;
+    }
+
     [[nodiscard]] std::size_t remaining() const noexcept { return bytes_.size() - offset_; }
     [[nodiscard]] std::size_t offset() const noexcept { return offset_; }
 
@@ -169,6 +188,34 @@ ByteBuffer encode_payload(const Message& message) {
             w.u8(value.bytes_per_sample);
             w.u64(value.capture_timestamp_us);
             w.raw(value.pcm);
+        } else if constexpr (
+            std::is_same_v<T, DisplayTopologySnapshotMessage>) {
+            w.raw(value.Machine);
+            w.u64(value.SessionNonce);
+            w.u64(value.Topology.Generation);
+            w.i32(value.Topology.VirtualBounds.Left);
+            w.i32(value.Topology.VirtualBounds.Top);
+            w.i32(value.Topology.VirtualBounds.Right);
+            w.i32(value.Topology.VirtualBounds.Bottom);
+            w.u16(static_cast<std::uint16_t>(
+                value.Topology.Displays.size()));
+            for (const auto& Display : value.Topology.Displays) {
+                w.u16(Display.Id);
+                w.string(Display.StableIdentity);
+                w.string(Display.FriendlyName);
+                w.i32(Display.Bounds.Left);
+                w.i32(Display.Bounds.Top);
+                w.i32(Display.Bounds.Right);
+                w.i32(Display.Bounds.Bottom);
+                w.u8(Display.Primary ? 1u : 0u);
+                w.u32(Display.PixelWidth);
+                w.u32(Display.PixelHeight);
+                w.u32(Display.RefreshMilliHertz);
+                w.u16(Display.PhysicalWidthMillimeters);
+                w.u16(Display.PhysicalHeightMillimeters);
+                w.u8(static_cast<std::uint8_t>(Display.PhysicalSize));
+                w.u8(static_cast<std::uint8_t>(Display.Orientation));
+            }
         } else if constexpr (std::is_same_v<T, HeartbeatMessage>) {
         }
     }, message);
@@ -314,6 +361,57 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             if (!r.raw_vector(expected, m.pcm) || r.remaining() != 0) return std::nullopt;
             return m;
         }
+        case MessageType::DisplayTopologySnapshot: {
+            DisplayTopologySnapshotMessage Message;
+            std::uint16_t DisplayCount{};
+            if (!r.raw(Message.Machine) ||
+                !r.u64(Message.SessionNonce) ||
+                !r.u64(Message.Topology.Generation) ||
+                !r.i32(Message.Topology.VirtualBounds.Left) ||
+                !r.i32(Message.Topology.VirtualBounds.Top) ||
+                !r.i32(Message.Topology.VirtualBounds.Right) ||
+                !r.i32(Message.Topology.VirtualBounds.Bottom) ||
+                !r.u16(DisplayCount) || DisplayCount == 0 ||
+                DisplayCount > kMaxDisplayCount) {
+                return std::nullopt;
+            }
+            Message.Topology.Displays.reserve(DisplayCount);
+            for (std::size_t Index = 0; Index < DisplayCount; ++Index) {
+                DisplayDescriptor Display;
+                std::uint8_t Primary{};
+                std::uint8_t PhysicalSize{};
+                std::uint8_t Orientation{};
+                if (!r.u16(Display.Id) ||
+                    !r.string(Display.StableIdentity,
+                              kMaxDisplayIdentityLength, false) ||
+                    !r.string(Display.FriendlyName,
+                              kMaxDisplayFriendlyNameLength, true) ||
+                    !r.i32(Display.Bounds.Left) ||
+                    !r.i32(Display.Bounds.Top) ||
+                    !r.i32(Display.Bounds.Right) ||
+                    !r.i32(Display.Bounds.Bottom) ||
+                    !r.u8(Primary) || Primary > 1 ||
+                    !r.u32(Display.PixelWidth) ||
+                    !r.u32(Display.PixelHeight) ||
+                    !r.u32(Display.RefreshMilliHertz) ||
+                    !r.u16(Display.PhysicalWidthMillimeters) ||
+                    !r.u16(Display.PhysicalHeightMillimeters) ||
+                    !r.u8(PhysicalSize) || !r.u8(Orientation)) {
+                    return std::nullopt;
+                }
+                Display.Primary = Primary != 0;
+                Display.PhysicalSize =
+                    static_cast<PhysicalSizeSource>(PhysicalSize);
+                Display.Orientation =
+                    static_cast<DisplayOrientation>(Orientation);
+                Message.Topology.Displays.push_back(std::move(Display));
+            }
+            if (r.remaining() != 0 ||
+                !IsValidDisplayTopologySnapshotMessage(Message)) {
+                return std::nullopt;
+            }
+            return Message;
+        }
         case MessageType::Heartbeat:
             if (r.remaining() != 0) return std::nullopt;
             return HeartbeatMessage{};
@@ -339,6 +437,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::MouseWheel:
         case MessageType::SetAudioGain:
         case MessageType::AudioFrame:
+        case MessageType::DisplayTopologySnapshot:
         case MessageType::Heartbeat:
             return true;
         default:
@@ -366,6 +465,9 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, MouseWheelMessage>) return MessageType::MouseWheel;
         else if constexpr (std::is_same_v<T, SetAudioGainMessage>) return MessageType::SetAudioGain;
         else if constexpr (std::is_same_v<T, AudioFrameMessage>) return MessageType::AudioFrame;
+        else if constexpr (std::is_same_v<T, DisplayTopologySnapshotMessage>) {
+            return MessageType::DisplayTopologySnapshot;
+        }
         else return MessageType::Heartbeat;
     }, message);
 }
@@ -431,6 +533,47 @@ bool IsValidPointerMotionMessage(const PointerMotionMessage& Message) noexcept {
            Message.DeltaX <= kMaximumPointerMotionDelta &&
            Message.DeltaY >= -kMaximumPointerMotionDelta &&
            Message.DeltaY <= kMaximumPointerMotionDelta;
+}
+
+bool IsValidDisplayTopologySnapshotMessage(
+    const DisplayTopologySnapshotMessage& Message) {
+    const auto NonzeroMachine = std::any_of(
+        Message.Machine.begin(), Message.Machine.end(),
+        [](std::uint8_t Byte) { return Byte != 0; });
+    if (!NonzeroMachine || Message.SessionNonce == 0 ||
+        !IsValidDisplayTopologySnapshot(Message.Topology)) {
+        return false;
+    }
+    constexpr std::size_t FixedPayloadSize =
+        sizeof(MachineId) + sizeof(std::uint64_t) +
+        sizeof(std::uint64_t) + 4 * sizeof(std::int32_t) +
+        sizeof(std::uint16_t);
+    constexpr std::size_t FixedDisplaySize =
+        3 * sizeof(std::uint16_t) + 4 * sizeof(std::int32_t) +
+        sizeof(std::uint8_t) + 3 * sizeof(std::uint32_t) +
+        2 * sizeof(std::uint16_t) + 2 * sizeof(std::uint8_t);
+    std::size_t PayloadSize = FixedPayloadSize;
+    for (const auto& Display : Message.Topology.Displays) {
+        const auto DisplaySize = FixedDisplaySize +
+            Display.StableIdentity.size() + Display.FriendlyName.size();
+        if (DisplaySize > kMaxReliablePayload - PayloadSize) return false;
+        PayloadSize += DisplaySize;
+    }
+    return true;
+}
+
+std::optional<MessageType> PeekMessageType(ByteSpan Bytes) noexcept {
+    if (Bytes.size() < 8) return std::nullopt;
+    Reader Reader(Bytes);
+    std::uint32_t Magic{};
+    std::uint16_t Version{};
+    std::uint16_t RawType{};
+    if (!Reader.u32(Magic) || !Reader.u16(Version) ||
+        !Reader.u16(RawType) || Magic != kWireMagic ||
+        Version != kProtocolVersion || !known_type(RawType)) {
+        return std::nullopt;
+    }
+    return static_cast<MessageType>(RawType);
 }
 
 ByteBuffer encode_packet(const EnvelopeHeader& requested_header, const Message& message) {

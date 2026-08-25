@@ -332,6 +332,23 @@ Each edge relationship should include:
 
 Hysteresis is important to prevent rapid focus bouncing when the cursor sits exactly on a boundary.
 
+The Phase 2 exchange is implemented independently of focus. After
+`PeerValidated`, normal trust lookup, and fresh nonce negotiation, each session
+role may publish its canonical local `DisplayTopologySnapshot` on the reliable
+lane only when the peer has an explicit `DisplayTopologyExchange` grant. The
+receiver binds it to the stored peer machine and both envelope and payload
+nonces, validates exact canonical display descriptors within the 64 KiB
+reliable limit, and retains it for five seconds. The Windows runtime refreshes
+at two-second intervals and on generation changes.
+
+Peer state and route state remain separate. A transport may be Connected while
+a route is Synchronizing, missing a capability/display, directionally
+unsupported, disabled, or invalid. Only a current validated topology can make
+route resolution Ready. Lower generations do not refresh the lease;
+same-generation mutations and malformed/wrong-peer traffic invalidate the
+remote topology until reconnect. This layer cannot request focus or switch an
+edge; configurator and crossing behavior remain later phases.
+
 ---
 
 ## 9. Audio architecture

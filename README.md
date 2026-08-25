@@ -57,6 +57,9 @@ This repository is a **reference foundation implementation**, not a finished pro
   size fallback
 - Strict 128-link roaming graph with stable-identity resolution and atomic
   current-user preference persistence; canvas geometry is presentation-only
+- Explicit capability-gated display-topology exchange over the authenticated
+  reliable session, with nonce/machine binding, five-second freshness, and
+  fail-closed route readiness
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
 - Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
@@ -74,7 +77,7 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Authenticated peer topology exchange, configurator UI, and physical edge roaming
+- Monitor configurator UI, Identify overlays, and physical edge roaming
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Final tray/onboarding UI, installer/update flow, and Stream Deck plugin

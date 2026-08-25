@@ -11,6 +11,7 @@
 #include "desklink/win32_input.hpp"
 #include "desklink/win32_pairing.hpp"
 #include "desklink/win32_discovery.hpp"
+#include "desklink/win32_display_topology.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -73,6 +74,7 @@ struct CommandLine {
     bool GrantInput{};
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
+    bool GrantTopology{};
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
@@ -211,8 +213,8 @@ void PrintUsage() {
         << L"Usage:\n"
         << L"  desklink_pair identity\n"
         << L"  desklink_pair discover [seconds: 1..30]\n"
-        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive]\n"
-        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive]\n"
+        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
+        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
         << L"  desklink_pair serve [port] [--send-audio]\n"
         << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio]\n"
         << L"  desklink_pair control state\n"
@@ -222,6 +224,7 @@ void PrintUsage() {
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
         << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
+        << L"--grant-topology allows the authenticated peer to exchange bounded display topology snapshots.\n"
         << L"--send-audio explicitly starts loopback capture for authorized peers.\n"
         << L"--receive-audio explicitly starts shared-mode rendering for an authorized peer.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
@@ -345,6 +348,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--grant-audio-receive") {
             if (Result.GrantAudioReceive) return std::nullopt;
             Result.GrantAudioReceive = true;
+            continue;
+        }
+        if (Argument == L"--grant-topology") {
+            if (Result.GrantTopology) return std::nullopt;
+            Result.GrantTopology = true;
             continue;
         }
         if (Argument == L"--capture") {
@@ -493,7 +501,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         PortSeen = true;
     }
     if ((Result.GrantInput || Result.GrantAudioSend ||
-         Result.GrantAudioReceive) &&
+         Result.GrantAudioReceive || Result.GrantTopology) &&
         Result.Mode != Operation::PairListen &&
         Result.Mode != Operation::PairConnect) {
         return std::nullopt;
@@ -625,7 +633,9 @@ desklink::DiscoveryAdvertisement GetDiscoveryAdvertisement(
     Result.CapabilityHints =
         static_cast<std::uint64_t>(desklink::Capability::InputInject) |
         static_cast<std::uint64_t>(desklink::Capability::AudioSend) |
-        static_cast<std::uint64_t>(desklink::Capability::AudioReceive);
+        static_cast<std::uint64_t>(desklink::Capability::AudioReceive) |
+        static_cast<std::uint64_t>(
+            desklink::Capability::DisplayTopologyExchange);
     Result.PairingAvailable = PairingAvailable;
     return Result;
 }
@@ -774,6 +784,7 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool GrantInput,
                     bool GrantAudioSend,
                     bool GrantAudioReceive,
+                    bool GrantTopology,
                     bool ConsoleConfirm) {
     const auto& Candidate = Session.Candidate();
     const auto RemoteName = ToWide(Candidate.Identity.display_name);
@@ -794,6 +805,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     Text += GrantAudioSend ? L"allowed" : L"not allowed";
     Text += L"\nAudio receive from this PC: ";
     Text += GrantAudioReceive ? L"allowed" : L"not allowed";
+    Text += L"\nDisplay topology exchange: ";
+    Text += GrantTopology ? L"allowed" : L"not allowed";
     Text += L"\n\nSelect Yes only if the code matches on both PCs.";
 
     if (ConsoleConfirm) {
@@ -805,6 +818,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                    << (GrantAudioSend ? L"yes" : L"no") << L'\n'
                    << L"[Pairing:Confirmation] grant_audio_receive="
                    << (GrantAudioReceive ? L"yes" : L"no") << L'\n'
+                   << L"[Pairing:Confirmation] grant_topology="
+                   << (GrantTopology ? L"yes" : L"no") << L'\n'
                    << L"[Pairing:Confirmation] type yes only after comparing both PCs: "
                    << std::flush;
         std::wstring Answer;
@@ -821,6 +836,7 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
                         bool GrantInput,
                         bool GrantAudioSend,
                         bool GrantAudioReceive,
+                        bool GrantTopology,
                         bool ConsoleConfirm) {
     {
         std::scoped_lock Lock(Result->Mutex);
@@ -833,6 +849,7 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
 
     const bool UserConfirmed = ConfirmPairing(
         *Session, GrantInput, GrantAudioSend, GrantAudioReceive,
+        GrantTopology,
         ConsoleConfirm);
     desklink::CapabilitySet Capabilities;
     if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
@@ -841,6 +858,10 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
     }
     if (GrantAudioReceive) {
         Capabilities.grant(desklink::Capability::AudioReceive);
+    }
+    if (GrantTopology) {
+        Capabilities.grant(
+            desklink::Capability::DisplayTopologyExchange);
     }
     const bool ConfirmationSent = UserConfirmed &&
         Session->Confirm(Session->Candidate().VerificationCode, Capabilities);
@@ -1060,9 +1081,94 @@ using AgentInputInjector = ValidationInputInjector;
 using AgentInputInjector = desklink::Win32InputInjector;
 #endif
 
+const char* TopologyStatusName(
+    desklink::DisplayTopologyExchangeStatus Status) noexcept {
+    switch (Status) {
+        case desklink::DisplayTopologyExchangeStatus::Offline:
+            return "offline";
+        case desklink::DisplayTopologyExchangeStatus::Disabled:
+            return "disabled";
+        case desklink::DisplayTopologyExchangeStatus::CapabilityMissing:
+            return "capability-missing";
+        case desklink::DisplayTopologyExchangeStatus::Synchronizing:
+            return "synchronizing";
+        case desklink::DisplayTopologyExchangeStatus::Ready:
+            return "ready";
+        case desklink::DisplayTopologyExchangeStatus::TimedOut:
+            return "timed-out";
+        case desklink::DisplayTopologyExchangeStatus::Rejected:
+            return "rejected";
+    }
+    return "invalid";
+}
+
+class LocalTopologyRuntime final {
+public:
+    explicit LocalTopologyRuntime(desklink::MachineId LocalMachine) noexcept
+        : LocalMachine_(LocalMachine) {}
+
+    template <typename SessionType>
+    void Maintain(SessionType& Session) {
+        const auto Status = Session.DisplayTopologyStatus();
+        if (!LastStatus_ || *LastStatus_ != Status) {
+            std::cout << "[Roaming:Topology] remote_status="
+                      << TopologyStatusName(Status) << '\n';
+            LastStatus_ = Status;
+        }
+        if (Status == desklink::DisplayTopologyExchangeStatus::Offline ||
+            Status == desklink::DisplayTopologyExchangeStatus::Disabled ||
+            Status ==
+                desklink::DisplayTopologyExchangeStatus::CapabilityMissing) {
+            return;
+        }
+
+        if (!Topology_.RefreshIfDue(std::chrono::milliseconds(250))) {
+            if (!RefreshFailureReported_) {
+                std::cerr
+                    << "[Roaming:Topology] local topology unavailable; "
+                       "remote routes remain unready\n";
+                RefreshFailureReported_ = true;
+            }
+            return;
+        }
+        if (RefreshFailureReported_) {
+            std::cout << "[Roaming:Topology] local topology recovered\n";
+            RefreshFailureReported_ = false;
+        }
+
+        const auto Now = std::chrono::steady_clock::now();
+        const auto& Snapshot = Topology_.Current();
+        if (HasPublished_ && PublishedGeneration_ == Snapshot.Generation &&
+            Now - LastPublished_ <
+                desklink::kDisplayTopologyPublishInterval) {
+            return;
+        }
+        if (!Session.PublishDisplayTopology(LocalMachine_, Snapshot)) {
+            return;
+        }
+        HasPublished_ = true;
+        PublishedGeneration_ = Snapshot.Generation;
+        LastPublished_ = Now;
+        std::cout << "[Roaming:Topology] local_generation="
+                  << Snapshot.Generation
+                  << " displays=" << Snapshot.Displays.size()
+                  << " status=published\n";
+    }
+
+private:
+    desklink::MachineId LocalMachine_{};
+    desklink::Win32DisplayTopology Topology_;
+    std::optional<desklink::DisplayTopologyExchangeStatus> LastStatus_;
+    std::chrono::steady_clock::time_point LastPublished_{};
+    std::uint64_t PublishedGeneration_{};
+    bool HasPublished_{};
+    bool RefreshFailureReported_{};
+};
+
 struct AgentRuntime {
     AgentRuntime(const desklink::IClock& Clock,
                  const desklink::ITrustStore& TrustStore,
+                 const desklink::MachineId& LocalMachine,
                  desklink::MsQuicBootstrapHandlers::TrustedSession Trusted,
                  bool DropNextKeyRelease,
                  bool DropNextButtonRelease,
@@ -1070,15 +1176,18 @@ struct AgentRuntime {
                  bool ObserveRejections)
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          LocalTopology(LocalMachine),
           Injector(DropNextKeyRelease, DropNextButtonRelease, ObserveCleanup,
                    ObserveRejections),
           Coordinator(Clock, Injector),
 #else
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          LocalTopology(LocalMachine),
           Coordinator(Clock, Injector),
 #endif
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
-                  Trusted.SessionNonce) {
+                  Trusted.SessionNonce,
+                  desklink::DisplayTopologyExchangeOptions{true, &Clock}) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
         (void)DropNextKeyRelease;
         (void)DropNextButtonRelease;
@@ -1088,6 +1197,10 @@ struct AgentRuntime {
     }
 
     ~AgentRuntime() { StopAudio(); }
+
+    void MaintainDisplayTopology() {
+        LocalTopology.Maintain(Session);
+    }
 
     void RequestAudioRecovery(
         desklink::Win32WasapiFailureKind Kind,
@@ -1216,6 +1329,7 @@ struct AgentRuntime {
     }
 
     desklink::MachineId PeerMachine{};
+    LocalTopologyRuntime LocalTopology;
     AgentInputInjector Injector;
     desklink::AgentCoordinator Coordinator;
     desklink::AgentSession Session;
@@ -1230,10 +1344,13 @@ struct AgentRuntime {
 };
 
 struct HostRuntime {
-    HostRuntime(const desklink::ITrustStore& TrustStore,
+    HostRuntime(const desklink::IClock& Clock,
+                const desklink::ITrustStore& TrustStore,
+                const desklink::MachineId& LocalMachine,
                 desklink::MsQuicBootstrapHandlers::TrustedSession Trusted,
                 std::function<void()> FocusReadyHandler)
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          LocalTopology(LocalMachine),
           Endpoint(Trusted.Endpoint),
           SessionNonce(Trusted.SessionNonce),
           Coordinator(Trusted.SessionNonce),
@@ -1247,9 +1364,14 @@ struct HostRuntime {
           }),
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
                   Trusted.SessionNonce, std::move(FocusReadyHandler),
-                  &Receiver) {}
+                  &Receiver,
+                  desklink::DisplayTopologyExchangeOptions{true, &Clock}) {}
 
     ~HostRuntime() { StopAudio(); }
+
+    void MaintainDisplayTopology() {
+        LocalTopology.Maintain(Session);
+    }
 
     [[nodiscard]] bool SetAudioGainPermyriad(std::uint16_t Gain) noexcept {
         return Receiver.SetGainPermyriad(Gain);
@@ -1392,6 +1514,7 @@ struct HostRuntime {
     }
 
     desklink::MachineId PeerMachine{};
+    LocalTopologyRuntime LocalTopology;
     std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
     std::uint64_t SessionNonce{};
     desklink::HostCoordinator Coordinator;
@@ -2313,7 +2436,8 @@ int RunTrusted(const CommandLine& Command,
             std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
                       << " role=acceptor\n";
             auto Runtime = std::make_shared<AgentRuntime>(
-                Clock, TrustStore, std::move(Trusted),
+                Clock, TrustStore, LocalIdentity.machine_id,
+                std::move(Trusted),
                 Command.ValidationDropNextKeyRelease,
                 Command.ValidationDropNextButtonRelease,
                 Command.ValidationObserveCleanup,
@@ -2322,6 +2446,7 @@ int RunTrusted(const CommandLine& Command,
                 Runtime->Session.stop();
                 return;
             }
+            Runtime->MaintainDisplayTopology();
             if (Command.SendAudio && !Runtime->StartAudio()) {
                 std::cerr << "[Audio:Capture] requested audio was not started; "
                              "input session remains active\n";
@@ -2344,7 +2469,8 @@ int RunTrusted(const CommandLine& Command,
             std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
                       << " role=initiator\n";
             auto Runtime = std::make_shared<HostRuntime>(
-                TrustStore, std::move(Trusted), [FocusTarget] {
+                Clock, TrustStore, LocalIdentity.machine_id,
+                std::move(Trusted), [FocusTarget] {
                     if (const auto Input = FocusTarget->lock()) {
                         Input->NotifyFocusReady();
                     }
@@ -2358,6 +2484,7 @@ int RunTrusted(const CommandLine& Command,
                 Result->Changed.notify_all();
                 return;
             }
+            Runtime->MaintainDisplayTopology();
             if (Command.ReceiveAudio && !Runtime->StartAudio()) {
                 std::cerr << "[Audio:Render] requested audio was not started; "
                              "input session remains active\n";
@@ -2427,7 +2554,10 @@ int RunTrusted(const CommandLine& Command,
             while (!StopTicker.load()) {
                 {
                     std::scoped_lock Lock(RuntimesMutex);
-                    for (const auto& Runtime : AgentRuntimes) Runtime->Session.tick();
+                    for (const auto& Runtime : AgentRuntimes) {
+                        Runtime->MaintainDisplayTopology();
+                        Runtime->Session.tick();
+                    }
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
@@ -2619,6 +2749,7 @@ int RunTrusted(const CommandLine& Command,
                 std::chrono::milliseconds(Command.ValidationDurationMs);
         const auto InputHandle = GetStdHandle(STD_INPUT_HANDLE);
         for (;;) {
+            ActiveHost->MaintainDisplayTopology();
             {
                 std::scoped_lock Lock(Result->Mutex);
                 if (Result->Emergency) break;
@@ -2714,11 +2845,12 @@ int Run(const CommandLine& Command) {
                                GrantInput = Command.GrantInput,
                                GrantAudioSend = Command.GrantAudioSend,
                                GrantAudioReceive = Command.GrantAudioReceive,
+                               GrantTopology = Command.GrantTopology,
                                ConsoleConfirm = Command.ConsoleConfirm](
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         HandlePairingOffer(
             Result, std::move(Session), GrantInput, GrantAudioSend,
-            GrantAudioReceive, ConsoleConfirm);
+            GrantAudioReceive, GrantTopology, ConsoleConfirm);
     };
     Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         Session.Endpoint->close();

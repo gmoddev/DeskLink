@@ -27,6 +27,7 @@ struct LauncherRequest {
     bool GrantInput{};
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
+    bool GrantTopology{};
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};

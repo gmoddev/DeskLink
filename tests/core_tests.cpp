@@ -13,6 +13,7 @@
 #include "desklink/protocol.hpp"
 #include "desklink/roaming.hpp"
 #include "desklink/session.hpp"
+#include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
 #ifdef _WIN32
@@ -175,6 +176,17 @@ desklink::RoamingConfiguration MakeRoamingConfiguration() {
     Result.CanvasLayout.push_back(
         {MakeMachineId(2), "display-b", 0, -25});
     return Result;
+}
+
+desklink::DisplayTopologySnapshot MakeDisplayTopology(
+    std::string StableIdentity,
+    std::string FriendlyName,
+    desklink::DisplayRect Bounds = {0, 0, 1920, 1080}) {
+    desklink::DisplayTopologyMap Topology;
+    CHECK(Topology.Update({desklink::DiscoveredDisplay{
+        std::move(StableIdentity), std::move(FriendlyName), Bounds, true}}) ==
+        desklink::DisplayTopologyUpdate::Changed);
+    return Topology.Current();
 }
 
 desklink::Sha256Digest MakeDigest(std::uint8_t Marker) {
@@ -643,6 +655,198 @@ void RoamingEndpointsResolveAgainstCurrentStableTopologies() {
     CHECK(ResolveRoamingEndpoint(
               Configuration.Links[0].EndpointA, Topologies).Endpoint
               ->TopologyGeneration == 2);
+}
+
+void DisplayTopologyProtocolIsBoundedAndStrict() {
+    using namespace desklink;
+    constexpr std::uint64_t SessionNonce = 0x9021u;
+    DisplayTopologySnapshotMessage Message{
+        MakeMachineId(1), SessionNonce,
+        MakeDisplayTopology("display-a", "Primary display")};
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce;
+    Header.sequence = 7;
+
+    const auto Encoded = encode_packet(Header, Message);
+    CHECK(PeekMessageType(Encoded) ==
+          MessageType::DisplayTopologySnapshot);
+    const auto Decoded = decode_packet(Encoded, false);
+    CHECK(Decoded.packet.has_value());
+    CHECK(std::get<DisplayTopologySnapshotMessage>(
+              Decoded.packet->message) == Message);
+    CHECK(!decode_packet(Encoded, true).packet.has_value());
+
+    auto Truncated = Encoded;
+    Truncated.pop_back();
+    CHECK(PeekMessageType(Truncated) ==
+          MessageType::DisplayTopologySnapshot);
+    CHECK(!decode_packet(Truncated, false).packet.has_value());
+
+    auto Invalid = Message;
+    Invalid.Machine = {};
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.SessionNonce = 0;
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.Topology.Displays[0].StableIdentity.push_back('\0');
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.Topology.Displays.push_back(Invalid.Topology.Displays.front());
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.Topology.Displays[0].Id++;
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+
+    std::vector<DiscoveredDisplay> DenseDisplays;
+    DenseDisplays.reserve(kMaxDisplayCount);
+    for (std::size_t Index = 0; Index < kMaxDisplayCount; ++Index) {
+        DenseDisplays.push_back(DiscoveredDisplay{
+            "dense-" + std::to_string(Index) + "-" +
+                std::string(990, static_cast<char>('a' + Index % 26)),
+            std::string(kMaxDisplayFriendlyNameLength, 'n'),
+            {static_cast<std::int32_t>(Index * 10), 0,
+             static_cast<std::int32_t>(Index * 10 + 10), 10},
+            Index == 0});
+    }
+    DisplayTopologyMap DenseTopology;
+    CHECK(DenseTopology.Update(std::move(DenseDisplays)) ==
+          DisplayTopologyUpdate::Changed);
+    const DisplayTopologySnapshotMessage Oversized{
+        MakeMachineId(1), SessionNonce, DenseTopology.Current()};
+    CHECK(IsValidDisplayTopologySnapshot(Oversized.Topology));
+    CHECK(!IsValidDisplayTopologySnapshotMessage(Oversized));
+    const auto OversizedDecoded = decode_packet(
+        encode_packet(Header, Oversized), false);
+    CHECK(!OversizedDecoded.packet.has_value());
+    CHECK(OversizedDecoded.error == DecodeError::PayloadTooLarge);
+}
+
+void DisplayTopologyAdmissionFailsClosedAndRecoversOnReconnect() {
+    using namespace desklink;
+    constexpr std::uint64_t SessionNonce = 0x7700u;
+    ManualClock Clock;
+    DisplayTopologyExchangeTracker Tracker(&Clock);
+    const auto Peer = MakeMachineId(2);
+    const auto Topology = MakeDisplayTopology("display-b", "Peer display");
+    EnvelopeHeader Header;
+    Header.type = MessageType::DisplayTopologySnapshot;
+    Header.session_nonce = SessionNonce;
+    DisplayTopologySnapshotMessage Message{Peer, SessionNonce, Topology};
+
+    Tracker.Begin(Peer, SessionNonce, false, true);
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Disabled);
+    CHECK(!Tracker.Admit(Header, Message));
+    Tracker.Begin(Peer, SessionNonce, true, false);
+    CHECK(Tracker.Status() ==
+          DisplayTopologyExchangeStatus::CapabilityMissing);
+    CHECK(!Tracker.Admit(Header, Message));
+
+    Tracker.Begin(Peer, SessionNonce, true, true);
+    CHECK(Tracker.Status() ==
+          DisplayTopologyExchangeStatus::Synchronizing);
+    auto WrongPeer = Message;
+    WrongPeer.Machine = MakeMachineId(9);
+    CHECK(!Tracker.Admit(Header, WrongPeer));
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Rejected);
+    CHECK(!Tracker.Snapshot().has_value());
+
+    Tracker.Begin(Peer, SessionNonce, true, true);
+    CHECK(Tracker.Admit(Header, Message));
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Ready);
+    CHECK(Tracker.Snapshot() == Topology);
+
+    auto GenerationTwo = Topology;
+    GenerationTwo.Generation = 2;
+    Message.Topology = GenerationTwo;
+    CHECK(Tracker.Admit(Header, Message));
+    Message.Topology = Topology;
+    CHECK(!Tracker.Admit(Header, Message));
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Ready);
+    CHECK(Tracker.Snapshot()->Generation == 2);
+
+    Message.Topology = GenerationTwo;
+    Message.Topology.Displays[0].FriendlyName = "Changed without generation";
+    CHECK(IsValidDisplayTopologySnapshot(Message.Topology));
+    CHECK(!Tracker.Admit(Header, Message));
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Rejected);
+    CHECK(!Tracker.Snapshot().has_value());
+
+    Tracker.Begin(Peer, SessionNonce, true, true);
+    Message.Topology = Topology;
+    CHECK(Tracker.Admit(Header, Message));
+    Clock.advance(kDisplayTopologyExchangeTimeout);
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::TimedOut);
+    CHECK(!Tracker.Snapshot().has_value());
+    CHECK(!Tracker.Admit(Header, Message));
+
+    Tracker.Stop();
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Offline);
+    Tracker.Begin(Peer, SessionNonce + 1, true, true);
+    Header.session_nonce = SessionNonce + 1;
+    Message.SessionNonce = SessionNonce + 1;
+    CHECK(Tracker.Admit(Header, Message));
+    CHECK(Tracker.Status() == DisplayTopologyExchangeStatus::Ready);
+}
+
+void RoamingRouteWaitsForAuthenticatedTopology() {
+    using namespace desklink;
+    const auto Configuration = MakeRoamingConfiguration();
+    auto TopologyA = MakeDisplayTopology("display-a", "A");
+    auto TopologyB = MakeDisplayTopology("display-b", "B",
+                                         {0, 0, 2560, 1440});
+    std::array<MachineDisplayTopology, 2> Topologies{
+        MachineDisplayTopology{MakeMachineId(1), &TopologyA},
+        MachineDisplayTopology{MakeMachineId(2), &TopologyB},
+    };
+    const auto& Link = Configuration.Links.front();
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Connected,
+              DisplayTopologyExchangeStatus::Ready,
+              true, true, Topologies) == RoamingRouteStatus::Ready);
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Authenticating,
+              DisplayTopologyExchangeStatus::Ready,
+              true, true, Topologies) ==
+          RoamingRouteStatus::SynchronizingTopology);
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Connected,
+              DisplayTopologyExchangeStatus::Synchronizing,
+              true, true, Topologies) ==
+          RoamingRouteStatus::SynchronizingTopology);
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Connected,
+              DisplayTopologyExchangeStatus::CapabilityMissing,
+              false, true, Topologies) ==
+          RoamingRouteStatus::CapabilityMissing);
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Connected,
+              DisplayTopologyExchangeStatus::Rejected,
+              true, true, Topologies) == RoamingRouteStatus::Invalid);
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Connected,
+              DisplayTopologyExchangeStatus::Ready,
+              true, false, Topologies) ==
+          RoamingRouteStatus::DirectionUnsupported);
+
+    auto Missing = Topologies;
+    Missing[1].Topology = nullptr;
+    CHECK(EvaluateRoamingRoute(
+              Link, RoamingDirection::AToB,
+              PeerConnectionStatus::Connected,
+              DisplayTopologyExchangeStatus::Ready,
+              true, true, Missing) == RoamingRouteStatus::DisplayMissing);
 }
 
 void InputStateSnapshotRoundTripAndValidation() {
@@ -1426,6 +1630,172 @@ void secure_session_end_to_end() {
     CHECK(!agent.RemoteFocused());
 }
 
+void TopologySessionExchangeIsCapabilityAndNonceBound() {
+    using namespace desklink;
+    constexpr std::uint64_t SessionNonce = 0x61'72'83u;
+    TransportPeerInfo HostView;
+    HostView.authenticated = true;
+    HostView.encrypted = true;
+    HostView.identity = MakeIdentity(52, "Topology peer B");
+    TransportPeerInfo AgentView;
+    AgentView.authenticated = true;
+    AgentView.encrypted = true;
+    AgentView.identity = MakeIdentity(51, "Topology peer A");
+
+    {
+        auto Pair = make_in_memory_transport_pair(HostView, AgentView);
+        ManualClock Clock;
+        RecordingInjector Injector;
+        AgentCoordinator AgentCore(Clock, Injector);
+        HostCoordinator HostCore(SessionNonce);
+        InMemoryTrustStore HostTrust;
+        InMemoryTrustStore AgentTrust;
+        SaveTrustedPeer(HostTrust, HostView.identity);
+        SaveTrustedPeer(AgentTrust, AgentView.identity);
+        AgentSession Agent(
+            Pair.b, AgentCore, AgentTrust, SessionNonce,
+            DisplayTopologyExchangeOptions{true, &Clock});
+        HostSession Host(
+            Pair.a, HostCore, HostTrust, SessionNonce, {}, nullptr,
+            DisplayTopologyExchangeOptions{true, &Clock});
+        CHECK(Agent.start());
+        CHECK(Host.start());
+        CHECK(Agent.DisplayTopologyStatus() ==
+              DisplayTopologyExchangeStatus::CapabilityMissing);
+        CHECK(Host.DisplayTopologyStatus() ==
+              DisplayTopologyExchangeStatus::CapabilityMissing);
+        CHECK(!Agent.PublishDisplayTopology(
+            HostView.identity.machine_id,
+            MakeDisplayTopology("display-b", "B")));
+        CHECK(!Host.PublishDisplayTopology(
+            AgentView.identity.machine_id,
+            MakeDisplayTopology("display-a", "A")));
+    }
+
+    CapabilitySet TopologyCapability;
+    TopologyCapability.grant(Capability::DisplayTopologyExchange);
+    auto Pair = make_in_memory_transport_pair(HostView, AgentView);
+    ManualClock Clock;
+    RecordingInjector Injector;
+    AgentCoordinator AgentCore(Clock, Injector);
+    HostCoordinator HostCore(SessionNonce);
+    InMemoryTrustStore HostTrust;
+    InMemoryTrustStore AgentTrust;
+    SaveTrustedPeer(HostTrust, HostView.identity, TopologyCapability);
+    SaveTrustedPeer(AgentTrust, AgentView.identity, TopologyCapability);
+    AgentSession Agent(
+        Pair.b, AgentCore, AgentTrust, SessionNonce,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    HostSession Host(
+        Pair.a, HostCore, HostTrust, SessionNonce, {}, nullptr,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    EnvelopeHeader PreAdmissionHeader;
+    PreAdmissionHeader.session_nonce = SessionNonce;
+    PreAdmissionHeader.sequence = 1;
+    CHECK(!Pair.a->send_reliable(encode_packet(
+        PreAdmissionHeader,
+        DisplayTopologySnapshotMessage{
+            AgentView.identity.machine_id, SessionNonce,
+            MakeDisplayTopology("display-a", "A")})));
+    CHECK(Agent.start());
+    CHECK(Host.start());
+    CHECK(Agent.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Synchronizing);
+    CHECK(Host.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Synchronizing);
+
+    const auto TopologyA = MakeDisplayTopology("display-a", "A");
+    const auto TopologyB = MakeDisplayTopology("display-b", "B");
+    CHECK(Host.PublishDisplayTopology(
+        AgentView.identity.machine_id, TopologyA));
+    CHECK(Agent.PublishDisplayTopology(
+        HostView.identity.machine_id, TopologyB));
+    CHECK(!Host.PublishDisplayTopology(
+        MakeMachineId(99), TopologyA));
+    CHECK(Agent.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+    CHECK(Host.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+    CHECK(Agent.RemoteDisplayTopology() == TopologyA);
+    CHECK(Host.RemoteDisplayTopology() == TopologyB);
+    CHECK(Agent.stats().TopologyAccepted == 1);
+    CHECK(Host.stats().TopologyAccepted == 1);
+
+    auto TopologyATwo = TopologyA;
+    TopologyATwo.Generation = 2;
+    CHECK(Host.PublishDisplayTopology(
+        AgentView.identity.machine_id, TopologyATwo));
+    CHECK(Agent.RemoteDisplayTopology()->Generation == 2);
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce;
+    Header.sequence = 90;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        Header,
+        DisplayTopologySnapshotMessage{
+            AgentView.identity.machine_id, SessionNonce, TopologyA})));
+    CHECK(Agent.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+    CHECK(Agent.RemoteDisplayTopology()->Generation == 2);
+
+    auto Conflicting = TopologyATwo;
+    Conflicting.Displays[0].FriendlyName = "Conflicting metadata";
+    CHECK(IsValidDisplayTopologySnapshot(Conflicting));
+    Header.sequence = 91;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        Header,
+        DisplayTopologySnapshotMessage{
+            AgentView.identity.machine_id, SessionNonce, Conflicting})));
+    CHECK(Agent.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Rejected);
+    CHECK(!Agent.RemoteDisplayTopology().has_value());
+
+    Header.session_nonce = SessionNonce + 1;
+    Header.sequence = 92;
+    CHECK(Pair.b->send_reliable(encode_packet(
+        Header,
+        DisplayTopologySnapshotMessage{
+            HostView.identity.machine_id, SessionNonce + 1, TopologyB})));
+    CHECK(Host.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Rejected);
+    CHECK(!Host.RemoteDisplayTopology().has_value());
+    CHECK(Agent.stats().TopologyRejected >= 2);
+    CHECK(Host.stats().TopologyRejected == 1);
+
+    Agent.stop();
+    Host.stop();
+
+    auto ReconnectPair = make_in_memory_transport_pair(HostView, AgentView);
+    RecordingInjector ReconnectInjector;
+    AgentCoordinator ReconnectAgentCore(Clock, ReconnectInjector);
+    HostCoordinator ReconnectHostCore(SessionNonce + 1);
+    AgentSession ReconnectAgent(
+        ReconnectPair.b, ReconnectAgentCore, AgentTrust, SessionNonce + 1,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    HostSession ReconnectHost(
+        ReconnectPair.a, ReconnectHostCore, HostTrust, SessionNonce + 1,
+        {}, nullptr, DisplayTopologyExchangeOptions{true, &Clock});
+    CHECK(ReconnectAgent.start());
+    CHECK(ReconnectHost.start());
+    CHECK(ReconnectHost.PublishDisplayTopology(
+        AgentView.identity.machine_id, TopologyA));
+    CHECK(ReconnectAgent.PublishDisplayTopology(
+        HostView.identity.machine_id, TopologyB));
+    CHECK(ReconnectAgent.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+    CHECK(ReconnectHost.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+
+    auto Malformed = encode_packet(
+        EnvelopeHeader{.session_nonce = SessionNonce + 1, .sequence = 100},
+        DisplayTopologySnapshotMessage{
+            AgentView.identity.machine_id, SessionNonce + 1, TopologyA});
+    Malformed.pop_back();
+    CHECK(ReconnectPair.a->send_reliable(std::move(Malformed)));
+    CHECK(ReconnectAgent.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Rejected);
+    CHECK(!ReconnectAgent.RemoteDisplayTopology().has_value());
+}
+
 void AudioSessionRequiresCapabilitiesNonceAndFormat() {
     using namespace desklink;
     constexpr std::uint64_t Nonce = 0x1234'5678u;
@@ -2067,11 +2437,13 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     Pair.Operation = LauncherOperation::PairListen;
     Pair.GrantInput = true;
     Pair.GrantAudioReceive = true;
+    Pair.GrantTopology = true;
     const auto PairArguments = BuildLauncherArguments(Pair);
     CHECK(PairArguments.has_value());
     const std::vector<std::wstring> ExpectedPair{
         L"listen", L"43821", L"--grant-input",
-        L"--grant-audio-receive", L"--tls-provider", L"schannel"};
+        L"--grant-audio-receive", L"--grant-topology",
+        L"--tls-provider", L"schannel"};
     CHECK(*PairArguments == ExpectedPair);
 
     Focus.Host = L"host with spaces";
@@ -2564,6 +2936,9 @@ int main() {
     EdidPhysicalSizeParsingIsStrictAndBounded();
     RoamingGraphValidationAndCodecAreStrict();
     RoamingEndpointsResolveAgainstCurrentStableTopologies();
+    DisplayTopologyProtocolIsBoundedAndStrict();
+    DisplayTopologyAdmissionFailsClosedAndRecoversOnReconnect();
+    RoamingRouteWaitsForAuthenticatedTopology();
     InputStateSnapshotRoundTripAndValidation();
     InputStateTransitionsReleaseBeforePress();
     rejects_wrong_lane_and_oversize();
@@ -2575,6 +2950,7 @@ int main() {
     out_of_order_pointer_rejected();
     stale_focus_ready_cannot_win_new_transaction();
     secure_session_end_to_end();
+    TopologySessionExchangeIsCapabilityAndNonceBound();
     AudioSessionRequiresCapabilitiesNonceAndFormat();
     insecure_transport_refused();
     UnpairedTransportIsRefused();

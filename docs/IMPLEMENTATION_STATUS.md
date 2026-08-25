@@ -33,6 +33,8 @@ The current build proves the core invariants independently of Windows networking
 | Display presentation metadata | Done | Checked active resolution/refresh/orientation; EDID physical size with raw-DPI estimate fallback; metadata does not change routing generations |
 | Roaming graph foundation | Done | Strict bounded directional links and normalized edge segments; duplicate/overlapping source routes rejected; stable identities resolve only against current machine topologies |
 | Roaming preference persistence | Done | Versioned 512 KiB-bounded exact codec and atomic current-user replacement; canvas positions remain presentation-only and trust/identity stay in security stores |
+| Authenticated topology exchange | Done | Explicit trust grant; reliable snapshot bound to PeerValidated session, expected machine, and fresh nonce; canonical 64-display/64 KiB bounds; two-second refresh and five-second fail-closed freshness |
+| Roaming connection/route status | Done | Peer and route state are separate; missing capability/display, unsupported direction, invalid snapshot, and topology synchronization cannot report Ready |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded `GetState`/`SetDesiredMode`/audio gain/mute |
 | LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
@@ -66,7 +68,7 @@ The current build proves the core invariants independently of Windows networking
 | Connection rate limits | Done | Bounded per-address connection and pairing windows |
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
-| Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input grant |
+| Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input/audio/topology grants; existing trust records are not migrated |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
 | Windows 10 physical compatibility | R&D Stage 5 complete | Pairing, reconnect, nonce rotation, protocol-v2 relative pointer feel at 100%/raw DPI, physical forwarding, `SendInput`, snapshot recovery, emergency release, process termination, scoped network interruption, and live stale epoch/session rejection passed |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
@@ -136,6 +138,11 @@ The current test suite verifies:
 54. roaming graph bounds, reciprocal/one-way links, duplicate and overlapping source rejection, and exact codec framing
 55. current-topology stable-identity resolution including offline, missing, and ambiguous machines
 56. atomic current-user roaming preference save/load, invalid-candidate rollback, and malformed-file rejection
+57. topology snapshot reliable-lane round trip, canonical descriptor validation, truncation, wrong-lane, embedded-NUL, duplicate, ID, and 64 KiB aggregate bounds
+58. topology admission gating for explicit capability, expected peer machine, envelope/payload nonce, generation monotonicity, same-generation invariance, and five-second timeout
+59. pre-admission refusal and end-to-end bidirectional HostSession/AgentSession topology exchange, local-machine pinning, stale generation handling, malformed traffic invalidation, nonce rejection, and fresh reconnect recovery
+60. route status remains unready for authenticating peers, synchronization, missing grants/displays, unsupported directions, and rejected topology
+61. alpha launcher forwards the explicit topology grant while retaining production Schannel pinning
 
 Build/test result in the creation environment:
 
@@ -220,11 +227,13 @@ capture/render foundation, exact V1 audio block assembler, complementary
 capability/session datagram gates, and receiver jitter/render pump are complete.
 Scoped WASAPI endpoint notification and audio-only bounded reopen are complete.
 Bounded adaptive jitter targeting, rebuffer accounting, and asynchronous clock-
-drift correction and per-peer gain/mute are complete. Roaming Phase 1 now adds
+drift correction and per-peer gain/mute are complete. Roaming Phase 1 adds
 bounded display presentation metadata, the strict persisted directional graph,
 current-topology stable-identity resolution, and atomic preferences without
-allowing canvas geometry to influence routing. Authenticated topology exchange
-is the next roaming slice. The
+allowing canvas geometry to influence routing. Phase 2 now adds the explicit
+topology capability, bounded reliable snapshots, peer/machine/nonce admission,
+freshness timeout, and separate peer/route readiness without edge switching.
+The configurator and Identify overlays are the next roaming slice. The
 native Windows alpha wrapper is complete
 and provides the manual pairing/session/status surface used for future physical
 validation without changing any trust or transport boundary.

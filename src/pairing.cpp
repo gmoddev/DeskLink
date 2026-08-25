@@ -11,7 +11,6 @@ namespace {
 constexpr std::chrono::seconds kMinimumPairingWindow{1};
 constexpr std::chrono::seconds kMaximumPairingWindow{300};
 constexpr std::string_view kPairingDomain = "DeskLink-Pairing-v1";
-constexpr std::uint64_t kKnownCapabilityBits = (1ull << 12u) - 1u;
 
 bool IsAllZero(ByteSpan Bytes) noexcept {
     std::uint8_t Combined = 0;

@@ -44,6 +44,7 @@ add_library(desklink_core
     src/display_topology.cpp
     src/profile.cpp
     src/roaming.cpp
+    src/topology_exchange.cpp
     src/protocol.cpp
     src/input.cpp
     src/focus.cpp

@@ -4,6 +4,7 @@
 #include "desklink/audio.hpp"
 #include "desklink/host.hpp"
 #include "desklink/pairing.hpp"
+#include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
 
 #include <cstdint>
@@ -24,6 +25,16 @@ struct SessionStats {
     std::uint64_t AudioReceived{};
     std::uint64_t AudioAccepted{};
     std::uint64_t AudioRejected{};
+    std::uint64_t TopologySent{};
+    std::uint64_t TopologySendRejected{};
+    std::uint64_t TopologyReceived{};
+    std::uint64_t TopologyAccepted{};
+    std::uint64_t TopologyRejected{};
+};
+
+struct DisplayTopologyExchangeOptions {
+    bool Enabled{};
+    const IClock* Clock{};
 };
 
 class AgentSession {
@@ -31,7 +42,8 @@ public:
     AgentSession(std::shared_ptr<ITransportEndpoint> transport,
                  AgentCoordinator& coordinator,
                  const ITrustStore& TrustStore,
-                 std::uint64_t session_nonce) noexcept;
+                 std::uint64_t session_nonce,
+                 DisplayTopologyExchangeOptions TopologyOptions = {}) noexcept;
     ~AgentSession();
 
     [[nodiscard]] bool start();
@@ -42,6 +54,13 @@ public:
     [[nodiscard]] bool RemoteFocused() const noexcept;
     [[nodiscard]] bool CanSendAudio() const noexcept;
     [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
+    [[nodiscard]] bool PublishDisplayTopology(
+        const MachineId& LocalMachine,
+        const DisplayTopologySnapshot& Topology);
+    [[nodiscard]] DisplayTopologyExchangeStatus
+    DisplayTopologyStatus() const noexcept;
+    [[nodiscard]] std::optional<DisplayTopologySnapshot>
+    RemoteDisplayTopology() const;
     [[nodiscard]] SessionStats stats() const noexcept;
 
 private:
@@ -57,6 +76,10 @@ private:
     std::uint64_t response_sequence_{1};
     std::uint64_t AudioDatagramSequence_{1};
     CapabilitySet PeerCapabilities_;
+    DisplayTopologyExchangeOptions TopologyOptions_;
+    DisplayTopologyExchangeTracker TopologyExchange_;
+    std::optional<MachineId> LocalTopologyMachine_;
+    std::uint64_t TopologySequence_{1};
     SessionStats stats_;
     mutable std::recursive_mutex Mutex_;
     bool started_{};
@@ -69,7 +92,8 @@ public:
                 const ITrustStore& TrustStore,
                 std::uint64_t session_nonce,
                 std::function<void()> FocusReadyHandler = {},
-                AudioReceiver* Receiver = nullptr) noexcept;
+                AudioReceiver* Receiver = nullptr,
+                DisplayTopologyExchangeOptions TopologyOptions = {}) noexcept;
     ~HostSession();
 
     [[nodiscard]] bool start();
@@ -88,6 +112,13 @@ public:
     [[nodiscard]] bool RemoteFocused() const noexcept;
     [[nodiscard]] DeskMode DesiredMode() const noexcept;
     [[nodiscard]] bool CanReceiveAudio() const noexcept;
+    [[nodiscard]] bool PublishDisplayTopology(
+        const MachineId& LocalMachine,
+        const DisplayTopologySnapshot& Topology);
+    [[nodiscard]] DisplayTopologyExchangeStatus
+    DisplayTopologyStatus() const noexcept;
+    [[nodiscard]] std::optional<DisplayTopologySnapshot>
+    RemoteDisplayTopology() const;
 
     [[nodiscard]] SessionStats stats() const noexcept;
 
@@ -102,6 +133,10 @@ private:
     std::function<void()> FocusReadyHandler_;
     AudioReceiver* AudioReceiver_{};
     CapabilitySet PeerCapabilities_;
+    DisplayTopologyExchangeOptions TopologyOptions_;
+    DisplayTopologyExchangeTracker TopologyExchange_;
+    std::optional<MachineId> LocalTopologyMachine_;
+    std::uint64_t TopologySequence_{1};
     SessionStats stats_;
     mutable std::recursive_mutex Mutex_;
     bool started_{};

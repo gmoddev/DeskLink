@@ -460,7 +460,7 @@ configurator becomes the primary UI:
   one-way links, offline displays, and generation invalidation.
 - No network exchange or edge switching.
 
-### Phase 2: authenticated topology exchange
+### Phase 2: authenticated topology exchange — complete
 
 - Add the explicit capability and bounded reliable snapshot.
 - Gate it on `PeerValidated`, trust, nonce, and normal session admission.
@@ -469,6 +469,16 @@ configurator becomes the primary UI:
 - Test wrong peer, stale nonce, malformed/oversized snapshot, pre-admission
   traffic, reconnect, missing display, and same-display return.
 - No edge switching.
+
+The implementation uses an explicit `DisplayTopologyExchange` trust grant;
+existing trust records are never upgraded silently. Both session roles publish
+canonical snapshots on the reliable lane after trusted-session admission and
+refresh them every two seconds. Remote snapshots have a five-second freshness
+lease. Lower generations are ignored without extending freshness, while a
+same-generation mutation, wrong machine/nonce, malformed framing, or invalid
+descriptor invalidates route readiness until a new authenticated connection.
+Peer connection and route status remain separate, and no Phase 2 code requests
+focus or switches an edge.
 
 ### Phase 3: configurator, tray integration, and Identify
 
