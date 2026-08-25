@@ -480,13 +480,35 @@ descriptor invalidates route readiness until a new authenticated connection.
 Peer connection and route status remain separate, and no Phase 2 code requests
 focus or switches an edge.
 
-### Phase 3: configurator, tray integration, and Identify
+### Phase 3: configurator, tray integration, and Identify — complete
 
 - Add scaled PC/display canvas, adjacency suggestions, directional availability,
   advanced edge editing, offline/invalid states, atomic save, first-run flow,
   tray lifecycle, and five-second Identify overlays.
 - Exercise with the available Windows 11 and Windows 10 compatibility machines.
 - No physical input routing is required for this phase.
+
+The implementation adds a bounded same-SID `GetDisplayTopologies` control
+request. The runtime returns one current local topology and at most seven
+authenticated peer entries; only a `Ready` entry may carry a canonical current
+snapshot. The aggregate response is capped at 512 KiB and cannot mutate trust,
+capabilities, focus, or input state.
+
+The native configurator refreshes this view asynchronously. It scales cards by
+EDID physical dimensions, marks DPI/unknown fallbacks with a dotted estimated
+border, preserves saved missing displays as offline, and reports connection and
+route availability separately. Drag adjacency creates only a suggestion;
+confirmation saves a bidirectional full-edge link by default. Advanced controls
+permit one-way and partial normalized segments. Canvas coordinates never enter
+route resolution. A complete candidate graph is validated, control is confirmed
+Local, and the file is atomically replaced; failure leaves the previous graph.
+
+Identify creates one topmost, no-activate, click-through local overlay per
+active display for five seconds and never starts capture or suppression. The
+companion is single-instance, shows first-run guidance, supports close-to-tray,
+tray Open/Return Local/Exit, ordered shutdown, and opt-in current-user sign-in
+startup. Automatic peer reconnection remains companion follow-up work and never
+restores remote focus.
 
 ### Phase 4: roaming implementation and experimental testing
 

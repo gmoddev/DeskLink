@@ -1,17 +1,20 @@
 #pragma once
 
 #include "desklink/protocol.hpp"
+#include "desklink/topology_exchange.hpp"
 #include "desklink/types.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <variant>
+#include <vector>
 
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
 inline constexpr std::uint16_t kControlProtocolVersion = 1;
-inline constexpr std::size_t kMaximumControlPayload = 128;
+inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
+inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kControlFrameHeaderSize = 20;
 inline constexpr std::size_t kMaximumControlFrameSize =
     kControlFrameHeaderSize + kMaximumControlPayload;
@@ -27,6 +30,7 @@ enum class ControlCommand : std::uint16_t {
     FocusMachine = 3,
     SetAudioGain = 4,
     ToggleAudioMute = 5,
+    GetDisplayTopologies = 6,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -59,12 +63,15 @@ struct SetAudioGainControlRequest {
 
 struct ToggleAudioMuteControlRequest {};
 
+struct GetDisplayTopologiesControlRequest {};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
     FocusMachineControlRequest,
     SetAudioGainControlRequest,
-    ToggleAudioMuteControlRequest>;
+    ToggleAudioMuteControlRequest,
+    GetDisplayTopologiesControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
@@ -83,10 +90,30 @@ struct ControlState {
     bool AudioMuted{};
 };
 
+struct ControlMachineTopology {
+    MachineId Machine{};
+    DisplayTopologyExchangeStatus Status{
+        DisplayTopologyExchangeStatus::Offline};
+    std::optional<DisplayTopologySnapshot> Topology;
+    bool Local{};
+    bool PeerInputAllowed{};
+
+    [[nodiscard]] bool operator==(
+        const ControlMachineTopology&) const noexcept = default;
+};
+
+struct ControlTopologyState {
+    std::vector<ControlMachineTopology> Machines;
+
+    [[nodiscard]] bool operator==(
+        const ControlTopologyState&) const noexcept = default;
+};
+
 struct ControlResponse {
     std::uint64_t RequestId{};
     ControlStatus Status{ControlStatus::Failed};
     std::optional<ControlState> State;
+    std::optional<ControlTopologyState> Topologies;
 };
 
 enum class ControlDecodeError {
@@ -105,7 +132,9 @@ struct ControlDecodeResult {
 
 [[nodiscard]] bool IsValidControlRequest(const ControlRequest& Request) noexcept;
 [[nodiscard]] bool IsValidControlState(const ControlState& State) noexcept;
-[[nodiscard]] bool IsValidControlResponse(const ControlResponse& Response) noexcept;
+[[nodiscard]] bool IsValidControlTopologyState(
+    const ControlTopologyState& State);
+[[nodiscard]] bool IsValidControlResponse(const ControlResponse& Response);
 [[nodiscard]] std::optional<ByteBuffer> EncodeControlRequest(
     const ControlRequest& Request);
 [[nodiscard]] ControlDecodeResult<ControlRequest> DecodeControlRequest(

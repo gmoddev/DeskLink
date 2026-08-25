@@ -347,7 +347,22 @@ unsupported, disabled, or invalid. Only a current validated topology can make
 route resolution Ready. Lower generations do not refresh the lease;
 same-generation mutations and malformed/wrong-peer traffic invalidate the
 remote topology until reconnect. This layer cannot request focus or switch an
-edge; configurator and crossing behavior remain later phases.
+edge. Phase 3 displays and persists the graph, while crossing behavior remains
+disabled until Phase 4.
+
+The companion reads topology through a bounded current-user control request.
+The named-pipe server retains its one-SID DACL and mutual process-SID checks;
+responses contain one canonical local snapshot plus at most seven current peer
+statuses/snapshots. A remote snapshot is exposed only while the authenticated
+session tracker reports it current. This read-only surface has no trust,
+capability, focus, or input mutation operation.
+
+Configurator geometry is a separate presentation model. EDID millimeters and
+DPI estimates choose card dimensions, and saved `CanvasLayout` coordinates
+choose card positions. Only an explicitly confirmed `RoamingLink` containing
+machine ID, stable display identity, side, and normalized segment can enter the
+runtime graph. Atomic save validates the complete candidate and confirms Local
+before replacement.
 
 ---
 

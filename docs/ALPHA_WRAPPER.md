@@ -11,6 +11,8 @@ surface, not the final DeskLink UI or installer.
 - one wrapper-owned DeskLink operation at a time
 - manual pairing and manual focus switching
 - optional physical input capture and optional audio startup
+- presentation-only monitor arrangement and explicit saved edge configuration
+- single-instance notification-area lifecycle and optional sign-in startup
 
 The wrapper always passes `--tls-provider schannel`. It does not expose the
 experimental Windows 10 OpenSSL/CNG path, does not read or rewrite the trust
@@ -40,6 +42,10 @@ store, and does not implement a second connection or pairing stack.
    authenticated connected peer, then select **Focus remote**.
 9. Select **RETURN LOCAL** before stopping a session. The physical emergency
    chord remains **Ctrl+Alt+Pause/Break**.
+10. Select **Arrange monitors** to refresh current local/authenticated peer
+    layouts, drag the physical-size cards, identify local displays, and confirm
+    edge connections. Existing peers require the topology grant in both
+    directions before their current cards can appear.
 
 The audio permission names describe what the peer may do:
 
@@ -75,6 +81,23 @@ releases DeskLink-owned input state. If the control endpoint is unavailable,
 the wrapper closes the owned process input as a fail-local fallback. Normal
 stop and wrapper shutdown use the CLI's graceful stdin shutdown path.
 
+The wrapper is single-instance. By default the X button hides it to the
+notification area without stopping an active or reconnecting operation. The
+tray offers Open, Return Local, and Exit. Explicit Exit and Windows shutdown
+perform ordered fail-local cleanup and remove the tray icon. **Keep DeskLink
+running when I close the window** controls close-to-background behavior.
+**Start DeskLink when I sign in to Windows** writes only the current user's Run
+entry and starts the same executable with `--background`; first launch still
+shows onboarding.
+
+The configurator obtains remote cards only through the existing same-user
+control pipe after authenticated topology admission. Refresh is asynchronous.
+At most eight machine entries and 512 KiB are accepted, and non-Ready peers
+cannot supply a snapshot. Saving validates the complete graph, confirms the
+runtime is Local, then atomically replaces
+`%LOCALAPPDATA%\DeskLink\roaming.settings`. Canvas geometry never enables input.
+Identify overlays are click-through and expire after five seconds.
+
 ## Portable package
 
 Configure a Windows MsQuic build and create the ZIP with CPack:
@@ -101,9 +124,9 @@ verification remain fail closed.
 
 ## Deliberately deferred
 
-- edge-triggered roaming
+- edge-triggered roaming (Phase 4)
 - Windows 10 production support
 - two-Windows-11 physical failure-matrix signoff
 - persisted profiles or automatic startup
-- final onboarding, tray UX, installer, signing, and updates
+- final visual polish, installer, signing, and updates
 - persistent diagnostics or telemetry

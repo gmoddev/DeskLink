@@ -42,6 +42,7 @@ add_library(desklink_core
     src/control.cpp
     src/discovery.cpp
     src/display_topology.cpp
+    src/monitor_configurator.cpp
     src/profile.cpp
     src/roaming.cpp
     src/topology_exchange.cpp
@@ -249,8 +250,10 @@ endif()
 
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
+        src/win32_application_settings.cpp
         src/win32_control.cpp
         src/win32_launcher.cpp
+        src/win32_monitor_configurator.cpp
         src/win32_display_topology.cpp
         src/win32_discovery.cpp
         src/win32_foreground.cpp
@@ -262,7 +265,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_device_certificate.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt setupapi shcore)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt setupapi shcore)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     else()
@@ -273,7 +276,7 @@ endif()
 
 if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     add_executable(desklink_alpha WIN32 apps/desklink_alpha.cpp)
-    target_link_libraries(desklink_alpha PRIVATE desklink_windows comctl32)
+    target_link_libraries(desklink_alpha PRIVATE desklink_windows comctl32 shell32 ole32)
     add_dependencies(desklink_alpha desklink_pair)
     target_compile_definitions(desklink_alpha PRIVATE UNICODE _UNICODE)
     if(MSVC)
