@@ -200,6 +200,23 @@ changes advance a process-local generation. An active nonzero-display pointer
 mapping remains pinned to its original generation and fails closed after such a
 change until focus is released and reacquired.
 
+Each active descriptor also carries checked pixel dimensions, refresh in
+millihertz, orientation, and physical millimeters for presentation. Physical
+size prefers the matching monitor-interface EDID base block after header and
+checksum validation, falls back to a bounded `MDT_RAW_DPI` estimate, and
+otherwise remains explicitly unknown. Friendly-name, refresh, physical-size,
+orientation, and canvas changes update presentation state without advancing the
+routing generation.
+
+The Phase 1 roaming model persists at most 128 explicit cross-machine links.
+Endpoints use machine ID, full stable display identity, side, and a normalized
+edge segment. The complete graph is validated before a versioned, 512 KiB-
+bounded preferences file is atomically replaced. Duplicate links, overlapping
+active source segments, invalid direction/policy bounds, ambiguous machines,
+and missing displays fail closed. The preference store contains no certificate,
+pin, capability, trust record, or CNG identity material. Canvas coordinates are
+not accepted by any route-resolution API.
+
 The Host UI should store edge adjacency, for example:
 
 ```text

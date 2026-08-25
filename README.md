@@ -53,6 +53,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Guarded two-PC reconciliation fault validation with a non-production-only control
 - Stable Windows DisplayConfig identities, deterministic display IDs, rectangle mapping,
   and topology-generation invalidation
+- Bounded monitor presentation metadata from DisplayConfig plus checked EDID/raw-DPI
+  size fallback
+- Strict 128-link roaming graph with stable-identity resolution and atomic
+  current-user preference persistence; canvas geometry is presentation-only
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
 - Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
@@ -70,10 +74,9 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Monitor graph and edge roaming
+- Authenticated peer topology exchange, configurator UI, and physical edge roaming
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
-- Per-peer audio gain/mute
 - Final tray/onboarding UI, installer/update flow, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
