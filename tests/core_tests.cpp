@@ -16,6 +16,7 @@
 #include "desklink/roaming.hpp"
 #include "desklink/roaming_runtime.hpp"
 #include "desklink/runtime_broker.hpp"
+#include "desklink/product_shell.hpp"
 #include "desklink/session.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
@@ -5371,6 +5372,49 @@ void DiscoveryCacheExpiresAndFlagsConflicts() {
                          std::chrono::milliseconds(0)));
 }
 
+void ProductShellPresentationIsFailLocalAndBounded() {
+    using namespace desklink;
+
+    constexpr std::array States{
+        ProductShellState::Offline,
+        ProductShellState::Connecting,
+        ProductShellState::ConnectedLocal,
+        ProductShellState::RemoteFocus,
+        ProductShellState::ActionRequired,
+        ProductShellState::Paused,
+    };
+    for (const auto State : States) {
+        const auto Presentation = PresentProductShellState(State);
+        CHECK(!Presentation.Badge.empty());
+        CHECK(!Presentation.KeyboardAndMouseTitle.empty());
+        CHECK(!Presentation.KeyboardAndMouseSummary.empty());
+        CHECK(!Presentation.ConnectionDetail.empty());
+        CHECK(Presentation.Badge.size() <= 32);
+        CHECK(Presentation.KeyboardAndMouseSummary.size() <= 96);
+    }
+
+    const auto Remote =
+        PresentProductShellState(ProductShellState::RemoteFocus);
+    CHECK(Remote.ShowReturnLocal);
+    CHECK(!Remote.ShowActionRequired);
+
+    const auto Action =
+        PresentProductShellState(ProductShellState::ActionRequired);
+    CHECK(!Action.ShowReturnLocal);
+    CHECK(Action.ShowActionRequired);
+    CHECK(Action.ConnectionDetail.find(L"retry stopped") !=
+          std::wstring_view::npos);
+
+    for (const auto State : {ProductShellState::Offline,
+                             ProductShellState::Connecting,
+                             ProductShellState::ConnectedLocal,
+                             ProductShellState::Paused}) {
+        const auto Presentation = PresentProductShellState(State);
+        CHECK(!Presentation.ShowReturnLocal);
+        CHECK(!Presentation.ShowActionRequired);
+    }
+}
+
 void in_memory_transport_preserves_security_metadata() {
     using namespace desklink;
     TransportPeerInfo a_sees_b;
@@ -5426,6 +5470,7 @@ int main() {
     HostInputLifecycleFailuresRemainLocal();
     DiscoveryPropertiesAreStrictAndRoundTrip();
     DiscoveryCacheExpiresAndFlagsConflicts();
+    ProductShellPresentationIsFailLocalAndBounded();
     protocol_round_trip();
     PointerMotionRoundTripAndValidation();
     ControlProtocolRoundTripAndValidation();

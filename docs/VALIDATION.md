@@ -96,6 +96,32 @@ second supported Windows 11/Server 2022+ system is available.
 
 ---
 
+## Product UX PR 5 automated validation
+
+The WinUI deployment foundation is built with locked NuGet resolution and an
+unpackaged self-contained x64 payload. Local validation proves:
+
+- locked restore/build and self-contained `--smoke-test` launch;
+- a 243-file allowlisted staging payload with required core graph files,
+  pinned SDK license/notices, no reparse points, and valid Microsoft signatures
+  on every redistributed DLL/EXE;
+- distinct Alpha and product-shell lifecycle mutexes, secondary activation,
+  close-to-tray background lifetime, and bounded explicit exit;
+- the full Windows core regression suite after the new fail-local presentation
+  mapping tests;
+- all 34 interactive UI Automation controls have accessible names; and
+- real Inno Setup 7.1.0 compilation of the unsigned development installer.
+
+The shell is intentionally driven by simulated broker states in this PR, so
+these checks cannot change trust, pairing, networking, capture, or injection.
+Disposable-account CI additionally exercises installed shell activation,
+broker survival after shell exit, update shutdown, rollback, and uninstall.
+Production signing plus clean Windows 11 and Server 2022 Desktop Experience
+DPI, keyboard, Narrator, light/dark, and contrast qualification remain release
+gates.
+
+---
+
 ## Simulation output
 
 The simulation demonstrates:
@@ -528,17 +554,20 @@ of scope.
 ## Windows installer validation
 
 The Windows MsQuic job installs a hash-pinned, Authenticode-verified Inno Setup
-7.1.0 compiler and stages only CMake's `Alpha` component. The packaging script
+7.1.0 compiler and stages CMake's `Alpha` component plus the exact
+self-contained product-shell payload. The packaging script
 rejects unexpected files, reparse points, the wrong Schannel runtime digest,
 and every production invocation that lacks both an explicit current-user code
 signing certificate and timestamp URL.
 
-On the disposable CI account, the installer test first holds the Alpha
-lifecycle mutex and proves Setup cannot proceed. It proves coordinator-mode
+On the disposable CI account, the installer test first holds the Alpha and
+product-shell lifecycle mutexes and proves Setup cannot proceed. It proves coordinator-mode
 Setup cannot run without the update mutex and that ordinary Setup/runtime
 startup cannot overlap that mutex. After installing 0.1.0, it starts Alpha and
-proves the production updater rejects unsigned packages without stopping the
-UI or changing the version. A validation-only updater then injects candidate
+the product shell, proves secondary shell activation and shell-only exit leave
+the broker responsive, and proves the production updater rejects unsigned
+packages without stopping the UI or changing the version. A validation-only
+updater then injects candidate
 health failure and must restore 0.1.0 before a clean transaction advances to
 0.1.1. Finally the test seeds DeskLink's optional Run value and uninstalls. The
 Run value and installer-owned files disappear while a sentinel under

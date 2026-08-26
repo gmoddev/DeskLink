@@ -87,12 +87,13 @@ jobs:
         run: >-
           cmake -S . -B build-msquic
           -DDESKLINK_BUILD_MSQUIC=ON
+          -DDESKLINK_BUILD_PRODUCT_UI=ON
           -DDESKLINK_MSQUIC_ROOT=${{ github.workspace }}/external/Microsoft.Native.Quic.MsQuic.Schannel
 
       - name: Build adapter, pairing control, and native loopback
         run: >-
           cmake --build build-msquic --config Release
-          --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair desklink_runtime desklink_alpha desklink_update_validation
+          --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair desklink_runtime desklink_alpha desklink_update_validation desklink_product_ui
           --parallel 2
 
       - name: Run pinned-runtime and native MsQuic loopback tests
@@ -107,6 +108,23 @@ jobs:
         run: >-
           cmake --install build-msquic --config Release
           --prefix installer-stage --component Alpha
+
+      - name: Stage and smoke-test the WinUI product shell
+        shell: pwsh
+        run: |
+          ./scripts/Stage-WinUiShell.ps1 `
+            -BuildPath build-msquic/product-ui/Release `
+            -StagePath installer-stage/ui
+          $Shell = Start-Process `
+            -FilePath build-msquic/product-ui/Release/desklink.exe `
+            -ArgumentList '--smoke-test' -PassThru
+          if (-not $Shell.WaitForExit(15000)) {
+            Stop-Process -Id $Shell.Id
+            throw 'WinUI product-shell smoke test timed out.'
+          }
+          if ($Shell.ExitCode -ne 0) {
+            throw "WinUI product-shell smoke test failed with $($Shell.ExitCode)."
+          }
 
       - name: Install verified Inno Setup compiler
         shell: pwsh
@@ -195,6 +213,38 @@ jobs:
           path: |
             DeskLink-Alpha-0.1.0-windows-x64.zip
             DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe
+
+  ProductUiServer2022:
+    name: Product UI Server 2022 smoke
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout DeskLink
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build locked self-contained product shell
+        shell: pwsh
+        run: >-
+          ./scripts/Build-WinUiShell.ps1
+          -Configuration Release
+          -LockedMode
+
+      - name: Validate payload and launch
+        shell: pwsh
+        run: |
+          ./scripts/Stage-WinUiShell.ps1 `
+            -BuildPath build-winui/Release `
+            -StagePath product-ui-stage
+          $Shell = Start-Process `
+            -FilePath build-winui/Release/desklink.exe `
+            -ArgumentList '--smoke-test' -PassThru
+          if (-not $Shell.WaitForExit(15000)) {
+            Stop-Process -Id $Shell.Id
+            throw 'Windows Server 2022 product-shell smoke test timed out.'
+          }
+          if ($Shell.ExitCode -ne 0) {
+            throw "Windows Server 2022 product-shell smoke test failed with $($Shell.ExitCode)."
+          }
 
   Windows10Prototype:
     name: Windows 10 opaque CNG prototype

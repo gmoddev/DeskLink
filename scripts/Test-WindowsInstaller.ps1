@@ -54,6 +54,7 @@ function Invoke-Installer([string] $Path, [string] $Operation) {
 
 function Assert-InstalledPayload() {
     $ExpectedFiles = @(
+        'desklink.exe',
         'desklink_alpha.exe',
         'desklink_pair.exe',
         'desklink_runtime.exe',
@@ -67,6 +68,14 @@ function Assert-InstalledPayload() {
         'msvcp140_codecvt_ids.dll',
         'vcruntime140.dll',
         'vcruntime140_1.dll',
+        'Microsoft.WindowsAppRuntime.dll',
+        'Microsoft.ui.xaml.dll',
+        'App.xbf',
+        'MainWindow.xbf',
+        'CppWinRT-LICENSE.txt',
+        'WindowsAppSDK-LICENSE.txt',
+        'WindowsAppSDK-Runtime-NOTICE.txt',
+        'WindowsAppSDK-WinUI-NOTICE.txt',
         'LICENSE',
         'ALPHA_WRAPPER.md'
     )
@@ -170,16 +179,19 @@ try {
     Set-Content -LiteralPath $SentinelPath -Value 'preserve-on-uninstall' `
         -Encoding utf8 -NoNewline
 
-    $GateMutex = [Threading.Mutex]::new($false, 'Local\DeskLink.Alpha.v1')
-    try {
-        $Blocked = Start-Process -FilePath $InstallerPath -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
-        ) -Wait -PassThru
-        if ($Blocked.ExitCode -eq 0) {
-            throw 'Installer succeeded while the DeskLink lifecycle mutex was active.'
+    foreach ($MutexName in
+            'Local\DeskLink.Alpha.v1', 'Local\DeskLink.Shell.v1') {
+        $GateMutex = [Threading.Mutex]::new($false, $MutexName)
+        try {
+            $Blocked = Start-Process -FilePath $InstallerPath -ArgumentList @(
+                '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+            ) -Wait -PassThru
+            if ($Blocked.ExitCode -eq 0) {
+                throw "Installer succeeded while lifecycle mutex $MutexName was active."
+            }
+        } finally {
+            $GateMutex.Dispose()
         }
-    } finally {
-        $GateMutex.Dispose()
     }
 
     $Impersonated = Start-Process -FilePath $InstallerPath -ArgumentList @(
@@ -207,11 +219,42 @@ try {
     }
     Wait-ForBrokerReady
 
+    $Shell = Start-Process -FilePath (Join-Path $InstallPath 'desklink.exe') `
+        -ArgumentList '--background' -PassThru
+    Start-Sleep -Seconds 2
+    if ($Shell.HasExited) {
+        throw 'Installed product shell did not remain active in the notification area.'
+    }
+    $Activation = Start-Process `
+        -FilePath (Join-Path $InstallPath 'desklink.exe') -Wait -PassThru
+    if ($Activation.ExitCode -ne 0 -or $Shell.HasExited) {
+        throw 'Single-instance product-shell activation failed.'
+    }
+    $ExitActivation = Start-Process `
+        -FilePath (Join-Path $InstallPath 'desklink.exe') `
+        -ArgumentList '--request-exit' -Wait -PassThru
+    if ($ExitActivation.ExitCode -ne 0 -or
+        -not $Shell.WaitForExit(15000)) {
+        throw 'The product shell did not honor bounded explicit exit.'
+    }
+    Wait-ForBrokerReady
+
+    $ShellForUpdate = Start-Process `
+        -FilePath (Join-Path $InstallPath 'desklink.exe') `
+        -ArgumentList '--background' -PassThru
+    Start-Sleep -Seconds 2
+    if ($ShellForUpdate.HasExited) {
+        throw 'The product shell did not start for update coordination.'
+    }
+
     $Rejected = Invoke-CoordinatedUpdate `
         -Coordinator (Join-Path $InstallPath 'desklink_update.exe') `
         -ExpectedState failed -ExpectedFailure package-validation
     if ($Alpha.HasExited) {
         throw 'Production package rejection disturbed the running Alpha UI.'
+    }
+    if ($ShellForUpdate.HasExited) {
+        throw 'Production package rejection disturbed the product shell.'
     }
     $RejectedVersion =
         (Get-ItemProperty -LiteralPath $UninstallKeyPath).DisplayVersion
@@ -226,6 +269,10 @@ try {
     [void] $Alpha.WaitForExit(30000)
     if (-not $Alpha.HasExited) {
         throw 'Coordinated update did not stop the Alpha UI.'
+    }
+    [void] $ShellForUpdate.WaitForExit(30000)
+    if (-not $ShellForUpdate.HasExited) {
+        throw 'Coordinated update did not stop the product shell.'
     }
     $RollbackVersion =
         (Get-ItemProperty -LiteralPath $UninstallKeyPath).DisplayVersion
@@ -301,6 +348,9 @@ try {
     }
     if (Test-Path -LiteralPath (Join-Path $InstallPath 'desklink_alpha.exe')) {
         throw 'Uninstall left installer-owned DeskLink binaries behind.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $InstallPath 'desklink.exe')) {
+        throw 'Uninstall left the DeskLink product shell behind.'
     }
     if (Get-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
             -ErrorAction SilentlyContinue) {

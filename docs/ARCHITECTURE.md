@@ -565,7 +565,8 @@ User session
 ├── desklink_runtime.exe     one persistent current-user broker
 │   └── desklink_pair.exe    at most one broker-owned transport/session child
 ├── desklink_alpha.exe       current engineering shell and tray
-└── future typed local clients, including the WinUI shell/Stream Deck plugin
+├── desklink.exe             self-contained WinUI product-shell preview
+└── future typed local clients, including a Stream Deck plugin
 ```
 
 The broker converts validated persisted role policy into either a Companion
@@ -610,3 +611,12 @@ runtime/UI mutexes disappear can coordinator-bound Setup acquire its own gate.
 The worker runs outside the install directory, validates the installed payload,
 and invokes the prevalidated rollback installer before any optional restart if
 candidate install or health validation fails.
+
+The product shell is an unpackaged, self-contained C++/WinRT application with a
+locked minimal Windows App SDK component graph. It owns presentation and local
+activation only. In its foundation PR it renders simulated broker states and
+cannot open transport, mutate trust, capture input, or inject input. It uses a
+separate lifecycle mutex and native lifecycle window so Alpha and the preview
+may coexist; the update coordinator requests both to exit. Post-rollback health
+validation deliberately retains the pre-shell executable baseline so a valid
+rollback to the previous Alpha-only release remains possible.

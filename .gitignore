@@ -3,6 +3,7 @@
 /build-alpha/
 /build-update/
 /build-update-msquic/
+/build-winui/
 /out/
 /cmake-build-*/
 CMakeCache.txt
@@ -16,6 +17,7 @@ compile_commands.json
 /.vs/
 *.sln
 *.vcxproj*
+!apps/desklink_ui/DeskLink.vcxproj
 *.user
 *.suo
 *.pdb
@@ -45,3 +47,8 @@ Thumbs.db
 !.env.example
 *.pem
 *.key
+
+# C++/WinRT and XAML compiler output
+/apps/desklink_ui/Generated Files/
+/apps/desklink_ui/DeskLink/
+/apps/desklink_ui/obj/
