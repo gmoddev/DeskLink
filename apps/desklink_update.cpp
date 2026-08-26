@@ -41,6 +41,9 @@ constexpr wchar_t kShellWindowClass[] = L"DeskLinkShellLifecycleWindow.v1";
 constexpr wchar_t kUninstallKey[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
     L"{58944975-11A2-4DD6-B881-A0700574270F}_is1";
+constexpr wchar_t kRunKey[] =
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kRunValueName[] = L"DeskLink";
 constexpr std::chrono::seconds kShutdownTimeout{30};
 constexpr std::chrono::minutes kInstallerTimeout{5};
 
@@ -77,6 +80,11 @@ struct Version {
 
     [[nodiscard]] bool operator==(const Version&) const noexcept = default;
     [[nodiscard]] auto operator<=>(const Version&) const noexcept = default;
+};
+
+struct RegistryValueSnapshot {
+    bool Exists{};
+    std::wstring Value;
 };
 
 struct CommandLine {
@@ -135,6 +143,51 @@ std::optional<std::wstring> ReadRegistryString(const wchar_t* Name) {
     }
     while (!Value.empty() && Value.back() == L'\0') Value.pop_back();
     return Value.empty() ? std::nullopt : std::optional(std::move(Value));
+}
+
+std::optional<RegistryValueSnapshot> CaptureStartupRegistration() {
+    DWORD Type{};
+    DWORD Size{};
+    const auto Status = RegGetValueW(
+        HKEY_CURRENT_USER, kRunKey, kRunValueName,
+        RRF_RT_REG_SZ, &Type, nullptr, &Size);
+    if (Status == ERROR_FILE_NOT_FOUND) return RegistryValueSnapshot{};
+    if (Status != ERROR_SUCCESS || Type != REG_SZ ||
+        Size < sizeof(wchar_t) || Size > 32'768 * sizeof(wchar_t)) {
+        return std::nullopt;
+    }
+    std::wstring Value(Size / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(
+            HKEY_CURRENT_USER, kRunKey, kRunValueName,
+            RRF_RT_REG_SZ, &Type, Value.data(), &Size) != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    while (!Value.empty() && Value.back() == L'\0') Value.pop_back();
+    if (Value.empty()) return std::nullopt;
+    return RegistryValueSnapshot{true, std::move(Value)};
+}
+
+bool RestoreStartupRegistration(
+    const RegistryValueSnapshot& Snapshot) noexcept {
+    HKEY Key{};
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE,
+            nullptr, &Key, nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    LSTATUS Status{};
+    if (Snapshot.Exists) {
+        Status = RegSetValueExW(
+            Key, kRunValueName, 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(Snapshot.Value.c_str()),
+            static_cast<DWORD>(
+                (Snapshot.Value.size() + 1) * sizeof(wchar_t)));
+    } else {
+        Status = RegDeleteValueW(Key, kRunValueName);
+        if (Status == ERROR_FILE_NOT_FOUND) Status = ERROR_SUCCESS;
+    }
+    RegCloseKey(Key);
+    return Status == ERROR_SUCCESS;
 }
 
 std::optional<Version> ParseVersion(std::wstring_view Text) {
@@ -590,6 +643,11 @@ public:
             std::cerr << "[Update:Validation] candidate must advance the installed version and rollback must match it\n";
             return false;
         }
+        StartupRegistration_ = CaptureStartupRegistration();
+        if (!StartupRegistration_) {
+            std::cerr << "[Update:Validation] current-user startup registration could not be captured\n";
+            return false;
+        }
 
 #ifdef DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS
         if (Command_.DevelopmentAllowUnsigned) {
@@ -597,24 +655,24 @@ public:
             return true;
         }
 #endif
-        const auto AlphaSigner = GetVerifiedSigner(
-            InstallRoot_ / L"desklink_alpha.exe");
+        const auto ProductSigner = GetVerifiedSigner(
+            InstallRoot_ / L"desklink.exe");
         const auto SelfPath = GetModulePath();
         const auto SelfSigner = SelfPath
             ? GetVerifiedSigner(std::filesystem::path(*SelfPath)) : std::nullopt;
         const auto CandidateSigner = GetVerifiedSigner(Command_.Candidate);
         const auto RollbackSigner = GetVerifiedSigner(Command_.Rollback);
-        if (!AlphaSigner || !SelfSigner || !CandidateSigner ||
-            !RollbackSigner || !AlphaSigner->Timestamped ||
+        if (!ProductSigner || !SelfSigner || !CandidateSigner ||
+            !RollbackSigner || !ProductSigner->Timestamped ||
             !SelfSigner->Timestamped || !CandidateSigner->Timestamped ||
             !RollbackSigner->Timestamped ||
-            SelfSigner->CertificateHash != AlphaSigner->CertificateHash ||
-            CandidateSigner->CertificateHash != AlphaSigner->CertificateHash ||
-            RollbackSigner->CertificateHash != AlphaSigner->CertificateHash) {
+            SelfSigner->CertificateHash != ProductSigner->CertificateHash ||
+            CandidateSigner->CertificateHash != ProductSigner->CertificateHash ||
+            RollbackSigner->CertificateHash != ProductSigner->CertificateHash) {
             std::cerr << "[Update:Validation] packages must have valid timestamped signatures from the installed DeskLink signer\n";
             return false;
         }
-        ExpectedSigner_ = AlphaSigner->CertificateHash;
+        ExpectedSigner_ = ProductSigner->CertificateHash;
         return true;
     }
 
@@ -701,19 +759,21 @@ public:
     }
 
     bool ValidateRollback() override {
-        return ValidateInstalled(*RollbackVersion_);
+        return ValidateInstalled(*RollbackVersion_) &&
+               StartupRegistration_ &&
+               RestoreStartupRegistration(*StartupRegistration_);
     }
 
     bool RestartApplication() override {
         UpdateGate_.reset();
-        const auto AlphaPath = InstallRoot_ / L"desklink_alpha.exe";
+        const auto ProductPath = InstallRoot_ / L"desklink.exe";
         const auto CommandLine = desklink::BuildWindowsCommandLine(
-            AlphaPath.wstring(), {L"--background"});
+            ProductPath.wstring(), {L"--background"});
         if (!CommandLine) return false;
         auto MutableCommand = *CommandLine;
         STARTUPINFOW Startup{sizeof(Startup)};
         PROCESS_INFORMATION Process{};
-        if (!CreateProcessW(AlphaPath.c_str(), MutableCommand.data(), nullptr,
+        if (!CreateProcessW(ProductPath.c_str(), MutableCommand.data(), nullptr,
                             nullptr, FALSE, 0, nullptr, InstallRoot_.c_str(),
                             &Startup, &Process)) {
             return false;
@@ -723,12 +783,20 @@ public:
         const auto Deadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(5);
         while (std::chrono::steady_clock::now() < Deadline) {
-            if (MutexExists(kAlphaMutexName)) return true;
+            const auto Response = desklink::Win32ControlPipeClient::Send(
+                desklink::ControlRequest{
+                    ++RequestId_, desklink::GetStateControlRequest{}},
+                L"broker", std::chrono::milliseconds{100});
+            if (MutexExists(kShellMutexName) && Response &&
+                Response->Status == desklink::ControlStatus::Ok &&
+                Response->State) {
+                return true;
+            }
             if (WaitForSingleObject(ProcessHandle.get(), 100) == WAIT_OBJECT_0) {
                 return false;
             }
         }
-        return MutexExists(kAlphaMutexName);
+        return false;
     }
 
 private:
@@ -754,7 +822,8 @@ private:
         const auto ActualHash = HashFile(Path);
         if (!ActualHash || *ActualHash != ExpectedHash ||
             MutexExists(kRuntimeMutexName) ||
-            MutexExists(kBrokerMutexName) || MutexExists(kAlphaMutexName)) {
+            MutexExists(kBrokerMutexName) || MutexExists(kAlphaMutexName) ||
+            MutexExists(kShellMutexName)) {
             return false;
         }
 #ifndef DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS
@@ -827,11 +896,8 @@ private:
             std::cerr << "[Update:Validation] installed version did not match the package\n";
             return false;
         }
-        // Keep rollback compatible with valid pre-product-shell packages. The
-        // current package builder requires and validates desklink.exe, while
-        // the updater's post-install baseline remains the original signed
-        // executable set until the product-shell cutover is complete.
-        for (const auto* Name : {L"desklink_alpha.exe", L"desklink_pair.exe",
+        for (const auto* Name : {L"desklink.exe", L"desklink_alpha.exe",
+                                 L"desklink_pair.exe",
                                  L"desklink_runtime.exe",
                                  L"desklink_update.exe"}) {
             const auto Path = InstallRoot_ / Name;
@@ -852,16 +918,26 @@ private:
             }
 #endif
         }
-        const auto AlphaPath = InstallRoot_ / L"desklink_alpha.exe";
+        return RunHealthProbe(
+                   InstallRoot_ / L"desklink.exe", L"--validate-update") &&
+               RunHealthProbe(
+                   InstallRoot_ / L"desklink_runtime.exe",
+                   L"--validate-update");
+    }
+
+    bool RunHealthProbe(
+        const std::filesystem::path& Executable,
+        std::wstring_view Argument) {
         const auto CommandLine = desklink::BuildWindowsCommandLine(
-            AlphaPath.wstring(), {L"--validate-update"});
+            Executable.wstring(), {std::wstring(Argument)});
         if (!CommandLine) return false;
         auto MutableCommand = *CommandLine;
         STARTUPINFOW Startup{sizeof(Startup)};
         PROCESS_INFORMATION Process{};
-        if (!CreateProcessW(AlphaPath.c_str(), MutableCommand.data(), nullptr,
-                            nullptr, FALSE, 0, nullptr, InstallRoot_.c_str(),
-                            &Startup, &Process)) {
+        if (!CreateProcessW(
+                Executable.c_str(), MutableCommand.data(), nullptr,
+                nullptr, FALSE, 0, nullptr, InstallRoot_.c_str(),
+                &Startup, &Process)) {
             return false;
         }
         const auto ProcessHandle = TakeHandle(Process.hProcess);
@@ -872,7 +948,7 @@ private:
         }
         DWORD ExitCode{};
         return GetExitCodeProcess(ProcessHandle.get(), &ExitCode) &&
-            ExitCode == 0;
+               ExitCode == 0;
     }
 
     CommandLine Command_;
@@ -883,6 +959,7 @@ private:
     std::optional<Version> CandidateVersion_;
     std::optional<Version> RollbackVersion_;
     std::optional<std::array<std::uint8_t, 32>> ExpectedSigner_;
+    std::optional<RegistryValueSnapshot> StartupRegistration_;
     std::uint64_t RequestId_{1};
 };
 

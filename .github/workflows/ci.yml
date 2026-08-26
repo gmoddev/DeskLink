@@ -101,10 +101,10 @@ jobs:
           ctest --test-dir build-msquic -C Release
           -R "desklink_msquic_(runtime|loopback)_tests" --output-on-failure
 
-      - name: Package native alpha wrapper
+      - name: Package native diagnostic wrapper
         run: cpack --config build-msquic/CPackConfig.cmake -C Release
 
-      - name: Stage native alpha wrapper for the installer
+      - name: Stage native runtime and diagnostic wrapper for the installer
         run: >-
           cmake --install build-msquic --config Release
           --prefix installer-stage --component Alpha
@@ -184,13 +184,13 @@ jobs:
         run: |
           ./scripts/Build-WindowsInstaller.ps1 `
             -StagePath installer-stage `
-            -OutputPath DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe `
+            -OutputPath DeskLink-0.1.0-windows-x64-unsigned.exe `
             -IsccPath $env:DESKLINK_ISCC `
             -AppVersion 0.1.0 `
             -DevelopmentUnsigned
           ./scripts/Build-WindowsInstaller.ps1 `
             -StagePath installer-stage `
-            -OutputPath DeskLink-Alpha-0.1.1-windows-x64-unsigned.exe `
+            -OutputPath DeskLink-0.1.1-windows-x64-unsigned.exe `
             -IsccPath $env:DESKLINK_ISCC `
             -AppVersion 0.1.1 `
             -DevelopmentUnsigned
@@ -199,20 +199,20 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/Test-WindowsInstaller.ps1 `
-            -InstallerPath DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe `
-            -UpgradeInstallerPath DeskLink-Alpha-0.1.1-windows-x64-unsigned.exe `
+            -InstallerPath DeskLink-0.1.0-windows-x64-unsigned.exe `
+            -UpgradeInstallerPath DeskLink-0.1.1-windows-x64-unsigned.exe `
             -ExpectedUpgradeVersion 0.1.1 `
             -UpdateValidationPath build-msquic/Release/desklink_update_validation.exe `
             -AllowCurrentUserMutation
 
-      - name: Upload Windows alpha packages
+      - name: Upload Windows packages
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: DeskLink-Alpha-0.1.0-windows-x64
+          name: DeskLink-0.1.0-windows-x64
           if-no-files-found: error
           path: |
             DeskLink-Alpha-0.1.0-windows-x64.zip
-            DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe
+            DeskLink-0.1.0-windows-x64-unsigned.exe
 
   ProductUiServer2022:
     name: Product UI Server 2022 smoke

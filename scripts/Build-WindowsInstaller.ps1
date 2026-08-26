@@ -267,9 +267,9 @@ try {
         }
     } else {
         Assert-AuthenticodeSignature $BuiltInstaller $Certificate.Thumbprint -RequireTimestamp
-        foreach ($Executable in 'desklink_alpha.exe', 'desklink_pair.exe',
-                'desklink_runtime.exe', 'desklink_update.exe',
-                'ui\desklink.exe') {
+        foreach ($Executable in 'ui\desklink.exe', 'desklink_runtime.exe',
+                'desklink_pair.exe', 'desklink_update.exe',
+                'desklink_alpha.exe') {
             Assert-AuthenticodeSignature `
                 (Join-Path $TemporaryStage $Executable) $Certificate.Thumbprint -RequireTimestamp
         }

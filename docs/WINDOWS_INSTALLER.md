@@ -6,6 +6,10 @@ for the Windows 11 / Windows Server 2022+ production baseline. It installs to
 and registers its uninstaller only under HKCU. It does not request elevation,
 install a service, add Firewall rules, or modify the Windows network profile.
 
+PR 9A makes `desklink.exe` the normal Start menu, post-install, sign-in, and
+updater-restart entry point. `desklink_alpha.exe` remains for one migration
+release as the explicitly labeled **DeskLink diagnostics (Alpha)** fallback.
+
 ## Security and lifecycle contract
 
 - The installer accepts only the exact allowlisted Alpha payload plus the
@@ -20,7 +24,10 @@ install a service, add Firewall rules, or modify the Windows network profile.
   `Local\DeskLink.Runtime.v1`, and `Local\DeskLink.RuntimeBroker.v1`. An
   active UI, transport runtime, or broker blocks replacement and removal;
   Setup never force-closes or restarts DeskLink.
-- Install/repair/upgrade modifies only installer-owned files. Uninstall also
+- Install/repair/upgrade modifies only installer-owned files. If the DeskLink
+  Run value exactly names the installed Alpha executable, with either no
+  argument or `--background`, upgrade migrates it to the product shell. Missing,
+  unrelated, and malformed values are not adopted or rewritten. Uninstall also
   removes DeskLink's current-user Run value so an enabled sign-in launch cannot
   point at a deleted executable.
 - `%LOCALAPPDATA%\DeskLink`, the current-user CNG key, certificate, trust
@@ -80,14 +87,19 @@ account to verify:
 
 1. an active DeskLink lifecycle mutex blocks Setup;
 2. installation remains current-user and installs the complete allowlisted
-   Alpha and self-contained WinUI payload;
-3. product-shell secondary activation and bounded exit work, and shell exit
-   leaves the broker responsive;
+   runtime, diagnostic Alpha, and self-contained WinUI payload;
+3. launching only the installed product shell starts the fixed sibling broker,
+   secondary activation and bounded exit work, and shell exit leaves the broker
+   responsive;
 4. unsigned packages are rejected by the production updater before UI shutdown;
-5. injected candidate health failure rolls back to the current version;
-6. a coordinated update advances the registered version;
-7. uninstall removes binaries, registration, and the startup value; and
-8. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
+5. injected candidate health failure rolls back to the current version and
+   restores the exact prior Alpha startup command;
+6. a coordinated update advances the registered version and migrates that
+   exact legacy command to `desklink.exe --background`;
+7. the complete CNG identity snapshot and hashes of a real DPAPI trust record,
+   schema-3 preferences, and saved roaming graph remain unchanged;
+8. uninstall removes binaries, registration, and the startup value; and
+9. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
 
 `Test-WindowsInstaller.ps1` refuses to run unless
 `-AllowCurrentUserMutation` is supplied. Use that switch only on an isolated

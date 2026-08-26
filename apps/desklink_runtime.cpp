@@ -19,6 +19,8 @@
 #include "desklink/win32_discovery.hpp"
 #include "desklink/win32_launcher.hpp"
 #include "desklink/win32_pairing.hpp"
+#include "desklink/win32_product_lifecycle.hpp"
+#include "desklink/win32_roaming_settings.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1327,11 +1329,48 @@ bool ArmNetworkChangeNotification(
     return false;
 }
 
+bool ValidateInstalledBrokerForUpdate() {
+    if (!desklink::IsWin32DeskLinkUpdateValidationActive()) return false;
+    const auto DataDirectory = GetDataDirectory();
+    const auto Executable = GetExecutablePath();
+    if (!DataDirectory || !Executable) return false;
+    const auto Root = Executable->parent_path();
+    for (const auto* Relative : {
+             L"desklink.exe", L"desklink_alpha.exe", L"desklink_pair.exe",
+             L"desklink_runtime.exe", L"desklink_update.exe",
+             L"runtime\\schannel\\msquic.dll"}) {
+        if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
+    }
+
+    desklink::BCryptPairingCrypto Crypto;
+    auto Certificate = desklink::Win32DeviceCertificate::Load(
+        kDeviceKeyName, Crypto);
+    const auto Snapshot = Certificate
+        ? Certificate->IdentitySnapshot(Crypto) : std::nullopt;
+    if (!Snapshot || Snapshot->ExportPolicy != 0) return false;
+
+    desklink::DpapiTrustStore TrustStore(*DataDirectory / L"trust.db");
+    desklink::Win32ProductPreferencesStore PreferencesStore(
+        *DataDirectory / L"application.settings");
+    desklink::Win32RoamingSettingsStore RoamingStore(
+        *DataDirectory / L"roaming.settings");
+    return TrustStore.Load() && PreferencesStore.Load() &&
+           RoamingStore.Load();
+}
+
 } // namespace
 
-int wmain() {
+int wmain(int Count, wchar_t** Values) {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
+
+    if (Count == 2 && std::wstring_view(Values[1]) == L"--validate-update") {
+        return ValidateInstalledBrokerForUpdate() ? 0 : 1;
+    }
+    if (Count != 1) {
+        std::cerr << "[Broker:Lifecycle] unexpected command-line argument\n";
+        return 2;
+    }
 
     UniqueHandle BrokerMutex(CreateMutexW(
         nullptr, FALSE, kBrokerMutexName));
@@ -1347,6 +1386,9 @@ int wmain() {
         return 1;
     }
     const auto AlphaPath = Executable->parent_path() / L"desklink_alpha.exe";
+    const auto ProductShellPath =
+        desklink::GetWin32ProductShellExecutable(*Executable)
+            .value_or(AlphaPath);
     const auto PairPath = Executable->parent_path() / L"desklink_pair.exe";
 
     desklink::BCryptPairingCrypto Crypto;
@@ -1410,15 +1452,15 @@ int wmain() {
                     desklink::SetProductPreferencesControlRequest>(
                     &Request.Payload)) {
                 const auto Previous = PreferencesStore.Current();
-                const bool StartupSaved = std::filesystem::is_regular_file(
-                        AlphaPath) &&
+                const bool StartupSaved =
+                    desklink::IsSafeWin32ProductFile(ProductShellPath) &&
                     desklink::SetWin32RunAtLogin(
-                        Set->Preferences.RunAtLogin, AlphaPath);
+                        Set->Preferences.RunAtLogin, ProductShellPath);
                 const bool Saved = StartupSaved &&
                     PreferencesStore.Save(Set->Preferences);
                 if (!Saved && Previous) {
                     (void)desklink::SetWin32RunAtLogin(
-                        Previous->RunAtLogin, AlphaPath);
+                        Previous->RunAtLogin, ProductShellPath);
                 }
                 const bool Reconciled = !Saved ||
                     Supervisor.ConfigurationChanged();

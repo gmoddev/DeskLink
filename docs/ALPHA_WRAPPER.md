@@ -164,15 +164,20 @@ Do not copy a different `msquic.dll` into the package. Runtime version and hash
 verification remain fail closed.
 
 The Windows CI job also stages the same allowlisted payload into a current-user
-installer together with the separate self-contained WinUI product-shell
-preview. Alpha remains the default Start menu/run target until the later
-product cutover. Development artifacts are explicitly named `*-unsigned.exe` and are
-not release candidates. A production installer build requires an explicit
+installer together with the separate self-contained WinUI product shell.
+`desklink.exe` is the normal Start menu, post-install, sign-in, and updater
+restart target. Alpha is labeled **DeskLink diagnostics (Alpha)** and remains
+available for one migration release; when it edits sign-in preferences from an
+installed layout it still targets the product shell. Development artifacts are
+explicitly named `*-unsigned.exe` and are not release candidates. A production
+installer build requires an explicit
 current-user code-signing certificate and RFC 3161 timestamp, and refuses to
 continue without them. Setup never elevates, installs a service, or changes
 Firewall policy. Active Alpha/runtime mutexes block upgrade and uninstall, and
 the uninstaller preserves `%LOCALAPPDATA%\DeskLink` identity, trust, and
-preferences while removing an enabled current-user startup value. See
+preferences while removing an enabled current-user startup value. An upgrade
+rewrites only the exact legacy Alpha Run command; unrelated or malformed Run
+values are never silently adopted. See
 [`WINDOWS_INSTALLER.md`](WINDOWS_INSTALLER.md).
 
 The package also includes `desklink_update.exe`. It accepts only explicit local

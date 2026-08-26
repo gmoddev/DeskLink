@@ -588,13 +588,17 @@ admitted level.
 The Windows installer is current-user only and installs under
 `%LOCALAPPDATA%\Programs\DeskLink`. It does not elevate, install a service,
 alter Firewall/network policy, or package the Windows 10 research provider.
-Setup and Uninstall refuse to proceed while either the Alpha UI or a DeskLink
-runtime holds its lifecycle mutex; they do not force-close a potentially
-Remote session. The compiler accepts only an allowlisted payload, rejects
-reparse points, and rechecks the reviewed Schannel MsQuic digest.
+Setup and Uninstall refuse to proceed while the product shell, Alpha diagnostics
+UI, broker, or transport runtime holds its lifecycle mutex; they do not force-
+close a potentially Remote session. The compiler accepts only an allowlisted
+payload, rejects reparse points, and rechecks the reviewed Schannel MsQuic
+digest. The product shell launches the broker only from its fixed sibling path,
+without a shell or inherited handles, and never across an install/update gate.
 
-Uninstall removes installer-owned files and DeskLink's current-user startup
-value, but deliberately preserves `%LOCALAPPDATA%\DeskLink`, the CNG device
+`desklink.exe` is the normal installed and sign-in entry point. Setup migrates
+only an exact installed Alpha Run command; it does not enable startup or adopt
+an unrelated value. Uninstall removes installer-owned files and DeskLink's
+current-user startup value, but deliberately preserves `%LOCALAPPDATA%\DeskLink`, the CNG device
 identity, certificates, trust records, and preferences. Release signing is a
 separate code-signing identity selected from the current-user certificate
 store. No PFX/private-key path is accepted, and failure to sign and timestamp
@@ -605,7 +609,8 @@ The updater does not download or select releases. Before any focus mutation it
 copies an explicit candidate and current-version rollback installer into a
 unique current-user transaction, checks exact SHA-256, requires the candidate
 version to advance and rollback to equal the installed version, and requires
-valid timestamped Authenticode from the same leaf signer as installed DeskLink.
+valid timestamped Authenticode from the same leaf signer as the installed
+product shell. It snapshots the exact DeskLink Run value before shutdown.
 The production binary has no unsigned switch; CI's unsigned/fault controls are
 compiled only into a separate non-installed validation target, and packaging
 scans the staged updater to prevent substitution.
@@ -616,8 +621,12 @@ only then schedules normal runtime teardown. The update gate prevents new Alpha
 or runtime startup; Setup requires that gate only with an exact private
 coordinator parameter, while ordinary Setup/Uninstall is rejected during the
 transaction. Candidate failure invokes the already-verified rollback package.
-Rollback failure cannot fall through to the candidate, another provider, an
-unsigned package, or application restart.
+Rollback validation restores that exact startup value and separately proves the
+product-shell deployment plus broker loading of the existing non-exportable
+identity, DPAPI trust, product preferences, and roaming graph. Health validation
+uses `Load`, never `LoadOrCreate`, for the CNG identity. Rollback failure cannot
+fall through to the candidate, another provider, an unsigned package, or
+application restart.
 
 ---
 

@@ -149,6 +149,9 @@
     <ClCompile Include="..\..\src\win32_monitor_configurator.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\src\win32_product_lifecycle.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\src\win32_roaming_settings.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

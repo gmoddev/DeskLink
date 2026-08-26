@@ -11,7 +11,7 @@
   #define OutputPath "."
 #endif
 #ifndef OutputName
-  #define OutputName "DeskLink-Alpha-unsigned"
+  #define OutputName "DeskLink-unsigned"
 #endif
 
 [Setup]
@@ -48,7 +48,7 @@ SolidCompression=yes
 MergeDuplicateFiles=yes
 OutputDir={#OutputPath}
 OutputBaseFilename={#OutputName}
-UninstallDisplayIcon={app}\desklink_alpha.exe
+UninstallDisplayIcon={app}\desklink.exe
 AppReadmeFile={app}\ALPHA_WRAPPER.md
 LicenseFile={#StagePath}\ui\WindowsAppSDK-LICENSE.txt
 VersionInfoCompany=DeskLink
@@ -96,11 +96,11 @@ Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\DeskLink"; Filename: "{app}\desklink_alpha.exe"; WorkingDir: "{app}"; Comment: "Open DeskLink"
-Name: "{group}\DeskLink Product UI Preview"; Filename: "{app}\desklink.exe"; WorkingDir: "{app}"; Comment: "Open the WinUI product shell preview"
+Name: "{group}\DeskLink"; Filename: "{app}\desklink.exe"; WorkingDir: "{app}"; Comment: "Open DeskLink"
+Name: "{group}\DeskLink diagnostics (Alpha)"; Filename: "{app}\desklink_alpha.exe"; WorkingDir: "{app}"; Comment: "Open the temporary engineering diagnostics shell"
 
 [Run]
-Filename: "{app}\desklink_alpha.exe"; Description: "Open DeskLink"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\desklink.exe"; Description: "Open DeskLink"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
@@ -161,6 +161,32 @@ end;
 function InitializeUninstall(): Boolean;
 begin
   Result := AcquireInstallerGate();
+end;
+
+procedure MigrateLegacyStartupRegistration();
+var
+  CurrentValue: String;
+  LegacyExecutable: String;
+  ProductExecutable: String;
+begin
+  if not RegQueryStringValue(
+      HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
+      'DeskLink', CurrentValue) then
+    exit;
+  LegacyExecutable := '"' + ExpandConstant('{app}\desklink_alpha.exe') + '"';
+  ProductExecutable := '"' + ExpandConstant('{app}\desklink.exe') +
+    '" --background';
+  if (CompareText(CurrentValue, LegacyExecutable) = 0) or
+     (CompareText(CurrentValue, LegacyExecutable + ' --background') = 0) then
+    RegWriteStringValue(
+      HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
+      'DeskLink', ProductExecutable);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    MigrateLegacyStartupRegistration();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

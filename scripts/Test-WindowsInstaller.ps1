@@ -87,6 +87,160 @@ function Assert-InstalledPayload() {
     }
 }
 
+function Add-U16(
+    [Collections.Generic.List[byte]] $Bytes,
+    [uint16] $Value) {
+    $Bytes.Add([byte]($Value -shr 8))
+    $Bytes.Add([byte]$Value)
+}
+
+function Add-U32(
+    [Collections.Generic.List[byte]] $Bytes,
+    [uint32] $Value) {
+    $Bytes.Add([byte]($Value -shr 24))
+    $Bytes.Add([byte]($Value -shr 16))
+    $Bytes.Add([byte]($Value -shr 8))
+    $Bytes.Add([byte]$Value)
+}
+
+function Add-U64(
+    [Collections.Generic.List[byte]] $Bytes,
+    [uint64] $Value) {
+    for ($Shift = 56; $Shift -ge 0; $Shift -= 8) {
+        $Bytes.Add([byte]($Value -shr $Shift))
+    }
+}
+
+function Add-I32(
+    [Collections.Generic.List[byte]] $Bytes,
+    [int32] $Value) {
+    $Raw = [BitConverter]::GetBytes($Value)
+    if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($Raw) }
+    $Bytes.AddRange([byte[]] $Raw)
+}
+
+function Add-Utf8(
+    [Collections.Generic.List[byte]] $Bytes,
+    [string] $Value) {
+    $Encoded = [Text.Encoding]::UTF8.GetBytes($Value)
+    Add-U16 $Bytes ([uint16] $Encoded.Length)
+    $Bytes.AddRange($Encoded)
+}
+
+function Initialize-PreservedStateFixtures() {
+    $FingerprintBytes = [byte[]] (1..32)
+    $PeerMachine = [byte[]] $FingerprintBytes[0..15]
+
+    $Preferences = [byte[]]::new(36)
+    [Text.Encoding]::ASCII.GetBytes('DLPP').CopyTo($Preferences, 0)
+    $Preferences[5] = 3
+    $Preferences[6] = 1
+    $Preferences[11] = 7
+    $Preferences[12] = 0x27
+    $Preferences[13] = 0x10
+    $PeerMachine.CopyTo($Preferences, 16)
+    [IO.File]::WriteAllBytes(
+        (Join-Path $StatePath 'application.settings'), $Preferences)
+
+    $Roaming = [Collections.Generic.List[byte]]::new()
+    Add-U32 $Roaming 0x444C5247
+    Add-U16 $Roaming 1
+    Add-U16 $Roaming 0
+    Add-U16 $Roaming 1
+    $Roaming.Add(1)
+    Add-U16 $Roaming 8
+    Add-U16 $Roaming 120
+    Add-U16 $Roaming 500
+    $Roaming.AddRange($PeerMachine)
+    Add-Utf8 $Roaming 'preserved-display'
+    Add-I32 $Roaming -1920
+    Add-I32 $Roaming 75
+    [IO.File]::WriteAllBytes(
+        (Join-Path $StatePath 'roaming.settings'), $Roaming.ToArray())
+
+    $Trust = [Collections.Generic.List[byte]]::new()
+    Add-U32 $Trust 0x444C5453
+    Add-U16 $Trust 2
+    Add-U64 $Trust 1
+    Add-U16 $Trust 1
+    $Trust.AddRange($PeerMachine)
+    Add-U64 $Trust 1
+    $PeerName = [Text.Encoding]::UTF8.GetBytes('Preserved peer')
+    $Trust.Add([byte] $PeerName.Length)
+    $Trust.AddRange($PeerName)
+    $Fingerprint = -join ($FingerprintBytes | ForEach-Object {
+        $_.ToString('x2')
+    })
+    $Trust.AddRange([Text.Encoding]::ASCII.GetBytes($Fingerprint))
+    $Entropy = [Text.Encoding]::UTF8.GetBytes('DeskLink-Trust-Store-v1')
+    $Protected = [Security.Cryptography.ProtectedData]::Protect(
+        $Trust.ToArray(), $Entropy,
+        [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [IO.File]::WriteAllBytes((Join-Path $StatePath 'trust.db'), $Protected)
+}
+
+function Get-PreservedStateHashes() {
+    $Hashes = [ordered]@{}
+    foreach ($Name in 'application.settings', 'roaming.settings', 'trust.db') {
+        $Path = Join-Path $StatePath $Name
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw "Preserved state fixture is missing: $Name"
+        }
+        $Hashes[$Name] =
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+    }
+    return $Hashes
+}
+
+function Assert-PreservedStateHashes($Expected) {
+    foreach ($Name in $Expected.Keys) {
+        $Path = Join-Path $StatePath $Name
+        $Actual = if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+        }
+        if ($Actual -ne $Expected[$Name]) {
+            throw "Upgrade or rollback changed preserved state: $Name"
+        }
+    }
+}
+
+function Get-IdentitySnapshot() {
+    $IdentityOutput = $GateOutputPath + '.identity'
+    $IdentityError = $GateErrorPath + '.identity'
+    try {
+        $Process = Start-Process `
+            -FilePath (Join-Path $InstallPath 'desklink_pair.exe') `
+            -ArgumentList 'identity' `
+            -RedirectStandardOutput $IdentityOutput `
+            -RedirectStandardError $IdentityError `
+            -Wait -PassThru
+        if ($Process.ExitCode -ne 0) {
+            $Failure = if (Test-Path -LiteralPath $IdentityError) {
+                Get-Content -Raw -LiteralPath $IdentityError
+            }
+            throw "Could not capture the non-exportable identity: $Failure"
+        }
+        return (Get-Content -Raw -LiteralPath $IdentityOutput).Trim()
+    } finally {
+        Remove-Item -LiteralPath $IdentityOutput, $IdentityError `
+            -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Assert-IdentitySnapshot(
+    [string] $Expected,
+    [string] $Operation) {
+    $Actual = Get-IdentitySnapshot
+    if ($Actual -ne $Expected) {
+        throw "$Operation changed the CNG identity snapshot."
+    }
+}
+
+function Get-StartupCommand() {
+    return (Get-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
+        -ErrorAction Stop).DeskLink
+}
+
 function Wait-ForBrokerReady() {
     $Deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
@@ -211,19 +365,33 @@ try {
         throw 'DeskLink unexpectedly registered a machine-wide uninstall entry.'
     }
 
-    $Alpha = Start-Process -FilePath (Join-Path $InstallPath 'desklink_alpha.exe') `
-        -ArgumentList '--background' -PassThru
-    Start-Sleep -Seconds 1
-    if ($Alpha.HasExited) {
-        throw 'Installed Alpha UI did not remain active for update coordination.'
-    }
-    Wait-ForBrokerReady
+    Initialize-PreservedStateFixtures
+    $LegacyStartup = '"' +
+        (Join-Path $InstallPath 'desklink_alpha.exe') + '" --background'
+    $ProductStartup = '"' +
+        (Join-Path $InstallPath 'desklink.exe') + '" --background'
+    New-Item -Path $RunKeyPath -Force | Out-Null
+    Set-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
+        -Value $LegacyStartup
 
     $Shell = Start-Process -FilePath (Join-Path $InstallPath 'desklink.exe') `
         -ArgumentList '--background' -PassThru
     Start-Sleep -Seconds 2
     if ($Shell.HasExited) {
-        throw 'Installed product shell did not remain active in the notification area.'
+        throw 'Installed product shell did not remain active as the primary UI.'
+    }
+    Wait-ForBrokerReady
+    $IdentityBefore = Get-IdentitySnapshot
+    $StateHashesBefore = Get-PreservedStateHashes
+    $Devices = Start-Process `
+        -FilePath (Join-Path $InstallPath 'desklink_pair.exe') `
+        -ArgumentList @('control', 'devices') `
+        -RedirectStandardOutput $GateOutputPath `
+        -RedirectStandardError $GateErrorPath `
+        -Wait -PassThru
+    $DeviceOutput = Get-Content -Raw -LiteralPath $GateOutputPath
+    if ($Devices.ExitCode -ne 0 -or $DeviceOutput -notmatch 'count=1') {
+        throw 'The product broker did not load the preserved DPAPI trust record.'
     }
     $Activation = Start-Process `
         -FilePath (Join-Path $InstallPath 'desklink.exe') -Wait -PassThru
@@ -238,6 +406,13 @@ try {
         throw 'The product shell did not honor bounded explicit exit.'
     }
     Wait-ForBrokerReady
+
+    $Alpha = Start-Process -FilePath (Join-Path $InstallPath 'desklink_alpha.exe') `
+        -ArgumentList '--background' -PassThru
+    Start-Sleep -Seconds 1
+    if ($Alpha.HasExited) {
+        throw 'The explicit Alpha diagnostics shell did not remain available.'
+    }
 
     $ShellForUpdate = Start-Process `
         -FilePath (Join-Path $InstallPath 'desklink.exe') `
@@ -280,6 +455,11 @@ try {
         throw "Rollback restored version $RollbackVersion instead of 0.1.0"
     }
     Assert-InstalledPayload
+    Assert-IdentitySnapshot $IdentityBefore 'Rollback'
+    Assert-PreservedStateHashes $StateHashesBefore
+    if ((Get-StartupCommand) -ne $LegacyStartup) {
+        throw 'Rollback did not restore the exact pre-update startup command.'
+    }
 
     $InstallGate = [Threading.Mutex]::new($false, 'Local\DeskLink.Install.v1')
     try {
@@ -329,10 +509,11 @@ try {
     if ($InstalledVersion -ne $ExpectedUpgradeVersion) {
         throw "Upgrade registered version $InstalledVersion instead of $ExpectedUpgradeVersion"
     }
-
-    New-Item -Path $RunKeyPath -Force | Out-Null
-    Set-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
-        -Value ('"' + (Join-Path $InstallPath 'desklink_alpha.exe') + '"')
+    Assert-IdentitySnapshot $IdentityBefore 'Upgrade'
+    Assert-PreservedStateHashes $StateHashesBefore
+    if ((Get-StartupCommand) -ne $ProductStartup) {
+        throw 'Upgrade did not migrate the enabled Alpha startup command to the product shell.'
+    }
     $Uninstaller = Join-Path $InstallPath 'unins000.exe'
     if (-not (Test-Path -LiteralPath $Uninstaller -PathType Leaf)) {
         throw 'The current-user uninstaller was not installed.'

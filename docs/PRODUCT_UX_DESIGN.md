@@ -865,6 +865,24 @@ Gate: identity pin, CNG key properties, trust records, saved graph, and product
 preferences survive upgrade; rollback restores the previous working product;
 all security and physical validation gates pass.
 
+Implementation checkpoint: **PR 9A cutover foundation is complete.** The
+installed Start menu entry, post-install action, sign-in registration, and
+updater restart now target `desklink.exe`. The shell starts only the fixed
+sibling broker with a bounded readiness probe and never crosses an active
+install/update gate. Alpha remains an explicitly labeled diagnostics fallback
+for one migration release. Setup migrates only the exact legacy Alpha Run
+command; the updater snapshots and restores the exact prior command on
+rollback. Product-shell deployment and broker/state health probes replace the
+Alpha health baseline. Disposable-account validation compares the full
+non-exportable CNG identity snapshot and byte-identical DPAPI trust, schema-3
+preferences, and saved roaming graph across rollback and upgrade.
+
+**PR 9B remains open:** production signing, clean Windows 11 and Server 2022
+install/update/rollback qualification, DPI/keyboard/Narrator/contrast/
+localization checks, sleep/resume and network-loss validation, and the deferred
+two-supported-Windows-11-PC physical failure matrix. DeskLink therefore remains
+experimental despite the installed-shell cutover.
+
 ## 17. Product acceptance criteria
 
 The redesign is complete only when all of these hold:

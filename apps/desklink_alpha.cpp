@@ -8,6 +8,7 @@
 #include "desklink/win32_launcher.hpp"
 #include "desklink/win32_monitor_configurator.hpp"
 #include "desklink/win32_pairing.hpp"
+#include "desklink/win32_product_lifecycle.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -294,46 +295,12 @@ public:
 
 private:
     bool EnsureRuntimeBroker() {
-        const auto Probe = [] {
-            return desklink::Win32ControlPipeClient::Send(
-                desklink::ControlRequest{
-                    1, desklink::GetStateControlRequest{}},
-                L"broker", std::chrono::milliseconds{100});
-        };
-        if (Probe()) return true;
-
         const auto Executable = GetExecutablePath();
         if (!Executable) return false;
-        const auto BrokerPath =
-            std::filesystem::path(*Executable).parent_path() /
-            L"desklink_runtime.exe";
-        if (!std::filesystem::is_regular_file(BrokerPath)) return false;
-        const auto CommandLine = desklink::BuildWindowsCommandLine(
-            BrokerPath.native(), {});
-        if (!CommandLine) return false;
-        auto MutableCommandLine = *CommandLine;
-        STARTUPINFOW Startup{sizeof(Startup)};
-        PROCESS_INFORMATION Process{};
-        const auto WorkingDirectory = BrokerPath.parent_path().native();
-        if (!CreateProcessW(
-                BrokerPath.c_str(), MutableCommandLine.data(), nullptr,
-                nullptr, FALSE,
-                CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-                nullptr, WorkingDirectory.c_str(), &Startup, &Process)) {
-            return false;
-        }
-        CloseHandle(Process.hThread);
-        const auto ProcessHandle = TakeHandle(Process.hProcess);
-        const auto Deadline = GetTickCount64() + 2'000u;
-        while (GetTickCount64() < Deadline) {
-            if (Probe()) return true;
-            if (WaitForSingleObject(ProcessHandle.get(), 25) ==
-                WAIT_OBJECT_0) {
-                return false;
-            }
-            Sleep(25);
-        }
-        return false;
+        const auto Status = desklink::EnsureWin32RuntimeBroker(
+            std::filesystem::path(*Executable));
+        return Status == desklink::Win32BrokerLaunchStatus::Ready ||
+               Status == desklink::Win32BrokerLaunchStatus::Started;
     }
 
     static LRESULT CALLBACK WindowProcedure(HWND Window, UINT Message,
@@ -764,12 +731,19 @@ private:
         Candidate.CloseToTray = IsChecked(KeepRunningOnClose);
         Candidate.RunAtLogin = IsChecked(StartWithWindows);
         const auto Executable = GetExecutablePath();
-        if (!Executable || !desklink::SetWin32RunAtLogin(
-                Candidate.RunAtLogin, *Executable) ||
+        const auto CurrentExecutable = Executable
+            ? std::optional(std::filesystem::path(*Executable))
+            : std::nullopt;
+        const auto StartupExecutable = CurrentExecutable
+            ? desklink::GetWin32ProductShellExecutable(*CurrentExecutable)
+                  .value_or(*CurrentExecutable)
+            : std::filesystem::path{};
+        if (!CurrentExecutable || !desklink::SetWin32RunAtLogin(
+                Candidate.RunAtLogin, StartupExecutable) ||
             !PersistApplicationSettings(Candidate)) {
-            if (Executable) {
+            if (CurrentExecutable) {
                 (void)desklink::SetWin32RunAtLogin(
-                    Previous.RunAtLogin, *Executable);
+                    Previous.RunAtLogin, StartupExecutable);
             }
             CheckDlgButton(
                 Window_, KeepRunningOnClose,

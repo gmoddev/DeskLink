@@ -93,10 +93,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture
 - Production Host profile CLI and serialized live mode-event runtime
-- Native Windows alpha launcher with bounded pairing/session controls,
-  authenticated status/mode IPC, graceful child lifecycle, a Schannel-only
-  ZIP, and a current-user installer foundation
-- Self-contained C++/WinRT product-shell preview with guided role selection,
+- Native Windows Alpha diagnostics launcher with bounded pairing/session
+  controls, authenticated status/mode IPC, graceful child lifecycle, and a
+  Schannel-only diagnostic ZIP
+- Self-contained C++/WinRT product shell with guided role selection,
   Home, Add a PC, untrusted Nearby/manual pairing, Devices & permissions,
   Arrange displays, feature intent, profiles, Advanced, and Diagnostics
   surfaces backed by the current-user broker;
@@ -117,8 +117,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
-- Production signing/clean-system installer and update qualification, monitor
-  authoring, feature settings, final product polish, and Stream Deck plugin
+- Production signing/clean-system installer and update qualification, final
+  product polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 Current release-specific defects and workarounds are tracked in
@@ -165,13 +165,15 @@ Compatibility builds may explicitly set
 default and is not a production artifact. It exposes only bounded Stage 5 fault
 probes; the normal `desklink_pair.exe` rejects those options.
 
-### Native alpha wrapper
+### Native diagnostic wrapper
 
-Windows MsQuic builds produce `desklink_alpha.exe` and the long-lived
-current-user `desklink_runtime.exe` broker. The Alpha remains a migration
-launcher around the existing `desklink_pair.exe` transport runtime, but normal
-UI status, topology, product-preference, and trust-management traffic goes
-through the broker's bounded same-user endpoint. The broker owns UI-facing
+Windows MsQuic builds produce the temporary `desklink_alpha.exe` diagnostic
+shell and the long-lived current-user `desklink_runtime.exe` broker. Installed
+DeskLink now starts through `desklink.exe`; Alpha remains available for one
+migration release as an explicitly labeled engineering fallback around the
+existing `desklink_pair.exe` transport runtime. Normal UI status, topology,
+product-preference, and trust-management traffic goes through the broker's
+bounded same-user endpoint. The broker owns UI-facing
 identity, trust, and preference access; it never exposes raw certificates, input events,
 clipboard text, audio frames, arbitrary execution, or module loading.
 
@@ -190,9 +192,9 @@ Windows 11 / Server 2022+ production baseline. See
 [`docs/ALPHA_WRAPPER.md`](docs/ALPHA_WRAPPER.md) for the workflow and packaging
 command.
 
-### Product UI preview
+### Product UI
 
-Windows builds can opt into the deployment-qualified WinUI 3 shell foundation:
+Windows builds can opt into the WinUI 3 product shell:
 
 ```powershell
 cmake -S . -B build-product-ui -DDESKLINK_BUILD_PRODUCT_UI=ON
@@ -200,8 +202,9 @@ cmake --build build-product-ui --config Release --target desklink_product_ui
 ```
 
 The build uses locked NuGet dependencies and stages an unpackaged,
-self-contained Windows App SDK payload. `desklink.exe` is a real client of the
-current-user runtime broker. It provides guided role selection, bounded Nearby
+self-contained Windows App SDK payload. `desklink.exe` is the normal installed
+entry point and starts the fixed sibling current-user runtime broker without a
+shell or inherited handles. It provides guided role selection, bounded Nearby
 cards, manual address fallback, broker-owned two-PC code confirmation, and an
 authenticated Devices & permissions list. Nearby names and endpoints remain
 visibly unverified and ambiguity disables Connect. Every pairing grant defaults
@@ -222,14 +225,15 @@ The shell can reduce grants or forget a peer only through fail-local broker
 mutations. It cannot add authority through the generic pipe; additions require
 a new two-PC pairing/reauthorization flow. Closing it leaves the broker running,
 but exiting/crashing during a pairing prompt makes the managed child reject the
-candidate. **Exit** ends only the shell. The Alpha remains the normal installed
-entry point until the product cutover PR.
+candidate. **Exit** ends only the shell. Alpha remains available from the Start
+menu only as **DeskLink diagnostics (Alpha)** during the migration release.
 
 Windows CI also creates an explicitly unsigned current-user development
-installer containing the Alpha and product-shell preview and validates install,
-shell single-instance/exit behavior, broker survival, fail-closed update
-rejection, forced rollback, coordinated upgrade, startup cleanup, state
-preservation, and uninstall.
+installer containing the product shell, broker, transport runtime, updater, and
+Alpha diagnostics fallback. It validates product-shell-only broker startup,
+single-instance/exit behavior, fail-closed update rejection, product-shell and
+broker health checks, forced rollback, exact legacy-startup migration, full CNG
+identity/state preservation, coordinated upgrade, cleanup, and uninstall.
 Unsigned installers are never production release artifacts. Production
 packaging fails closed unless the DeskLink executables, uninstaller, and Setup
 can be Authenticode-signed and timestamped with an explicit current-user

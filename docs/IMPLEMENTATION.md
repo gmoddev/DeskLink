@@ -301,7 +301,8 @@ the coordinator. Once candidate installation has been attempted, every install
 or health failure enters rollback; rollback install/validation failure prevents
 restart. The Windows backend binds that state machine to the same-SID control
 pipe, named lifecycle gates, timestamped same-signer installers, a bounded Job
-object, registered version checks, and an installed Alpha self-test.
+object, registered version checks, separate installed product-shell and broker
+health probes, exact startup-registration rollback, and product-shell restart.
 
 ---
 
@@ -520,12 +521,17 @@ paths, deterministic nonzero display IDs, rectangle transforms, and
 generation-based stale-topology rejection. Bounded reliable mouse-wheel
 transport is implemented with enqueue-before-suppress fail-local capture.
 
-The first installation slice is also implemented as a fixed-path current-user
-package. It checks Alpha/runtime lifecycle mutexes before replacing files,
-accepts only the exact staged Schannel payload, preserves the device identity,
-trust, and preferences outside installer ownership, and removes the optional
-Run value on uninstall. CI proves unsigned development install, in-place
-upgrade, state preservation, and uninstall. Production output remains blocked
+The current installation slice is implemented as a fixed-path current-user
+package. It checks shell/Alpha/runtime lifecycle mutexes before replacing files,
+accepts only the exact staged Schannel and locked product-shell payload, makes
+`desklink.exe` the normal entry point, and retains Alpha as explicit diagnostic
+tooling. An exact legacy Alpha sign-in command migrates to the product shell;
+unrecognized Run values are left untouched. Identity, trust, product
+preferences, and the roaming graph remain outside installer ownership, and the
+Run value is removed on uninstall. CI proves unsigned development install,
+product-shell-only broker startup, in-place upgrade, forced rollback, exact
+startup restoration/migration, byte-identical protected state, full CNG
+identity invariance, and uninstall. Production output remains blocked
 until an explicit current-user Authenticode certificate and timestamp service
 can sign and verify the application executables, uninstaller, and Setup.
 

@@ -16,9 +16,10 @@ release-signing identity and clean Windows 11 / Windows Server 2022 validation.
    `%LOCALAPPDATA%\DeskLink\UpdateTransactions`;
 2. verify both copied SHA-256 values, require the candidate version to be newer,
    and require the rollback installer to exactly match the installed version;
-3. require valid, timestamped Authenticode on the running worker, installed
-   Alpha executable, candidate, and rollback installer, all from the same leaf
-   signing certificate;
+3. capture the exact current-user DeskLink Run value, then require valid,
+   timestamped Authenticode on the running worker, installed product shell,
+   candidate, and rollback installer, all from the same leaf signing
+   certificate;
 4. request `LockPc1`, then read the same-user control state and require both
    remote focus and capture to be false;
 5. send the typed `PrepareForUpdate` request, which repeats the fail-local
@@ -27,11 +28,14 @@ release-signing identity and clean Windows 11 / Windows Server 2022 validation.
    `Local\DeskLink.RuntimeBroker.v1`, then the Alpha and product-shell UI
    mutexes, to disappear;
 7. run Setup in a bounded kill-on-close job and validate the registered version,
-   exact installed executables, their signer, and the Alpha update self-test;
+   exact installed executables, their signer, WinUI/XAML deployment through the
+   product-shell health mode, and existing non-exportable identity plus
+   trust/preferences/roaming loading through the broker health mode;
 8. if install or validation fails, run and validate the already-approved
-   rollback installer; and
-9. only after candidate or rollback validation may the optional background
-   restart occur.
+   rollback installer and restore the exact captured Run value; and
+9. only after candidate or rollback validation may the product shell receive
+   the optional background restart, which is successful only after both shell
+   and broker are ready.
 
 An authentication, hash, version, local-state, shutdown, installer, health, or
 rollback error has no alternate package/provider path. A rollback failure leaves
@@ -81,20 +85,26 @@ package mutation before local confirmation. Windows disposable-account CI proves
 - ordinary Setup and application startup cannot overlap the update gate;
 - coordinator-mode Setup cannot be impersonated without that gate;
 - the production updater rejects unsigned development packages before disturbing
-  running Alpha and product-shell UI processes;
-- an injected post-install health failure restores the prior version; and
-- a valid development transaction advances the version before normal uninstall.
+  running diagnostic Alpha and product-shell UI processes;
+- an injected post-install health failure restores the prior version and exact
+  startup command;
+- product-shell and broker/state health modes run only inside the update gate;
+- the complete non-exportable identity snapshot plus DPAPI trust, schema-3
+  preferences, and roaming graph remain unchanged; and
+- a valid development transaction advances the version, migrates an exact
+  legacy Alpha startup command, and then uninstalls normally.
 
 The unsigned acceptance and injected-health controls exist only in the separate
 `desklink_update_validation.exe` test target. The installer stages
 `desklink_update.exe` and rejects a staged binary containing the unsigned-test
 switch.
 
-The current installer validates and signs `desklink.exe`, but post-install and
-rollback health retains the original required executable baseline during the
-preview transition. This is deliberate: a failed first shell-bearing update
-must be able to roll back to a valid older Alpha-only package. Shell shutdown is
-still coordinated whenever the shell mutex/window exists.
+PR 9A closes the preview transition: post-install and rollback health now
+require `desklink.exe`, the broker, and the retained Alpha diagnostics binary.
+Compatibility with the immediately preceding migration package is preserved by
+restoring its exact startup command after rollback. Alpha-only packages older
+than that migration baseline are not accepted as rollback packages by the new
+updater.
 
 Production qualification still requires the actual timestamped release signer,
 revocation behavior, signed candidate/rollback transactions, power loss and

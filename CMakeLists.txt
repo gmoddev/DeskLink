@@ -275,6 +275,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_control.cpp
         src/win32_launcher.cpp
         src/win32_monitor_configurator.cpp
+        src/win32_product_lifecycle.cpp
         src/win32_display_topology.cpp
         src/win32_discovery.cpp
         src/win32_foreground.cpp

@@ -171,7 +171,11 @@ two-supported-Windows-11-PC failure qualification remain PR 9 release gates;
 the user has explicitly deferred that hardware matrix.
 
 Disposable-account CI additionally exercises installed shell activation,
-broker survival after shell exit, update shutdown, rollback, and uninstall.
+product-shell-only broker startup, broker survival after shell exit, update
+shutdown, shell/broker health probes, exact startup rollback/migration, and
+uninstall. It seeds a valid DPAPI trust record, schema-3 preferences, and saved
+roaming layout, then compares their hashes plus the complete non-exportable CNG
+identity snapshot after forced rollback and successful upgrade.
 Production signing plus clean Windows 11 and Server 2022 Desktop Experience
 DPI, keyboard, Narrator, light/dark, and contrast qualification remain release
 gates.
@@ -619,16 +623,24 @@ signing certificate and timestamp URL.
 On the disposable CI account, the installer test first holds the Alpha and
 product-shell lifecycle mutexes and proves Setup cannot proceed. It proves coordinator-mode
 Setup cannot run without the update mutex and that ordinary Setup/runtime
-startup cannot overlap that mutex. After installing 0.1.0, it starts Alpha and
-the product shell, proves secondary shell activation and shell-only exit leave
-the broker responsive, and proves the production updater rejects unsigned
-packages without stopping the UI or changing the version. A validation-only
-updater then injects candidate
-health failure and must restore 0.1.0 before a clean transaction advances to
-0.1.1. Finally the test seeds DeskLink's optional Run value and uninstalls. The
-Run value and installer-owned files disappear while a sentinel under
-`%LOCALAPPDATA%\DeskLink` remains byte-for-byte unchanged. The test requires an
-explicit mutation switch and is not run on developer accounts.
+startup cannot overlap that mutex. After installing 0.1.0, it seeds valid
+product preferences, a saved monitor layout, one current-user DPAPI trust
+record, and an exact legacy Alpha Run value. Starting only `desklink.exe` must
+start the broker; secondary activation and shell-only exit must leave it
+responsive. The explicitly labeled Alpha diagnostics shell is then started to
+retain dual-UI update-shutdown coverage. The production updater must reject
+unsigned packages without stopping either UI or changing the version.
+
+A validation-only updater injects candidate health failure and must restore
+0.1.0 plus the exact prior startup command. A clean transaction then advances
+to 0.1.1 and migrates that exact command to `desklink.exe --background`.
+Product-shell and broker/state health probes must pass during both paths. The
+test compares the full CNG key/provider/algorithm/export-policy/public-key/
+certificate-hash/identity-pin snapshot and exact hashes of trust, preferences,
+and roaming files after each transaction. Finally uninstall removes the Run
+value and installer-owned files while the state files and sentinel remain
+byte-for-byte unchanged. The test requires an explicit mutation switch and is
+not run on developer accounts.
 
 Portable coordinator tests independently cover exact lifecycle ordering,
 pre-shutdown validation failure, local-confirmation refusal, backend exception
