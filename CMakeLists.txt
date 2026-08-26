@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# DeskLink source files are UTF-8 and contain user-facing Unicode punctuation.
+# Pin MSVC's source and execution character sets so wide literals render
+# consistently instead of being decoded through the machine's legacy code page.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 option(DESKLINK_BUILD_TESTS "Build DeskLink tests" ON)
 option(DESKLINK_BUILD_SIM "Build DeskLink simulation CLI" ON)
 option(DESKLINK_BUILD_WINDOWS_BACKENDS "Build Win32 backend adapters" ON)

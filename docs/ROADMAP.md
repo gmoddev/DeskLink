@@ -310,6 +310,8 @@ automated validation, and collection of results. There remains no normal
 
 - image clipboard and explicit file transfer after their independent
   capability/privacy/security design and text-clipboard qualification;
+- Explorer drag/drop only as a presentation over the explicit transfer model,
+  never as implicit clipboard authority or generic remote filesystem access;
 - richer automatic audio routing and per-application desk profiles;
 - Stream Deck integration implemented as a narrowly permissioned local client
   of the same typed control model; and
@@ -344,3 +346,34 @@ production-admission and release-integration change is approved.
 
 No later stage begins before the preceding stage passes. Full constraints are
 in [`PLATFORM_SUPPORT.md`](PLATFORM_SUPPORT.md).
+
+## Far-future R&D backlog — no implementation authorization
+
+Remote-video and network-display work comes after every current roaming,
+clipboard, audio, product UX, installer/update, signing, and supported two-PC
+physical gate. It is not part of the active roadmap or the product UX PR series.
+
+If future product evidence justifies the investment, the order is:
+
+1. Design remote-screen KVM video as an independent capability and protocol,
+   including capture, hardware/software codec negotiation, congestion and
+   latency control, presentation, cursor composition, protected-content and
+   secure-desktop boundaries, reconnect behavior, and module-isolated failure.
+2. Build and qualify that project without changing the existing device identity,
+   trust, pinning, `PeerValidated`, nonce, epoch, lease, or fail-local model.
+3. Only then investigate extended-display mode as a separate Windows driver and
+   video project using an explicitly installed, production-signed Indirect
+   Display Driver and a separately threat-modeled frame pipeline.
+
+Extended-display mode is intentionally last. DeskLink's current topology and
+input work can provide bounded display metadata and an authenticated return
+path, but it does not provide a virtual monitor, GPU-frame transport, codec,
+decoder, or renderer. No current milestone may add a display driver, capture
+surface, video lane, automatic driver installation, or new elevated service in
+anticipation of this work.
+
+Any future approval must define protected-content, lock/UAC/secure-desktop,
+driver update/rollback, bandwidth exhaustion, malformed bitstream, decoder/GPU
+failure, display detach, sleep/resume, and network-loss behavior. Validation and
+application admission remain fail-closed, 0-RTT remains disabled, and video or
+driver failure must not retain input or weaken the ordinary roaming path.

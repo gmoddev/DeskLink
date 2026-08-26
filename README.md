@@ -107,6 +107,8 @@ The following are intentionally kept behind interfaces and are the next producti
   product polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
+Current release-specific defects and workarounds are tracked in
+[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md).
 
 ## Build
 

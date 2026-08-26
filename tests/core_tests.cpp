@@ -4264,6 +4264,29 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
 
     LauncherRequest Pair;
     Pair.Operation = LauncherOperation::PairListen;
+    const auto DefaultGrants = DefaultManualPairingGrants();
+    CHECK(!DefaultGrants.GrantInput);
+    CHECK(!DefaultGrants.GrantAudioSend);
+    CHECK(!DefaultGrants.GrantAudioReceive);
+    CHECK(!DefaultGrants.GrantTopology);
+    CHECK(!DefaultGrants.GrantClipboardRead);
+    CHECK(!DefaultGrants.GrantClipboardWrite);
+    const auto DefaultPairArguments = BuildLauncherArguments(Pair);
+    CHECK(DefaultPairArguments.has_value());
+    const std::vector<std::wstring> ExpectedDefaultPair{
+        L"listen", L"43821", L"--tls-provider", L"schannel"};
+    CHECK(*DefaultPairArguments == ExpectedDefaultPair);
+
+    LauncherRequest DefaultConnect;
+    DefaultConnect.Operation = LauncherOperation::PairConnect;
+    DefaultConnect.Host = L"desklink-peer.local";
+    const auto DefaultConnectArguments = BuildLauncherArguments(DefaultConnect);
+    CHECK(DefaultConnectArguments.has_value());
+    const std::vector<std::wstring> ExpectedDefaultConnect{
+        L"pair", L"desklink-peer.local", L"43821",
+        L"--tls-provider", L"schannel"};
+    CHECK(*DefaultConnectArguments == ExpectedDefaultConnect);
+
     Pair.GrantInput = true;
     Pair.GrantAudioReceive = true;
     Pair.GrantTopology = true;

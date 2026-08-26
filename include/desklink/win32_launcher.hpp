@@ -20,6 +20,22 @@ enum class LauncherOperation {
     Focus,
 };
 
+struct LauncherPairingGrants {
+    bool GrantInput{};
+    bool GrantAudioSend{};
+    bool GrantAudioReceive{};
+    bool GrantTopology{};
+    bool GrantClipboardRead{};
+    bool GrantClipboardWrite{};
+};
+
+// Manual pairing is authority creation. Keep every grant off until the local
+// user explicitly selects it, independent of any suggested product role.
+[[nodiscard]] constexpr LauncherPairingGrants
+DefaultManualPairingGrants() noexcept {
+    return {};
+}
+
 struct LauncherRequest {
     LauncherOperation Operation{LauncherOperation::Identity};
     std::wstring Host;
