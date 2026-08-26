@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace {
@@ -15,6 +16,21 @@ constexpr UINT kTrayOpen = 1;
 constexpr UINT kTrayReturnLocal = 2;
 constexpr UINT kTrayPause = 3;
 constexpr UINT kTrayExit = 4;
+
+std::optional<std::filesystem::path> GetDataDirectory() {
+    PWSTR RawPath{};
+    if (FAILED(SHGetKnownFolderPath(
+            FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &RawPath)) ||
+        !RawPath) {
+        return std::nullopt;
+    }
+    std::filesystem::path Result(RawPath);
+    CoTaskMemFree(RawPath);
+    Result /= L"DeskLink";
+    std::error_code Error;
+    std::filesystem::create_directories(Result, Error);
+    return Error ? std::nullopt : std::optional(Result);
+}
 
 UINT GetActivateMessage() noexcept {
     static const UINT Message =
@@ -127,6 +143,94 @@ winrt::hstring RoleName(desklink::DeskRole Role) {
         case desklink::DeskRole::Flexible: return L"Flexible role";
         default: return L"Not configured";
     }
+}
+
+const wchar_t* MonitorSideName(desklink::DisplayEdgeSide Side) noexcept {
+    switch (Side) {
+        case desklink::DisplayEdgeSide::Left: return L"left";
+        case desklink::DisplayEdgeSide::Top: return L"top";
+        case desklink::DisplayEdgeSide::Right: return L"right";
+        case desklink::DisplayEdgeSide::Bottom: return L"bottom";
+    }
+    return L"unknown";
+}
+
+winrt::hstring RefreshRateText(std::uint32_t MilliHertz) {
+    if (MilliHertz == 0) return L"refresh unknown";
+    std::wostringstream Output;
+    if (MilliHertz % 1'000u == 0) {
+        Output << MilliHertz / 1'000u;
+    } else {
+        Output.setf(std::ios::fixed);
+        Output.precision(1);
+        Output << static_cast<double>(MilliHertz) / 1'000.0;
+    }
+    Output << L" Hz";
+    return winrt::hstring(Output.str());
+}
+
+bool SameMonitorEndpoint(
+    const desklink::RoamingEndpoint& Left,
+    const desklink::RoamingEndpoint& Right) noexcept {
+    return Left.Machine == Right.Machine &&
+           Left.StableDisplayIdentity == Right.StableDisplayIdentity &&
+           Left.Side == Right.Side;
+}
+
+bool HasEquivalentMonitorConnection(
+    const desklink::RoamingConfiguration& Configuration,
+    const desklink::RoamingLink& Candidate) noexcept {
+    return std::any_of(
+        Configuration.Links.begin(), Configuration.Links.end(),
+        [&](const desklink::RoamingLink& Existing) {
+            return (SameMonitorEndpoint(
+                        Existing.EndpointA, Candidate.EndpointA) &&
+                    SameMonitorEndpoint(
+                        Existing.EndpointB, Candidate.EndpointB)) ||
+                   (SameMonitorEndpoint(
+                        Existing.EndpointA, Candidate.EndpointB) &&
+                    SameMonitorEndpoint(
+                        Existing.EndpointB, Candidate.EndpointA));
+        });
+}
+
+winrt::hstring MonitorTileLabel(
+    const desklink::MonitorCanvasTile& Tile,
+    std::size_t Index) {
+    std::wstring Result = std::to_wstring(Index + 1u) + L"  " +
+        ToHString(Tile.FriendlyName).c_str() + L"\n";
+    if (Tile.Online) {
+        Result += std::to_wstring(Tile.PixelWidth) + L" × " +
+            std::to_wstring(Tile.PixelHeight) + L" · " +
+            RefreshRateText(Tile.RefreshMilliHertz).c_str();
+    } else {
+        Result += L"Saved display identity unavailable";
+    }
+    Result += L"\n";
+    Result += ToHString(Tile.MachineName).c_str();
+    if (Tile.Primary) Result += L" · Primary";
+    if (!Tile.Online) Result += L" · Offline";
+    if (Tile.SizeEstimated) Result += L" · Size estimated";
+    return winrt::hstring(Result);
+}
+
+winrt::hstring MonitorDisplayChoice(
+    const desklink::MonitorCanvasTile& Tile,
+    std::size_t Index) {
+    std::wstring Result = std::to_wstring(Index + 1u) + L" — " +
+        ToHString(Tile.MachineName).c_str() + L" — " +
+        ToHString(Tile.FriendlyName).c_str();
+    if (!Tile.Online) Result += L" (offline)";
+    return winrt::hstring(Result);
+}
+
+std::optional<std::uint16_t> PercentToPermyriad(double Value) noexcept {
+    if (!std::isfinite(Value) || Value < 0.0 || Value > 100.0) {
+        return std::nullopt;
+    }
+    const auto Rounded = std::llround(Value * 100.0);
+    if (Rounded < 0 || Rounded > 10'000) return std::nullopt;
+    return static_cast<std::uint16_t>(Rounded);
 }
 
 winrt::hstring CapabilitySummary(desklink::CapabilitySet Capabilities) {
@@ -259,6 +363,9 @@ void MainWindow::PollBroker() {
         if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
         return;
     }
+    LocalMachine_ = Response->State->LocalMachine;
+    BrokerPaused_ = Response->State->RuntimePhase ==
+        desklink::BrokerRuntimePhase::Paused;
     ApplyState(StateFromControl(*Response->State));
     PollPreferences();
     PollDevices();
@@ -374,8 +481,12 @@ void MainWindow::NavigateTo(winrt::hstring const& Tag) {
     HomePage().Visibility(Tag == L"Home" ? Visible : Collapsed);
     AddPcPage().Visibility(Tag == L"AddPc" ? Visible : Collapsed);
     DevicesPage().Visibility(Tag == L"Devices" ? Visible : Collapsed);
+    DisplaysPage().Visibility(Tag == L"Displays" ? Visible : Collapsed);
     AdvancedPage().Visibility(Tag == L"Advanced" ? Visible : Collapsed);
     DiagnosticsPage().Visibility(Tag == L"Diagnostics" ? Visible : Collapsed);
+    if (Tag == L"Displays" && !MonitorLayoutLoaded_) {
+        LoadMonitorLayout();
+    }
 }
 
 void MainWindow::ChooseRole(desklink::DeskRole Role) {
@@ -433,6 +544,13 @@ void MainWindow::OnOpenAddPc(
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
     Navigation().SelectedItem(AddPcNavigation());
     NavigateTo(L"AddPc");
+}
+
+void MainWindow::OnOpenDisplays(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    Navigation().SelectedItem(DisplaysNavigation());
+    NavigateTo(L"Displays");
 }
 
 desklink::CapabilitySet MainWindow::SelectedPairingCapabilities() {
@@ -670,6 +788,840 @@ void MainWindow::RenderDevices() {
         Card.Child(Contents);
         DeviceCards().Children().Append(Card);
     }
+}
+
+void MainWindow::ShowMonitorStatus(
+    winrt::hstring const& Title,
+    winrt::hstring const& Message,
+    Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity) {
+    MonitorStatusBar().Title(Title);
+    MonitorStatusBar().Message(Message);
+    MonitorStatusBar().Severity(Severity);
+    MonitorStatusBar().IsOpen(true);
+}
+
+void MainWindow::LoadMonitorLayout() {
+    using namespace Microsoft::UI::Xaml::Controls;
+    if (!BrokerAvailable_ ||
+        !std::any_of(LocalMachine_.begin(), LocalMachine_.end(),
+                     [](std::uint8_t Byte) { return Byte != 0; })) {
+        ShowMonitorStatus(
+            L"Runtime unavailable",
+            L"DeskLink cannot establish the local machine identity. The saved layout was not opened.",
+            InfoBarSeverity::Error);
+        return;
+    }
+
+    if (!RoamingSettings_) {
+        const auto Directory = GetDataDirectory();
+        if (!Directory) {
+            ShowMonitorStatus(
+                L"Layout storage unavailable",
+                L"DeskLink could not open its current-user data directory.",
+                InfoBarSeverity::Error);
+            return;
+        }
+        RoamingSettings_ =
+            std::make_unique<desklink::Win32RoamingSettingsStore>(
+                *Directory / L"roaming.settings");
+    }
+    if (!RoamingSettings_->Load()) {
+        ShowMonitorStatus(
+            L"Saved layout is invalid",
+            L"DeskLink rejected the existing layout rather than guessing at its meaning. Input remains Local.",
+            InfoBarSeverity::Error);
+        return;
+    }
+    const auto Configuration = RoamingSettings_->Current();
+    if (!Configuration) {
+        ShowMonitorStatus(
+            L"Saved layout unavailable",
+            L"DeskLink could not read a validated roaming configuration.",
+            InfoBarSeverity::Error);
+        return;
+    }
+
+    desklink::ControlTopologyState TopologyState;
+    const auto Response = Send(
+        desklink::GetDisplayTopologiesControlRequest{},
+        std::chrono::milliseconds{750});
+    bool RemoteLayoutsAvailable = Response &&
+        Response->Status == desklink::ControlStatus::Ok &&
+        Response->Topologies;
+    if (RemoteLayoutsAvailable) {
+        TopologyState = *Response->Topologies;
+    } else {
+        desklink::Win32DisplayTopology LocalTopology;
+        if (!LocalTopology.Refresh()) {
+            ShowMonitorStatus(
+                L"Display enumeration failed",
+                L"No layout was changed. Reconnect the displays and try again.",
+                InfoBarSeverity::Error);
+            return;
+        }
+        TopologyState.Machines.push_back(desklink::ControlMachineTopology{
+            LocalMachine_, desklink::DisplayTopologyExchangeStatus::Ready,
+            LocalTopology.Current(), true, false});
+    }
+
+    MonitorMachines_.clear();
+    const auto LocalName = ToUtf8(LocalPcName().Text()).value_or("This PC");
+    for (auto& Entry : TopologyState.Machines) {
+        std::string Name = LocalName;
+        if (!Entry.Local) {
+            const auto Trusted = std::find_if(
+                TrustedDevices_.begin(), TrustedDevices_.end(),
+                [&](const auto& Device) {
+                    return Device.Machine == Entry.Machine;
+                });
+            Name = Trusted == TrustedDevices_.end()
+                ? "Paired PC"
+                : Trusted->DisplayName;
+        }
+        MonitorMachines_.push_back(desklink::MonitorCanvasMachine{
+            Entry.Machine, std::move(Name), std::move(Entry.Topology),
+            Entry.Status, Entry.Local, Entry.PeerInputAllowed});
+    }
+    const auto Model = desklink::BuildMonitorCanvasModel(
+        MonitorMachines_, *Configuration);
+    if (!Model) {
+        ShowMonitorStatus(
+            L"Layouts were rejected",
+            L"The current and saved display records did not form a bounded, unambiguous canvas.",
+            InfoBarSeverity::Error);
+        return;
+    }
+
+    MonitorConfiguration_ = *Configuration;
+    MonitorModel_ = *Model;
+    MonitorLayoutLoaded_ = true;
+    MonitorLayoutDirty_ = false;
+    DraggingMonitorTile_.reset();
+    RecomputeMonitorSuggestion(false);
+    RenderMonitorEditors();
+    RenderMonitorRoutes();
+    RenderMonitorCanvas();
+    MonitorUnsavedText().Text(L"No unsaved changes.");
+    ShowMonitorStatus(
+        RemoteLayoutsAvailable ? L"Layouts refreshed" : L"Local layout loaded",
+        RemoteLayoutsAvailable
+            ? L"Authenticated current topologies are shown. Offline saved displays remain visible."
+            : L"The peer topology is unavailable. Saved peer displays remain offline and cannot produce a new snap proposal.",
+        RemoteLayoutsAvailable
+            ? InfoBarSeverity::Success
+            : InfoBarSeverity::Warning);
+}
+
+void MainWindow::RenderMonitorCanvas() {
+    using namespace Microsoft::UI;
+    using namespace Microsoft::UI::Xaml;
+    using namespace Microsoft::UI::Xaml::Automation;
+    using namespace Microsoft::UI::Xaml::Controls;
+    using namespace Microsoft::UI::Xaml::Media;
+
+    MonitorCanvas().Children().Clear();
+    MonitorTileElements_.clear();
+    if (MonitorModel_.Tiles.empty()) {
+        TextBlock Empty;
+        Empty.Text(L"No current or saved displays are available.");
+        Canvas::SetLeft(Empty, 24);
+        Canvas::SetTop(Empty, 24);
+        MonitorCanvas().Children().Append(Empty);
+        return;
+    }
+
+    auto Left = MonitorModel_.Tiles.front().Rect.X;
+    auto Top = MonitorModel_.Tiles.front().Rect.Y;
+    auto Right = Left + MonitorModel_.Tiles.front().Rect.Width;
+    auto Bottom = Top + MonitorModel_.Tiles.front().Rect.Height;
+    for (const auto& Tile : MonitorModel_.Tiles) {
+        Left = std::min(Left, Tile.Rect.X);
+        Top = std::min(Top, Tile.Rect.Y);
+        Right = std::max(Right, Tile.Rect.X + Tile.Rect.Width);
+        Bottom = std::max(Bottom, Tile.Rect.Y + Tile.Rect.Height);
+    }
+    const auto Width = std::max<std::int32_t>(Right - Left, 1);
+    const auto Height = std::max<std::int32_t>(Bottom - Top, 1);
+    MonitorViewScale_ = std::clamp(
+        std::min(1.0, std::min(1'400.0 / Width, 620.0 / Height)),
+        0.10, 1.0);
+    MonitorViewOriginX_ = Left;
+    MonitorViewOriginY_ = Top;
+    MonitorCanvas().Width(std::max(
+        780.0, static_cast<double>(Width) * MonitorViewScale_ + 72.0));
+    MonitorCanvas().Height(std::max(
+        430.0, static_cast<double>(Height) * MonitorViewScale_ + 84.0));
+
+    const auto LocalBrush = MonitorLocalPalette().Background();
+    const auto PeerBrush = MonitorPeerPalette().Background();
+    const auto OfflineBrush = MonitorOfflinePalette().Background();
+    const auto NormalBorder = MonitorNormalBorderPalette().BorderBrush();
+    const auto SuggestedBorder =
+        MonitorSuggestedBorderPalette().BorderBrush();
+
+    std::vector<desklink::MachineId> Groups;
+    for (const auto& Tile : MonitorModel_.Tiles) {
+        if (std::find(Groups.begin(), Groups.end(), Tile.Machine) ==
+            Groups.end()) {
+            Groups.push_back(Tile.Machine);
+        }
+    }
+    for (const auto& Machine : Groups) {
+        double GroupLeft = std::numeric_limits<double>::max();
+        double GroupTop = std::numeric_limits<double>::max();
+        double GroupRight = std::numeric_limits<double>::lowest();
+        double GroupBottom = std::numeric_limits<double>::lowest();
+        winrt::hstring GroupName;
+        for (const auto& Tile : MonitorModel_.Tiles) {
+            if (Tile.Machine != Machine) continue;
+            GroupName = ToHString(Tile.MachineName);
+            const auto X = 30.0 +
+                (Tile.Rect.X - MonitorViewOriginX_) * MonitorViewScale_;
+            const auto Y = 42.0 +
+                (Tile.Rect.Y - MonitorViewOriginY_) * MonitorViewScale_;
+            GroupLeft = std::min(GroupLeft, X);
+            GroupTop = std::min(GroupTop, Y);
+            GroupRight = std::max(
+                GroupRight, X + std::max(
+                    96.0, Tile.Rect.Width * MonitorViewScale_));
+            GroupBottom = std::max(
+                GroupBottom, Y + std::max(
+                    68.0, Tile.Rect.Height * MonitorViewScale_));
+        }
+        Border Group;
+        Group.Width(GroupRight - GroupLeft + 24.0);
+        Group.Height(GroupBottom - GroupTop + 54.0);
+        Group.CornerRadius(CornerRadius{8});
+        Group.BorderThickness(Thickness{1});
+        Group.BorderBrush(NormalBorder);
+        Group.Background(PeerBrush);
+        Group.IsHitTestVisible(false);
+        TextBlock Name;
+        Name.Text(GroupName);
+        Name.Margin(Thickness{10, 7, 10, 0});
+        Name.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        Name.VerticalAlignment(VerticalAlignment::Top);
+        Group.Child(Name);
+        Canvas::SetLeft(Group, GroupLeft - 12.0);
+        Canvas::SetTop(Group, GroupTop - 34.0);
+        MonitorCanvas().Children().Append(Group);
+    }
+
+    for (std::size_t Index = 0; Index < MonitorModel_.Tiles.size(); ++Index) {
+        const auto& Tile = MonitorModel_.Tiles[Index];
+        const bool Suggested = MonitorSuggestion_ &&
+            (MonitorSuggestion_->TileA == Index ||
+             MonitorSuggestion_->TileB == Index);
+        Border Card;
+        Card.Width(std::max(96.0, Tile.Rect.Width * MonitorViewScale_));
+        Card.Height(std::max(68.0, Tile.Rect.Height * MonitorViewScale_));
+        Card.Padding(Thickness{10});
+        Card.CornerRadius(CornerRadius{6});
+        Card.BorderThickness(Thickness{Suggested ? 3.0 : 1.5});
+        Card.BorderBrush(Suggested ? SuggestedBorder : NormalBorder);
+        Card.Background(!Tile.Online
+            ? OfflineBrush
+            : Tile.Local ? LocalBrush : PeerBrush);
+        Card.Opacity(Tile.Online ? 1.0 : 0.68);
+        Card.Tag(winrt::box_value(static_cast<std::uint64_t>(Index)));
+        Card.PointerPressed({this, &MainWindow::OnMonitorTilePointerPressed});
+        Card.PointerMoved({this, &MainWindow::OnMonitorTilePointerMoved});
+        Card.PointerReleased({this, &MainWindow::OnMonitorTilePointerReleased});
+        Card.PointerCanceled({this, &MainWindow::OnMonitorTilePointerReleased});
+        const auto Label = MonitorTileLabel(Tile, Index);
+        AutomationProperties::SetName(Card, Label);
+        AutomationProperties::SetHelpText(
+            Card,
+            L"Drag for visual placement. Use the keyboard-accessible editor to create routing without dragging.");
+        TextBlock Text;
+        Text.Text(Label);
+        Text.TextWrapping(TextWrapping::Wrap);
+        Text.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        Card.Child(Text);
+        Canvas::SetLeft(
+            Card, 30.0 +
+                (Tile.Rect.X - MonitorViewOriginX_) * MonitorViewScale_);
+        Canvas::SetTop(
+            Card, 42.0 +
+                (Tile.Rect.Y - MonitorViewOriginY_) * MonitorViewScale_);
+        MonitorCanvas().Children().Append(Card);
+        MonitorTileElements_.push_back(Card);
+    }
+}
+
+void MainWindow::RenderMonitorEditors() {
+    const auto SourceSelection = AccessibleSourceDisplay().SelectedIndex();
+    const auto TargetSelection = AccessibleTargetDisplay().SelectedIndex();
+    AccessibleSourceDisplay().Items().Clear();
+    AccessibleTargetDisplay().Items().Clear();
+    for (std::size_t Index = 0; Index < MonitorModel_.Tiles.size(); ++Index) {
+        const auto Text = MonitorDisplayChoice(MonitorModel_.Tiles[Index], Index);
+        AccessibleSourceDisplay().Items().Append(winrt::box_value(Text));
+        AccessibleTargetDisplay().Items().Append(winrt::box_value(Text));
+    }
+    if (MonitorModel_.Tiles.empty()) return;
+    AccessibleSourceDisplay().SelectedIndex(
+        SourceSelection >= 0 &&
+                static_cast<std::size_t>(SourceSelection) < MonitorModel_.Tiles.size()
+            ? SourceSelection
+            : 0);
+    AccessibleTargetDisplay().SelectedIndex(
+        TargetSelection >= 0 &&
+                static_cast<std::size_t>(TargetSelection) < MonitorModel_.Tiles.size()
+            ? TargetSelection
+            : MonitorModel_.Tiles.size() > 1 ? 1 : 0);
+}
+
+void MainWindow::RenderMonitorRoutes() {
+    using namespace Microsoft::UI::Xaml;
+    using namespace Microsoft::UI::Xaml::Controls;
+    MonitorRouteCards().Children().Clear();
+    NoMonitorRoutesText().Visibility(MonitorConfiguration_.Links.empty()
+        ? Visibility::Visible
+        : Visibility::Collapsed);
+
+    std::vector<desklink::MachineDisplayTopology> Topologies;
+    for (const auto& Machine : MonitorMachines_) {
+        if (Machine.Topology) {
+            Topologies.push_back({Machine.Machine, &*Machine.Topology});
+        }
+    }
+    const auto EndpointName = [&](const desklink::RoamingEndpoint& Endpoint) {
+        const auto Match = std::find_if(
+            MonitorModel_.Tiles.begin(), MonitorModel_.Tiles.end(),
+            [&](const auto& Tile) {
+                return Tile.Machine == Endpoint.Machine &&
+                       Tile.StableDisplayIdentity ==
+                           Endpoint.StableDisplayIdentity;
+            });
+        return Match == MonitorModel_.Tiles.end()
+            ? winrt::hstring(L"Offline display")
+            : MonitorDisplayChoice(
+                  *Match, static_cast<std::size_t>(
+                      std::distance(MonitorModel_.Tiles.begin(), Match)));
+    };
+
+    for (std::size_t Index = 0;
+         Index < MonitorConfiguration_.Links.size(); ++Index) {
+        const auto& Link = MonitorConfiguration_.Links[Index];
+        const auto Resolution = desklink::ResolveRoamingLink(Link, Topologies);
+        const wchar_t* Direction =
+            Link.Direction == desklink::RoamingDirectionMode::Bidirectional
+                ? L" ↔ "
+                : Link.Direction == desklink::RoamingDirectionMode::AToB
+                    ? L" → "
+                    : L" ← ";
+        std::wstring Summary = EndpointName(Link.EndpointA).c_str();
+        Summary += L" · ";
+        Summary += MonitorSideName(Link.EndpointA.Side);
+        Summary += Direction;
+        Summary += EndpointName(Link.EndpointB).c_str();
+        Summary += L" · ";
+        Summary += MonitorSideName(Link.EndpointB.Side);
+        Summary += Link.Enabled
+            ? Resolution.Ready() ? L" · Ready" : L" · Display offline or missing"
+            : L" · Disabled";
+
+        Border Card;
+        Card.Padding(Thickness{12});
+        Card.CornerRadius(CornerRadius{6});
+        Card.BorderThickness(Thickness{1});
+        Grid Layout;
+        Layout.ColumnSpacing(12);
+        Layout.ColumnDefinitions().Append(ColumnDefinition{});
+        ColumnDefinition ActionColumn;
+        ActionColumn.Width(GridLengthHelper::Auto());
+        Layout.ColumnDefinitions().Append(ActionColumn);
+        TextBlock Text;
+        Text.Text(winrt::hstring(Summary));
+        Text.TextWrapping(TextWrapping::Wrap);
+        Layout.Children().Append(Text);
+        Button Remove;
+        Remove.Content(winrt::box_value(L"Remove"));
+        Remove.Tag(winrt::box_value(static_cast<std::uint64_t>(Index)));
+        Remove.Click({this, &MainWindow::OnRemoveMonitorRoute});
+        Grid::SetColumn(Remove, 1);
+        Layout.Children().Append(Remove);
+        Card.Child(Layout);
+        MonitorRouteCards().Children().Append(Card);
+    }
+}
+
+void MainWindow::RecomputeMonitorSuggestion(bool SnapDraggedTile) {
+    MonitorSuggestion_.reset();
+    for (std::size_t A = 0; A < MonitorModel_.Tiles.size(); ++A) {
+        for (std::size_t B = A + 1; B < MonitorModel_.Tiles.size(); ++B) {
+            if (SnapDraggedTile && DraggingMonitorTile_ &&
+                A != *DraggingMonitorTile_ && B != *DraggingMonitorTile_) {
+                continue;
+            }
+            auto Candidate = desklink::BuildRoamingLinkSuggestion(
+                MonitorModel_.Tiles, A, B);
+            if (!Candidate || HasEquivalentMonitorConnection(
+                    MonitorConfiguration_, Candidate->Link)) {
+                continue;
+            }
+            if (!MonitorSuggestion_ ||
+                std::tie(Candidate->EdgeGapPixels,
+                         Candidate->TileA, Candidate->TileB) <
+                    std::tie(MonitorSuggestion_->EdgeGapPixels,
+                             MonitorSuggestion_->TileA,
+                             MonitorSuggestion_->TileB)) {
+                MonitorSuggestion_ = std::move(Candidate);
+            }
+        }
+    }
+
+    if (SnapDraggedTile && DraggingMonitorTile_ && MonitorSuggestion_) {
+        const auto MovingIndex = *DraggingMonitorTile_;
+        auto& Moving = MonitorModel_.Tiles[MovingIndex].Rect;
+        const auto OtherIndex = MonitorSuggestion_->TileA == MovingIndex
+            ? MonitorSuggestion_->TileB
+            : MonitorSuggestion_->TileA;
+        const auto& Other = MonitorModel_.Tiles[OtherIndex].Rect;
+        const auto Side = MonitorSuggestion_->TileA == MovingIndex
+            ? MonitorSuggestion_->Link.EndpointA.Side
+            : MonitorSuggestion_->Link.EndpointB.Side;
+        switch (Side) {
+            case desklink::DisplayEdgeSide::Left:
+                Moving.X = Other.X + Other.Width;
+                break;
+            case desklink::DisplayEdgeSide::Top:
+                Moving.Y = Other.Y + Other.Height;
+                break;
+            case desklink::DisplayEdgeSide::Right:
+                Moving.X = Other.X - Moving.Width;
+                break;
+            case desklink::DisplayEdgeSide::Bottom:
+                Moving.Y = Other.Y - Moving.Height;
+                break;
+        }
+        Moving.X = std::clamp(
+            Moving.X, -desklink::kMaximumCanvasCoordinate,
+            desklink::kMaximumCanvasCoordinate);
+        Moving.Y = std::clamp(
+            Moving.Y, -desklink::kMaximumCanvasCoordinate,
+            desklink::kMaximumCanvasCoordinate);
+        MonitorSuggestion_ = desklink::BuildRoamingLinkSuggestion(
+            MonitorModel_.Tiles,
+            MonitorSuggestion_->TileA, MonitorSuggestion_->TileB);
+    }
+
+    if (!MonitorSuggestion_) {
+        MonitorSuggestionCard().Visibility(
+            Microsoft::UI::Xaml::Visibility::Collapsed);
+        return;
+    }
+    const auto& A = MonitorModel_.Tiles[MonitorSuggestion_->TileA];
+    const auto& B = MonitorModel_.Tiles[MonitorSuggestion_->TileB];
+    std::wstring Text = MonitorDisplayChoice(
+        A, MonitorSuggestion_->TileA).c_str();
+    Text += L" ";
+    Text += MonitorSideName(MonitorSuggestion_->Link.EndpointA.Side);
+    Text += L" ↔ ";
+    Text += MonitorDisplayChoice(B, MonitorSuggestion_->TileB).c_str();
+    Text += L" ";
+    Text += MonitorSideName(MonitorSuggestion_->Link.EndpointB.Side);
+    MonitorSuggestionText().Text(winrt::hstring(Text));
+    MonitorSuggestionCard().Visibility(
+        Microsoft::UI::Xaml::Visibility::Visible);
+}
+
+void MainWindow::MarkMonitorDirty() {
+    MonitorLayoutDirty_ = true;
+    MonitorUnsavedText().Text(
+        L"Unsaved changes. Input routing is unchanged until Save desk layout succeeds.");
+}
+
+std::optional<std::size_t> MainWindow::MonitorTileFromTag(
+    Windows::Foundation::IInspectable const& Tag) const {
+    const auto Index = winrt::unbox_value_or<std::uint64_t>(
+        Tag, std::numeric_limits<std::uint64_t>::max());
+    return Index < MonitorModel_.Tiles.size()
+        ? std::optional<std::size_t>(static_cast<std::size_t>(Index))
+        : std::nullopt;
+}
+
+std::optional<std::size_t> MainWindow::SelectedMonitorTile(
+    Microsoft::UI::Xaml::Controls::ComboBox const& Selector) const {
+    const auto Index = Selector.SelectedIndex();
+    return Index >= 0 &&
+            static_cast<std::size_t>(Index) < MonitorModel_.Tiles.size()
+        ? std::optional<std::size_t>(static_cast<std::size_t>(Index))
+        : std::nullopt;
+}
+
+std::optional<desklink::RoamingLink> MainWindow::ReadMonitorConnection(
+    bool Advanced) {
+    const auto Source = SelectedMonitorTile(AccessibleSourceDisplay());
+    const auto Target = SelectedMonitorTile(AccessibleTargetDisplay());
+    const auto SourceSide = AccessibleSourceSide().SelectedIndex();
+    const auto TargetSide = AccessibleTargetSide().SelectedIndex();
+    if (!Source || !Target || *Source == *Target ||
+        SourceSide < 0 || SourceSide > 3 ||
+        TargetSide < 0 || TargetSide > 3) {
+        return std::nullopt;
+    }
+    const auto& A = MonitorModel_.Tiles[*Source];
+    const auto& B = MonitorModel_.Tiles[*Target];
+    if (!A.Online || !B.Online || A.Machine == B.Machine) {
+        return std::nullopt;
+    }
+    const std::array Sides{
+        desklink::DisplayEdgeSide::Left,
+        desklink::DisplayEdgeSide::Top,
+        desklink::DisplayEdgeSide::Right,
+        desklink::DisplayEdgeSide::Bottom};
+    const auto AStart = Advanced
+        ? PercentToPermyriad(AdvancedSourceStart().Value())
+        : std::optional<std::uint16_t>(static_cast<std::uint16_t>(0));
+    const auto AEnd = Advanced
+        ? PercentToPermyriad(AdvancedSourceEnd().Value())
+        : std::optional<std::uint16_t>(static_cast<std::uint16_t>(10'000));
+    const auto BStart = Advanced
+        ? PercentToPermyriad(AdvancedTargetStart().Value())
+        : std::optional<std::uint16_t>(static_cast<std::uint16_t>(0));
+    const auto BEnd = Advanced
+        ? PercentToPermyriad(AdvancedTargetEnd().Value())
+        : std::optional<std::uint16_t>(static_cast<std::uint16_t>(10'000));
+    if (!AStart || !AEnd || !BStart || !BEnd ||
+        *AStart >= *AEnd || *BStart >= *BEnd) {
+        return std::nullopt;
+    }
+    const std::array Directions{
+        desklink::RoamingDirectionMode::Bidirectional,
+        desklink::RoamingDirectionMode::AToB,
+        desklink::RoamingDirectionMode::BToA};
+    const auto Direction = Advanced ? AdvancedDirection().SelectedIndex() : 0;
+    if (Direction < 0 || Direction > 2) return std::nullopt;
+    desklink::RoamingLink Link;
+    Link.EndpointA = {
+        A.Machine, A.StableDisplayIdentity,
+        Sides[static_cast<std::size_t>(SourceSide)], *AStart, *AEnd};
+    Link.EndpointB = {
+        B.Machine, B.StableDisplayIdentity,
+        Sides[static_cast<std::size_t>(TargetSide)], *BStart, *BEnd};
+    Link.Direction = Directions[static_cast<std::size_t>(Direction)];
+    Link.AToB = MonitorConfiguration_.CrossingDefaults;
+    Link.BToA = MonitorConfiguration_.CrossingDefaults;
+    return Link;
+}
+
+void MainWindow::OnRefreshMonitorLayout(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (MonitorLayoutDirty_) {
+        ShowMonitorStatus(
+            L"Save or remove pending changes first",
+            L"Refresh did not discard the unsaved desk layout.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    LoadMonitorLayout();
+}
+
+void MainWindow::OnIdentifyDisplays(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (!MainWindowHandle_ ||
+        !desklink::ShowWin32DisplayIdentification(MainWindowHandle_)) {
+        ShowMonitorStatus(
+            L"Identify unavailable",
+            L"DeskLink could not create the five-second local display overlays.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+    }
+}
+
+void MainWindow::OnMonitorTilePointerPressed(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& Args) {
+    const auto Card = Sender.try_as<Microsoft::UI::Xaml::Controls::Border>();
+    const auto Index = Card ? MonitorTileFromTag(Card.Tag()) : std::nullopt;
+    if (!Card || !Index) return;
+    const auto Point = Args.GetCurrentPoint(MonitorCanvas()).Position();
+    DraggingMonitorTile_ = *Index;
+    DragStartRect_ = MonitorModel_.Tiles[*Index].Rect;
+    DragStartPointerX_ = Point.X;
+    DragStartPointerY_ = Point.Y;
+    Card.CapturePointer(Args.Pointer());
+    Args.Handled(true);
+}
+
+void MainWindow::OnMonitorTilePointerMoved(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& Args) {
+    const auto Card = Sender.try_as<Microsoft::UI::Xaml::Controls::Border>();
+    const auto Index = Card ? MonitorTileFromTag(Card.Tag()) : std::nullopt;
+    if (!Card || !Index || !DraggingMonitorTile_ ||
+        *DraggingMonitorTile_ != *Index ||
+        !Args.GetCurrentPoint(MonitorCanvas()).Properties().IsLeftButtonPressed()) {
+        return;
+    }
+    const auto Point = Args.GetCurrentPoint(MonitorCanvas()).Position();
+    auto& Rect = MonitorModel_.Tiles[*Index].Rect;
+    Rect.X = std::clamp(
+        DragStartRect_.X + static_cast<std::int32_t>(std::lround(
+            (Point.X - DragStartPointerX_) / MonitorViewScale_)),
+        -desklink::kMaximumCanvasCoordinate,
+        desklink::kMaximumCanvasCoordinate);
+    Rect.Y = std::clamp(
+        DragStartRect_.Y + static_cast<std::int32_t>(std::lround(
+            (Point.Y - DragStartPointerY_) / MonitorViewScale_)),
+        -desklink::kMaximumCanvasCoordinate,
+        desklink::kMaximumCanvasCoordinate);
+    Microsoft::UI::Xaml::Controls::Canvas::SetLeft(
+        Card, 30.0 +
+            (Rect.X - MonitorViewOriginX_) * MonitorViewScale_);
+    Microsoft::UI::Xaml::Controls::Canvas::SetTop(
+        Card, 42.0 +
+            (Rect.Y - MonitorViewOriginY_) * MonitorViewScale_);
+    MarkMonitorDirty();
+    Args.Handled(true);
+}
+
+void MainWindow::OnMonitorTilePointerReleased(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& Args) {
+    const auto Card = Sender.try_as<Microsoft::UI::Xaml::Controls::Border>();
+    const auto Index = Card ? MonitorTileFromTag(Card.Tag()) : std::nullopt;
+    if (!Card || !Index || !DraggingMonitorTile_ ||
+        *DraggingMonitorTile_ != *Index) {
+        return;
+    }
+    Card.ReleasePointerCapture(Args.Pointer());
+    RecomputeMonitorSuggestion(true);
+    DraggingMonitorTile_.reset();
+    RenderMonitorCanvas();
+    Args.Handled(true);
+}
+
+void MainWindow::OnAcceptMonitorSuggestion(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (!MonitorSuggestion_) return;
+    auto Link = MonitorSuggestion_->Link;
+    Link.AToB = MonitorConfiguration_.CrossingDefaults;
+    Link.BToA = MonitorConfiguration_.CrossingDefaults;
+    auto Candidate = MonitorConfiguration_;
+    Candidate.Links.push_back(std::move(Link));
+    if (!desklink::IsValidRoamingConfiguration(Candidate)) {
+        ShowMonitorStatus(
+            L"Connection rejected",
+            L"The proposed edge duplicates or overlaps an active source edge.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    MonitorConfiguration_ = std::move(Candidate);
+    MarkMonitorDirty();
+    RecomputeMonitorSuggestion(false);
+    RenderMonitorRoutes();
+    RenderMonitorCanvas();
+}
+
+void MainWindow::OnAddAccessibleConnection(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Link = ReadMonitorConnection(false);
+    if (!Link) {
+        ShowMonitorStatus(
+            L"Choose two online displays",
+            L"Connections must join displays on different PCs with a valid edge on each side.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    auto Candidate = MonitorConfiguration_;
+    Candidate.Links.push_back(*Link);
+    if (!desklink::IsValidRoamingConfiguration(Candidate)) {
+        ShowMonitorStatus(
+            L"Connection rejected",
+            L"The new connection duplicates or overlaps an active source edge.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    MonitorConfiguration_ = std::move(Candidate);
+    MarkMonitorDirty();
+    RecomputeMonitorSuggestion(false);
+    RenderMonitorRoutes();
+    RenderMonitorCanvas();
+}
+
+void MainWindow::OnAddAdvancedConnection(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Link = ReadMonitorConnection(true);
+    if (!Link) {
+        ShowMonitorStatus(
+            L"Advanced connection is invalid",
+            L"Choose different online PCs, valid edges, and percentages where start is less than end.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    auto Candidate = MonitorConfiguration_;
+    Candidate.Links.push_back(*Link);
+    if (!desklink::IsValidRoamingConfiguration(Candidate)) {
+        ShowMonitorStatus(
+            L"Advanced connection rejected",
+            L"The new source segment duplicates or overlaps an existing active route.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    MonitorConfiguration_ = std::move(Candidate);
+    MarkMonitorDirty();
+    RecomputeMonitorSuggestion(false);
+    RenderMonitorRoutes();
+    RenderMonitorCanvas();
+}
+
+void MainWindow::OnRemoveMonitorRoute(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Button = Sender.try_as<Microsoft::UI::Xaml::Controls::Button>();
+    const auto Index = Button
+        ? winrt::unbox_value_or<std::uint64_t>(
+              Button.Tag(), std::numeric_limits<std::uint64_t>::max())
+        : std::numeric_limits<std::uint64_t>::max();
+    if (Index >= MonitorConfiguration_.Links.size()) return;
+    MonitorConfiguration_.Links.erase(
+        MonitorConfiguration_.Links.begin() +
+        static_cast<std::ptrdiff_t>(Index));
+    MarkMonitorDirty();
+    RecomputeMonitorSuggestion(false);
+    RenderMonitorRoutes();
+    RenderMonitorCanvas();
+}
+
+void MainWindow::OnNudgeMonitorTile(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Button = Sender.try_as<Microsoft::UI::Xaml::Controls::Button>();
+    const auto Index = SelectedMonitorTile(AccessibleSourceDisplay());
+    const auto Direction = Button
+        ? winrt::unbox_value_or<winrt::hstring>(Button.Tag(), {})
+        : winrt::hstring{};
+    if (!Index || Direction.empty()) return;
+    auto& Rect = MonitorModel_.Tiles[*Index].Rect;
+    constexpr std::int32_t Step = 10;
+    if (Direction == L"Left") Rect.X -= Step;
+    else if (Direction == L"Right") Rect.X += Step;
+    else if (Direction == L"Up") Rect.Y -= Step;
+    else if (Direction == L"Down") Rect.Y += Step;
+    else return;
+    Rect.X = std::clamp(
+        Rect.X, -desklink::kMaximumCanvasCoordinate,
+        desklink::kMaximumCanvasCoordinate);
+    Rect.Y = std::clamp(
+        Rect.Y, -desklink::kMaximumCanvasCoordinate,
+        desklink::kMaximumCanvasCoordinate);
+    MarkMonitorDirty();
+    RecomputeMonitorSuggestion(false);
+    RenderMonitorCanvas();
+}
+
+void MainWindow::OnSaveMonitorLayout(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    if (!MonitorLayoutLoaded_ || !RoamingSettings_) return;
+    auto Candidate = MonitorConfiguration_;
+    Candidate.CanvasLayout.clear();
+    if (MonitorModel_.Tiles.size() > desklink::kMaximumCanvasPlacements) {
+        ShowMonitorStatus(
+            L"Layout is too large",
+            L"The bounded display-placement limit was exceeded.",
+            InfoBarSeverity::Error);
+        return;
+    }
+    for (const auto& Tile : MonitorModel_.Tiles) {
+        Candidate.CanvasLayout.push_back({
+            Tile.Machine, Tile.StableDisplayIdentity,
+            Tile.Rect.X, Tile.Rect.Y});
+    }
+    if (!desklink::IsValidRoamingConfiguration(Candidate)) {
+        ShowMonitorStatus(
+            L"Layout rejected",
+            L"The candidate graph failed strict validation. The active layout was not changed.",
+            InfoBarSeverity::Error);
+        return;
+    }
+
+    const auto StateResponse = Send(desklink::GetStateControlRequest{});
+    if (!StateResponse || StateResponse->Status != desklink::ControlStatus::Ok ||
+        !StateResponse->State) {
+        ShowMonitorStatus(
+            L"Cannot confirm Local",
+            L"The runtime state could not be verified. The active layout was not changed.",
+            InfoBarSeverity::Error);
+        return;
+    }
+    const bool WasPaused = StateResponse->State->RuntimePhase ==
+        desklink::BrokerRuntimePhase::Paused;
+    const auto SaveStatus = desklink::ApplyProductMonitorLayout(
+        WasPaused,
+        desklink::ProductMonitorSaveActions{
+            [&] {
+                const auto Response = Send(
+                    desklink::PauseDeskLinkControlRequest{},
+                    std::chrono::milliseconds{2'500});
+                return Response &&
+                    Response->Status == desklink::ControlStatus::Ok;
+            },
+            [&] {
+                const auto Response = Send(
+                    desklink::PauseDeskLinkControlRequest{},
+                    std::chrono::milliseconds{2'500});
+                return Response &&
+                    Response->Status == desklink::ControlStatus::Ok;
+            },
+            [&] { return RoamingSettings_->Save(Candidate); },
+            [&] {
+                const auto Response = Send(
+                    desklink::ResumeDeskLinkControlRequest{},
+                    std::chrono::milliseconds{2'500});
+                return Response &&
+                    Response->Status == desklink::ControlStatus::Ok;
+            }});
+    if (SaveStatus == desklink::ProductMonitorSaveStatus::CleanupFailed) {
+        ShowMonitorStatus(
+            L"Cannot confirm Local",
+            L"DeskLink did not complete fail-local runtime cleanup. The active layout was not changed.",
+            InfoBarSeverity::Error);
+        return;
+    }
+    if (SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed ||
+        SaveStatus ==
+            desklink::ProductMonitorSaveStatus::StoreFailedRuntimePaused) {
+        ShowMonitorStatus(
+            L"Layout was not saved",
+            SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed
+                ? L"Atomic replacement failed. The previous validated layout remains on disk."
+                : L"Atomic replacement failed and automatic resume also failed. The previous layout remains on disk and input remains Local.",
+            SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed
+                ? InfoBarSeverity::Error
+                : InfoBarSeverity::Warning);
+        return;
+    }
+
+    MonitorConfiguration_ = std::move(Candidate);
+    MonitorLayoutDirty_ = false;
+    MonitorUnsavedText().Text(L"No unsaved changes.");
+    RenderMonitorRoutes();
+    if (SaveStatus == desklink::ProductMonitorSaveStatus::Applied) {
+        ShowMonitorStatus(
+            L"Desk layout saved",
+            L"Input returned Local, the graph was replaced atomically, and the runtime restarted with a fresh session.",
+            InfoBarSeverity::Success);
+    } else if (WasPaused) {
+        ShowMonitorStatus(
+            L"Desk layout saved",
+            L"The validated graph was replaced atomically while DeskLink remained paused.",
+            InfoBarSeverity::Success);
+    } else {
+        ShowMonitorStatus(
+            L"Desk layout saved; runtime remains paused",
+            L"The graph is stored, but automatic resume failed. Input remains Local until DeskLink is resumed.",
+            InfoBarSeverity::Warning);
+    }
+    PollBroker();
 }
 
 void MainWindow::UpdateHome() {

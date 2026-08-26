@@ -617,7 +617,8 @@ candidate install or health validation fails.
 
 The product shell is an unpackaged, self-contained C++/WinRT application with a
 locked minimal Windows App SDK component graph. It owns presentation and local
-activation only. PR 6 replaces its foundation simulations with bounded typed
+activation plus bounded current-user roaming preferences only. PR 6 replaces
+its foundation simulations with bounded typed
 requests to the persistent current-user broker; the shell still cannot open
 transport, directly mutate trust, capture input, or inject input. The broker
 owns discovery and the exclusive pairing child, and presents only an expiring,
@@ -626,3 +627,15 @@ and native lifecycle window so Alpha and the preview may coexist; the update
 coordinator requests both to exit. Post-rollback health validation deliberately
 retains the pre-shell executable baseline so a valid rollback to the previous
 Alpha-only release remains possible.
+
+PR 7 adds monitor authoring without making canvas geometry authoritative. The
+shell reads the same bounded topology snapshot used by Alpha, builds cards with
+the shared `MonitorCanvasModel`, and persists only a strictly validated
+`RoamingConfiguration` in current-user application state. Stable machine and
+display identities—not XAML coordinates—compile every accepted link. A save
+uses the shared product monitor coordinator to pause/stop the broker-managed
+runtime and confirm Local before the existing atomic settings replacement; only
+after persistence may the runtime resume and negotiate a fresh session. A UI
+crash between stop and resume therefore leaves input Local and the runtime
+paused. Identify remains a local, click-through, no-activate overlay and does
+not capture or suppress input.

@@ -328,6 +328,15 @@ the connection usable for already-authorized modules but the affected roaming
 route remains unavailable. Recovery from rejection requires a fresh
 authenticated connection and nonce.
 
+The production monitor page preserves that separation. Dragging or keyboard
+nudge changes presentation coordinates only, and a snap is an inert proposal
+until local acceptance. Both canvas and non-canvas authoring compile links from
+the exact stable machine/display identities and pass the same complete-graph
+validation. Persistence is ordered as `pause/stop and confirm Local -> atomic
+replace -> optional resume`; cleanup failure prevents the write, and resume
+failure leaves the runtime paused. Offline or stale topology can be displayed
+for editing but cannot make a route Ready.
+
 Phase 3 exposes this state to the companion only through the existing
 current-user named pipe. The one-user DACL, remote-client rejection, and mutual
 process-token SID checks remain mandatory. `GetDisplayTopologies` is read-only,

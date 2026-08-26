@@ -805,6 +805,18 @@ Gate: canvas placement alone cannot alter routing; accepted proposals compile
 deterministically; topology loss invalidates Ready routes; accessibility has a
 non-canvas equivalent.
 
+Implementation checkpoint: the production WinUI shell now renders the existing
+bounded monitor model as physically scaled per-PC cards, including stable
+identities, current/offline state, checked resolution/refresh metadata, and the
+local five-second Identify overlays. Dragging or keyboard nudging changes only
+pending canvas placement. Cross-PC adjacency produces a highlighted proposal
+that must be accepted explicitly; the non-canvas editor can create the same
+full-edge bidirectional link, and Advanced retains exact percentages and one-
+way direction. The shared save coordinator is unit-tested to require Local plus
+a stopped/paused managed runtime before atomic persistence and to remain paused
+on uncertain resume. Topology loss continues to resolve saved links as not
+Ready rather than falling back to canvas geometry.
+
 ### PR 8 — Feature intent and profiles
 
 - Clipboard and audio intention flows with concrete peer names.

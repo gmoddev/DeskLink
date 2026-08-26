@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string_view>
 
 namespace desklink {
@@ -21,6 +22,28 @@ struct ProductShellPresentation {
     bool ShowReturnLocal{};
     bool ShowActionRequired{};
 };
+
+enum class ProductMonitorSaveStatus {
+    Applied,
+    AppliedRuntimePaused,
+    CleanupFailed,
+    StoreFailed,
+    StoreFailedRuntimePaused,
+};
+
+struct ProductMonitorSaveActions {
+    std::function<bool()> ConfirmStoppedLocalWhilePaused;
+    std::function<bool()> PauseAndStopRuntime;
+    std::function<bool()> SaveAtomically;
+    std::function<bool()> ResumeRuntime;
+};
+
+// The save callback is never reached until a stopped/paused runtime has
+// confirmed Local. A runtime stopped by this operation is offered exactly one
+// resume attempt after either save success or failure.
+[[nodiscard]] ProductMonitorSaveStatus ApplyProductMonitorLayout(
+    bool RuntimeWasPaused,
+    const ProductMonitorSaveActions& Actions);
 
 constexpr ProductShellPresentation PresentProductShellState(
     ProductShellState State) noexcept {
