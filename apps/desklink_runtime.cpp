@@ -342,7 +342,22 @@ int wmain() {
     }
 
     std::cout << "[Broker:Lifecycle] per-user runtime broker ready; input is Local\n";
-    (void)WaitForSingleObject(StopEvent.Get(), INFINITE);
+    for (;;) {
+        const auto Wait = WaitForSingleObject(StopEvent.Get(), 250);
+        if (Wait == WAIT_OBJECT_0) break;
+        if (Wait != WAIT_TIMEOUT) {
+            std::cerr << "[Broker:Lifecycle] stop-event wait failed\n";
+            Server.Stop();
+            return 1;
+        }
+        if (Server.Running()) continue;
+        Server.Stop();
+        if (!Server.Start()) {
+            std::cerr << "[Broker:Control] current-user endpoint recovery failed\n";
+            return 1;
+        }
+        std::cerr << "[Broker:Control] current-user endpoint recovered after a transient failure\n";
+    }
     Server.Stop();
     std::cout << "[Broker:Lifecycle] broker stopped after fail-local cleanup\n";
     return 0;
