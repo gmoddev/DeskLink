@@ -30,6 +30,9 @@ public:
     [[nodiscard]] bool RemoteFocused() const noexcept {
         return focus_.focus() == FocusLocation::Remote && focus_.lease_active();
     }
+    [[nodiscard]] bool InputCleanupPending() const noexcept {
+        return InputCleanupPending_;
+    }
 
     [[nodiscard]] AgentDecision handle(const DecodedPacket& packet);
     void SetLocalDesiredMode(DeskMode Mode) noexcept;
@@ -40,6 +43,7 @@ private:
     [[nodiscard]] bool can_inject() const noexcept;
     void SetRemoteDesiredMode(DeskMode Mode) noexcept;
     void ApplyDesiredMode() noexcept;
+    [[nodiscard]] bool ReleaseOwnedState() noexcept;
 
     IInputInjector& injector_;
     CapabilitySet peer_capabilities_;
@@ -47,6 +51,7 @@ private:
     DeskMode LocalDesiredMode_{DeskMode::Roam};
     DeskMode RemoteDesiredMode_{DeskMode::Roam};
     std::uint64_t last_pointer_sequence_{};
+    bool InputCleanupPending_{};
 };
 
 } // namespace desklink

@@ -122,15 +122,17 @@ Work proceeds in this order:
     bounded attenuation after drift correction, ramps changes over one block,
     preserves policy across audio-only recovery, and exposes typed CLI/wrapper
     controls without changing the system mixer.
-18. **Phase 4 controlled outbound slice complete:** the portable state machine
+18. **Phase 4 controlled reciprocal slice complete:** the portable state machine
     implements all three crossing policies, proportional corner-safe landing,
     re-entry cooldown, bounded focus timeout, active-route invalidation, and
     stale direction-token rejection. The Windows Host observes local Raw Input
     without suppression and can enter Remote only after current trusted
     session/capability/nonce/topology checks, fresh `FocusReady`, landing,
     initial reconciliation, and direction admission. The Alpha switch and CLI
-    path are explicit experimental opt-ins. Reciprocal peer-session ownership
-    and physical two-PC qualification remain open.
+    path are explicit experimental opt-ins. A single `PeerSession` now owns
+    incoming and outgoing coordination, independent directional grants,
+    nonce-bound tokens, collision-to-Local, and duplicate-startup convergence.
+    Physical two-PC qualification remains open.
 
 The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
@@ -143,7 +145,7 @@ without unavailable hardware, but a milestone that requires two supported
 Windows 11/Server 2022+ systems cannot receive production sign-off until that
 physical matrix runs.
 
-### 1. Symmetric roaming ownership
+### 1. Symmetric roaming ownership — complete
 
 - integrate `PeerDirectionArbiter` with a reusable reciprocal peer-session
   owner so either trusted machine can initiate an edge crossing;
@@ -152,6 +154,13 @@ physical matrix runs.
   remote focus automatically after reconnect; and
 - keep startup, duplicate-session convergence, reconnect, and all error paths
   Local until a new focus transaction, landing, and reconciliation succeed.
+
+Implemented with one validated reciprocal `PeerSession`. Portable tests cover
+both directions, independent capability grants, simultaneous opposite focus,
+peer/nonce/generation token binding, reconnect invalidation, and malformed or
+changing capability replay. The Alpha/CLI listener can opt into capture only
+with an explicit absolute roaming-settings path. Physical two-PC signoff stays
+in milestone 3; it does not reopen this ownership design.
 
 ### 2. Physical-distance-aware crossing polish
 

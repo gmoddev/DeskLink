@@ -80,6 +80,17 @@ offered_capabilities    u64
 capabilities            u64
 ```
 
+For a reciprocal `PeerSession`, this message is sent only after
+`PeerValidated` and fresh session-nonce negotiation. It reports the exact
+capabilities in the sender's persisted local trust record for that peer; it is
+not an offer and cannot modify either trust store. The first valid value is
+immutable for the connection. Exact replays are harmless, while unknown bits
+or a changed value invalidate remote-grant state and fail both input directions
+Local. A peer-reported value can gate this machine's outbound input attempt,
+but it never authorizes disclosure of this machine's audio or topology; those
+remain gated by this machine's persisted local grant. Recovery requires a new
+authenticated connection and nonce.
+
 ### SetMode — type 10
 
 ```text

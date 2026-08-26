@@ -580,10 +580,8 @@ private:
                 kDeviceKeyName, Crypto);
             desklink::Win32DisplayTopology Topology;
             if (!Certificate || !Topology.Refresh()) return std::nullopt;
-            desklink::MachineId LocalMachine{};
-            std::copy_n(
-                Certificate->CertificatePin().begin(), LocalMachine.size(),
-                LocalMachine.begin());
+            const auto LocalMachine = desklink::DeriveMachineId(
+                Certificate->CertificatePin());
             desklink::ControlTopologyState State;
             State.Machines.push_back(desklink::ControlMachineTopology{
                 LocalMachine,
@@ -777,6 +775,7 @@ private:
         if (!Request) return;
         Request->Operation = Controller ? desklink::LauncherOperation::Focus
                                         : desklink::LauncherOperation::Serve;
+        Request->CaptureInput = IsChecked(CaptureInput);
         if (Controller) {
             const auto Address = ReadAddress();
             if (!Address) {
@@ -785,46 +784,51 @@ private:
                 return;
             }
             Request->Host = *Address;
-            Request->CaptureInput = IsChecked(CaptureInput);
             Request->ReceiveAudio = IsChecked(ReceiveAudio);
-            if (IsChecked(EnableEdgeRoaming)) {
-                if (!Request->CaptureInput) {
-                    MessageBoxW(
-                        Window_,
-                        L"Experimental edge roaming requires physical input capture.",
-                        L"DeskLink Alpha", MB_OK | MB_ICONERROR);
-                    return;
-                }
-                Request->EdgeRoamingSettingsPath = RoamingSettingsPath_;
-            }
-            if (Request->CaptureInput) {
-                const auto Gain = ReadUnsignedControl(
-                    PointerGainControl_, desklink::kMinimumPointerGainPercent,
-                    desklink::kMaximumPointerGainPercent);
-                const auto Dpi = ReadUnsignedControl(
-                    PointerDpiControl_, 0, desklink::kMaximumPointerDpi);
-                if (!Gain || !Dpi ||
-                    (*Dpi != 0 && *Dpi < desklink::kMinimumPointerDpi)) {
-                    MessageBoxW(
-                        Window_,
-                        L"Pointer gain must be 25..400. Mouse DPI must be 0 (raw) or 100..32000.",
-                        L"DeskLink Alpha", MB_OK | MB_ICONERROR);
-                    return;
-                }
-                Request->PointerCalibration.GainPercent = *Gain;
-                Request->PointerCalibration.SourceDpi = *Dpi;
-            }
-            if (Request->CaptureInput && MessageBoxW(
-                    Window_,
-                    L"Physical keyboard and mouse input can be suppressed while Remote is focused.\n\n"
-                    L"Emergency chord: Ctrl+Alt+Pause/Break\n\n"
-                    L"The session will start Local and will not capture until you press Focus remote. Continue?",
-                    L"Enable physical capture", MB_OKCANCEL | MB_ICONWARNING |
-                    MB_DEFBUTTON2) != IDOK) {
-                return;
-            }
         } else {
             Request->SendAudio = IsChecked(SendAudio);
+        }
+        if (IsChecked(EnableEdgeRoaming)) {
+            if (!Request->CaptureInput) {
+                MessageBoxW(
+                    Window_,
+                    L"Experimental edge roaming requires physical input capture.",
+                    L"DeskLink Alpha", MB_OK | MB_ICONERROR);
+                return;
+            }
+            Request->EdgeRoamingSettingsPath = RoamingSettingsPath_;
+        } else if (!Controller && Request->CaptureInput) {
+            MessageBoxW(
+                Window_,
+                L"Receiver-side physical capture is only enabled for explicit edge roaming.",
+                L"DeskLink Alpha", MB_OK | MB_ICONERROR);
+            return;
+        }
+        if (Request->CaptureInput) {
+            const auto Gain = ReadUnsignedControl(
+                PointerGainControl_, desklink::kMinimumPointerGainPercent,
+                desklink::kMaximumPointerGainPercent);
+            const auto Dpi = ReadUnsignedControl(
+                PointerDpiControl_, 0, desklink::kMaximumPointerDpi);
+            if (!Gain || !Dpi ||
+                (*Dpi != 0 && *Dpi < desklink::kMinimumPointerDpi)) {
+                MessageBoxW(
+                    Window_,
+                    L"Pointer gain must be 25..400. Mouse DPI must be 0 (raw) or 100..32000.",
+                    L"DeskLink Alpha", MB_OK | MB_ICONERROR);
+                return;
+            }
+            Request->PointerCalibration.GainPercent = *Gain;
+            Request->PointerCalibration.SourceDpi = *Dpi;
+        }
+        if (Request->CaptureInput && MessageBoxW(
+                Window_,
+                L"Physical keyboard and mouse input can be suppressed while the peer is focused.\n\n"
+                L"Emergency chord: Ctrl+Alt+Pause/Break\n\n"
+                L"The session starts Local and only captures after an explicit focus or edge crossing. Continue?",
+                L"Enable physical capture", MB_OKCANCEL | MB_ICONWARNING |
+                MB_DEFBUTTON2) != IDOK) {
+            return;
         }
         StartRequest(*Request);
     }

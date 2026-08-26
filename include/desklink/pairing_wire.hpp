@@ -12,20 +12,33 @@
 
 namespace desklink {
 
-inline constexpr std::uint32_t kPairingWireMagic = 0x444C5031u; // "DLP1"
-inline constexpr std::uint8_t kPairingWireVersion = 1;
+inline constexpr std::uint32_t kPairingWireMagic = 0x444C5032u; // "DLP2"
+inline constexpr std::uint8_t kPairingWireVersion = 2;
 inline constexpr std::size_t kPairingFrameHeaderSize = 8;
 inline constexpr std::size_t kMaxPairingFrameSize =
     kPairingFrameHeaderSize + 16 + 1 + kMaxPairingDisplayName +
     kSha256DigestSize + kPairingNonceSize;
 
+[[nodiscard]] ByteBuffer EncodePairingCommitmentFrame(
+    const PairingCommitment& Commitment);
 [[nodiscard]] std::optional<ByteBuffer> EncodePairingOfferFrame(const PairingOffer& Offer);
 [[nodiscard]] std::optional<PairingOffer> DecodePairingOfferFrame(ByteSpan Frame);
-[[nodiscard]] ByteBuffer EncodePairingConfirmationFrame();
+[[nodiscard]] ByteBuffer EncodePairingConfirmationFrame(
+    const Sha256Digest& TranscriptDigest,
+    CapabilitySet Capabilities);
+[[nodiscard]] ByteBuffer EncodePairingCompletionFrame(
+    const Sha256Digest& TranscriptDigest);
+
+struct PairingConfirmation {
+    Sha256Digest TranscriptDigest{};
+    CapabilitySet Capabilities;
+};
 
 enum class PairingWireFrameType {
+    Commitment,
     Offer,
     Confirmation,
+    Completion,
 };
 
 enum class PairingWireStatus {
@@ -39,15 +52,20 @@ public:
     [[nodiscard]] PairingWireStatus Push(ByteSpan Bytes);
     [[nodiscard]] PairingWireStatus Status() const noexcept;
     [[nodiscard]] std::optional<PairingWireFrameType> ReadyType() const noexcept;
+    [[nodiscard]] std::optional<PairingCommitment> TakeCommitment();
     [[nodiscard]] std::optional<PairingOffer> TakeOffer();
-    [[nodiscard]] bool TakeConfirmation();
+    [[nodiscard]] std::optional<PairingConfirmation> TakeConfirmation();
+    [[nodiscard]] std::optional<Sha256Digest> TakeCompletion();
     void Reset() noexcept;
 
 private:
     void Advance();
 
     ByteBuffer Buffer_;
+    std::optional<PairingCommitment> Commitment_;
     std::optional<PairingOffer> Offer_;
+    std::optional<PairingConfirmation> Confirmation_;
+    std::optional<Sha256Digest> Completion_;
     std::optional<PairingWireFrameType> ReadyType_;
     PairingWireStatus Status_{PairingWireStatus::Incomplete};
 };

@@ -19,7 +19,7 @@ public:
     bool InjectPointerMotion(const PointerMotionMessage& Message) override;
     bool InjectWheel(const MouseWheelMessage& Message) override;
     bool ReconcileState(const InputStateSnapshotMessage& Snapshot) override;
-    void release_owned_state() noexcept override;
+    [[nodiscard]] bool release_owned_state() noexcept override;
 
     [[nodiscard]] bool RefreshDisplayTopology();
     [[nodiscard]] const DisplayTopologySnapshot& CurrentDisplayTopology() const noexcept;

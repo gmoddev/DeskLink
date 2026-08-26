@@ -325,7 +325,7 @@ std::optional<ControlTopologyState> DecodeTopologyState(Reader& Input) {
         if (HasTopology != 0) {
             std::uint32_t PacketSize{};
             if (!Input.U32(PacketSize) || PacketSize == 0 ||
-                PacketSize > kMaxReliablePayload + 36u ||
+                PacketSize > kMaxReliablePayload + kEnvelopeSize ||
                 Input.Remaining() < PacketSize) {
                 return std::nullopt;
             }

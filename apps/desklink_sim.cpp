@@ -50,8 +50,9 @@ public:
         std::cout << "agent: reconcile DeskLink-owned key/button state\n";
         return true;
     }
-    void release_owned_state() noexcept override {
+    bool release_owned_state() noexcept override {
         std::cout << "agent: release DeskLink-owned key/button state\n";
+        return true;
     }
 };
 

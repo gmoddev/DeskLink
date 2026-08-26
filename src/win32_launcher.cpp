@@ -66,8 +66,11 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
     }
     const auto HasEdgeRoaming =
         !Request.EdgeRoamingSettingsPath.empty();
+    const bool DirectionalSession =
+        Request.Operation == LauncherOperation::Focus ||
+        Request.Operation == LauncherOperation::Serve;
     if (HasEdgeRoaming &&
-        (Request.Operation != LauncherOperation::Focus ||
+        (!DirectionalSession ||
          !Request.CaptureInput ||
          !Request.EdgeRoamingSettingsPath.is_absolute() ||
          Request.EdgeRoamingSettingsPath.native().size() >=
@@ -130,15 +133,34 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             AppendProductionProvider(Arguments);
             break;
         case LauncherOperation::Serve:
-            if (HasPairingGrants(Request) || Request.CaptureInput ||
-                Request.ReceiveAudio ||
-                Request.PointerCalibration.GainPercent != 100 ||
-                Request.PointerCalibration.SourceDpi != 0) {
+            if (HasPairingGrants(Request) || Request.ReceiveAudio ||
+                (Request.CaptureInput && !HasEdgeRoaming) ||
+                (!Request.CaptureInput &&
+                 (Request.PointerCalibration.GainPercent != 100 ||
+                  Request.PointerCalibration.SourceDpi != 0))) {
                 return std::nullopt;
             }
             Arguments.emplace_back(L"serve");
             AppendPort(Arguments, Request.Port);
             if (Request.SendAudio) Arguments.emplace_back(L"--send-audio");
+            if (Request.CaptureInput) Arguments.emplace_back(L"--capture");
+            if (Request.CaptureInput &&
+                Request.PointerCalibration.GainPercent != 100) {
+                Arguments.emplace_back(L"--pointer-gain");
+                Arguments.push_back(std::to_wstring(
+                    Request.PointerCalibration.GainPercent));
+            }
+            if (Request.CaptureInput &&
+                Request.PointerCalibration.SourceDpi != 0) {
+                Arguments.emplace_back(L"--pointer-dpi");
+                Arguments.push_back(std::to_wstring(
+                    Request.PointerCalibration.SourceDpi));
+            }
+            if (HasEdgeRoaming) {
+                Arguments.emplace_back(L"--edge-roaming");
+                Arguments.push_back(
+                    Request.EdgeRoamingSettingsPath.native());
+            }
             AppendProductionProvider(Arguments);
             break;
         case LauncherOperation::Focus:

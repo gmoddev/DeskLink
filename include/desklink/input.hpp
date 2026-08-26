@@ -16,7 +16,7 @@ public:
     virtual bool InjectPointerMotion(const PointerMotionMessage& Message) = 0;
     virtual bool InjectWheel(const MouseWheelMessage& Message) = 0;
     virtual bool ReconcileState(const InputStateSnapshotMessage& Snapshot) = 0;
-    virtual void release_owned_state() noexcept = 0;
+    [[nodiscard]] virtual bool release_owned_state() noexcept = 0;
 };
 
 using InputStateTransition = std::variant<KeyEventMessage, MouseButtonMessage>;
@@ -33,7 +33,7 @@ public:
     bool InjectPointerMotion(const PointerMotionMessage&) override { return true; }
     bool InjectWheel(const MouseWheelMessage&) override { return true; }
     bool ReconcileState(const InputStateSnapshotMessage&) override { return true; }
-    void release_owned_state() noexcept override {}
+    [[nodiscard]] bool release_owned_state() noexcept override { return true; }
 };
 
 } // namespace desklink

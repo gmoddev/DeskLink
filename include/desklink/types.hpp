@@ -13,8 +13,11 @@ using ByteBuffer = std::vector<std::uint8_t>;
 using ByteSpan = std::span<const std::uint8_t>;
 using MachineId = std::array<std::uint8_t, 16>;
 
+inline constexpr std::size_t kEnvelopeSize = 36;
 inline constexpr std::size_t kMaxReliablePayload = 64 * 1024;
-inline constexpr std::size_t kMaxDatagramPayload = 1200;
+inline constexpr std::size_t kMaxEncodedDatagramSize = 1200;
+inline constexpr std::size_t kMaxDatagramPayload =
+    kMaxEncodedDatagramSize - kEnvelopeSize;
 inline constexpr std::uint32_t kWireMagic = 0x444C4E4Bu; // "DLNK"
 inline constexpr std::uint16_t kProtocolVersion = 2;
 

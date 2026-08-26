@@ -218,7 +218,7 @@ void PrintUsage() {
         << L"  desklink_pair discover [seconds: 1..30]\n"
         << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
-        << L"  desklink_pair serve [port] [--send-audio]\n"
+        << L"  desklink_pair serve [port] [--send-audio] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio] [--edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n"
@@ -524,13 +524,19 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         Result.Mode != Operation::PairConnect) {
         return std::nullopt;
     }
-    if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    const bool DirectionalSession =
+        Result.Mode == Operation::Focus || Result.Mode == Operation::Serve;
+    if (Result.CaptureInput && !DirectionalSession) return std::nullopt;
+    if (Result.Mode == Operation::Serve && Result.CaptureInput &&
+        !Result.EdgeRoamingSettingsPath) {
+        return std::nullopt;
+    }
     if (Result.EdgeRoamingSettingsPath &&
-        (Result.Mode != Operation::Focus || !Result.CaptureInput)) {
+        (!DirectionalSession || !Result.CaptureInput)) {
         return std::nullopt;
     }
     if ((PointerGainSeen || PointerDpiSeen) &&
-        (Result.Mode != Operation::Focus || !Result.CaptureInput)) {
+        (!DirectionalSession || !Result.CaptureInput)) {
         return std::nullopt;
     }
     if (!desklink::IsValidWin32PointerCalibration(
@@ -797,9 +803,7 @@ std::optional<std::string> GetDisplayName() {
 }
 
 desklink::MachineId GetMachineId(const desklink::Sha256Digest& CertificatePin) {
-    desklink::MachineId Result{};
-    std::copy_n(CertificatePin.begin(), Result.size(), Result.begin());
-    return Result;
+    return desklink::DeriveMachineId(CertificatePin);
 }
 
 bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
@@ -810,7 +814,12 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool ConsoleConfirm) {
     const auto& Candidate = Session.Candidate();
     const auto RemoteName = ToWide(Candidate.Identity.display_name);
-    if (!RemoteName || Candidate.Status != desklink::PairingStatus::Ready) return false;
+    const auto RemoteFingerprint = ToWide(
+        Candidate.Identity.public_key_fingerprint);
+    if (!RemoteName || !RemoteFingerprint ||
+        Candidate.Status != desklink::PairingStatus::Ready) {
+        return false;
+    }
 
     std::wstring Text =
         L"Compare this code with the code shown on the other PC:\n\n    ";
@@ -819,6 +828,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     Text += *Code;
     Text += L"\n\nRemote PC: ";
     Text += *RemoteName;
+    Text += L"\nCertificate SHA-256: ";
+    Text += *RemoteFingerprint;
     Text += L"\n\n";
     Text += GrantInput
         ? L"This PC will allow the remote PC to inject keyboard and mouse input."
@@ -834,6 +845,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     if (ConsoleConfirm) {
         std::wcout << L"[Pairing:Confirmation] verification_code=" << *Code << L'\n'
                    << L"[Pairing:Confirmation] remote_pc=" << *RemoteName << L'\n'
+                   << L"[Pairing:Confirmation] certificate_sha256="
+                   << *RemoteFingerprint << L'\n'
                    << L"[Pairing:Confirmation] grant_input="
                    << (GrantInput ? L"yes" : L"no") << L'\n'
                    << L"[Pairing:Confirmation] grant_audio_send="
@@ -1013,12 +1026,13 @@ public:
         return true;
     }
 
-    void release_owned_state() noexcept override {
+    bool release_owned_state() noexcept override {
+        bool Released = false;
         if (ObserveCleanup_) {
             const bool KeyHeld = AnyKeyDown();
             const bool ButtonHeld = AnyButtonDown();
-            const bool Released = Injector_.ReconcileState({});
-            if (!Released) Injector_.release_owned_state();
+            Released = Injector_.ReconcileState({});
+            if (!Released) Released = Injector_.release_owned_state();
             std::cout
                 << "[Input:Cleanup] validation lease cleanup key_held="
                 << (KeyHeld ? "true" : "false")
@@ -1026,7 +1040,7 @@ public:
                 << " release_succeeded=" << (Released ? "true" : "false")
                 << std::endl;
         } else {
-            Injector_.release_owned_state();
+            Released = Injector_.release_owned_state();
         }
         if (ObserveRejections_ && !RejectionReportEmitted_) {
             RejectionReportEmitted_ = true;
@@ -1042,6 +1056,7 @@ public:
         PendingKeyRelease_.reset();
         ObservedButtonDown_.reset();
         PendingButtonRelease_.reset();
+        return Released;
     }
 
 private:
@@ -1549,6 +1564,361 @@ struct HostRuntime {
     std::thread AudioPump;
 };
 
+struct PeerRuntime {
+    PeerRuntime(const desklink::IClock& Clock,
+                const desklink::ITrustStore& TrustStore,
+                const desklink::MachineId& LocalMachine,
+                desklink::MsQuicBootstrapHandlers::TrustedSession Trusted,
+                desklink::PeerSessionHandlers Handlers,
+                bool DropNextKeyRelease,
+                bool DropNextButtonRelease,
+                bool ObserveCleanup,
+                bool ObserveRejections)
+#ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
+        : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          LocalTopology(LocalMachine),
+          Endpoint(Trusted.Endpoint),
+          SessionNonce(Trusted.SessionNonce),
+          Injector(DropNextKeyRelease, DropNextButtonRelease, ObserveCleanup,
+                   ObserveRejections),
+          IncomingCoordinator(Clock, Injector),
+#else
+        : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
+          LocalTopology(LocalMachine),
+          Endpoint(Trusted.Endpoint),
+          SessionNonce(Trusted.SessionNonce),
+          IncomingCoordinator(Clock, Injector),
+#endif
+          OutgoingCoordinator(Trusted.SessionNonce),
+          Renderer(desklink::Win32WasapiRenderHandlers{
+              [this](desklink::Win32WasapiFailureKind Kind,
+                     std::string Message) {
+                  RequestRenderRecovery(Kind, std::move(Message));
+              }}),
+          Receiver([this](desklink::AudioFrameMessage Frame) {
+              return Renderer.Submit(std::move(Frame));
+          }),
+          Session(std::move(Trusted.Endpoint), OutgoingCoordinator,
+                  IncomingCoordinator, TrustStore, Trusted.SessionNonce,
+                  std::move(Handlers), &Receiver,
+                  desklink::DisplayTopologyExchangeOptions{true, &Clock}) {
+#ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
+        (void)DropNextKeyRelease;
+        (void)DropNextButtonRelease;
+        (void)ObserveCleanup;
+        (void)ObserveRejections;
+#endif
+    }
+
+    ~PeerRuntime() {
+        StopSendingAudio();
+        StopReceivingAudio();
+    }
+
+    void MaintainDisplayTopology() {
+        Session.Tick();
+        LocalTopology.Maintain(Session);
+    }
+
+    [[nodiscard]] bool SetAudioGainPermyriad(
+        std::uint16_t Gain) noexcept {
+        return Receiver.SetGainPermyriad(Gain);
+    }
+
+    void ToggleAudioMuted() noexcept {
+        (void)Receiver.ToggleMuted();
+    }
+
+    [[nodiscard]] std::uint16_t AudioGainPermyriad() const noexcept {
+        return Receiver.GainPermyriad();
+    }
+
+    [[nodiscard]] bool AudioMuted() const noexcept {
+        return Receiver.Muted();
+    }
+
+    void RequestRenderRecovery(
+        desklink::Win32WasapiFailureKind Kind,
+        std::string Message) noexcept {
+        std::cerr << "[Audio:Render] "
+                  << (Message.empty() ? "renderer stopped" : Message);
+        if (!desklink::IsRecoverableWasapiFailure(Kind)) {
+            std::cerr
+                << "; audio stopped without restart; input session remains active\n";
+            return;
+        }
+        std::cerr << "; scheduling audio-only recovery\n";
+        RenderRecoveryGeneration.fetch_add(1);
+    }
+
+    void RunRenderPump() noexcept {
+        std::uint64_t SeenGeneration{};
+        bool RendererReady = Renderer.Running();
+        auto Delay = kAudioRecoveryInitialDelay;
+        auto RetryAt = std::chrono::steady_clock::now() + Delay;
+        while (!RenderStop.load()) {
+            const auto Now = std::chrono::steady_clock::now();
+            const auto Generation = RenderRecoveryGeneration.load();
+            if (RendererReady &&
+                (Generation != SeenGeneration || !Renderer.Running())) {
+                Renderer.Stop();
+                Receiver.Reset();
+                RendererReady = false;
+                SeenGeneration = Generation;
+                Delay = kAudioRecoveryInitialDelay;
+                RetryAt = Now + Delay;
+            }
+            if (!RendererReady) {
+                SeenGeneration = RenderRecoveryGeneration.load();
+                if (Now >= RetryAt) {
+                    bool Restarted = false;
+                    const auto AttemptGeneration =
+                        RenderRecoveryGeneration.load();
+                    try {
+                        Renderer.Stop();
+                        Receiver.Reset();
+                        Restarted = !RenderStop.load() && Renderer.Start();
+                    } catch (...) {
+                        Restarted = false;
+                    }
+                    if (Restarted) {
+                        SeenGeneration = AttemptGeneration;
+                        RendererReady = true;
+                        Delay = kAudioRecoveryInitialDelay;
+                        ++RenderRestartCount;
+                        std::cout
+                            << "[Audio:Render] endpoint recovered; session and input remained active\n";
+                    } else {
+                        SeenGeneration = RenderRecoveryGeneration.load();
+                        Delay = NextAudioRecoveryDelay(Delay);
+                        RetryAt = std::chrono::steady_clock::now() + Delay;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            if (Receiver.Pump() ==
+                desklink::AudioPumpResult::RenderRejected) {
+                std::cerr
+                    << "[Audio:Render] receiver rejected playout; scheduling audio-only recovery\n";
+                RenderRecoveryGeneration.fetch_add(1);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    [[nodiscard]] bool StartReceivingAudio() {
+        if (RenderPump.joinable()) return true;
+        if (!Session.CanReceiveAudio()) {
+            std::cerr
+                << "[Audio:Security] peer lacks local audio.send grant; renderer remains stopped\n";
+            return false;
+        }
+        Receiver.Reset();
+        RenderStop.store(false);
+        RenderRecoveryGeneration.store(0);
+        RenderRestartCount.store(0);
+        bool Started = false;
+        try {
+            Started = Renderer.Start();
+            RenderPump = std::thread([this] { RunRenderPump(); });
+        } catch (...) {
+            Renderer.Stop();
+            return false;
+        }
+        if (Started) {
+            std::cout << "[Audio:Render] capability-gated receiver active\n";
+        } else {
+            std::cout
+                << "[Audio:Render] waiting for a usable default endpoint; input session remains active\n";
+        }
+        return true;
+    }
+
+    void StopReceivingAudio() noexcept {
+        RenderStop.store(true);
+        if (RenderPump.joinable() &&
+            RenderPump.get_id() != std::this_thread::get_id()) {
+            RenderPump.join();
+        }
+        Renderer.Stop();
+        const auto Statistics = Receiver.Stats();
+        if (Statistics.Accepted || Statistics.Submitted ||
+            Statistics.RenderRejected) {
+            std::cout << "[Audio:Render] stopped accepted="
+                      << Statistics.Accepted
+                      << " submitted=" << Statistics.Submitted
+                      << " concealed=" << Statistics.Concealed
+                      << " rejected="
+                      << (Statistics.FormatRejected +
+                          Statistics.StreamRejected +
+                          Statistics.SequenceRejected +
+                          Statistics.RenderRejected)
+                      << " restarts=" << RenderRestartCount.load()
+                      << " drift_ppm="
+                      << Statistics.AppliedClockDriftPpm
+                      << " drift_adjustments="
+                      << Statistics.ClockDriftAdjustments
+                      << " drift_resets="
+                      << Statistics.ClockDriftDiscontinuities << '\n';
+        }
+        Receiver.Reset();
+    }
+
+    void RequestCaptureRecovery(
+        desklink::Win32WasapiFailureKind Kind,
+        std::string Message) noexcept {
+        std::cerr << "[Audio:Capture] "
+                  << (Message.empty() ? "capture stopped" : Message);
+        if (!desklink::IsRecoverableWasapiFailure(Kind)) {
+            std::cerr
+                << "; audio stopped without restart; input session remains active\n";
+            return;
+        }
+        std::cerr << "; scheduling audio-only recovery\n";
+        CaptureRecoveryGeneration.fetch_add(1);
+        CaptureRecoveryChanged.notify_one();
+    }
+
+    void RunCaptureRecovery() noexcept {
+        std::uint64_t SeenGeneration{};
+        while (!CaptureStop.load()) {
+            {
+                std::unique_lock Lock(CaptureRecoveryMutex);
+                CaptureRecoveryChanged.wait(Lock, [&] {
+                    return CaptureStop.load() ||
+                        CaptureRecoveryGeneration.load() != SeenGeneration;
+                });
+            }
+            if (CaptureStop.load()) break;
+            SeenGeneration = CaptureRecoveryGeneration.load();
+            auto Delay = kAudioRecoveryInitialDelay;
+            while (!CaptureStop.load()) {
+                std::unique_lock Lock(CaptureRecoveryMutex);
+                if (CaptureRecoveryChanged.wait_for(Lock, Delay, [&] {
+                        return CaptureStop.load();
+                    })) {
+                    break;
+                }
+                Lock.unlock();
+                bool Restarted = false;
+                const auto AttemptGeneration =
+                    CaptureRecoveryGeneration.load();
+                try {
+                    std::scoped_lock LifecycleLock(CaptureLifecycleMutex);
+                    if (AudioCapture) {
+                        AudioCapture->Stop();
+                        Restarted = !CaptureStop.load() &&
+                            AudioCapture->Start();
+                    }
+                } catch (...) {
+                    Restarted = false;
+                }
+                if (Restarted) {
+                    SeenGeneration = AttemptGeneration;
+                    ++CaptureRestartCount;
+                    std::cout
+                        << "[Audio:Capture] endpoint recovered; session and input remained active\n";
+                    break;
+                }
+                SeenGeneration = CaptureRecoveryGeneration.load();
+                Delay = NextAudioRecoveryDelay(Delay);
+            }
+        }
+    }
+
+    [[nodiscard]] bool StartSendingAudio() {
+        if (AudioCapture) return true;
+        if (!Session.CanSendAudio()) {
+            std::cerr
+                << "[Audio:Security] peer did not grant audio.receive; capture remains stopped\n";
+            return false;
+        }
+        desklink::Win32WasapiCaptureHandlers Handlers;
+        Handlers.Frame = [this](desklink::AudioFrameMessage Frame) {
+            return Session.SendAudioFrame(std::move(Frame));
+        };
+        Handlers.Failed = [this](
+            desklink::Win32WasapiFailureKind Kind,
+            std::string Message) {
+            RequestCaptureRecovery(Kind, std::move(Message));
+        };
+        try {
+            AudioCapture =
+                std::make_unique<desklink::Win32WasapiLoopbackCapture>(
+                    1, std::move(Handlers));
+            CaptureStop.store(false);
+            CaptureRecoveryGeneration.store(0);
+            CaptureRestartCount.store(0);
+            CaptureRecovery =
+                std::thread([this] { RunCaptureRecovery(); });
+        } catch (...) {
+            AudioCapture.reset();
+            return false;
+        }
+        bool Started = false;
+        try {
+            std::scoped_lock LifecycleLock(CaptureLifecycleMutex);
+            Started = AudioCapture->Start();
+        } catch (...) {
+            StopSendingAudio();
+            return false;
+        }
+        if (Started) {
+            std::cout << "[Audio:Capture] capability-gated loopback active\n";
+        } else {
+            std::cout
+                << "[Audio:Capture] waiting for a usable default endpoint; input session remains active\n";
+        }
+        return true;
+    }
+
+    void StopSendingAudio() noexcept {
+        if (!AudioCapture) return;
+        CaptureStop.store(true);
+        CaptureRecoveryChanged.notify_all();
+        {
+            std::scoped_lock LifecycleLock(CaptureLifecycleMutex);
+            AudioCapture->Stop();
+        }
+        if (CaptureRecovery.joinable() &&
+            CaptureRecovery.get_id() != std::this_thread::get_id()) {
+            CaptureRecovery.join();
+        }
+        AudioCapture.reset();
+        const auto Statistics = Session.Stats();
+        std::cout << "[Audio:Capture] stopped sent="
+                  << Statistics.AudioSent
+                  << " rejected=" << Statistics.AudioSendRejected
+                  << " restarts=" << CaptureRestartCount.load() << '\n';
+    }
+
+    desklink::MachineId PeerMachine{};
+    LocalTopologyRuntime LocalTopology;
+    std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
+    std::uint64_t SessionNonce{};
+    AgentInputInjector Injector;
+    desklink::AgentCoordinator IncomingCoordinator;
+    desklink::HostCoordinator OutgoingCoordinator;
+    desklink::Win32WasapiRenderer Renderer;
+    desklink::AudioReceiver Receiver;
+    desklink::PeerSession Session;
+
+    std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
+    std::mutex CaptureLifecycleMutex;
+    std::mutex CaptureRecoveryMutex;
+    std::condition_variable CaptureRecoveryChanged;
+    std::atomic_bool CaptureStop{};
+    std::atomic_uint64_t CaptureRecoveryGeneration{};
+    std::atomic_uint64_t CaptureRestartCount{};
+    std::thread CaptureRecovery;
+
+    std::atomic_bool RenderStop{};
+    std::atomic_uint64_t RenderRecoveryGeneration{};
+    std::atomic_uint64_t RenderRestartCount{};
+    std::thread RenderPump;
+};
+
 const char* ProfileSourceName(desklink::ProfileModeSource Source) noexcept {
     switch (Source) {
         case desklink::ProfileModeSource::SystemDefault: return "default";
@@ -1565,7 +1935,7 @@ class HostInputRuntime final
     : public desklink::IHostInputLifecycleBackend,
       public std::enable_shared_from_this<HostInputRuntime> {
 public:
-    HostInputRuntime(std::shared_ptr<HostRuntime> Host,
+    HostInputRuntime(std::shared_ptr<PeerRuntime> Host,
                      std::shared_ptr<TrustedResult> Result,
                      const desklink::IClock& Clock,
                      desklink::MachineId LocalMachine,
@@ -1642,11 +2012,8 @@ public:
                 const auto ContextUpdate = RefreshRoamingContext(true);
                 if (ContextUpdate.MustFailLocal ||
                     !PendingRoamingRequest_ ||
-                    !RoamingDirectionToken_ ||
                     !Roaming_.AdmitFocusReady(
-                        *PendingRoamingRequest_) ||
-                    !DirectionArbiter_.AdmitOutgoing(
-                        *RoamingDirectionToken_)) {
+                        *PendingRoamingRequest_)) {
                     FailRoamingLocal(
                         "FocusReady failed the roaming security gate");
                     return;
@@ -1687,6 +2054,43 @@ public:
             }
         }) && !Stopping_.load()) {
             RequestAsynchronousFailLocal("Host input event queue overflow");
+        }
+    }
+
+    void NotifyDirectionChanged() noexcept {
+        const bool LostActiveOutgoingDirection =
+            CaptureActive_.load() && !Host_->Session.OutgoingFocused();
+        if (LostActiveOutgoingDirection) DisableCaptureImmediately();
+        if (!Post([this, LostActiveOutgoingDirection] {
+                if (LostActiveOutgoingDirection) {
+                    ReportTerminalFailure(
+                        "active outgoing peer direction was invalidated");
+                    return;
+                }
+                if (!RoamingSettings_ &&
+                    Profiles_.Decision().Mode == desklink::DeskMode::Roam &&
+                    Lifecycle_.Status().State ==
+                        desklink::HostInputLifecycleState::Local &&
+                    Host_->Session.CanBeginOutgoing()) {
+                    (void)ApplyDecision();
+                    return;
+                }
+                MaintainRoaming();
+                PublishLifecycleStatus();
+            }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal(
+                "peer direction-change event queue overflow");
+        }
+    }
+
+    void NotifyDirectionCollision() noexcept {
+        DisableCaptureImmediately();
+        if (!Post([this] {
+                FailRoamingLocal(
+                    "simultaneous opposite focus requests collided");
+            }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal(
+                "peer direction-collision event queue overflow");
         }
     }
 
@@ -1740,7 +2144,7 @@ public:
     [[nodiscard]] bool RemoteFocused() const noexcept {
         return LifecycleState_.load() ==
                    desklink::HostInputLifecycleState::Remote &&
-               Host_->Session.RemoteFocused();
+               Host_->Session.OutgoingFocused();
     }
 
     void DisableCapture() noexcept override {
@@ -1775,7 +2179,7 @@ public:
 
     [[nodiscard]] bool ReleaseFocus() noexcept override {
         try {
-            return Host_->Session.release_focus();
+            return Host_->Session.ReleaseOutgoingFocus();
         } catch (...) {
             return false;
         }
@@ -1784,6 +2188,7 @@ public:
     [[nodiscard]] bool SetDesiredMode(desklink::DeskMode Mode) noexcept override {
         DesiredMode_.store(Mode);
         try {
+            Host_->Session.SetLocalDesiredMode(Mode);
             if (Host_->Session.SetDesiredMode(Mode)) return true;
         } catch (...) {
         }
@@ -1793,7 +2198,7 @@ public:
 
     [[nodiscard]] bool RequestFocus() noexcept override {
         try {
-            if (Host_->Session.focus_remote(750)) return true;
+            if (Host_->Session.BeginOutgoingFocus(750)) return true;
         } catch (...) {
         }
         LastBackendFailure_ = BackendFailure::RequestFocus;
@@ -1803,7 +2208,7 @@ public:
     [[nodiscard]] bool SendInputStateSnapshot() noexcept override {
         try {
             if (PendingLanding_) {
-                if (!Host_->Session.send_pointer(*PendingLanding_)) {
+                if (!Host_->Session.SendPointer(*PendingLanding_)) {
                     LastBackendFailure_ = BackendFailure::Landing;
                     return false;
                 }
@@ -1830,7 +2235,7 @@ public:
             }
             if (PendingRoamingRequest_) {
                 if (PendingLanding_ ||
-                    DirectionArbiter_.State() !=
+                    Host_->Session.DirectionState() !=
                         desklink::PeerDirectionState::OutgoingActive ||
                     !Roaming_.AdmitRemoteInput(
                         *PendingRoamingRequest_)) {
@@ -2001,9 +2406,11 @@ private:
         Context.SessionNonce = Host_->SessionNonce;
         Context.PeerValidated = true;
         Context.InputCapabilityGranted =
-            Host_->Session.PeerHasCapability(
+            Host_->Session.PeerGrantedCapability(
                 desklink::Capability::InputInject);
-        Context.DirectionSupported = true;
+        Context.DirectionSupported =
+            Host_->Session.DirectionState() !=
+                desklink::PeerDirectionState::IncomingActive;
         return Roaming_.UpdateContext(std::move(Context));
     }
 
@@ -2012,9 +2419,9 @@ private:
             desklink::RoamingRuntimeState::LocalCooldown) {
             Roaming_.FailLocal();
         }
-        DirectionArbiter_.FailLocal();
+        DisableCaptureImmediately();
+        Host_->Session.FailLocalDirections();
         PendingRoamingRequest_.reset();
-        RoamingDirectionToken_.reset();
         PendingLanding_.reset();
     }
 
@@ -2149,18 +2556,20 @@ private:
             Observation->DeltaY});
         if (!Request) return;
 
-        const auto Direction = DirectionArbiter_.BeginOutgoing();
-        if (Direction.Outcome !=
-                desklink::PeerDirectionOutcome::Admitted ||
-            !Direction.Token) {
-            FailRoamingLocal("peer direction arbitration rejected crossing");
-            return;
-        }
         PendingRoamingRequest_ = *Request;
         PendingLanding_ = Request->Landing;
-        RoamingDirectionToken_ = *Direction.Token;
         LastBackendFailure_ = BackendFailure::None;
         if (!Lifecycle_.ApplyMode(desklink::DeskMode::Roam)) {
+            if (Host_->Session.DirectionState() ==
+                desklink::PeerDirectionState::IncomingActive) {
+                Roaming_.FailLocal();
+                PendingRoamingRequest_.reset();
+                PendingLanding_.reset();
+                PublishLifecycleStatus();
+                std::cout
+                    << "[Roaming:Runtime] outbound crossing deferred while peer controls this PC\n";
+                return;
+            }
             ResetRoamingState();
             PublishLifecycleStatus();
             ReportTerminalFailure(BackendFailureMessage());
@@ -2182,8 +2591,9 @@ private:
         }
         LastBackendFailure_ = BackendFailure::None;
         const auto Decision = Profiles_.Decision();
-        const auto InitialMode = RoamingSettings_ &&
-                Decision.Mode == desklink::DeskMode::Roam
+        const auto InitialMode = Decision.Mode == desklink::DeskMode::Roam &&
+                (RoamingSettings_ ||
+                 !Host_->Session.CanBeginOutgoing())
             ? desklink::DeskMode::LockPc1 : Decision.Mode;
         if (!Lifecycle_.Start(InitialMode)) {
             PublishLifecycleStatus();
@@ -2196,7 +2606,7 @@ private:
         if (RoamingSettings_) {
             std::cout
                 << "[Roaming:Runtime] experimental edge roaming requested; "
-                   "outbound direction only and fail-local gates active\n";
+                   "reciprocal session ownership and fail-local gates active\n";
             MaintainRoaming();
         }
 
@@ -2346,9 +2756,8 @@ private:
             if (RoamingSettings_ &&
                 Decision.Mode != desklink::DeskMode::Roam) {
                 Roaming_.ReturnLocal();
-                DirectionArbiter_.FailLocal();
+                Host_->Session.FailLocalDirections();
                 PendingRoamingRequest_.reset();
-                RoamingDirectionToken_.reset();
                 PendingLanding_.reset();
             }
         }
@@ -2379,7 +2788,7 @@ private:
         bool Renewed = false;
         bool Reconciled = false;
         try {
-            Renewed = Host_->Session.renew_focus(750);
+            Renewed = Host_->Session.RenewOutgoingFocus(750);
             Reconciled = Renewed && Host_->Session.SendInputStateSnapshot();
         } catch (...) {
         }
@@ -2474,7 +2883,7 @@ private:
         KeyEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
         bool Sent = false;
         try {
-            Sent = Host_->Session.send_key(Event);
+            Sent = Host_->Session.SendKey(Event);
         } catch (...) {
         }
         if (Sent) {
@@ -2488,7 +2897,7 @@ private:
         ButtonEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
         bool Sent = false;
         try {
-            Sent = Host_->Session.send_button(Event);
+            Sent = Host_->Session.SendButton(Event);
         } catch (...) {
         }
         if (Sent) {
@@ -2502,7 +2911,7 @@ private:
         PointerEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
         bool Sent = false;
         try {
-            Sent = Host_->Session.send_pointer(Event);
+            Sent = Host_->Session.SendPointer(Event);
         } catch (...) {
         }
         if (Sent) {
@@ -2590,19 +2999,17 @@ private:
                   << '\n';
     }
 
-    std::shared_ptr<HostRuntime> Host_;
+    std::shared_ptr<PeerRuntime> Host_;
     std::shared_ptr<TrustedResult> Result_;
     const desklink::IClock& Clock_;
     desklink::MachineId LocalMachine_{};
     desklink::ForegroundProfileEngine Profiles_;
     desklink::HostInputLifecycle Lifecycle_;
     desklink::RoamingRuntime Roaming_;
-    desklink::PeerDirectionArbiter DirectionArbiter_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore> RoamingSettings_;
     desklink::RoamingConfiguration RoamingConfiguration_;
     desklink::Win32DisplayTopology RoamingLocalTopology_;
     std::optional<desklink::RoamingFocusRequest> PendingRoamingRequest_;
-    std::optional<desklink::PeerDirectionToken> RoamingDirectionToken_;
     std::optional<desklink::PointerPositionMessage> PendingLanding_;
     std::chrono::steady_clock::time_point LastRoamingSettingsLoad_{};
     std::optional<std::size_t> LastReadyRouteCount_;
@@ -2657,9 +3064,11 @@ int RunTrusted(const CommandLine& Command,
                const desklink::PeerIdentity& LocalIdentity) {
     const auto Result = std::make_shared<TrustedResult>();
     std::mutex RuntimesMutex;
-    std::vector<std::shared_ptr<AgentRuntime>> AgentRuntimes;
-    std::shared_ptr<HostRuntime> Host;
+    std::vector<std::shared_ptr<PeerRuntime>> PeerRuntimes;
+    std::vector<desklink::MachineId> PendingPeers;
+    std::shared_ptr<PeerRuntime> ActivePeer;
     std::shared_ptr<HostInputRuntime> HostInput;
+    bool CaptureStartPending{};
     int ExitCode = 0;
     std::atomic<desklink::DeskMode> DesiredMode{desklink::DeskMode::Roam};
 
@@ -2681,15 +3090,13 @@ int RunTrusted(const CommandLine& Command,
                     desklink::DisplayTopologyExchangeStatus::Ready,
                     LocalTopology.Current(), true, false});
 
-                std::vector<std::shared_ptr<AgentRuntime>> Agents;
-                std::shared_ptr<HostRuntime> ActiveHost;
+                std::vector<std::shared_ptr<PeerRuntime>> Peers;
                 {
                     std::scoped_lock Lock(RuntimesMutex);
-                    Agents = AgentRuntimes;
-                    ActiveHost = Host;
+                    Peers = PeerRuntimes;
                 }
                 std::sort(
-                    Agents.begin(), Agents.end(),
+                    Peers.begin(), Peers.end(),
                     [](const auto& Left, const auto& Right) {
                         return Left->PeerMachine < Right->PeerMachine;
                     });
@@ -2708,14 +3115,10 @@ int RunTrusted(const CommandLine& Command,
                     }
                     State.Machines.push_back(desklink::ControlMachineTopology{
                         Runtime->PeerMachine, Status, std::move(Topology), false,
-                        Runtime->Session.PeerHasCapability(
+                        Runtime->Session.PeerGrantedCapability(
                             desklink::Capability::InputInject)});
                 };
-                if (Command.Mode == Operation::Serve) {
-                    for (const auto& Runtime : Agents) AppendRemote(Runtime);
-                } else if (ActiveHost) {
-                    AppendRemote(ActiveHost);
-                }
+                for (const auto& Runtime : Peers) AppendRemote(Runtime);
 
                 std::sort(
                     State.Machines.begin() + 1, State.Machines.end(),
@@ -2743,39 +3146,39 @@ int RunTrusted(const CommandLine& Command,
                     : desklink::ControlRole::Host;
                 State.DesiredMode = DesiredMode.load();
 
-                std::vector<std::shared_ptr<AgentRuntime>> Agents;
-                std::shared_ptr<HostRuntime> ActiveHost;
+                std::vector<std::shared_ptr<PeerRuntime>> Peers;
+                std::shared_ptr<PeerRuntime> SelectedPeer;
                 std::shared_ptr<HostInputRuntime> ActiveInput;
                 {
                     std::scoped_lock Lock(RuntimesMutex);
-                    Agents = AgentRuntimes;
-                    ActiveHost = Host;
+                    Peers = PeerRuntimes;
+                    SelectedPeer = ActivePeer;
                     ActiveInput = HostInput;
                 }
-                if (Command.Mode == Operation::Serve) {
-                    State.ConnectedPeerCount = static_cast<std::uint16_t>(
-                        std::min<std::size_t>(Agents.size(),
-                            std::numeric_limits<std::uint16_t>::max()));
-                    for (const auto& Runtime : Agents) {
-                        if (Runtime->Session.RemoteFocused()) {
+                State.ConnectedPeerCount = static_cast<std::uint16_t>(
+                    std::min<std::size_t>(Peers.size(),
+                        std::numeric_limits<std::uint16_t>::max()));
+                if (SelectedPeer && ActiveInput) {
+                    State.DesiredMode = ActiveInput->DesiredMode();
+                    State.CaptureActive = ActiveInput->CaptureActive();
+                    State.RemoteFocused = ActiveInput->RemoteFocused();
+                    if (State.RemoteFocused) {
+                        State.FocusedMachine = SelectedPeer->PeerMachine;
+                    }
+                }
+                if (!State.RemoteFocused) {
+                    for (const auto& Runtime : Peers) {
+                        if (Runtime->Session.IncomingFocused()) {
                             State.RemoteFocused = true;
                             State.FocusedMachine = Runtime->PeerMachine;
                             break;
                         }
                     }
-                } else if (ActiveHost && ActiveInput) {
-                    State.ConnectedPeerCount = 1;
-                    State.DesiredMode = ActiveInput->DesiredMode();
-                    State.CaptureActive = ActiveInput->CaptureActive();
-                    State.RemoteFocused = ActiveInput->RemoteFocused();
-                    if (State.RemoteFocused) {
-                        State.FocusedMachine = ActiveHost->PeerMachine;
-                    }
                 }
-                if (ActiveHost) {
+                if (SelectedPeer) {
                     State.AudioGainPermyriad =
-                        ActiveHost->AudioGainPermyriad();
-                    State.AudioMuted = ActiveHost->AudioMuted();
+                        SelectedPeer->AudioGainPermyriad();
+                    State.AudioMuted = SelectedPeer->AudioMuted();
                 }
                 if (!desklink::IsValidControlState(State)) {
                     return desklink::ControlResponse{
@@ -2791,27 +3194,22 @@ int RunTrusted(const CommandLine& Command,
             const bool ToggleMute = std::holds_alternative<
                 desklink::ToggleAudioMuteControlRequest>(Request.Payload);
             if (SetGain || ToggleMute) {
-                if (Command.Mode == Operation::Serve) {
-                    return desklink::ControlResponse{
-                        Request.RequestId, desklink::ControlStatus::NotReady,
-                        std::nullopt};
-                }
-                std::shared_ptr<HostRuntime> ActiveHost;
+                std::shared_ptr<PeerRuntime> SelectedPeer;
                 {
                     std::scoped_lock Lock(RuntimesMutex);
-                    ActiveHost = Host;
+                    SelectedPeer = ActivePeer;
                 }
-                if (!ActiveHost) {
+                if (!SelectedPeer) {
                     return desklink::ControlResponse{
                         Request.RequestId, desklink::ControlStatus::NotReady,
                         std::nullopt};
                 }
                 bool Applied = true;
                 if (SetGain) {
-                    Applied = ActiveHost->SetAudioGainPermyriad(
+                    Applied = SelectedPeer->SetAudioGainPermyriad(
                         SetGain->GainPermyriad);
                 } else {
-                    ActiveHost->ToggleAudioMuted();
+                    SelectedPeer->ToggleAudioMuted();
                 }
                 return desklink::ControlResponse{
                     Request.RequestId,
@@ -2828,29 +3226,25 @@ int RunTrusted(const CommandLine& Command,
                     std::nullopt};
             }
 
-            if (Command.Mode == Operation::Serve) {
-                DesiredMode.store(SetMode->Mode);
-                std::vector<std::shared_ptr<AgentRuntime>> Agents;
-                {
-                    std::scoped_lock Lock(RuntimesMutex);
-                    Agents = AgentRuntimes;
-                }
-                for (const auto& Runtime : Agents) {
-                    Runtime->Session.SetLocalDesiredMode(SetMode->Mode);
-                }
+            DesiredMode.store(SetMode->Mode);
+            std::vector<std::shared_ptr<PeerRuntime>> Peers;
+            std::shared_ptr<PeerRuntime> SelectedPeer;
+            std::shared_ptr<HostInputRuntime> ActiveInput;
+            {
+                std::scoped_lock Lock(RuntimesMutex);
+                Peers = PeerRuntimes;
+                SelectedPeer = ActivePeer;
+                ActiveInput = HostInput;
+            }
+            for (const auto& Runtime : Peers) {
+                Runtime->Session.SetLocalDesiredMode(SetMode->Mode);
+            }
+            if (!ActiveInput) {
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::Ok,
                     std::nullopt};
             }
-
-            std::shared_ptr<HostRuntime> ActiveHost;
-            std::shared_ptr<HostInputRuntime> ActiveInput;
-            {
-                std::scoped_lock Lock(RuntimesMutex);
-                ActiveHost = Host;
-                ActiveInput = HostInput;
-            }
-            if (!ActiveHost || !ActiveInput) {
+            if (!SelectedPeer) {
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::NotReady,
                     std::nullopt};
@@ -2887,103 +3281,173 @@ int RunTrusted(const CommandLine& Command,
         }
         Result->Changed.notify_all();
     };
-    const auto FocusTarget =
-        std::make_shared<std::weak_ptr<HostInputRuntime>>();
-    if (Command.Mode == Operation::Serve) {
-        Handlers.Connected = [&, Result](
-            desklink::MsQuicBootstrapHandlers::TrustedSession Trusted) {
-            if (Trusted.Initiator) {
-                Trusted.Endpoint->close();
-                return;
+    Handlers.Connected = [&, Result](
+        desklink::MsQuicBootstrapHandlers::TrustedSession Trusted) {
+        const bool ExpectedInitiator = Command.Mode == Operation::Focus;
+        if (Trusted.Initiator != ExpectedInitiator) {
+            Trusted.Endpoint->close();
+            return;
+        }
+        const auto ConnectingPeer =
+            Trusted.Endpoint->peer_info().identity.machine_id;
+        const bool OwnsLocalCapture =
+            Command.Mode == Operation::Focus ||
+            Command.EdgeRoamingSettingsPath.has_value();
+        bool Reserved = false;
+        {
+            std::scoped_lock Lock(RuntimesMutex);
+            const bool Duplicate = std::any_of(
+                PeerRuntimes.begin(), PeerRuntimes.end(),
+                [&](const auto& Existing) {
+                    return Existing->PeerMachine == ConnectingPeer;
+                }) || std::find(
+                    PendingPeers.begin(), PendingPeers.end(),
+                    ConnectingPeer) != PendingPeers.end();
+            if (!Duplicate &&
+                (!OwnsLocalCapture ||
+                 (!HostInput && !CaptureStartPending))) {
+                PendingPeers.push_back(ConnectingPeer);
+                if (OwnsLocalCapture) CaptureStartPending = true;
+                Reserved = true;
             }
-            std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
-                      << " role=acceptor\n";
-            auto Runtime = std::make_shared<AgentRuntime>(
-                Clock, TrustStore, LocalIdentity.machine_id,
-                std::move(Trusted),
-                Command.ValidationDropNextKeyRelease,
-                Command.ValidationDropNextButtonRelease,
-                Command.ValidationObserveCleanup,
-                Command.ValidationObserveRejections);
-            if (!Runtime->Session.start()) {
-                Runtime->Session.stop();
-                return;
-            }
-            Runtime->MaintainDisplayTopology();
-            if (Command.SendAudio && !Runtime->StartAudio()) {
-                std::cerr << "[Audio:Capture] requested audio was not started; "
-                             "input session remains active\n";
-            }
-            Runtime->Session.SetLocalDesiredMode(DesiredMode.load());
-            {
-                std::scoped_lock Lock(RuntimesMutex);
-                AgentRuntimes.push_back(std::move(Runtime));
-            }
-            std::cout << "[Session:Control] trusted agent session connected\n";
-            Result->Changed.notify_all();
+        }
+        if (!Reserved) {
+            Trusted.Endpoint->close();
+            std::cerr
+                << "[Session:Control] duplicate peer or capture-owner startup rejected\n";
+            return;
+        }
+        bool ReservationActive = true;
+        const auto ReleaseReservation = [&] {
+            if (!ReservationActive) return;
+            std::scoped_lock Lock(RuntimesMutex);
+            const auto Pending = std::find(
+                PendingPeers.begin(), PendingPeers.end(), ConnectingPeer);
+            if (Pending != PendingPeers.end()) PendingPeers.erase(Pending);
+            if (OwnsLocalCapture) CaptureStartPending = false;
+            ReservationActive = false;
         };
-    } else {
-        Handlers.Connected = [&, Result](
-            desklink::MsQuicBootstrapHandlers::TrustedSession Trusted) {
-            if (!Trusted.Initiator) {
-                Trusted.Endpoint->close();
-                return;
+        std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
+                  << " role="
+                  << (Trusted.Initiator ? "initiator" : "acceptor")
+                  << " symmetric=true\n";
+
+        const auto RuntimeTarget =
+            std::make_shared<std::weak_ptr<HostInputRuntime>>();
+        desklink::PeerSessionHandlers SessionHandlers;
+        SessionHandlers.OutgoingFocusReady = [RuntimeTarget] {
+            if (const auto Input = RuntimeTarget->lock()) {
+                Input->NotifyFocusReady();
             }
-            std::cout << "[Session:Security] nonce=" << Trusted.SessionNonce
-                      << " role=initiator\n";
-            auto Runtime = std::make_shared<HostRuntime>(
-                Clock, TrustStore, LocalIdentity.machine_id,
-                std::move(Trusted), [FocusTarget] {
-                    if (const auto Input = FocusTarget->lock()) {
-                        Input->NotifyFocusReady();
-                    }
-                });
-            if (!Runtime->Session.start()) {
-                Runtime->Session.stop();
-                {
-                    std::scoped_lock Lock(Result->Mutex);
-                    Result->Failure = "trusted host session could not start";
-                }
-                Result->Changed.notify_all();
-                return;
+        };
+        SessionHandlers.DirectionChanged = [RuntimeTarget] {
+            if (const auto Input = RuntimeTarget->lock()) {
+                Input->NotifyDirectionChanged();
             }
-            Runtime->MaintainDisplayTopology();
-            if (Command.ReceiveAudio && !Runtime->StartAudio()) {
-                std::cerr << "[Audio:Render] requested audio was not started; "
-                             "input session remains active\n";
+        };
+        SessionHandlers.DirectionCollision = [RuntimeTarget] {
+            if (const auto Input = RuntimeTarget->lock()) {
+                Input->NotifyDirectionCollision();
             }
-            auto Input = std::make_shared<HostInputRuntime>(
+        };
+
+        auto Runtime = std::make_shared<PeerRuntime>(
+            Clock, TrustStore, LocalIdentity.machine_id,
+            std::move(Trusted), std::move(SessionHandlers),
+            Command.ValidationDropNextKeyRelease,
+            Command.ValidationDropNextButtonRelease,
+            Command.ValidationObserveCleanup,
+            Command.ValidationObserveRejections);
+        if (!Runtime->Session.Start()) {
+            Runtime->Session.Stop();
+            ReleaseReservation();
+            if (Command.Mode == Operation::Focus) {
+                std::scoped_lock Lock(Result->Mutex);
+                Result->Failure = "trusted peer session could not start";
+            }
+            Result->Changed.notify_all();
+            return;
+        }
+        Runtime->Session.SetLocalDesiredMode(DesiredMode.load());
+        Runtime->MaintainDisplayTopology();
+        if (Command.SendAudio && !Runtime->StartSendingAudio()) {
+            std::cerr << "[Audio:Capture] requested audio was not started; "
+                         "input session remains active\n";
+        }
+        if (Command.ReceiveAudio && !Runtime->StartReceivingAudio()) {
+            std::cerr << "[Audio:Render] requested audio was not started; "
+                         "input session remains active\n";
+        }
+
+        std::shared_ptr<HostInputRuntime> Input;
+        if (OwnsLocalCapture) {
+            Input = std::make_shared<HostInputRuntime>(
                 Runtime, Result, Clock, LocalIdentity.machine_id,
                 Command.ProfileDefaultMode,
                 Command.ProfileRules, Command.CaptureInput,
                 Command.PointerCalibration,
                 Command.EdgeRoamingSettingsPath);
-            *FocusTarget = Input;
-            {
-                std::scoped_lock Lock(RuntimesMutex);
-                Host = Runtime;
-                HostInput = Input;
-            }
+            *RuntimeTarget = Input;
             if (!Input->Start()) {
                 Input->Stop();
-                Runtime->StopAudio();
-                Runtime->Session.stop();
+                Runtime->StopSendingAudio();
+                Runtime->StopReceivingAudio();
+                Runtime->Session.Stop();
+                ReleaseReservation();
                 {
                     std::scoped_lock Lock(Result->Mutex);
                     if (Result->Failure.empty()) {
-                        Result->Failure = "Host input runtime could not start";
+                        Result->Failure =
+                            "peer input runtime could not start";
                     }
                 }
                 Result->Changed.notify_all();
                 return;
             }
-            {
-                std::scoped_lock Lock(Result->Mutex);
-                Result->Connected = true;
+        }
+
+        bool Inserted = false;
+        {
+            std::scoped_lock Lock(RuntimesMutex);
+            const auto Pending = std::find(
+                PendingPeers.begin(), PendingPeers.end(), ConnectingPeer);
+            if (Pending != PendingPeers.end()) PendingPeers.erase(Pending);
+            if (OwnsLocalCapture) CaptureStartPending = false;
+            ReservationActive = false;
+            const auto Duplicate = std::find_if(
+                PeerRuntimes.begin(), PeerRuntimes.end(),
+                [&](const auto& Existing) {
+                    return Existing->PeerMachine == Runtime->PeerMachine;
+                });
+            if (Duplicate == PeerRuntimes.end() &&
+                (!Input || !HostInput)) {
+                PeerRuntimes.push_back(Runtime);
+                if (Input) {
+                    ActivePeer = Runtime;
+                    HostInput = Input;
+                } else if (!ActivePeer) {
+                    ActivePeer = Runtime;
+                }
+                Inserted = true;
             }
-            Result->Changed.notify_all();
-        };
-    }
+        }
+        if (!Inserted) {
+            if (Input) Input->Stop();
+            Runtime->StopSendingAudio();
+            Runtime->StopReceivingAudio();
+            Runtime->Session.Stop();
+            std::cerr
+                << "[Session:Control] authenticated peer ownership convergence rejected the later session\n";
+            return;
+        }
+        if (Command.Mode == Operation::Focus) {
+            std::scoped_lock Lock(Result->Mutex);
+            Result->Connected = true;
+        }
+        std::cout
+            << "[Session:Control] trusted symmetric peer session connected\n";
+        Result->Changed.notify_all();
+    };
 
     auto Bootstrap = desklink::MsQuicBootstrap::Create(
         std::move(Certificate), TrustStore, Crypto, Pairing, Clock,
@@ -3019,9 +3483,8 @@ int RunTrusted(const CommandLine& Command,
             while (!StopTicker.load()) {
                 {
                     std::scoped_lock Lock(RuntimesMutex);
-                    for (const auto& Runtime : AgentRuntimes) {
+                    for (const auto& Runtime : PeerRuntimes) {
                         Runtime->MaintainDisplayTopology();
-                        Runtime->Session.tick();
                     }
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -3038,13 +3501,19 @@ int RunTrusted(const CommandLine& Command,
         }
         StopTicker.store(true);
         Ticker.join();
+        std::vector<std::shared_ptr<PeerRuntime>> StoppingPeers;
+        std::shared_ptr<HostInputRuntime> StoppingInput;
         {
             std::scoped_lock Lock(RuntimesMutex);
-            for (const auto& Runtime : AgentRuntimes) {
-                Runtime->StopAudio();
-                Runtime->Session.stop();
-            }
-            AgentRuntimes.clear();
+            StoppingPeers = std::move(PeerRuntimes);
+            StoppingInput = std::move(HostInput);
+            ActivePeer.reset();
+        }
+        if (StoppingInput) StoppingInput->Stop();
+        for (const auto& Runtime : StoppingPeers) {
+            Runtime->StopSendingAudio();
+            Runtime->StopReceivingAudio();
+            Runtime->Session.Stop();
         }
         Advertiser.Stop();
     } else {
@@ -3060,7 +3529,7 @@ int RunTrusted(const CommandLine& Command,
                 }) || !Result->Connected) {
                 std::cerr << "[Session:Control] "
                           << (Result->Failure.empty()
-                                  ? "trusted Host runtime did not become ready"
+                                  ? "trusted peer runtime did not become ready"
                                   : Result->Failure)
                           << '\n';
                 Bootstrap->Close();
@@ -3068,15 +3537,15 @@ int RunTrusted(const CommandLine& Command,
                 return 1;
             }
         }
-        std::shared_ptr<HostRuntime> ActiveHost;
+        std::shared_ptr<PeerRuntime> ActiveHost;
         std::shared_ptr<HostInputRuntime> ActiveInput;
         {
             std::scoped_lock Lock(RuntimesMutex);
-            ActiveHost = Host;
+            ActiveHost = ActivePeer;
             ActiveInput = HostInput;
         }
         if (!ActiveHost || !ActiveInput) {
-            std::cerr << "[Session:Control] trusted Host runtime is unavailable\n";
+            std::cerr << "[Session:Control] trusted peer runtime is unavailable\n";
             Bootstrap->Close();
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return 1;
@@ -3103,8 +3572,9 @@ int RunTrusted(const CommandLine& Command,
                           << '\n';
                 Lock.unlock();
                 ActiveInput->Stop();
-                ActiveHost->StopAudio();
-                ActiveHost->Session.stop();
+                ActiveHost->StopSendingAudio();
+                ActiveHost->StopReceivingAudio();
+                ActiveHost->Session.Stop();
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 return 1;
@@ -3114,14 +3584,14 @@ int RunTrusted(const CommandLine& Command,
         if (Command.ValidationReconciliationProbe) {
             constexpr std::uint16_t ValidationScanCode = 0x7eu;
             const bool ProbeSent =
-                ActiveHost->Session.send_key(
+                ActiveHost->Session.SendKey(
                     desklink::KeyEventMessage{ValidationScanCode, false, true}) &&
-                ActiveHost->Session.send_button(
+                ActiveHost->Session.SendButton(
                     desklink::MouseButtonMessage{
                         desklink::MouseButtonId::X2, true}) &&
-                ActiveHost->Session.send_key(
+                ActiveHost->Session.SendKey(
                     desklink::KeyEventMessage{ValidationScanCode, false, false}) &&
-                ActiveHost->Session.send_button(
+                ActiveHost->Session.SendButton(
                     desklink::MouseButtonMessage{
                         desklink::MouseButtonId::X2, false});
             if (!ProbeSent) {
@@ -3139,9 +3609,9 @@ int RunTrusted(const CommandLine& Command,
         if (Command.ValidationTerminateHeldInput) {
             constexpr std::uint16_t ValidationScanCode = 0x7du;
             const bool HeldInputSent =
-                ActiveHost->Session.send_key(
+                ActiveHost->Session.SendKey(
                     desklink::KeyEventMessage{ValidationScanCode, false, true}) &&
-                ActiveHost->Session.send_button(
+                ActiveHost->Session.SendButton(
                     desklink::MouseButtonMessage{
                         desklink::MouseButtonId::X1, true});
             if (!HeldInputSent) {
@@ -3160,7 +3630,7 @@ int RunTrusted(const CommandLine& Command,
         }
         if (Command.ValidationStaleSessionNonce != 0) {
             const auto CurrentEpoch =
-                ActiveHost->Coordinator.remote_epoch();
+                ActiveHost->OutgoingCoordinator.remote_epoch();
             const auto StaleEpoch = CurrentEpoch > 1
                 ? CurrentEpoch - 1
                 : CurrentEpoch + 1;
@@ -3176,10 +3646,10 @@ int RunTrusted(const CommandLine& Command,
             const bool ProbeSent =
                 Command.ValidationStaleSessionNonce !=
                     ActiveHost->SessionNonce &&
-                ActiveHost->Session.send_key(
+                ActiveHost->Session.SendKey(
                     desklink::KeyEventMessage{
                         kValidationAcceptedScanCode, false, true}) &&
-                ActiveHost->Session.send_key(
+                ActiveHost->Session.SendKey(
                     desklink::KeyEventMessage{
                         kValidationAcceptedScanCode, false, false}) &&
                 ActiveHost->Endpoint->send_reliable(
@@ -3207,7 +3677,7 @@ int RunTrusted(const CommandLine& Command,
         }
 #endif
         std::cout
-            << "[Session:Control] trusted Host runtime active; profiles control focus; "
+            << "[Session:Control] trusted symmetric peer runtime active; profiles control focus; "
                "press Enter to stop\n";
         const auto ValidationDeadline = Command.ValidationDurationMs == 0
             ? std::chrono::steady_clock::time_point::max()
@@ -3242,8 +3712,9 @@ int RunTrusted(const CommandLine& Command,
             }
         }
         ActiveInput->Stop();
-        ActiveHost->StopAudio();
-        ActiveHost->Session.stop();
+        ActiveHost->StopSendingAudio();
+        ActiveHost->StopReceivingAudio();
+        ActiveHost->Session.Stop();
         {
             std::scoped_lock Lock(Result->Mutex);
             if (!Result->Failure.empty()) {

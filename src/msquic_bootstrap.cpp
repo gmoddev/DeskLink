@@ -4,14 +4,19 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace desklink {
 namespace {
@@ -21,11 +26,198 @@ constexpr QUIC_UINT62 kPairingRejectedError = 0x444C1002u;
 constexpr std::size_t kMaximumCertificateSize = 16u * 1024u;
 constexpr std::size_t kMaximumServerNameSize = 253;
 constexpr std::size_t kSessionPrefaceSize = 16;
+constexpr std::size_t kMaximumInitialReliableBytes = 1024u * 1024u;
 constexpr std::size_t kMaximumSessionBuffered =
-    kSessionPrefaceSize + 36u + kMaxReliablePayload;
+    kSessionPrefaceSize + kMaximumInitialReliableBytes;
 constexpr std::array<std::uint8_t, 4> kSessionPrefaceMagic{'D', 'L', 'S', 'N'};
 constexpr auto kPeerValidationTimeout = std::chrono::seconds(4);
 constexpr auto kPairingIdleTimeout = std::chrono::minutes(2);
+constexpr std::size_t kMaximumPendingValidations = 64;
+
+class BoundedExecutor final {
+public:
+    BoundedExecutor(std::size_t WorkerCount, std::size_t MaximumQueued)
+        : Core_(std::make_shared<Core>(MaximumQueued)) {
+        Workers_.reserve(WorkerCount);
+        for (std::size_t Index = 0; Index < WorkerCount; ++Index) {
+            Workers_.emplace_back([Core = Core_] { Run(std::move(Core)); });
+        }
+    }
+
+    ~BoundedExecutor() { StopAndWait(); }
+
+    [[nodiscard]] bool Submit(std::function<void()> Task) {
+        if (!Task) return false;
+        {
+            std::scoped_lock Lock(Core_->Mutex);
+            if (Core_->Stopping ||
+                Core_->Tasks.size() >= Core_->MaximumQueued) {
+                return false;
+            }
+            Core_->Tasks.push_back(std::move(Task));
+        }
+        Core_->Wake.notify_one();
+        return true;
+    }
+
+    void StopAndWait() noexcept {
+        {
+            std::scoped_lock Lock(Core_->Mutex);
+            if (Core_->Stopping && Workers_.empty()) return;
+            Core_->Stopping = true;
+            Core_->Tasks.clear();
+        }
+        Core_->Wake.notify_all();
+        const auto CurrentThread = std::this_thread::get_id();
+        for (auto& Worker : Workers_) {
+            if (!Worker.joinable()) continue;
+            if (Worker.get_id() == CurrentThread) {
+                // Run() owns Core independently, so a callback may close its
+                // executor without joining itself or using a destroyed owner.
+                Worker.detach();
+            } else {
+                Worker.join();
+            }
+        }
+        Workers_.clear();
+    }
+
+private:
+    struct Core final {
+        explicit Core(std::size_t OwnedMaximumQueued)
+            : MaximumQueued(OwnedMaximumQueued) {}
+
+        std::mutex Mutex;
+        std::condition_variable Wake;
+        std::deque<std::function<void()>> Tasks;
+        std::size_t MaximumQueued{};
+        bool Stopping{};
+    };
+
+    static void Run(std::shared_ptr<Core> CoreState) noexcept {
+        for (;;) {
+            std::function<void()> Task;
+            {
+                std::unique_lock Lock(CoreState->Mutex);
+                CoreState->Wake.wait(Lock, [&] {
+                    return CoreState->Stopping || !CoreState->Tasks.empty();
+                });
+                if (CoreState->Stopping) return;
+                Task = std::move(CoreState->Tasks.front());
+                CoreState->Tasks.pop_front();
+            }
+            try {
+                Task();
+            } catch (...) {
+                // Every submitted task has a fail-closed boundary of its own.
+            }
+        }
+    }
+
+    std::shared_ptr<Core> Core_;
+    std::vector<std::thread> Workers_;
+};
+
+class DeadlineExecutor final {
+public:
+    explicit DeadlineExecutor(std::size_t MaximumScheduled)
+        : Core_(std::make_shared<Core>(MaximumScheduled)),
+          Worker_([Core = Core_] { Run(std::move(Core)); }) {}
+
+    ~DeadlineExecutor() { StopAndWait(); }
+
+    [[nodiscard]] bool Schedule(std::chrono::steady_clock::time_point Deadline,
+                                std::function<void()> Task) {
+        if (!Task) return false;
+        {
+            std::scoped_lock Lock(Core_->Mutex);
+            if (Core_->Stopping ||
+                Core_->Tasks.size() >= Core_->MaximumScheduled) {
+                return false;
+            }
+            Core_->Tasks.push_back(ScheduledTask{
+                Deadline, Core_->NextOrder++, std::move(Task)});
+            std::push_heap(Core_->Tasks.begin(), Core_->Tasks.end(), Later);
+        }
+        Core_->Wake.notify_one();
+        return true;
+    }
+
+    void StopAndWait() noexcept {
+        {
+            std::scoped_lock Lock(Core_->Mutex);
+            if (Core_->Stopping && !Worker_.joinable()) return;
+            Core_->Stopping = true;
+            Core_->Tasks.clear();
+        }
+        Core_->Wake.notify_all();
+        if (!Worker_.joinable()) return;
+        if (Worker_.get_id() == std::this_thread::get_id()) {
+            Worker_.detach();
+        } else {
+            Worker_.join();
+        }
+    }
+
+private:
+    struct ScheduledTask {
+        std::chrono::steady_clock::time_point Deadline;
+        std::uint64_t Order{};
+        std::function<void()> Task;
+    };
+
+    static bool Later(const ScheduledTask& Left,
+                      const ScheduledTask& Right) noexcept {
+        if (Left.Deadline != Right.Deadline) return Left.Deadline > Right.Deadline;
+        return Left.Order > Right.Order;
+    }
+
+    struct Core final {
+        explicit Core(std::size_t OwnedMaximumScheduled)
+            : MaximumScheduled(OwnedMaximumScheduled) {}
+
+        std::mutex Mutex;
+        std::condition_variable Wake;
+        std::vector<ScheduledTask> Tasks;
+        std::size_t MaximumScheduled{};
+        std::uint64_t NextOrder{};
+        bool Stopping{};
+    };
+
+    static void Run(std::shared_ptr<Core> CoreState) noexcept {
+        std::unique_lock Lock(CoreState->Mutex);
+        for (;;) {
+            if (CoreState->Stopping) return;
+            if (CoreState->Tasks.empty()) {
+                CoreState->Wake.wait(Lock, [&] {
+                    return CoreState->Stopping || !CoreState->Tasks.empty();
+                });
+                continue;
+            }
+            const auto Deadline = CoreState->Tasks.front().Deadline;
+            if (CoreState->Wake.wait_until(Lock, Deadline, [&] {
+                    return CoreState->Stopping || CoreState->Tasks.empty() ||
+                           CoreState->Tasks.front().Deadline < Deadline;
+                })) {
+                continue;
+            }
+            std::pop_heap(
+                CoreState->Tasks.begin(), CoreState->Tasks.end(), Later);
+            auto Task = std::move(CoreState->Tasks.back().Task);
+            CoreState->Tasks.pop_back();
+            Lock.unlock();
+            try {
+                Task();
+            } catch (...) {
+                // Deadline tasks reject their connection on every failure path.
+            }
+            Lock.lock();
+        }
+    }
+
+    std::shared_ptr<Core> Core_;
+    std::thread Worker_;
+};
 
 enum class ConnectionPurpose {
     Trusted,
@@ -43,14 +235,23 @@ enum class PeerValidationState {
 struct BootstrapConnectionState;
 using ConnectionHolder = std::shared_ptr<BootstrapConnectionState>;
 
+enum class PairingSendKind {
+    Commitment,
+    Reveal,
+    Confirmation,
+    Completion,
+};
+
 struct PairingSendContext {
-    explicit PairingSendContext(ByteBuffer Frame) : Bytes(std::move(Frame)) {
+    PairingSendContext(ByteBuffer Frame, PairingSendKind OwnedKind)
+        : Bytes(std::move(Frame)), Kind(OwnedKind) {
         Buffer.Length = static_cast<std::uint32_t>(Bytes.size());
         Buffer.Buffer = Bytes.data();
     }
 
     ByteBuffer Bytes;
     QUIC_BUFFER Buffer{};
+    PairingSendKind Kind{PairingSendKind::Commitment};
 };
 
 struct SessionSendContext {
@@ -80,16 +281,33 @@ struct BootstrapConnectionState {
     std::mutex Mutex;
     bool Outgoing{};
     PeerValidationState PeerValidation{PeerValidationState::NotStarted};
+    bool ValidationSlotHeld{};
     bool ConnectedObserved{};
     bool AdmissionStarted{};
-    bool OfferSent{};
+    std::optional<PairingOffer> LocalPairingOffer;
+    std::optional<PairingCommitment> LocalCommitment;
+    std::optional<PairingCommitment> PeerCommitment;
+    bool CommitmentSent{};
+    bool CommitmentDelivered{};
+    bool RevealSent{};
+    bool RevealDelivered{};
     bool OfferDelivered{};
     std::optional<PairingOffer> ConfirmedPairingOffer;
+    Sha256Digest PairingTranscript{};
     std::string ConfirmationCode;
     CapabilitySet ConfirmedCapabilities;
     bool LocalConfirmed{};
+    bool ConfirmationSent{};
+    bool ConfirmationDelivered{};
     bool PeerConfirmed{};
+    bool TrustSaved{};
+    bool CompletionSent{};
+    bool CompletionDelivered{};
+    bool PeerCompleted{};
     bool PairingCompletionStarted{};
+    bool PairingReported{};
+    bool LocalPairingShutdown{};
+    bool PeerPairingShutdown{};
     bool EndpointDelivered{};
     bool Closed{};
 };
@@ -212,9 +430,15 @@ struct MsQuicBootstrap::State {
           RuntimeConfig(std::move(OwnedRuntimeConfig)),
           Handlers(std::move(OwnedHandlers)),
           ConnectionLimiter(Clock, 20, std::chrono::seconds(10)),
-          PairingLimiter(Clock, 4, std::chrono::minutes(1)) {}
+          PairingLimiter(Clock, 4, std::chrono::minutes(1)),
+          ValidationWorkers(4, kMaximumPendingValidations),
+          ApplicationWorkers(2, 8),
+          ValidationDeadlines(kMaximumPendingValidations) {}
 
     ~State() {
+        ValidationDeadlines.StopAndWait();
+        ValidationWorkers.StopAndWait();
+        ApplicationWorkers.StopAndWait();
         auto Cleanup = std::make_unique<RuntimeCleanup>(
             std::move(Certificate), std::move(Runtime));
         Api = nullptr;
@@ -246,6 +470,10 @@ struct MsQuicBootstrap::State {
     MsQuicBootstrapHandlers Handlers;
     AttemptRateLimiter ConnectionLimiter;
     AttemptRateLimiter PairingLimiter;
+    BoundedExecutor ValidationWorkers;
+    BoundedExecutor ApplicationWorkers;
+    DeadlineExecutor ValidationDeadlines;
+    std::atomic_size_t PendingValidations{};
     std::unique_ptr<MsQuicRuntime> Runtime;
     const QUIC_API_TABLE* Api{};
     HQUIC Registration{};
@@ -340,84 +568,108 @@ void RejectStream(const ConnectionHolder& State, HQUIC Stream) {
         Stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, kBootstrapError);
 }
 
-bool SendPairingOffer(const ConnectionHolder& State) {
+bool QueuePairingFrame(const ConnectionHolder& State,
+                       ByteBuffer Frame,
+                       PairingSendKind Kind) {
     HQUIC Stream{};
     {
         std::scoped_lock Lock(State->Mutex);
         if (State->Closed ||
             State->PeerValidation != PeerValidationState::PeerValidated ||
-            State->OfferSent || !State->PairingStream) return false;
+            !State->PairingStream) return false;
         Stream = State->PairingStream;
     }
-    const auto Offer = State->Owner->Pairing.CreateOffer();
-    const auto Frame = Offer ? EncodePairingOfferFrame(*Offer) : std::nullopt;
-    if (!Frame) return false;
-    auto* Context = new PairingSendContext(*Frame);
+    auto* Context = new PairingSendContext(std::move(Frame), Kind);
     if (QUIC_FAILED(State->Owner->Api->StreamSend(
             Stream, &Context->Buffer, 1, QUIC_SEND_FLAG_NONE, Context))) {
         delete Context;
         return false;
     }
-    std::scoped_lock Lock(State->Mutex);
-    State->OfferSent = true;
     return true;
+}
+
+bool SendPairingCommitment(const ConnectionHolder& State) {
+    const auto Offer = State->Owner->Pairing.CreateOffer();
+    if (!Offer) return false;
+    const auto Commitment = State->Owner->Pairing.CreateCommitment(
+        *Offer, State->Outgoing);
+    if (!Commitment) return false;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->CommitmentSent || State->LocalPairingOffer) {
+            return false;
+        }
+        State->LocalPairingOffer = *Offer;
+        State->LocalCommitment = *Commitment;
+        State->CommitmentSent = true;
+    }
+    return QueuePairingFrame(
+        State, EncodePairingCommitmentFrame(*Commitment),
+        PairingSendKind::Commitment);
+}
+
+bool TrySendPairingReveal(const ConnectionHolder& State) {
+    std::optional<PairingOffer> Offer;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->RevealSent ||
+            !State->CommitmentDelivered || !State->PeerCommitment ||
+            !State->LocalPairingOffer) {
+            return !State->Closed;
+        }
+        Offer = State->LocalPairingOffer;
+        State->RevealSent = true;
+    }
+    const auto Frame = EncodePairingOfferFrame(*Offer);
+    return Frame && QueuePairingFrame(State, *Frame, PairingSendKind::Reveal);
 }
 
 bool SendPairingConfirmation(const ConnectionHolder& State) {
     try {
-        HQUIC Stream{};
+        Sha256Digest Transcript{};
+        CapabilitySet Capabilities;
         {
             std::scoped_lock Lock(State->Mutex);
             if (State->Closed ||
                 State->PeerValidation != PeerValidationState::PeerValidated ||
-                !State->LocalConfirmed || !State->PairingStream) {
+                !State->LocalConfirmed || State->ConfirmationSent ||
+                !State->OfferDelivered) {
                 return false;
             }
-            Stream = State->PairingStream;
+            Transcript = State->PairingTranscript;
+            Capabilities = State->ConfirmedCapabilities;
+            State->ConfirmationSent = true;
         }
-        auto* Context = new PairingSendContext(EncodePairingConfirmationFrame());
-        if (QUIC_FAILED(State->Owner->Api->StreamSend(
-                Stream, &Context->Buffer, 1, QUIC_SEND_FLAG_NONE, Context))) {
-            delete Context;
-            return false;
-        }
-        return true;
+        return QueuePairingFrame(
+            State, EncodePairingConfirmationFrame(Transcript, Capabilities),
+            PairingSendKind::Confirmation);
     } catch (...) {
         return false;
     }
 }
 
-void TryCompletePairingImpl(const ConnectionHolder& State) {
-    std::optional<PairingOffer> Offer;
-    std::string VerificationCode;
-    CapabilitySet Capabilities;
+void TryCloseCompletedPairing(const ConnectionHolder& State) noexcept {
+    bool Close = false;
     {
         std::scoped_lock Lock(State->Mutex);
-        if (State->Closed || State->PairingCompletionStarted ||
-            !State->LocalConfirmed || !State->PeerConfirmed ||
-            !State->ConfirmedPairingOffer || State->ConfirmationCode.empty()) {
+        Close = !State->Closed && State->PairingReported &&
+                State->LocalPairingShutdown && State->PeerPairingShutdown;
+    }
+    if (Close) ShutdownConnection(State);
+}
+
+void ReportPairingCompleted(const ConnectionHolder& State) {
+    HQUIC Stream{};
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->PairingReported || !State->TrustSaved ||
+            !State->CompletionDelivered || !State->PeerCompleted) {
             return;
         }
-        State->PairingCompletionStarted = true;
-        Offer = State->ConfirmedPairingOffer;
-        VerificationCode = State->ConfirmationCode;
-        Capabilities = State->ConfirmedCapabilities;
+        State->PairingReported = true;
+        State->LocalPairingShutdown = true;
+        Stream = State->PairingStream;
     }
-
-    bool Accepted = false;
-    try {
-        Accepted = State->Owner->Pairing.ConfirmOffer(
-            *Offer, VerificationCode, Capabilities);
-    } catch (...) {
-        Accepted = false;
-    }
-    if (!Accepted) {
-        ReportFailure(State->Owner,
-                      "mutual pairing confirmation expired or trust persistence failed");
-        ShutdownConnection(State, kPairingRejectedError);
-        return;
-    }
-
     try {
         std::function<void()> Handler;
         {
@@ -429,7 +681,68 @@ void TryCompletePairingImpl(const ConnectionHolder& State) {
         ReportFailure(State->Owner,
                       "pairing completion handler raised an exception");
     }
-    ShutdownConnection(State);
+    if (!Stream || QUIC_FAILED(State->Owner->Api->StreamShutdown(
+            Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0))) {
+        ShutdownConnection(State, kPairingRejectedError);
+        return;
+    }
+    TryCloseCompletedPairing(State);
+}
+
+void TryCompletePairingImpl(const ConnectionHolder& State) {
+    std::optional<PairingOffer> LocalOffer;
+    std::optional<PairingOffer> RemoteOffer;
+    std::string VerificationCode;
+    CapabilitySet Capabilities;
+    bool LocalIsInitiator = false;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed || State->PairingCompletionStarted ||
+            State->TrustSaved || !State->LocalConfirmed ||
+            !State->ConfirmationDelivered || !State->PeerConfirmed ||
+            !State->LocalPairingOffer || !State->ConfirmedPairingOffer ||
+            State->ConfirmationCode.empty()) {
+            return;
+        }
+        State->PairingCompletionStarted = true;
+        LocalOffer = State->LocalPairingOffer;
+        RemoteOffer = State->ConfirmedPairingOffer;
+        VerificationCode = State->ConfirmationCode;
+        Capabilities = State->ConfirmedCapabilities;
+        LocalIsInitiator = State->Outgoing;
+    }
+
+    bool Accepted = false;
+    try {
+        Accepted = State->Owner->Pairing.ConfirmOffer(
+            *LocalOffer, *RemoteOffer, LocalIsInitiator,
+            VerificationCode, Capabilities);
+    } catch (...) {
+        Accepted = false;
+    }
+    if (!Accepted) {
+        ReportFailure(State->Owner,
+                      "mutual pairing confirmation expired or trust persistence failed");
+        ShutdownConnection(State, kPairingRejectedError);
+        return;
+    }
+    Sha256Digest Transcript{};
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed) return;
+        State->TrustSaved = true;
+        Transcript = State->PairingTranscript;
+        State->CompletionSent = true;
+    }
+    if (!QueuePairingFrame(
+            State, EncodePairingCompletionFrame(Transcript),
+            PairingSendKind::Completion)) {
+        ReportFailure(State->Owner,
+                      "could not send pairing persistence acknowledgement");
+        ShutdownConnection(State, kPairingRejectedError);
+        return;
+    }
+    ReportPairingCompleted(State);
 }
 
 void TryCompletePairing(const ConnectionHolder& State) noexcept {
@@ -442,13 +755,16 @@ void TryCompletePairing(const ConnectionHolder& State) noexcept {
     }
 }
 
-void HandlePairingConfirmation(const ConnectionHolder& State) noexcept {
+void HandlePairingConfirmation(const ConnectionHolder& State,
+                               PairingConfirmation Confirmation) noexcept {
     bool Accepted = false;
     {
         std::scoped_lock Lock(State->Mutex);
         if (!State->Closed &&
             State->PeerValidation == PeerValidationState::PeerValidated &&
-            State->OfferDelivered && !State->PeerConfirmed) {
+            State->OfferDelivered && !State->PeerConfirmed &&
+            IsSamePin(State->PairingTranscript,
+                      Confirmation.TranscriptDigest)) {
             State->PeerConfirmed = true;
             Accepted = true;
         }
@@ -460,6 +776,26 @@ void HandlePairingConfirmation(const ConnectionHolder& State) noexcept {
         return;
     }
     TryCompletePairing(State);
+}
+
+void HandlePairingCompletion(const ConnectionHolder& State,
+                             const Sha256Digest& Transcript) noexcept {
+    bool Accepted = false;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (!State->Closed && State->PeerConfirmed && !State->PeerCompleted &&
+            IsSamePin(State->PairingTranscript, Transcript)) {
+            State->PeerCompleted = true;
+            Accepted = true;
+        }
+    }
+    if (!Accepted) {
+        ReportFailure(State->Owner,
+                      "invalid or duplicate pairing persistence acknowledgement");
+        ShutdownConnection(State, kPairingRejectedError);
+        return;
+    }
+    ReportPairingCompleted(State);
 }
 
 bool OpenPairingStream(const ConnectionHolder& State) {
@@ -492,20 +828,25 @@ bool OpenPairingStream(const ConnectionHolder& State) {
         State->Owner->Api->StreamClose(Stream);
         return false;
     }
-    return SendPairingOffer(State);
+    return SendPairingCommitment(State);
 }
 
 void DeliverPairingOffer(const ConnectionHolder& State, PairingOffer Offer) {
     Sha256Digest PresentedPin{};
+    std::optional<PairingCommitment> PeerCommitment;
+    std::optional<PairingOffer> LocalOffer;
     bool MissingPin = false;
     {
         std::scoped_lock Lock(State->Mutex);
         if (State->Closed ||
             State->PeerValidation != PeerValidationState::PeerValidated ||
-            State->OfferDelivered || !State->PresentedPin) {
+            State->OfferDelivered || !State->PresentedPin ||
+            !State->PeerCommitment || !State->LocalPairingOffer) {
             MissingPin = true;
         } else {
             PresentedPin = *State->PresentedPin;
+            PeerCommitment = State->PeerCommitment;
+            LocalOffer = State->LocalPairingOffer;
         }
     }
     if (MissingPin) {
@@ -516,7 +857,15 @@ void DeliverPairingOffer(const ConnectionHolder& State, PairingOffer Offer) {
         ShutdownConnection(State, kPairingRejectedError);
         return;
     }
-    const auto Candidate = State->Owner->Pairing.InspectOffer(Offer);
+    if (!State->Owner->Pairing.VerifyCommitment(
+            *PeerCommitment, Offer, !State->Outgoing)) {
+        ReportFailure(State->Owner,
+                      "pairing reveal did not match the role-bound commitment");
+        ShutdownConnection(State, kPairingRejectedError);
+        return;
+    }
+    const auto Candidate = State->Owner->Pairing.InspectOffer(
+        *LocalOffer, Offer, State->Outgoing);
     if (Candidate.Status != PairingStatus::Ready) {
         ShutdownConnection(State, kPairingRejectedError);
         return;
@@ -533,6 +882,7 @@ void DeliverPairingOffer(const ConnectionHolder& State, PairingOffer Offer) {
         std::scoped_lock Lock(State->Mutex, State->Owner->Mutex);
         if (State->Closed || State->OfferDelivered) return;
         State->OfferDelivered = true;
+        State->PairingTranscript = Candidate.TranscriptDigest;
         Handler = State->Owner->Handlers.PairingOffered;
     }
     if (!Handler) {
@@ -540,15 +890,37 @@ void DeliverPairingOffer(const ConnectionHolder& State, PairingOffer Offer) {
         return;
     }
     try {
-        std::thread([State, Handler = std::move(Handler),
-                     Session = std::move(Session)]() mutable {
+        if (!State->Owner->ApplicationWorkers.Submit(
+                [State, Handler = std::move(Handler),
+                 Session = std::move(Session)]() mutable {
             try {
                 Handler(std::move(Session));
             } catch (...) {
                 ShutdownConnection(State, kPairingRejectedError);
             }
-        }).detach();
+        })) {
+            ShutdownConnection(State, kPairingRejectedError);
+        }
     } catch (...) {
+        ShutdownConnection(State, kPairingRejectedError);
+    }
+}
+
+void HandlePairingCommitment(const ConnectionHolder& State,
+                             PairingCommitment Commitment) {
+    bool Accepted = false;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (!State->Closed &&
+            State->PeerValidation == PeerValidationState::PeerValidated &&
+            !State->PeerCommitment && !State->OfferDelivered) {
+            State->PeerCommitment = Commitment;
+            Accepted = true;
+        }
+    }
+    if (!Accepted || !TrySendPairingReveal(State)) {
+        ReportFailure(State->Owner,
+                      "invalid pairing commitment or reveal transition");
         ShutdownConnection(State, kPairingRejectedError);
     }
 }
@@ -566,21 +938,31 @@ void HandlePairingBytes(const ConnectionHolder& State, ByteSpan Bytes) {
     }
 
     while (Status == PairingWireStatus::Ready) {
+        std::optional<PairingCommitment> Commitment;
         std::optional<PairingOffer> Offer;
-        bool Confirmation = false;
+        std::optional<PairingConfirmation> Confirmation;
+        std::optional<Sha256Digest> Completion;
         {
             std::scoped_lock Lock(State->Mutex);
-            if (State->Decoder.ReadyType() == PairingWireFrameType::Offer) {
+            if (State->Decoder.ReadyType() == PairingWireFrameType::Commitment) {
+                Commitment = State->Decoder.TakeCommitment();
+            } else if (State->Decoder.ReadyType() == PairingWireFrameType::Offer) {
                 Offer = State->Decoder.TakeOffer();
-            } else {
+            } else if (State->Decoder.ReadyType() == PairingWireFrameType::Confirmation) {
                 Confirmation = State->Decoder.TakeConfirmation();
+            } else {
+                Completion = State->Decoder.TakeCompletion();
             }
             Status = State->Decoder.Status();
         }
-        if (Offer) {
+        if (Commitment) {
+            HandlePairingCommitment(State, *Commitment);
+        } else if (Offer) {
             DeliverPairingOffer(State, std::move(*Offer));
         } else if (Confirmation) {
-            HandlePairingConfirmation(State);
+            HandlePairingConfirmation(State, *Confirmation);
+        } else if (Completion) {
+            HandlePairingCompletion(State, *Completion);
         } else {
             Status = PairingWireStatus::InvalidFrame;
             break;
@@ -592,7 +974,7 @@ void HandlePairingBytes(const ConnectionHolder& State, ByteSpan Bytes) {
     }
 }
 
-QUIC_STATUS QUIC_API PairingStreamCallback(
+QUIC_STATUS PairingStreamCallbackImpl(
     HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event) {
     const auto State = HoldConnection(Context);
     if (!State) return QUIC_STATUS_SUCCESS;
@@ -614,7 +996,55 @@ QUIC_STATUS QUIC_API PairingStreamCallback(
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        delete static_cast<PairingSendContext*>(Event->SEND_COMPLETE.ClientContext);
+        {
+            std::unique_ptr<PairingSendContext> SendContext(
+                static_cast<PairingSendContext*>(Event->SEND_COMPLETE.ClientContext));
+            if (!SendContext || Event->SEND_COMPLETE.Canceled) {
+                ReportFailure(State->Owner, "pairing control send was canceled");
+                ShutdownConnection(State, kPairingRejectedError);
+                return QUIC_STATUS_SUCCESS;
+            }
+            {
+                std::scoped_lock Lock(State->Mutex);
+                if (State->Closed) return QUIC_STATUS_SUCCESS;
+                switch (SendContext->Kind) {
+                case PairingSendKind::Commitment:
+                    State->CommitmentDelivered = true;
+                    break;
+                case PairingSendKind::Reveal:
+                    State->RevealDelivered = true;
+                    break;
+                case PairingSendKind::Confirmation:
+                    State->ConfirmationDelivered = true;
+                    break;
+                case PairingSendKind::Completion:
+                    State->CompletionDelivered = true;
+                    break;
+                }
+            }
+            switch (SendContext->Kind) {
+            case PairingSendKind::Commitment:
+                if (!TrySendPairingReveal(State)) {
+                    ShutdownConnection(State, kPairingRejectedError);
+                }
+                break;
+            case PairingSendKind::Confirmation:
+                TryCompletePairing(State);
+                break;
+            case PairingSendKind::Completion:
+                ReportPairingCompleted(State);
+                break;
+            case PairingSendKind::Reveal:
+                break;
+            }
+        }
+        return QUIC_STATUS_SUCCESS;
+    case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
+        {
+            std::scoped_lock Lock(State->Mutex);
+            State->PeerPairingShutdown = true;
+        }
+        TryCloseCompletedPairing(State);
         return QUIC_STATUS_SUCCESS;
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
         {
@@ -628,8 +1058,24 @@ QUIC_STATUS QUIC_API PairingStreamCallback(
     }
 }
 
+void ReleaseValidationSlot(const ConnectionHolder& State) noexcept {
+    bool Release = false;
+    {
+        std::scoped_lock Lock(State->Mutex);
+        Release = State->ValidationSlotHeld;
+        State->ValidationSlotHeld = false;
+    }
+    if (Release) {
+        const auto Previous = State->Owner->PendingValidations.fetch_sub(
+            1, std::memory_order_acq_rel);
+        if (Previous == 0) {
+            State->Owner->PendingValidations.store(0, std::memory_order_release);
+        }
+    }
+}
+
 void RejectPendingCertificateValidation(const ConnectionHolder& State,
-                                        std::string_view Failure) noexcept {
+                                         std::string_view Failure) noexcept {
     HQUIC Connection{};
     {
         std::scoped_lock Lock(State->Mutex);
@@ -640,6 +1086,7 @@ void RejectPendingCertificateValidation(const ConnectionHolder& State,
         State->TrustedPeer.reset();
         Connection = State->Connection;
     }
+    ReleaseValidationSlot(State);
     if (Connection) {
         (void)State->Owner->Api->ConnectionCertificateValidationComplete(
             Connection, FALSE, QUIC_TLS_ALERT_CODE_BAD_CERTIFICATE);
@@ -679,12 +1126,19 @@ void CompleteCertificateValidation(const ConnectionHolder& State,
     {
         std::scoped_lock Lock(State->Mutex);
         if (State->Closed ||
-            State->PeerValidation != PeerValidationState::Pending) return;
+            State->PeerValidation != PeerValidationState::Pending) {
+            // The timeout or shutdown path owns any rejection; only release
+            // the shared admission budget here.
+            Connection = nullptr;
+        } else {
         State->PeerValidation = Accepted
             ? PeerValidationState::Completing
             : PeerValidationState::Rejected;
         Connection = State->Connection;
+        }
     }
+    ReleaseValidationSlot(State);
+    if (!Connection) return;
     if (!Connection || QUIC_FAILED(State->Owner->Api->ConnectionCertificateValidationComplete(
             Connection, Accepted ? TRUE : FALSE,
             Accepted ? QUIC_TLS_ALERT_CODE_SUCCESS : QUIC_TLS_ALERT_CODE_BAD_CERTIFICATE))) {
@@ -743,22 +1197,49 @@ bool HandleCertificateEvent(const ConnectionHolder& State,
         State->PeerValidation = PeerValidationState::Rejected;
         return false;
     }
-    try {
-        std::thread([State] {
-            std::this_thread::sleep_for(kPeerValidationTimeout);
-            RejectPendingCertificateValidation(
-                State, "peer certificate validation timed out");
-        }).detach();
-    } catch (...) {
+    const auto PreviousPending = State->Owner->PendingValidations.fetch_add(
+        1, std::memory_order_acq_rel);
+    if (PreviousPending >= kMaximumPendingValidations) {
+        State->Owner->PendingValidations.fetch_sub(1, std::memory_order_acq_rel);
+        std::scoped_lock Lock(State->Mutex);
+        State->PeerValidation = PeerValidationState::Rejected;
+        return false;
+    }
+    {
+        std::scoped_lock Lock(State->Mutex);
+        if (State->Closed ||
+            State->PeerValidation != PeerValidationState::Pending) {
+            State->Owner->PendingValidations.fetch_sub(1, std::memory_order_acq_rel);
+            return false;
+        }
+        State->ValidationSlotHeld = true;
+    }
+    const std::weak_ptr<BootstrapConnectionState> WeakState = State;
+    if (!State->Owner->ValidationDeadlines.Schedule(
+            std::chrono::steady_clock::now() + kPeerValidationTimeout,
+            [WeakState] {
+                if (const auto Locked = WeakState.lock()) {
+                    RejectPendingCertificateValidation(
+                        Locked, "peer certificate validation timed out");
+                }
+            })) {
+        ReleaseValidationSlot(State);
         std::scoped_lock Lock(State->Mutex);
         State->PeerValidation = PeerValidationState::Rejected;
         return false;
     }
     try {
-        std::thread([State, CertificateDer = std::move(CertificateDer)]() mutable {
+        if (!State->Owner->ValidationWorkers.Submit(
+                [State, CertificateDer = std::move(CertificateDer)]() mutable {
             CompleteCertificateValidation(State, std::move(CertificateDer));
-        }).detach();
+        })) {
+            ReleaseValidationSlot(State);
+            std::scoped_lock Lock(State->Mutex);
+            State->PeerValidation = PeerValidationState::Rejected;
+            return false;
+        }
     } catch (...) {
+        ReleaseValidationSlot(State);
         std::scoped_lock Lock(State->Mutex);
         State->PeerValidation = PeerValidationState::Rejected;
         return false;
@@ -937,7 +1418,7 @@ void HandleSessionBytes(const ConnectionHolder& State, ByteSpan Bytes) {
     }
 }
 
-QUIC_STATUS QUIC_API SessionStreamCallback(
+QUIC_STATUS SessionStreamCallbackImpl(
     HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event) {
     const auto State = HoldConnection(Context);
     if (!State) return QUIC_STATUS_SUCCESS;
@@ -1024,7 +1505,7 @@ void HandleValidatedConnection(const ConnectionHolder& State) {
     ShutdownConnection(State);
 }
 
-QUIC_STATUS QUIC_API BootstrapConnectionCallback(
+QUIC_STATUS BootstrapConnectionCallbackImpl(
     HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event) {
     const auto State = HoldConnection(Context);
     if (!State) return QUIC_STATUS_SUCCESS;
@@ -1106,7 +1587,7 @@ QUIC_STATUS QUIC_API BootstrapConnectionCallback(
                 State->Owner->Api->SetCallbackHandler(
                     Event->PEER_STREAM_STARTED.Stream,
                     reinterpret_cast<void*>(PairingStreamCallback), State.get());
-                if (!SendPairingOffer(State)) ShutdownConnection(State);
+                if (!SendPairingCommitment(State)) ShutdownConnection(State);
             } else {
                 State->Owner->Api->SetCallbackHandler(
                     Event->PEER_STREAM_STARTED.Stream,
@@ -1157,7 +1638,7 @@ std::optional<ConnectionPurpose> GetPurpose(const QUIC_NEW_CONNECTION_INFO& Info
     return std::nullopt;
 }
 
-QUIC_STATUS QUIC_API ListenerCallback(
+QUIC_STATUS ListenerCallbackImpl(
     HQUIC Listener, void* Context, QUIC_LISTENER_EVENT* Event) {
     auto* RawState = static_cast<MsQuicBootstrap::State*>(Context);
     std::shared_ptr<MsQuicBootstrap::State> State;
@@ -1209,6 +1690,75 @@ QUIC_STATUS QUIC_API ListenerCallback(
         return QUIC_STATUS_CONNECTION_REFUSED;
     }
     return QUIC_STATUS_SUCCESS;
+}
+
+QUIC_STATUS QUIC_API PairingStreamCallback(
+    HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event) {
+    try {
+        return PairingStreamCallbackImpl(Stream, Context, Event);
+    } catch (...) {
+        try {
+            if (const auto State = HoldConnection(Context)) {
+                ReportFailure(State->Owner, "pairing callback raised an exception");
+                ShutdownConnection(State, kPairingRejectedError);
+            }
+        } catch (...) {
+        }
+        return QUIC_STATUS_INTERNAL_ERROR;
+    }
+}
+
+QUIC_STATUS QUIC_API SessionStreamCallback(
+    HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event) {
+    try {
+        return SessionStreamCallbackImpl(Stream, Context, Event);
+    } catch (...) {
+        try {
+            if (const auto State = HoldConnection(Context)) {
+                ReportFailure(State->Owner,
+                              "trusted-session callback raised an exception");
+                ShutdownConnection(State);
+            }
+        } catch (...) {
+        }
+        return QUIC_STATUS_INTERNAL_ERROR;
+    }
+}
+
+QUIC_STATUS QUIC_API BootstrapConnectionCallback(
+    HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event) {
+    try {
+        return BootstrapConnectionCallbackImpl(Connection, Context, Event);
+    } catch (...) {
+        try {
+            if (const auto State = HoldConnection(Context)) {
+                ReportFailure(State->Owner,
+                              "connection callback raised an exception");
+                ShutdownConnection(State, kPairingRejectedError);
+            }
+        } catch (...) {
+        }
+        return QUIC_STATUS_INTERNAL_ERROR;
+    }
+}
+
+QUIC_STATUS QUIC_API ListenerCallback(
+    HQUIC Listener, void* Context, QUIC_LISTENER_EVENT* Event) {
+    try {
+        return ListenerCallbackImpl(Listener, Context, Event);
+    } catch (...) {
+        try {
+            auto* RawState = static_cast<MsQuicBootstrap::State*>(Context);
+            std::shared_ptr<MsQuicBootstrap::State> State;
+            {
+                std::scoped_lock Lock(RawState->Mutex);
+                State = RawState->ListenerHold;
+            }
+            if (State) ReportFailure(State, "listener callback raised an exception");
+        } catch (...) {
+        }
+        return QUIC_STATUS_INTERNAL_ERROR;
+    }
 }
 
 bool OpenConfiguration(MsQuicBootstrap::State& State,
@@ -1525,10 +2075,8 @@ bool MsQuicBootstrap::StartListener(std::uint16_t Port) {
                     reinterpret_cast<std::uint8_t*>(
                         const_cast<char*>(kMsQuicPairingAlpn.data()))}};
     QUIC_ADDR Address{};
-    auto* V4 = reinterpret_cast<sockaddr_in*>(&Address);
-    V4->sin_family = AF_INET;
-    V4->sin_addr.s_addr = htonl(INADDR_ANY);
-    V4->sin_port = htons(Port);
+    QuicAddrSetFamily(&Address, QUIC_ADDRESS_FAMILY_UNSPEC);
+    QuicAddrSetPort(&Address, Port);
     if (QUIC_FAILED(State_->Api->ListenerStart(
             Listener, Alpns.data(), static_cast<std::uint32_t>(Alpns.size()), &Address))) {
         State_->Api->ListenerClose(Listener);
@@ -1545,9 +2093,8 @@ bool MsQuicBootstrap::StartListener(std::uint16_t Port) {
         Close();
         return false;
     }
-    const auto* BoundV4 = reinterpret_cast<const sockaddr_in*>(&BoundAddress);
     std::scoped_lock Lock(State_->Mutex);
-    State_->Port = ntohs(BoundV4->sin_port);
+    State_->Port = QuicAddrGetPort(&BoundAddress);
     return State_->Port != 0;
 }
 
@@ -1598,6 +2145,9 @@ void MsQuicBootstrap::Close() noexcept {
         State_->Api->RegistrationShutdown(
             Registration, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, kBootstrapError);
     }
+    State_->ValidationDeadlines.StopAndWait();
+    State_->ValidationWorkers.StopAndWait();
+    State_->ApplicationWorkers.StopAndWait();
 }
 
 } // namespace desklink

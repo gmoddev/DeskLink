@@ -6,8 +6,11 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <dpapi.h>
+#include <sddl.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cwctype>
 #include <limits>
 #include <utility>
 
@@ -15,7 +18,7 @@ namespace desklink {
 namespace {
 
 constexpr std::uint32_t kTrustMagic = 0x444C5453u; // DLTS
-constexpr std::uint16_t kTrustVersion = 1;
+constexpr std::uint16_t kTrustVersion = 2;
 constexpr std::size_t kMaximumProtectedStoreSize = 1024u * 1024u;
 constexpr std::string_view kDpapiEntropy = "DeskLink-Trust-Store-v1";
 
@@ -151,11 +154,92 @@ std::optional<ByteBuffer> Unprotect(ByteSpan Protected) {
     return Result;
 }
 
-ByteBuffer Serialize(const std::vector<TrustedPeer>& Peers) {
+struct TrustDocument {
+    std::uint64_t Generation{};
+    std::vector<TrustedPeer> Peers;
+};
+
+std::optional<std::wstring> CurrentUserSidString() {
+    HANDLE Token{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token)) {
+        return std::nullopt;
+    }
+    DWORD Size = 0;
+    (void)GetTokenInformation(Token, TokenUser, nullptr, 0, &Size);
+    std::vector<std::uint8_t> Storage(Size);
+    const bool Read = Size >= sizeof(TOKEN_USER) &&
+        GetTokenInformation(
+            Token, TokenUser, Storage.data(), Size, &Size) != FALSE;
+    CloseHandle(Token);
+    if (!Read) return std::nullopt;
+    const auto* User = reinterpret_cast<const TOKEN_USER*>(Storage.data());
+    LPWSTR Text{};
+    if (!ConvertSidToStringSidW(User->User.Sid, &Text) || !Text) {
+        return std::nullopt;
+    }
+    std::wstring Result(Text);
+    LocalFree(Text);
+    return Result;
+}
+
+std::wstring TrustMutexName(const std::filesystem::path& Path,
+                            std::wstring_view UserSid) {
+    const auto Canonical = std::filesystem::absolute(Path).lexically_normal().wstring();
+    std::uint64_t Hash = 1469598103934665603ull;
+    for (const auto Character : Canonical) {
+        const auto Lower = static_cast<std::uint64_t>(towlower(Character));
+        Hash ^= Lower;
+        Hash *= 1099511628211ull;
+    }
+    wchar_t Suffix[17]{};
+    swprintf_s(Suffix, L"%016llx", static_cast<unsigned long long>(Hash));
+    return std::wstring(L"Global\\DeskLink.TrustStore.") +
+        std::wstring(UserSid) + L"." + Suffix;
+}
+
+HANDLE CreateTrustMutex(const std::filesystem::path& Path) {
+    const auto UserSid = CurrentUserSidString();
+    if (!UserSid) return nullptr;
+    const auto Name = TrustMutexName(Path, *UserSid);
+    const auto DescriptorText =
+        std::wstring(L"D:P(A;;GA;;;") + *UserSid + L")(A;;GA;;;SY)";
+    PSECURITY_DESCRIPTOR Descriptor{};
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            DescriptorText.c_str(), SDDL_REVISION_1, &Descriptor, nullptr)) {
+        return nullptr;
+    }
+    SECURITY_ATTRIBUTES Attributes{};
+    Attributes.nLength = sizeof(Attributes);
+    Attributes.lpSecurityDescriptor = Descriptor;
+    const auto Mutex = CreateMutexW(&Attributes, FALSE, Name.c_str());
+    LocalFree(Descriptor);
+    return Mutex;
+}
+
+class NamedMutexLock final {
+public:
+    explicit NamedMutexLock(HANDLE Mutex) noexcept : Mutex_(Mutex) {
+        if (!Mutex_) return;
+        const auto Result = WaitForSingleObject(Mutex_, 10'000);
+        Acquired_ = Result == WAIT_OBJECT_0 || Result == WAIT_ABANDONED;
+    }
+    ~NamedMutexLock() {
+        if (Acquired_) ReleaseMutex(Mutex_);
+    }
+    [[nodiscard]] explicit operator bool() const noexcept { return Acquired_; }
+
+private:
+    HANDLE Mutex_{};
+    bool Acquired_{};
+};
+
+ByteBuffer Serialize(const std::vector<TrustedPeer>& Peers,
+                     std::uint64_t Generation) {
     ByteBuffer Output;
-    Output.reserve(8 + Peers.size() * 96);
+    Output.reserve(16 + Peers.size() * 96);
     AppendU32(Output, kTrustMagic);
     AppendU16(Output, kTrustVersion);
+    AppendU64(Output, Generation);
     AppendU16(Output, static_cast<std::uint16_t>(Peers.size()));
     for (const auto& Peer : Peers) {
         Output.insert(Output.end(), Peer.Identity.machine_id.begin(), Peer.Identity.machine_id.end());
@@ -168,14 +252,16 @@ ByteBuffer Serialize(const std::vector<TrustedPeer>& Peers) {
     return Output;
 }
 
-std::optional<std::vector<TrustedPeer>> Deserialize(ByteSpan Input) {
+std::optional<TrustDocument> Deserialize(ByteSpan Input) {
     std::size_t Offset = 0;
     std::uint32_t Magic{};
     std::uint16_t Version{};
     std::uint16_t Count{};
+    std::uint64_t Generation = 0;
     if (!ReadU32(Input, Offset, Magic) || !ReadU16(Input, Offset, Version) ||
-        !ReadU16(Input, Offset, Count) || Magic != kTrustMagic ||
-        Version != kTrustVersion || Count > kMaxTrustedPeers) {
+        Magic != kTrustMagic || (Version != 1 && Version != kTrustVersion) ||
+        (Version == kTrustVersion && !ReadU64(Input, Offset, Generation)) ||
+        !ReadU16(Input, Offset, Count) || Count > kMaxTrustedPeers) {
         return std::nullopt;
     }
 
@@ -205,11 +291,15 @@ std::optional<std::vector<TrustedPeer>> Deserialize(ByteSpan Input) {
         Peer.Identity.public_key_fingerprint.assign(
             reinterpret_cast<const char*>(Input.data() + Offset), FingerprintLength);
         Offset += FingerprintLength;
-        if (!ParseFingerprint(Peer.Identity.public_key_fingerprint)) return std::nullopt;
+        const auto Fingerprint = ParseFingerprint(Peer.Identity.public_key_fingerprint);
+        if (!Fingerprint ||
+            Peer.Identity.machine_id != DeriveMachineId(*Fingerprint)) {
+            return std::nullopt;
+        }
         Peers.push_back(std::move(Peer));
     }
     if (Offset != Input.size()) return std::nullopt;
-    return Peers;
+    return TrustDocument{Generation, std::move(Peers)};
 }
 
 } // namespace
@@ -255,15 +345,28 @@ std::optional<Sha256Digest> BCryptPairingCrypto::HashSha256(ByteSpan Bytes) cons
     return Digest;
 }
 
-DpapiTrustStore::DpapiTrustStore(std::filesystem::path Path) : Path_(std::move(Path)) {}
+DpapiTrustStore::DpapiTrustStore(std::filesystem::path Path)
+    : Path_(std::filesystem::absolute(std::move(Path)).lexically_normal()) {
+    NamedMutex_ = CreateTrustMutex(Path_);
+}
+
+DpapiTrustStore::~DpapiTrustStore() {
+    if (NamedMutex_) CloseHandle(static_cast<HANDLE>(NamedMutex_));
+}
 
 bool DpapiTrustStore::Load() {
     std::scoped_lock Lock(Mutex_);
+    NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));
+    return ProcessLock && RefreshLocked();
+}
+
+bool DpapiTrustStore::RefreshLocked() const {
     const auto Attributes = GetFileAttributesW(Path_.c_str());
     if (Attributes == INVALID_FILE_ATTRIBUTES) {
         const auto Error = GetLastError();
         if (Error != ERROR_FILE_NOT_FOUND && Error != ERROR_PATH_NOT_FOUND) return false;
         Peers_.clear();
+        Generation_ = 0;
         Loaded_ = true;
         return true;
     }
@@ -276,7 +379,8 @@ bool DpapiTrustStore::Load() {
     const auto Parsed = Deserialize(*Plaintext);
     SecureZeroMemory(Plaintext->data(), Plaintext->size());
     if (!Parsed) return false;
-    Peers_ = *Parsed;
+    Peers_ = std::move(Parsed->Peers);
+    Generation_ = Parsed->Generation;
     Loaded_ = true;
     return true;
 }
@@ -288,7 +392,8 @@ bool DpapiTrustStore::IsLoaded() const noexcept {
 
 std::optional<TrustedPeer> DpapiTrustStore::GetPeer(const MachineId& Machine) const {
     std::scoped_lock Lock(Mutex_);
-    if (!Loaded_) return std::nullopt;
+    NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));
+    if (!ProcessLock || !Loaded_ || !RefreshLocked()) return std::nullopt;
     const auto Match = std::find_if(Peers_.begin(), Peers_.end(), [&](const TrustedPeer& Peer) {
         return Peer.Identity.machine_id == Machine;
     });
@@ -302,7 +407,8 @@ std::optional<TrustedPeer> DpapiTrustStore::FindPeerByFingerprint(
     if (!Parsed) return std::nullopt;
     const auto Canonical = FormatFingerprint(*Parsed);
     std::scoped_lock Lock(Mutex_);
-    if (!Loaded_) return std::nullopt;
+    NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));
+    if (!ProcessLock || !Loaded_ || !RefreshLocked()) return std::nullopt;
     const auto Match = std::find_if(Peers_.begin(), Peers_.end(), [&](const TrustedPeer& Peer) {
         return Peer.Identity.public_key_fingerprint == Canonical;
     });
@@ -316,7 +422,13 @@ bool DpapiTrustStore::SavePeer(TrustedPeer Peer) {
     Peer = *Validator.GetPeer(Peer.Identity.machine_id);
 
     std::scoped_lock Lock(Mutex_);
-    if (!Loaded_) return false;
+    NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));
+    if (!ProcessLock || !Loaded_ || !RefreshLocked() ||
+        Generation_ == std::numeric_limits<std::uint64_t>::max()) {
+        return false;
+    }
+    const auto PreviousPeers = Peers_;
+    const auto PreviousGeneration = Generation_;
     const auto DuplicatePin = std::find_if(
         Peers_.begin(), Peers_.end(), [&](const TrustedPeer& Existing) {
             return Existing.Identity.machine_id != Peer.Identity.machine_id &&
@@ -328,36 +440,45 @@ bool DpapiTrustStore::SavePeer(TrustedPeer Peer) {
         return Existing.Identity.machine_id == Peer.Identity.machine_id;
     });
     if (Match != Peers_.end()) {
-        const auto Previous = *Match;
+        if (Match->Identity.public_key_fingerprint !=
+            Peer.Identity.public_key_fingerprint) {
+            return false;
+        }
         *Match = std::move(Peer);
-        if (SaveLocked()) return true;
-        *Match = Previous;
-        return false;
+    } else {
+        if (Peers_.size() >= kMaxTrustedPeers) return false;
+        Peers_.push_back(std::move(Peer));
     }
-    if (Peers_.size() >= kMaxTrustedPeers) return false;
-    Peers_.push_back(std::move(Peer));
+    ++Generation_;
     if (SaveLocked()) return true;
-    Peers_.pop_back();
+    Peers_ = PreviousPeers;
+    Generation_ = PreviousGeneration;
     return false;
 }
 
 bool DpapiTrustStore::RemovePeer(const MachineId& Machine) {
     std::scoped_lock Lock(Mutex_);
-    if (!Loaded_) return false;
+    NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));
+    if (!ProcessLock || !Loaded_ || !RefreshLocked() ||
+        Generation_ == std::numeric_limits<std::uint64_t>::max()) {
+        return false;
+    }
     const auto Match = std::find_if(Peers_.begin(), Peers_.end(), [&](const TrustedPeer& Peer) {
         return Peer.Identity.machine_id == Machine;
     });
     if (Match == Peers_.end()) return false;
-    const auto Index = static_cast<std::size_t>(std::distance(Peers_.begin(), Match));
-    auto Removed = *Match;
+    const auto PreviousPeers = Peers_;
+    const auto PreviousGeneration = Generation_;
     Peers_.erase(Match);
+    ++Generation_;
     if (SaveLocked()) return true;
-    Peers_.insert(Peers_.begin() + static_cast<std::ptrdiff_t>(Index), std::move(Removed));
+    Peers_ = PreviousPeers;
+    Generation_ = PreviousGeneration;
     return false;
 }
 
 bool DpapiTrustStore::SaveLocked() const {
-    auto Plaintext = Serialize(Peers_);
+    auto Plaintext = Serialize(Peers_, Generation_);
     const auto Protected = Protect(Plaintext);
     SecureZeroMemory(Plaintext.data(), Plaintext.size());
     return Protected && WriteFileBytesAtomic(Path_, *Protected);

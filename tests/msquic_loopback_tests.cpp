@@ -4,6 +4,7 @@
 
 #include <ncrypt.h>
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -166,6 +167,21 @@ bool CreatePersistedTestKey(NCRYPT_PROV_HANDLE Provider,
     return true;
 }
 
+bool EncodeCertificateExtension(const char* Type,
+                                const void* Value,
+                                std::vector<std::uint8_t>& Encoded) {
+    DWORD Size = 0;
+    if (!CryptEncodeObjectEx(
+            X509_ASN_ENCODING, Type, Value, 0, nullptr, nullptr, &Size) ||
+        Size == 0) {
+        return false;
+    }
+    Encoded.resize(Size);
+    return CryptEncodeObjectEx(
+        X509_ASN_ENCODING, Type, Value, 0, nullptr, Encoded.data(), &Size) !=
+        FALSE;
+}
+
 bool InstallTestIdentity(const std::wstring& CertificateKeyName,
                          const std::wstring& CredentialKeyName,
                          bool Exportable,
@@ -218,6 +234,37 @@ bool InstallTestIdentity(const std::wstring& CertificateKeyName,
         CertificateKeyInfo.dwKeySpec = AT_KEYEXCHANGE;
         CRYPT_ALGORITHM_IDENTIFIER Signature{};
         Signature.pszObjId = const_cast<char*>(szOID_RSA_SHA256RSA);
+        std::uint8_t KeyUsageByte = CERT_DIGITAL_SIGNATURE_KEY_USAGE;
+        CRYPT_BIT_BLOB KeyUsage{1, &KeyUsageByte, 0};
+        std::vector<std::uint8_t> EncodedKeyUsage;
+        std::array<char*, 2> EnhancedUsageOids{
+            const_cast<char*>(szOID_PKIX_KP_SERVER_AUTH),
+            const_cast<char*>(szOID_PKIX_KP_CLIENT_AUTH)};
+        CERT_ENHKEY_USAGE EnhancedUsage{
+            static_cast<DWORD>(EnhancedUsageOids.size()),
+            EnhancedUsageOids.data()};
+        std::vector<std::uint8_t> EncodedEnhancedUsage;
+        if (!EncodeCertificateExtension(
+                X509_KEY_USAGE, &KeyUsage, EncodedKeyUsage) ||
+            !EncodeCertificateExtension(
+                X509_ENHANCED_KEY_USAGE, &EnhancedUsage,
+                EncodedEnhancedUsage)) {
+            goto Exit;
+        }
+        std::array<CERT_EXTENSION, 2> CertificateExtensions{};
+        CertificateExtensions[0] = CERT_EXTENSION{
+            const_cast<char*>(szOID_KEY_USAGE), TRUE,
+            CRYPT_OBJID_BLOB{
+                static_cast<DWORD>(EncodedKeyUsage.size()),
+                EncodedKeyUsage.data()}};
+        CertificateExtensions[1] = CERT_EXTENSION{
+            const_cast<char*>(szOID_ENHANCED_KEY_USAGE), FALSE,
+            CRYPT_OBJID_BLOB{
+                static_cast<DWORD>(EncodedEnhancedUsage.size()),
+                EncodedEnhancedUsage.data()}};
+        CERT_EXTENSIONS Extensions{
+            static_cast<DWORD>(CertificateExtensions.size()),
+            CertificateExtensions.data()};
         SYSTEMTIME StartTime{};
         SYSTEMTIME EndTime{};
         SYSTEMTIME* Start = nullptr;
@@ -236,7 +283,7 @@ bool InstallTestIdentity(const std::wstring& CertificateKeyName,
         Certificate = CertCreateSelfSignCertificate(
             static_cast<HCRYPTPROV_OR_NCRYPT_KEY_HANDLE>(CertificateKey),
             &Subject, 0, &CertificateKeyInfo, &Signature, Start, End,
-            nullptr);
+            &Extensions);
         if (!Certificate) goto Exit;
 
         if (CertificateDer) {
@@ -355,10 +402,10 @@ void RunLoopback(const std::wstring& FirstKeyName,
     CHECK(!SecondBefore->PublicKeyDer.empty());
 
     PeerIdentity FirstIdentity{
-        MakeMachineId(1), "Loopback server",
+        DeriveMachineId(FirstCertificate->CertificatePin()), "Loopback server",
         FormatFingerprint(FirstCertificate->CertificatePin())};
     PeerIdentity SecondIdentity{
-        MakeMachineId(2), "Loopback client",
+        DeriveMachineId(SecondCertificate->CertificatePin()), "Loopback client",
         FormatFingerprint(SecondCertificate->CertificatePin())};
     InMemoryTrustStore FirstTrust;
     InMemoryTrustStore SecondTrust;
@@ -578,27 +625,10 @@ void RunLoopback(const std::wstring& FirstKeyName,
 void CheckOpenSslCredentialRejected(const std::wstring& KeyName) {
     using namespace desklink;
     BCryptPairingCrypto Crypto;
-    SteadyClock Clock;
     auto Certificate = Win32DeviceCertificate::LoadOrCreate(KeyName, Crypto);
-    CHECK(Certificate.has_value());
-    const PeerIdentity Identity{
-        MakeMachineId(9), "Rejected credential",
-        FormatFingerprint(Certificate->CertificatePin())};
-    InMemoryTrustStore Trust;
-    PairingCoordinator Pairing(
-        Identity, Certificate->CertificatePin(), Clock, Crypto, Trust);
-    Results Shared;
-    MsQuicRuntimeConfig RuntimeConfig;
-    RuntimeConfig.Backend = TlsBackend::OpenSsl;
-    const auto Bootstrap = MsQuicBootstrap::Create(
-        std::move(*Certificate), Trust, Crypto, Pairing, Clock,
-        RuntimeConfig, MakeHandlers(Shared));
-    CHECK(!Bootstrap);
-    {
-        std::scoped_lock Lock(Shared.Mutex);
-        CHECK(!Shared.Failures.empty());
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    // Credential invariants are enforced centrally before either Schannel or
+    // OpenSSL can receive the certificate/key pair.
+    CHECK(!Certificate.has_value());
 }
 
 void RunOpenSslCredentialRejectionTests(const std::wstring& Suffix) {
@@ -692,18 +722,23 @@ void RunTrustedValidationRejection(
     CHECK(SecondCertificate.has_value());
 
     PeerIdentity FirstIdentity{
-        MakeMachineId(31), "Rejected server",
+        DeriveMachineId(FirstCertificate->CertificatePin()), "Rejected server",
         FormatFingerprint(FirstCertificate->CertificatePin())};
     const PeerIdentity SecondIdentity{
-        MakeMachineId(32), "Rejected client",
+        DeriveMachineId(SecondCertificate->CertificatePin()), "Rejected client",
         FormatFingerprint(SecondCertificate->CertificatePin())};
     InMemoryTrustStore FirstTrust;
     InMemoryTrustStore SecondTrust;
+    MachineId ExpectedFirstMachine = FirstIdentity.machine_id;
     CHECK(FirstTrust.SavePeer(TrustedPeer{SecondIdentity, CapabilitySet{}}));
     if (SaveExpectedPeer) {
         auto ExpectedIdentity = FirstIdentity;
         if (ExpectedFingerprint) {
             ExpectedIdentity.public_key_fingerprint = *ExpectedFingerprint;
+            const auto Parsed = ParseFingerprint(*ExpectedFingerprint);
+            CHECK(Parsed.has_value());
+            ExpectedIdentity.machine_id = DeriveMachineId(*Parsed);
+            ExpectedFirstMachine = ExpectedIdentity.machine_id;
         }
         CHECK(SecondTrust.SavePeer(
             TrustedPeer{std::move(ExpectedIdentity), CapabilitySet{}}));
@@ -731,7 +766,7 @@ void RunTrustedValidationRejection(
 
     SecondCrypto.SetFault(Fault);
     CHECK(Second->ConnectTrusted(
-        "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id));
+        "127.0.0.1", First->BoundPort(), ExpectedFirstMachine));
     const auto Timeout = Fault == CryptoFault::Stall
         ? std::chrono::seconds(7)
         : std::chrono::seconds(5);
@@ -813,8 +848,9 @@ int main(int ArgumentCount, char** Arguments) {
                          std::string_view(Arguments[1]) == "--openssl"
         ? desklink::TlsBackend::OpenSsl
         : desklink::TlsBackend::Schannel;
-    const auto Suffix = std::to_wstring(
-        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto Suffix = std::to_wstring(GetCurrentProcessId()) + L"-" +
+        std::to_wstring(
+            std::chrono::steady_clock::now().time_since_epoch().count());
     const auto FirstKeyName = std::wstring(L"DeskLink-Loopback-A-") + Suffix;
     const auto SecondKeyName = std::wstring(L"DeskLink-Loopback-B-") + Suffix;
     desklink::Win32DeviceCertificate::Remove(FirstKeyName);

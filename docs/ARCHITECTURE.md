@@ -364,7 +364,7 @@ machine ID, stable display identity, side, and normalized segment can enter the
 runtime graph. Atomic save validates the complete candidate and confirms Local
 before replacement.
 
-The experimental Phase 4 outbound runtime consumes only explicit resolved link
+The experimental Phase 4 reciprocal runtime consumes only explicit resolved link
 fields; canvas position and physical-size metadata never enter crossing or
 landing calculations. While Local, the existing Win32 capture object observes
 Raw Input motion with both low-level hooks passing through. A selected policy
@@ -375,10 +375,19 @@ gate to `RemoteReady`; the absolute landing datagram and initial reliable input
 snapshot must both be accepted before the lifecycle enables suppression and
 marks the gate `Remote`. Focus stalls expire after 1.5 seconds.
 
-The direction arbiter has portable collision and stale-token coverage, but the
-current operational connection still has fixed Host/Agent roles. Therefore one
-controller session supports outbound roaming only. Reciprocal links remain
-persisted intent until a symmetric peer-session owner is separately reviewed.
+`PeerSession` owns both `HostCoordinator` (outgoing) and `AgentCoordinator`
+(incoming) for one validated transport. After admission, both endpoints report
+the exact capability mask from their local persisted trust record. The masks
+remain directional and immutable for that nonce; they do not alter trust.
+Peer-reported grants may preflight an outbound input attempt, but local audio
+and topology disclosure remain gated by this PC's persisted grant.
+`PeerDirectionArbiter` binds each token to the authenticated peer machine,
+session nonce, generation, and direction. It admits only one pending/active
+direction, rejects a new outgoing request while incoming control is active,
+and resolves simultaneous opposite requests by releasing/rejecting both to
+Local. Duplicate authenticated sessions for the same peer and competing
+capture-owner startups are converged before runtime publication. Reconnect
+starts unbound/Local with a fresh nonce and never restores focus.
 
 ---
 

@@ -10,7 +10,8 @@ namespace {
 
 constexpr std::chrono::seconds kMinimumPairingWindow{1};
 constexpr std::chrono::seconds kMaximumPairingWindow{300};
-constexpr std::string_view kPairingDomain = "DeskLink-Pairing-v1";
+constexpr std::string_view kPairingCommitmentDomain = "DeskLink-Pairing-Commitment-v2";
+constexpr std::string_view kPairingTranscriptDomain = "DeskLink-Pairing-Transcript-v2";
 
 bool IsAllZero(ByteSpan Bytes) noexcept {
     std::uint8_t Combined = 0;
@@ -38,22 +39,31 @@ ByteBuffer EncodeOffer(const PairingOffer& Offer) {
     return Encoded;
 }
 
-std::optional<std::string> DeriveVerificationCode(const PairingOffer& First,
-                                                  const PairingOffer& Second,
-                                                  const IPairingCrypto& Crypto) {
-    auto FirstEncoded = EncodeOffer(First);
-    auto SecondEncoded = EncodeOffer(Second);
-    if (SecondEncoded < FirstEncoded) std::swap(FirstEncoded, SecondEncoded);
-
+std::optional<Sha256Digest> DeriveTranscriptDigest(const PairingOffer& Initiator,
+                                                   const PairingOffer& Responder,
+                                                   const IPairingCrypto& Crypto) {
+    const auto InitiatorEncoded = EncodeOffer(Initiator);
+    const auto ResponderEncoded = EncodeOffer(Responder);
     ByteBuffer Transcript;
-    Transcript.reserve(kPairingDomain.size() + FirstEncoded.size() + SecondEncoded.size());
+    Transcript.reserve(kPairingTranscriptDomain.size() + 2 +
+                       InitiatorEncoded.size() + ResponderEncoded.size());
     AppendBytes(Transcript, ByteSpan{
-        reinterpret_cast<const std::uint8_t*>(kPairingDomain.data()), kPairingDomain.size()});
-    AppendBytes(Transcript, FirstEncoded);
-    AppendBytes(Transcript, SecondEncoded);
+        reinterpret_cast<const std::uint8_t*>(kPairingTranscriptDomain.data()),
+        kPairingTranscriptDomain.size()});
+    Transcript.push_back(1); // initiator role
+    AppendBytes(Transcript, InitiatorEncoded);
+    Transcript.push_back(2); // responder role
+    AppendBytes(Transcript, ResponderEncoded);
+    return Crypto.HashSha256(Transcript);
+}
 
-    const auto Digest = Crypto.HashSha256(Transcript);
+std::optional<std::string> DeriveVerificationCode(const PairingOffer& Initiator,
+                                                  const PairingOffer& Responder,
+                                                  const IPairingCrypto& Crypto,
+                                                  Sha256Digest& TranscriptDigest) {
+    const auto Digest = DeriveTranscriptDigest(Initiator, Responder, Crypto);
     if (!Digest) return std::nullopt;
+    TranscriptDigest = *Digest;
 
     const auto Value = (static_cast<std::uint32_t>((*Digest)[0]) << 16u) |
                        (static_cast<std::uint32_t>((*Digest)[1]) << 8u) |
@@ -81,7 +91,14 @@ bool IsValidPairingOffer(const PairingOffer& Offer) noexcept {
            !Offer.DisplayName.empty() &&
            Offer.DisplayName.size() <= kMaxPairingDisplayName &&
            !IsAllZero(Offer.CertificatePin) &&
+           Offer.Machine == DeriveMachineId(Offer.CertificatePin) &&
            !IsAllZero(Offer.Nonce);
+}
+
+MachineId DeriveMachineId(const Sha256Digest& CertificatePin) noexcept {
+    MachineId Result{};
+    std::copy_n(CertificatePin.begin(), Result.size(), Result.begin());
+    return Result;
 }
 
 std::optional<TrustedPeer> InMemoryTrustStore::GetPeer(const MachineId& Machine) const {
@@ -114,6 +131,7 @@ bool InMemoryTrustStore::SavePeer(TrustedPeer Peer) {
         IsAllZero(*Fingerprint) || (Peer.Capabilities.bits() & ~kKnownCapabilityBits) != 0) {
         return false;
     }
+    if (Peer.Identity.machine_id != DeriveMachineId(*Fingerprint)) return false;
     Peer.Identity.public_key_fingerprint = FormatFingerprint(*Fingerprint);
 
     const auto DuplicatePin = std::find_if(
@@ -128,6 +146,10 @@ bool InMemoryTrustStore::SavePeer(TrustedPeer Peer) {
         return Existing.Identity.machine_id == Peer.Identity.machine_id;
     });
     if (Match != Peers_.end()) {
+        if (Match->Identity.public_key_fingerprint !=
+            Peer.Identity.public_key_fingerprint) {
+            return false;
+        }
         *Match = std::move(Peer);
         return true;
     }
@@ -164,9 +186,6 @@ bool PairingCoordinator::BeginPairing(std::chrono::seconds Duration) {
         IsAllZero(LocalCertificatePin_)) {
         return false;
     }
-    PairingNonce Nonce{};
-    if (!Crypto_.FillRandom(Nonce) || IsAllZero(Nonce)) return false;
-    LocalNonce_ = Nonce;
     PairingDeadline_ = Clock_.now() + Duration;
     PairingOpen_ = true;
     return true;
@@ -175,7 +194,6 @@ bool PairingCoordinator::BeginPairing(std::chrono::seconds Duration) {
 void PairingCoordinator::ClosePairing() {
     std::scoped_lock Lock(Mutex_);
     PairingOpen_ = false;
-    LocalNonce_.fill(0);
 }
 
 bool PairingCoordinator::IsPairingOpen() const {
@@ -183,39 +201,99 @@ bool PairingCoordinator::IsPairingOpen() const {
     return PairingOpen_ && Clock_.now() < PairingDeadline_;
 }
 
-std::optional<PairingOffer> PairingCoordinator::CreateOffer() const {
+std::optional<PairingOffer> PairingCoordinator::CreateOffer() {
     std::scoped_lock Lock(Mutex_);
     if (!IsPairingOpen()) return std::nullopt;
+    PairingNonce Nonce{};
+    if (!Crypto_.FillRandom(Nonce) || IsAllZero(Nonce)) return std::nullopt;
     return PairingOffer{
         LocalIdentity_.machine_id,
         LocalIdentity_.display_name,
         LocalCertificatePin_,
-        LocalNonce_};
+        Nonce};
 }
 
-PairingCandidate PairingCoordinator::InspectOffer(const PairingOffer& RemoteOffer) const {
+std::optional<PairingCommitment> PairingCoordinator::CreateCommitment(
+    const PairingOffer& Offer,
+    bool IsInitiator) const {
     std::scoped_lock Lock(Mutex_);
-    if (!IsPairingOpen()) return {PairingStatus::WindowClosed, {}, {}};
-    if (!IsValidPairingOffer(RemoteOffer) || RemoteOffer.Machine == LocalIdentity_.machine_id) {
-        return {PairingStatus::InvalidOffer, {}, {}};
+    if (!IsPairingOpen() || !IsValidPairingOffer(Offer) ||
+        Offer.Machine != LocalIdentity_.machine_id ||
+        !ConstantTimeEqual(FormatFingerprint(Offer.CertificatePin),
+                           FormatFingerprint(LocalCertificatePin_))) {
+        return std::nullopt;
     }
-    const auto LocalOffer = CreateOffer();
-    if (!LocalOffer) return {PairingStatus::WindowClosed, {}, {}};
-    const auto Code = DeriveVerificationCode(*LocalOffer, RemoteOffer, Crypto_);
-    if (!Code) return {PairingStatus::CryptoFailure, {}, {}};
+    ByteBuffer Transcript;
+    const auto Encoded = EncodeOffer(Offer);
+    Transcript.reserve(kPairingCommitmentDomain.size() + 1 + Encoded.size());
+    AppendBytes(Transcript, ByteSpan{
+        reinterpret_cast<const std::uint8_t*>(kPairingCommitmentDomain.data()),
+        kPairingCommitmentDomain.size()});
+    Transcript.push_back(IsInitiator ? 1 : 2);
+    AppendBytes(Transcript, Encoded);
+    const auto Digest = Crypto_.HashSha256(Transcript);
+    return Digest ? std::optional<PairingCommitment>{PairingCommitment{*Digest}}
+                  : std::nullopt;
+}
+
+bool PairingCoordinator::VerifyCommitment(const PairingCommitment& Commitment,
+                                          const PairingOffer& Offer,
+                                          bool IsInitiator) const {
+    std::scoped_lock Lock(Mutex_);
+    if (!IsPairingOpen() || !IsValidPairingOffer(Offer) ||
+        IsAllZero(Commitment.Digest)) {
+        return false;
+    }
+    ByteBuffer Transcript;
+    const auto Encoded = EncodeOffer(Offer);
+    Transcript.reserve(kPairingCommitmentDomain.size() + 1 + Encoded.size());
+    AppendBytes(Transcript, ByteSpan{
+        reinterpret_cast<const std::uint8_t*>(kPairingCommitmentDomain.data()),
+        kPairingCommitmentDomain.size()});
+    Transcript.push_back(IsInitiator ? 1 : 2);
+    AppendBytes(Transcript, Encoded);
+    const auto Digest = Crypto_.HashSha256(Transcript);
+    if (!Digest) return false;
+    std::uint8_t Difference = 0;
+    for (std::size_t Index = 0; Index < Digest->size(); ++Index) {
+        Difference = static_cast<std::uint8_t>(
+            Difference | ((*Digest)[Index] ^ Commitment.Digest[Index]));
+    }
+    return Difference == 0;
+}
+
+PairingCandidate PairingCoordinator::InspectOffer(
+    const PairingOffer& LocalOffer,
+    const PairingOffer& RemoteOffer,
+    bool LocalIsInitiator) const {
+    std::scoped_lock Lock(Mutex_);
+    if (!IsPairingOpen()) return {PairingStatus::WindowClosed, {}, {}, {}};
+    if (!IsValidPairingOffer(LocalOffer) || !IsValidPairingOffer(RemoteOffer) ||
+        LocalOffer.Machine != LocalIdentity_.machine_id ||
+        LocalOffer.CertificatePin != LocalCertificatePin_ ||
+        RemoteOffer.Machine == LocalIdentity_.machine_id) {
+        return {PairingStatus::InvalidOffer, {}, {}, {}};
+    }
+    Sha256Digest TranscriptDigest{};
+    const auto Code = LocalIsInitiator
+        ? DeriveVerificationCode(LocalOffer, RemoteOffer, Crypto_, TranscriptDigest)
+        : DeriveVerificationCode(RemoteOffer, LocalOffer, Crypto_, TranscriptDigest);
+    if (!Code) return {PairingStatus::CryptoFailure, {}, {}, {}};
 
     PeerIdentity Identity;
     Identity.machine_id = RemoteOffer.Machine;
     Identity.display_name = RemoteOffer.DisplayName;
     Identity.public_key_fingerprint = FormatFingerprint(RemoteOffer.CertificatePin);
-    return {PairingStatus::Ready, std::move(Identity), *Code};
+    return {PairingStatus::Ready, std::move(Identity), *Code, TranscriptDigest};
 }
 
-bool PairingCoordinator::ConfirmOffer(const PairingOffer& RemoteOffer,
+bool PairingCoordinator::ConfirmOffer(const PairingOffer& LocalOffer,
+                                      const PairingOffer& RemoteOffer,
+                                      bool LocalIsInitiator,
                                       std::string_view VerificationCode,
                                       CapabilitySet Capabilities) {
     std::scoped_lock Lock(Mutex_);
-    const auto Candidate = InspectOffer(RemoteOffer);
+    const auto Candidate = InspectOffer(LocalOffer, RemoteOffer, LocalIsInitiator);
     if (Candidate.Status != PairingStatus::Ready ||
         !ConstantTimeEqual(Candidate.VerificationCode, VerificationCode)) {
         return false;

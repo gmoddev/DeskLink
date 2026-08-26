@@ -21,7 +21,7 @@ void AgentCoordinator::set_peer_capabilities(CapabilitySet capabilities) noexcep
     peer_capabilities_ = capabilities;
     if (!can_inject()) {
         focus_.release_remote_focus();
-        injector_.release_owned_state();
+        (void)ReleaseOwnedState();
     }
 }
 
@@ -41,7 +41,11 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         const auto& request = std::get<FocusRequestMessage>(packet.message);
-        if (focus_.focus() == FocusLocation::Remote) injector_.release_owned_state();
+        if (focus_.focus() == FocusLocation::Remote && !ReleaseOwnedState()) {
+            focus_.release_remote_focus();
+            return AgentDecision::RejectedMalformed;
+        }
+        if (InputCleanupPending_) return AgentDecision::RejectedLease;
         const auto new_epoch = focus_.begin_remote_focus(clamp_lease(request.requested_lease_ms));
         if (new_epoch != 0) last_pointer_sequence_ = 0;
         return new_epoch == 0 ? AgentDecision::RejectedLease : AgentDecision::Accepted;
@@ -60,8 +64,8 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         focus_.release_remote_focus();
-        injector_.release_owned_state();
-        return AgentDecision::Accepted;
+        return ReleaseOwnedState()
+            ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
     }
 
     if (type == MessageType::KeyEvent || type == MessageType::MouseButton ||
@@ -69,6 +73,7 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         type == MessageType::InputStateSnapshot ||
         type == MessageType::MouseWheel) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
+        if (InputCleanupPending_) return AgentDecision::RejectedLease;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         if (!focus_.accepts_remote_input(packet.header.epoch)) return AgentDecision::RejectedLease;
 
@@ -128,20 +133,26 @@ void AgentCoordinator::ApplyDesiredMode() noexcept {
     const bool WasRemote = focus_.focus() == FocusLocation::Remote;
     focus_.set_mode(EffectiveMode);
     if (WasRemote && focus_.focus() == FocusLocation::Local) {
-        injector_.release_owned_state();
+        (void)ReleaseOwnedState();
     }
 }
 
 void AgentCoordinator::tick() noexcept {
+    if (InputCleanupPending_) (void)ReleaseOwnedState();
     if (focus_.poll_expiry()) {
-        injector_.release_owned_state();
+        (void)ReleaseOwnedState();
     }
 }
 
 void AgentCoordinator::disconnect() noexcept {
     focus_.release_remote_focus();
     last_pointer_sequence_ = 0;
-    injector_.release_owned_state();
+    (void)ReleaseOwnedState();
+}
+
+bool AgentCoordinator::ReleaseOwnedState() noexcept {
+    InputCleanupPending_ = !injector_.release_owned_state();
+    return !InputCleanupPending_;
 }
 
 } // namespace desklink

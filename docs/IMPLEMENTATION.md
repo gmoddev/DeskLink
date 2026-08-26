@@ -454,12 +454,15 @@ all gate separate route readiness. Phase 3 now adds the presentation-only native
 configurator, offline display/route state, explicit adjacency suggestions,
 advanced directional edge editing, atomic Local-before-save replacement,
 five-second Identify overlays, and the companion tray/startup lifecycle.
-Phase 4 now adds an explicitly enabled outbound crossing slice: local Raw Input
+Phase 4 now adds an explicitly enabled reciprocal crossing slice: local Raw Input
 observation without suppression, three bounded intent policies, proportional
 corner-safe landing, cooldown, a focus timeout, active-route/session
 invalidation, and fresh-focus/landing/snapshot/direction gates before the
-existing lifecycle may suppress. Reciprocal peer-session ownership and the
-full Windows 11 physical qualification matrix remain outstanding.
+existing lifecycle may suppress. One `PeerSession` owns inbound and outbound
+coordinators on the validated connection, exchanges immutable per-direction
+persisted grants without mutating trust, binds direction tokens to the peer and
+nonce, and converges collision/duplicate/reconnect paths to Local. The full
+Windows 11 physical qualification matrix remains outstanding.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
@@ -477,6 +480,6 @@ Acceptance criteria:
 3. Peer identity survives restart.
 4. An unpaired PC cannot create an accepted DeskLink session.
 5. A paired PC with no `InputInject` grant cannot acquire focus.
-6. An authenticated encrypted session can execute the existing HostSession -> AgentSession focus test over the LAN.
+6. An authenticated encrypted peer session can execute focus in either direction while admitting at most one direction at a time.
 7. Ethernet removal while a key is held causes Agent cleanup after lease expiry.
 8. Reconnect creates a fresh logical session nonce and old packets cannot regain authority.

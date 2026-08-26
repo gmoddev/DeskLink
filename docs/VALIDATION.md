@@ -380,17 +380,22 @@ edge/segment rejection; proportional horizontal, vertical, and reverse
 landing; target corner clearance; re-entry cooldown; the 1.5-second focus
 timeout; presentation-only canvas mutation; and active link/topology/nonce
 invalidation. Negative cases revoke peer validation, `InputInject`, topology
-freshness, or link enablement and prove that none can reach Remote. Direction
-tests reject simultaneous opposite intent, busy ownership, and stale tokens.
-The Alpha argument tests require Focus, physical capture, and an absolute
-settings path before the experimental path can start.
+freshness, or link enablement and prove that none can reach Remote. Reciprocal
+session tests exercise focus and input in both directions, independent local
+grants, simultaneous opposite intent, busy ownership, peer/nonce/generation-
+bound stale tokens, invalid capability replay, and refusal to treat a remote
+grant report as local audio/topology disclosure consent. Positive cases retain
+explicit bidirectional audio and topology exchange. The Alpha argument tests
+require Focus or Serve, physical capture, and an absolute settings path before
+the experimental path can start; Serve capture without edge roaming is denied.
 
 These tests do not replace physical qualification. Still required on two
 supported Windows 11/Server 2022+ systems are high-poll-rate outward motion,
 visible landing on differently scaled displays, held-state transitions,
 cooldown/re-entry feel, emergency/manual return, process/network loss, monitor
 hot-plug, and reconnect without automatic refocus. Reciprocal roaming is not a
-physical test target until the symmetric peer-session owner is implemented.
+production-qualified path until this symmetric physical matrix passes; the
+peer-session owner itself is implemented and ready for that deferred test.
 
 ---
 

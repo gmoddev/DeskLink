@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <cwchar>
 #include <cwctype>
 #include <limits>
@@ -24,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace desklink {
@@ -32,7 +34,8 @@ namespace {
 constexpr auto kRegistrationWait = std::chrono::seconds(5);
 constexpr auto kResolveWait = std::chrono::seconds(2);
 constexpr std::size_t kMaximumBrowseNames = 64;
-constexpr std::size_t kMaximumRetainedBrowses = 4;
+constexpr std::size_t kMaximumActiveBrowseCallbacks = 8;
+constexpr std::size_t kMaximumActiveResolveCallbacks = 512;
 constexpr auto kMinimumBrowseDuration = std::chrono::seconds(1);
 constexpr auto kMaximumBrowseDuration = std::chrono::seconds(30);
 
@@ -328,69 +331,116 @@ struct BrowserState {
     bool BrowseComplete{};
 };
 
-struct BrowseContext {
-    std::shared_ptr<BrowserState> State;
+template <typename Value>
+class CallbackRegistry final {
+public:
+    explicit CallbackRegistry(std::size_t MaximumActive)
+        : MaximumActive_(MaximumActive) {}
+
+    [[nodiscard]] void* Register(std::shared_ptr<Value> RegisteredValue) {
+        if (!RegisteredValue) return nullptr;
+        std::lock_guard Lock(Mutex_);
+        if (Values_.size() >= MaximumActive_ || NextId_ == 0) return nullptr;
+        const auto Id = NextId_++;
+        Values_.emplace(Id, std::move(RegisteredValue));
+        return reinterpret_cast<void*>(Id);
+    }
+
+    [[nodiscard]] std::shared_ptr<Value> Get(void* Token) {
+        const auto Id = reinterpret_cast<std::uintptr_t>(Token);
+        if (Id == 0) return {};
+        std::lock_guard Lock(Mutex_);
+        const auto Match = Values_.find(Id);
+        return Match == Values_.end() ? std::shared_ptr<Value>{}
+                                      : Match->second;
+    }
+
+    [[nodiscard]] std::shared_ptr<Value> Take(void* Token) {
+        const auto Id = reinterpret_cast<std::uintptr_t>(Token);
+        if (Id == 0) return {};
+        std::lock_guard Lock(Mutex_);
+        const auto Match = Values_.find(Id);
+        if (Match == Values_.end()) return {};
+        auto Result = std::move(Match->second);
+        Values_.erase(Match);
+        return Result;
+    }
+
+    void Remove(void* Token) {
+        const auto Id = reinterpret_cast<std::uintptr_t>(Token);
+        if (Id == 0) return;
+        std::lock_guard Lock(Mutex_);
+        Values_.erase(Id);
+    }
+
+private:
+    std::mutex Mutex_;
+    std::unordered_map<std::uintptr_t, std::shared_ptr<Value>> Values_;
+    std::size_t MaximumActive_{};
+    std::uintptr_t NextId_{1};
 };
+
+CallbackRegistry<BrowserState>& BrowseCallbacks() {
+    static auto* const Registry =
+        new CallbackRegistry<BrowserState>(kMaximumActiveBrowseCallbacks);
+    return *Registry;
+}
+
+CallbackRegistry<BrowserState>& ResolveCallbacks() {
+    static auto* const Registry =
+        new CallbackRegistry<BrowserState>(kMaximumActiveResolveCallbacks);
+    return *Registry;
+}
 
 void WINAPI BrowseComplete(DWORD Status, void* Context,
                            PDNS_RECORD Records) noexcept {
-    auto* Browse = static_cast<BrowseContext*>(Context);
-    if (!Browse) {
+    auto State = Status == ERROR_SUCCESS
+        ? BrowseCallbacks().Get(Context)
+        : BrowseCallbacks().Take(Context);
+    if (!State) {
         if (Records) DnsRecordListFree(Records, DnsFreeRecordList);
         return;
     }
     try {
         if (Status == ERROR_SUCCESS && Records) {
-            std::lock_guard Lock(Browse->State->Mutex);
+            std::lock_guard Lock(State->Mutex);
             for (auto* Record = Records; Record; Record = Record->pNext) {
                 if (Record->wType != DNS_TYPE_PTR ||
                     !Record->Data.PTR.pNameHost ||
-                    Browse->State->Names.size() >= kMaximumBrowseNames) {
+                    State->Names.size() >= kMaximumBrowseNames) {
                     continue;
                 }
                 const auto Length = wcsnlen_s(Record->Data.PTR.pNameHost, 256);
                 if (Length > 0 && Length < 256) {
-                    Browse->State->Names.emplace(
+                    State->Names.emplace(
                         Record->Data.PTR.pNameHost, Length);
                 }
             }
-        } else if (Status == ERROR_CANCELLED) {
-            {
-                std::lock_guard Lock(Browse->State->Mutex);
-                Browse->State->BrowseComplete = true;
-            }
-            Browse->State->Condition.notify_all();
-            delete Browse;
-            Browse = nullptr;
-        } else if (Status != ERROR_SUCCESS) {
-            std::lock_guard Lock(Browse->State->Mutex);
-            ++Browse->State->BrowseFailures;
+        } else {
+            std::lock_guard Lock(State->Mutex);
+            State->BrowseComplete = true;
+            if (Status != ERROR_CANCELLED) ++State->BrowseFailures;
         }
     } catch (...) {
-        if (Browse) {
-            std::lock_guard Lock(Browse->State->Mutex);
-            ++Browse->State->BrowseFailures;
-        }
+        std::lock_guard Lock(State->Mutex);
+        ++State->BrowseFailures;
+        State->BrowseComplete = true;
     }
     if (Records) DnsRecordListFree(Records, DnsFreeRecordList);
+    State->Condition.notify_all();
 }
 
 struct ResolveOperation {
-    BrowserState* State{};
     std::wstring Name;
     DNS_SERVICE_CANCEL Cancel{};
     DNS_SERVICE_RESOLVE_REQUEST Request{};
-    std::atomic_bool Finished{};
+    void* CallbackToken{};
 };
 
 void WINAPI ResolveComplete(DWORD Status, void* Context,
                             PDNS_SERVICE_INSTANCE Instance) noexcept {
-    auto* Operation = static_cast<ResolveOperation*>(Context);
-    if (!Operation) {
-        if (Instance) DnsServiceFreeInstance(Instance);
-        return;
-    }
-    if (Operation->Finished.exchange(true)) {
+    auto State = ResolveCallbacks().Take(Context);
+    if (!State) {
         if (Instance) DnsServiceFreeInstance(Instance);
         return;
     }
@@ -410,41 +460,25 @@ void WINAPI ResolveComplete(DWORD Status, void* Context,
             }
         }
         {
-            std::lock_guard Lock(Operation->State->Mutex);
+            std::lock_guard Lock(State->Mutex);
             if (Endpoint) {
-                Operation->State->Endpoints.push_back(std::move(*Endpoint));
+                State->Endpoints.push_back(std::move(*Endpoint));
             } else if (Status == ERROR_SUCCESS) {
-                ++Operation->State->MalformedRecords;
+                ++State->MalformedRecords;
             } else {
-                ++Operation->State->ResolveFailures;
+                ++State->ResolveFailures;
             }
-            if (Operation->State->Outstanding > 0) {
-                --Operation->State->Outstanding;
+            if (State->Outstanding > 0) {
+                --State->Outstanding;
             }
         }
     } catch (...) {
-        std::lock_guard Lock(Operation->State->Mutex);
-        ++Operation->State->ResolveFailures;
-        if (Operation->State->Outstanding > 0) --Operation->State->Outstanding;
+        std::lock_guard Lock(State->Mutex);
+        ++State->ResolveFailures;
+        if (State->Outstanding > 0) --State->Outstanding;
     }
     if (Instance) DnsServiceFreeInstance(Instance);
-    Operation->State->Condition.notify_all();
-}
-
-std::mutex& RetainedBrowsesMutex() {
-    static auto* const Mutex = new std::mutex;
-    return *Mutex;
-}
-
-std::vector<std::shared_ptr<BrowserState>>& RetainedBrowses() {
-    // DNS_SERVICE_RESOLVE_COMPLETE can produce per-interface callbacks, and
-    // DnsServiceResolveCancel does not document a final callback. The CLI is a
-    // one-shot observer, so retain a strictly capped set of callback contexts
-    // until process exit instead of guessing when the OS has stopped using
-    // them. The heap-owned registry intentionally has no static destructor.
-    static auto* const States =
-        new std::vector<std::shared_ptr<BrowserState>>;
-    return *States;
+    State->Condition.notify_all();
 }
 
 } // namespace
@@ -458,15 +492,11 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
         return Result;
     }
     auto State = std::make_shared<BrowserState>();
-    {
-        std::lock_guard Lock(RetainedBrowsesMutex());
-        if (RetainedBrowses().size() >= kMaximumRetainedBrowses) {
-            Result.StartStatus = ERROR_TOO_MANY_CMDS;
-            return Result;
-        }
-        RetainedBrowses().push_back(State);
+    void* BrowseToken = BrowseCallbacks().Register(State);
+    if (!BrowseToken) {
+        Result.StartStatus = ERROR_TOO_MANY_CMDS;
+        return Result;
     }
-    auto* Context = new BrowseContext{State};
     const std::wstring QueryName(kDeskLinkDiscoveryServiceType.begin(),
                                  kDeskLinkDiscoveryServiceType.end());
     DNS_SERVICE_BROWSE_REQUEST Request{};
@@ -474,15 +504,11 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
     Request.InterfaceIndex = 0;
     Request.QueryName = QueryName.c_str();
     Request.pBrowseCallback = &BrowseComplete;
-    Request.pQueryContext = Context;
+    Request.pQueryContext = BrowseToken;
     DNS_SERVICE_CANCEL Cancel{};
     const auto Status = DnsServiceBrowse(&Request, &Cancel);
     if (Status != DNS_REQUEST_PENDING) {
-        delete Context;
-        {
-            std::lock_guard Lock(RetainedBrowsesMutex());
-            std::erase(RetainedBrowses(), State);
-        }
+        BrowseCallbacks().Remove(BrowseToken);
         Result.StartStatus = Status;
         return Result;
     }
@@ -500,13 +526,17 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
         State->Operations.reserve(State->Names.size());
         for (const auto& Name : State->Names) {
             auto Operation = std::make_unique<ResolveOperation>();
-            Operation->State = State.get();
             Operation->Name = Name;
             Operation->Request.Version = DNS_QUERY_REQUEST_VERSION1;
             Operation->Request.InterfaceIndex = 0;
             Operation->Request.QueryName = Operation->Name.data();
             Operation->Request.pResolveCompletionCallback = &ResolveComplete;
-            Operation->Request.pQueryContext = Operation.get();
+            Operation->CallbackToken = ResolveCallbacks().Register(State);
+            if (!Operation->CallbackToken) {
+                ++State->ResolveFailures;
+                continue;
+            }
+            Operation->Request.pQueryContext = Operation->CallbackToken;
             ++State->Outstanding;
             State->Operations.push_back(std::move(Operation));
         }
@@ -515,7 +545,7 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
         const auto ResolveStatus = DnsServiceResolve(
             &Operation->Request, &Operation->Cancel);
         if (ResolveStatus != DNS_REQUEST_PENDING) {
-            Operation->Finished = true;
+            ResolveCallbacks().Remove(Operation->CallbackToken);
             std::lock_guard Lock(State->Mutex);
             ++State->ResolveFailures;
             if (State->Outstanding > 0) --State->Outstanding;
@@ -536,7 +566,9 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
     }
     for (auto& Operation : State->Operations) {
         (void)DnsServiceResolveCancel(&Operation->Cancel);
+        ResolveCallbacks().Remove(Operation->CallbackToken);
     }
+    BrowseCallbacks().Remove(BrowseToken);
 
     SteadyClock Clock;
     DiscoveryCache Cache(Clock);

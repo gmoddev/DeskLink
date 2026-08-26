@@ -619,10 +619,31 @@ void RoamingRuntime::EnterCooldown() noexcept {
 PeerDirectionToken PeerDirectionArbiter::NewToken(bool Outgoing) noexcept {
     ++Generation_;
     if (Generation_ == 0) ++Generation_;
-    return {Generation_, Outgoing};
+    return {PeerMachine_, SessionNonce_, Generation_, Outgoing};
+}
+
+bool PeerDirectionArbiter::BindSession(
+    MachineId PeerMachine, std::uint64_t SessionNonce) noexcept {
+    if (!IsNonzeroMachine(PeerMachine) || SessionNonce == 0 ||
+        State_ != PeerDirectionState::Local || ActiveToken_) {
+        return false;
+    }
+    FailLocal();
+    PeerMachine_ = PeerMachine;
+    SessionNonce_ = SessionNonce;
+    return true;
+}
+
+void PeerDirectionArbiter::ResetSession() noexcept {
+    FailLocal();
+    PeerMachine_ = {};
+    SessionNonce_ = 0;
 }
 
 PeerDirectionDecision PeerDirectionArbiter::BeginOutgoing() noexcept {
+    if (!IsNonzeroMachine(PeerMachine_) || SessionNonce_ == 0) {
+        return {PeerDirectionOutcome::RejectedUnbound, std::nullopt};
+    }
     if (State_ != PeerDirectionState::Local) {
         return {PeerDirectionOutcome::RejectedBusy, std::nullopt};
     }
@@ -632,6 +653,9 @@ PeerDirectionDecision PeerDirectionArbiter::BeginOutgoing() noexcept {
 }
 
 PeerDirectionDecision PeerDirectionArbiter::BeginIncoming() noexcept {
+    if (!IsNonzeroMachine(PeerMachine_) || SessionNonce_ == 0) {
+        return {PeerDirectionOutcome::RejectedUnbound, std::nullopt};
+    }
     if (State_ == PeerDirectionState::OutgoingPending ||
         State_ == PeerDirectionState::OutgoingActive) {
         FailLocal();
@@ -670,6 +694,13 @@ void PeerDirectionArbiter::FailLocal() noexcept {
 
 PeerDirectionState PeerDirectionArbiter::State() const noexcept {
     return State_;
+}
+
+bool PeerDirectionArbiter::BoundTo(
+    const MachineId& PeerMachine,
+    std::uint64_t SessionNonce) const noexcept {
+    return SessionNonce != 0 && PeerMachine_ == PeerMachine &&
+        SessionNonce_ == SessionNonce;
 }
 
 } // namespace desklink

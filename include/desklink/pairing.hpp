@@ -30,6 +30,10 @@ struct PairingOffer {
     PairingNonce Nonce{};
 };
 
+struct PairingCommitment {
+    Sha256Digest Digest{};
+};
+
 [[nodiscard]] bool IsValidPairingOffer(const PairingOffer& Offer) noexcept;
 
 struct TrustedPeer {
@@ -78,6 +82,7 @@ struct PairingCandidate {
     PairingStatus Status{PairingStatus::InvalidOffer};
     PeerIdentity Identity;
     std::string VerificationCode;
+    Sha256Digest TranscriptDigest{};
 };
 
 class PairingCoordinator final {
@@ -91,16 +96,25 @@ public:
     [[nodiscard]] bool BeginPairing(std::chrono::seconds Duration);
     void ClosePairing();
     [[nodiscard]] bool IsPairingOpen() const;
-    [[nodiscard]] std::optional<PairingOffer> CreateOffer() const;
-    [[nodiscard]] PairingCandidate InspectOffer(const PairingOffer& RemoteOffer) const;
-    [[nodiscard]] bool ConfirmOffer(const PairingOffer& RemoteOffer,
+    [[nodiscard]] std::optional<PairingOffer> CreateOffer();
+    [[nodiscard]] std::optional<PairingCommitment> CreateCommitment(
+        const PairingOffer& Offer,
+        bool IsInitiator) const;
+    [[nodiscard]] bool VerifyCommitment(const PairingCommitment& Commitment,
+                                        const PairingOffer& Offer,
+                                        bool IsInitiator) const;
+    [[nodiscard]] PairingCandidate InspectOffer(const PairingOffer& LocalOffer,
+                                                const PairingOffer& RemoteOffer,
+                                                bool LocalIsInitiator) const;
+    [[nodiscard]] bool ConfirmOffer(const PairingOffer& LocalOffer,
+                                    const PairingOffer& RemoteOffer,
+                                    bool LocalIsInitiator,
                                     std::string_view VerificationCode,
                                     CapabilitySet Capabilities);
 
 private:
     PeerIdentity LocalIdentity_;
     Sha256Digest LocalCertificatePin_{};
-    PairingNonce LocalNonce_{};
     IClock& Clock_;
     IPairingCrypto& Crypto_;
     ITrustStore& TrustStore_;
@@ -109,6 +123,7 @@ private:
     mutable std::recursive_mutex Mutex_;
 };
 
+[[nodiscard]] MachineId DeriveMachineId(const Sha256Digest& CertificatePin) noexcept;
 [[nodiscard]] std::string FormatFingerprint(const Sha256Digest& Digest);
 [[nodiscard]] std::optional<Sha256Digest> ParseFingerprint(std::string_view Fingerprint);
 [[nodiscard]] std::optional<TrustedPeer> MatchPeerCertificate(

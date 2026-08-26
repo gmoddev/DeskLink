@@ -137,10 +137,13 @@ enum class PeerDirectionState : std::uint8_t {
 enum class PeerDirectionOutcome : std::uint8_t {
     Admitted,
     RejectedBusy,
+    RejectedUnbound,
     CollisionFailLocal,
 };
 
 struct PeerDirectionToken {
+    MachineId PeerMachine{};
+    std::uint64_t SessionNonce{};
     std::uint64_t Generation{};
     bool Outgoing{};
 
@@ -155,6 +158,10 @@ struct PeerDirectionDecision {
 
 class PeerDirectionArbiter final {
 public:
+    [[nodiscard]] bool BindSession(
+        MachineId PeerMachine, std::uint64_t SessionNonce) noexcept;
+    void ResetSession() noexcept;
+
     [[nodiscard]] PeerDirectionDecision BeginOutgoing() noexcept;
     [[nodiscard]] PeerDirectionDecision BeginIncoming() noexcept;
     [[nodiscard]] bool AdmitOutgoing(PeerDirectionToken Token) noexcept;
@@ -162,10 +169,15 @@ public:
     void FailLocal() noexcept;
 
     [[nodiscard]] PeerDirectionState State() const noexcept;
+    [[nodiscard]] bool BoundTo(
+        const MachineId& PeerMachine,
+        std::uint64_t SessionNonce) const noexcept;
 
 private:
     [[nodiscard]] PeerDirectionToken NewToken(bool Outgoing) noexcept;
 
+    MachineId PeerMachine_{};
+    std::uint64_t SessionNonce_{};
     PeerDirectionState State_{PeerDirectionState::Local};
     std::uint64_t Generation_{1};
     std::optional<PeerDirectionToken> ActiveToken_;

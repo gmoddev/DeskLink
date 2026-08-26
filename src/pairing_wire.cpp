@@ -7,12 +7,14 @@
 namespace desklink {
 namespace {
 
-constexpr std::uint8_t kOfferFrameType = 1;
-constexpr std::uint8_t kConfirmationFrameType = 2;
+constexpr std::uint8_t kCommitmentFrameType = 1;
+constexpr std::uint8_t kOfferFrameType = 2;
+constexpr std::uint8_t kConfirmationFrameType = 3;
+constexpr std::uint8_t kCompletionFrameType = 4;
 constexpr std::size_t kFixedOfferBodySize =
     MachineId{}.size() + 1 + Sha256Digest{}.size() + PairingNonce{}.size();
 constexpr std::size_t kMaximumBufferedPairingBytes =
-    kMaxPairingFrameSize + kPairingFrameHeaderSize;
+    kMaxPairingFrameSize * 4;
 constexpr std::size_t kMaximumRateLimitKeySize = 128;
 
 void AppendU16(ByteBuffer& Output, std::uint16_t Value) {
@@ -27,6 +29,12 @@ void AppendU32(ByteBuffer& Output, std::uint32_t Value) {
     Output.push_back(static_cast<std::uint8_t>(Value));
 }
 
+void AppendU64(ByteBuffer& Output, std::uint64_t Value) {
+    for (int Shift = 56; Shift >= 0; Shift -= 8) {
+        Output.push_back(static_cast<std::uint8_t>(Value >> Shift));
+    }
+}
+
 std::uint16_t ReadU16(ByteSpan Bytes, std::size_t Offset) noexcept {
     return static_cast<std::uint16_t>(
         (static_cast<std::uint16_t>(Bytes[Offset]) << 8u) |
@@ -38,6 +46,14 @@ std::uint32_t ReadU32(ByteSpan Bytes, std::size_t Offset) noexcept {
            (static_cast<std::uint32_t>(Bytes[Offset + 1]) << 16u) |
            (static_cast<std::uint32_t>(Bytes[Offset + 2]) << 8u) |
            static_cast<std::uint32_t>(Bytes[Offset + 3]);
+}
+
+std::uint64_t ReadU64(ByteSpan Bytes, std::size_t Offset) noexcept {
+    std::uint64_t Result = 0;
+    for (std::size_t Index = 0; Index < 8; ++Index) {
+        Result = (Result << 8u) | Bytes[Offset + Index];
+    }
+    return Result;
 }
 
 bool IsSafeUtf8DisplayName(std::string_view Value) noexcept {
@@ -86,6 +102,17 @@ bool IsSafeUtf8DisplayName(std::string_view Value) noexcept {
 }
 
 } // namespace
+
+ByteBuffer EncodePairingCommitmentFrame(const PairingCommitment& Commitment) {
+    ByteBuffer Frame;
+    Frame.reserve(kPairingFrameHeaderSize + Commitment.Digest.size());
+    AppendU32(Frame, kPairingWireMagic);
+    Frame.push_back(kPairingWireVersion);
+    Frame.push_back(kCommitmentFrameType);
+    AppendU16(Frame, static_cast<std::uint16_t>(Commitment.Digest.size()));
+    Frame.insert(Frame.end(), Commitment.Digest.begin(), Commitment.Digest.end());
+    return Frame;
+}
 
 std::optional<ByteBuffer> EncodePairingOfferFrame(const PairingOffer& Offer) {
     if (!IsValidPairingOffer(Offer) || !IsSafeUtf8DisplayName(Offer.DisplayName)) {
@@ -143,13 +170,28 @@ std::optional<PairingOffer> DecodePairingOfferFrame(ByteSpan Frame) {
                                       : std::nullopt;
 }
 
-ByteBuffer EncodePairingConfirmationFrame() {
+ByteBuffer EncodePairingConfirmationFrame(const Sha256Digest& TranscriptDigest,
+                                          CapabilitySet Capabilities) {
     ByteBuffer Frame;
-    Frame.reserve(kPairingFrameHeaderSize);
+    constexpr std::uint16_t BodySize = kSha256DigestSize + sizeof(std::uint64_t);
+    Frame.reserve(kPairingFrameHeaderSize + BodySize);
     AppendU32(Frame, kPairingWireMagic);
     Frame.push_back(kPairingWireVersion);
     Frame.push_back(kConfirmationFrameType);
-    AppendU16(Frame, 0);
+    AppendU16(Frame, BodySize);
+    Frame.insert(Frame.end(), TranscriptDigest.begin(), TranscriptDigest.end());
+    AppendU64(Frame, Capabilities.bits());
+    return Frame;
+}
+
+ByteBuffer EncodePairingCompletionFrame(const Sha256Digest& TranscriptDigest) {
+    ByteBuffer Frame;
+    Frame.reserve(kPairingFrameHeaderSize + TranscriptDigest.size());
+    AppendU32(Frame, kPairingWireMagic);
+    Frame.push_back(kPairingWireVersion);
+    Frame.push_back(kCompletionFrameType);
+    AppendU16(Frame, static_cast<std::uint16_t>(TranscriptDigest.size()));
+    Frame.insert(Frame.end(), TranscriptDigest.begin(), TranscriptDigest.end());
     return Frame;
 }
 
@@ -179,7 +221,10 @@ std::optional<PairingWireFrameType> PairingFrameDecoder::ReadyType() const noexc
 void PairingFrameDecoder::Advance() {
     Status_ = PairingWireStatus::Incomplete;
     ReadyType_.reset();
+    Commitment_.reset();
     Offer_.reset();
+    Confirmation_.reset();
+    Completion_.reset();
     if (Buffer_.size() < kPairingFrameHeaderSize) return;
     if (ReadU32(Buffer_, 0) != kPairingWireMagic ||
         Buffer_[4] != kPairingWireVersion) {
@@ -187,7 +232,8 @@ void PairingFrameDecoder::Advance() {
         return;
     }
     const auto FrameType = Buffer_[5];
-    if (FrameType != kOfferFrameType && FrameType != kConfirmationFrameType) {
+    if (FrameType != kCommitmentFrameType && FrameType != kOfferFrameType &&
+        FrameType != kConfirmationFrameType && FrameType != kCompletionFrameType) {
         Status_ = PairingWireStatus::InvalidFrame;
         return;
     }
@@ -195,13 +241,22 @@ void PairingFrameDecoder::Advance() {
     const auto ExpectedSize = kPairingFrameHeaderSize +
         BodySize;
     if (ExpectedSize > kMaxPairingFrameSize ||
-        (FrameType == kConfirmationFrameType && BodySize != 0)) {
+        (FrameType == kCommitmentFrameType && BodySize != kSha256DigestSize) ||
+        (FrameType == kConfirmationFrameType &&
+         BodySize != kSha256DigestSize + sizeof(std::uint64_t)) ||
+        (FrameType == kCompletionFrameType && BodySize != kSha256DigestSize)) {
         Status_ = PairingWireStatus::InvalidFrame;
         return;
     }
     if (Buffer_.size() < ExpectedSize) return;
 
-    if (FrameType == kOfferFrameType) {
+    if (FrameType == kCommitmentFrameType) {
+        PairingCommitment Commitment;
+        std::copy_n(Buffer_.begin() + static_cast<std::ptrdiff_t>(kPairingFrameHeaderSize),
+                    Commitment.Digest.size(), Commitment.Digest.begin());
+        Commitment_ = Commitment;
+        ReadyType_ = PairingWireFrameType::Commitment;
+    } else if (FrameType == kOfferFrameType) {
         Offer_ = DecodePairingOfferFrame(
             ByteSpan{Buffer_.data(), ExpectedSize});
         if (!Offer_) {
@@ -209,12 +264,40 @@ void PairingFrameDecoder::Advance() {
             return;
         }
         ReadyType_ = PairingWireFrameType::Offer;
-    } else {
+    } else if (FrameType == kConfirmationFrameType) {
+        PairingConfirmation Confirmation;
+        std::copy_n(Buffer_.begin() + static_cast<std::ptrdiff_t>(kPairingFrameHeaderSize),
+                    Confirmation.TranscriptDigest.size(),
+                    Confirmation.TranscriptDigest.begin());
+        const auto Bits = ReadU64(
+            Buffer_, kPairingFrameHeaderSize + kSha256DigestSize);
+        if ((Bits & ~kKnownCapabilityBits) != 0) {
+            Status_ = PairingWireStatus::InvalidFrame;
+            return;
+        }
+        Confirmation.Capabilities = CapabilitySet(Bits);
+        Confirmation_ = Confirmation;
         ReadyType_ = PairingWireFrameType::Confirmation;
+    } else {
+        Sha256Digest Completion{};
+        std::copy_n(Buffer_.begin() + static_cast<std::ptrdiff_t>(kPairingFrameHeaderSize),
+                    Completion.size(), Completion.begin());
+        Completion_ = Completion;
+        ReadyType_ = PairingWireFrameType::Completion;
     }
     Buffer_.erase(Buffer_.begin(),
                   Buffer_.begin() + static_cast<std::ptrdiff_t>(ExpectedSize));
     Status_ = PairingWireStatus::Ready;
+}
+
+std::optional<PairingCommitment> PairingFrameDecoder::TakeCommitment() {
+    if (Status_ != PairingWireStatus::Ready ||
+        ReadyType_ != PairingWireFrameType::Commitment || !Commitment_) {
+        return std::nullopt;
+    }
+    auto Result = Commitment_;
+    Advance();
+    return Result;
 }
 
 std::optional<PairingOffer> PairingFrameDecoder::TakeOffer() {
@@ -227,18 +310,32 @@ std::optional<PairingOffer> PairingFrameDecoder::TakeOffer() {
     return Result;
 }
 
-bool PairingFrameDecoder::TakeConfirmation() {
+std::optional<PairingConfirmation> PairingFrameDecoder::TakeConfirmation() {
     if (Status_ != PairingWireStatus::Ready ||
-        ReadyType_ != PairingWireFrameType::Confirmation) {
-        return false;
+        ReadyType_ != PairingWireFrameType::Confirmation || !Confirmation_) {
+        return std::nullopt;
     }
+    auto Result = Confirmation_;
     Advance();
-    return true;
+    return Result;
+}
+
+std::optional<Sha256Digest> PairingFrameDecoder::TakeCompletion() {
+    if (Status_ != PairingWireStatus::Ready ||
+        ReadyType_ != PairingWireFrameType::Completion || !Completion_) {
+        return std::nullopt;
+    }
+    auto Result = Completion_;
+    Advance();
+    return Result;
 }
 
 void PairingFrameDecoder::Reset() noexcept {
     Buffer_.clear();
+    Commitment_.reset();
     Offer_.reset();
+    Confirmation_.reset();
+    Completion_.reset();
     ReadyType_.reset();
     Status_ = PairingWireStatus::Incomplete;
 }

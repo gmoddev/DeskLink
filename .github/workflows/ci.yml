@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure
         run: >-
@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure
         env:
@@ -64,7 +64,7 @@ jobs:
 
     steps:
       - name: Checkout DeskLink
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pinned MsQuic package
         run: >-
@@ -73,6 +73,15 @@ jobs:
           -OutputDirectory external
           -ExcludeVersion
           -NonInteractive
+
+      - name: Verify pinned MsQuic runtime
+        shell: pwsh
+        run: |
+          $Runtime = 'external/Microsoft.Native.Quic.MsQuic.Schannel/build/native/bin/x64/msquic.dll'
+          $Expected = 'C981E61CD207F42D46B54EF7DBF1049F1F836424C3BA981F4469AC2B2BEA9610'
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash -ne $Expected) {
+            throw 'Downloaded MsQuic 2.6.0 Schannel runtime digest did not match the reviewed artifact.'
+          }
 
       - name: Configure
         run: >-
@@ -100,10 +109,10 @@ jobs:
 
     steps:
       - name: Checkout DeskLink
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout pinned MsQuic source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: microsoft/msquic
           ref: e7e7a114e20a55ec2d5f723cf6bdf3bfb7b0b24a
@@ -111,7 +120,7 @@ jobs:
           submodules: recursive
 
       - name: Checkout pinned OpenSSL source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: openssl/openssl
           ref: 8cf17aaeb4599f8af87fefd810b5b5fee90fe69e
@@ -124,6 +133,15 @@ jobs:
           -OutputDirectory external
           -ExcludeVersion
           -NonInteractive
+
+      - name: Verify pinned Schannel runtime
+        shell: pwsh
+        run: |
+          $Runtime = 'external/Microsoft.Native.Quic.MsQuic.Schannel/build/native/bin/x64/msquic.dll'
+          $Expected = 'C981E61CD207F42D46B54EF7DBF1049F1F836424C3BA981F4469AC2B2BEA9610'
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Runtime).Hash -ne $Expected) {
+            throw 'Downloaded MsQuic 2.6.0 Schannel runtime digest did not match the reviewed artifact.'
+          }
 
       - name: Build pinned OpenSSL 3.5.7
         shell: cmd

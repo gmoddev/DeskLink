@@ -138,7 +138,8 @@ bool Win32InputInjector::ReconcileState(const InputStateSnapshotMessage& Snapsho
     }
 }
 
-void Win32InputInjector::release_owned_state() noexcept {
+bool Win32InputInjector::release_owned_state() noexcept {
+    bool ReleasedAll = true;
     for (std::uint16_t ScanCode = 1; ScanCode <= 255; ++ScanCode) {
         for (const bool Extended : {false, true}) {
             if (!InputSnapshotKeyDown(OwnedState_, ScanCode, Extended)) continue;
@@ -147,7 +148,12 @@ void Win32InputInjector::release_owned_state() noexcept {
             Input.ki.wScan = ScanCode;
             Input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
             if (Extended) Input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
-            (void)send_one(Input);
+            if (send_one(Input)) {
+                (void)SetInputSnapshotKey(
+                    OwnedState_, ScanCode, Extended, false);
+            } else {
+                ReleasedAll = false;
+            }
         }
     }
 
@@ -161,10 +167,14 @@ void Win32InputInjector::release_owned_state() noexcept {
         if (Button == MouseButtonId::X1 || Button == MouseButtonId::X2) {
             Input.mi.mouseData = xbutton_data(Button);
         }
-        (void)send_one(Input);
+        if (send_one(Input)) {
+            (void)SetInputSnapshotButton(OwnedState_, Button, false);
+        } else {
+            ReleasedAll = false;
+        }
     }
-    OwnedState_ = {};
     DisplayGeneration_.reset();
+    return ReleasedAll;
 }
 
 } // namespace desklink

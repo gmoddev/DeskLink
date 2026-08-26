@@ -49,23 +49,37 @@ bool AgentSession::start() {
         session_nonce_,
         TopologyOptions_.Enabled,
         PeerCapabilities_.contains(Capability::DisplayTopologyExchange));
-    transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
-    transport_->set_datagram_handler([this](ByteBuffer packet) { on_datagram(std::move(packet)); });
+    const auto Gate = CallbackGate_;
+    transport_->set_reliable_handler([this, Gate](ByteBuffer packet) {
+        auto Guard = Gate->TryEnter();
+        if (Guard) on_reliable(std::move(packet));
+    });
+    transport_->set_datagram_handler([this, Gate](ByteBuffer packet) {
+        auto Guard = Gate->TryEnter();
+        if (Guard) on_datagram(std::move(packet));
+    });
     started_ = true;
     return true;
 }
 
 void AgentSession::stop() noexcept {
-    std::scoped_lock Lock(Mutex_);
-    if (!started_) return;
-    coordinator_.disconnect();
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!started_) return;
+        started_ = false;
+    }
+    CallbackGate_->Close();
     transport_->close();
-    PeerCapabilities_ = {};
-    AudioDatagramSequence_ = 1;
-    TopologyExchange_.Stop();
-    LocalTopologyMachine_.reset();
-    TopologySequence_ = 1;
-    started_ = false;
+    CallbackGate_->Wait();
+    {
+        std::scoped_lock Lock(Mutex_);
+        coordinator_.disconnect();
+        PeerCapabilities_ = {};
+        AudioDatagramSequence_ = 1;
+        TopologyExchange_.Stop();
+        LocalTopologyMachine_.reset();
+        TopologySequence_ = 1;
+    }
 }
 
 void AgentSession::tick() noexcept {
@@ -267,27 +281,42 @@ bool HostSession::start() {
         session_nonce_,
         TopologyOptions_.Enabled,
         PeerCapabilities_.contains(Capability::DisplayTopologyExchange));
-    transport_->set_reliable_handler([this](ByteBuffer packet) { on_reliable(std::move(packet)); });
-    transport_->set_datagram_handler([this](ByteBuffer packet) { on_datagram(std::move(packet)); });
+    const auto Gate = CallbackGate_;
+    transport_->set_reliable_handler([this, Gate](ByteBuffer packet) {
+        auto Guard = Gate->TryEnter();
+        if (Guard) on_reliable(std::move(packet));
+    });
+    transport_->set_datagram_handler([this, Gate](ByteBuffer packet) {
+        auto Guard = Gate->TryEnter();
+        if (Guard) on_datagram(std::move(packet));
+    });
     started_ = true;
     return true;
 }
 
 void HostSession::stop() noexcept {
-    std::scoped_lock Lock(Mutex_);
-    if (!started_) return;
-    coordinator_.emergency_fail_local();
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!started_) return;
+        started_ = false;
+    }
+    CallbackGate_->Close();
     transport_->close();
-    if (AudioReceiver_) AudioReceiver_->Reset();
-    PeerCapabilities_ = {};
-    TopologyExchange_.Stop();
-    LocalTopologyMachine_.reset();
-    TopologySequence_ = 1;
-    started_ = false;
+    CallbackGate_->Wait();
+    {
+        std::scoped_lock Lock(Mutex_);
+        coordinator_.emergency_fail_local();
+        if (AudioReceiver_) AudioReceiver_->Reset();
+        PeerCapabilities_ = {};
+        TopologyExchange_.Stop();
+        LocalTopologyMachine_.reset();
+        TopologySequence_ = 1;
+    }
 }
 
 void HostSession::on_reliable(ByteBuffer packet) {
     bool FocusReady = false;
+    std::function<void()> FocusReadyHandler;
     {
         std::scoped_lock Lock(Mutex_);
         ++stats_.reliable_received;
@@ -330,8 +359,9 @@ void HostSession::on_reliable(ByteBuffer packet) {
                 FocusReady = true;
             }
         }
+        if (FocusReady) FocusReadyHandler = FocusReadyHandler_;
     }
-    if (FocusReady && FocusReadyHandler_) FocusReadyHandler_();
+    if (FocusReadyHandler) FocusReadyHandler();
 }
 
 void HostSession::on_datagram(ByteBuffer packet) {
@@ -492,6 +522,662 @@ HostSession::RemoteDisplayTopology() const {
 SessionStats HostSession::stats() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return stats_;
+}
+
+PeerSession::PeerSession(
+    std::shared_ptr<ITransportEndpoint> Transport,
+    HostCoordinator& OutgoingCoordinator,
+    AgentCoordinator& IncomingCoordinator,
+    const ITrustStore& TrustStore,
+    std::uint64_t SessionNonce,
+    PeerSessionHandlers Handlers,
+    AudioReceiver* Receiver,
+    DisplayTopologyExchangeOptions TopologyOptions) noexcept
+    : Transport_(std::move(Transport)),
+      OutgoingCoordinator_(OutgoingCoordinator),
+      IncomingCoordinator_(IncomingCoordinator),
+      TrustStore_(TrustStore),
+      SessionNonce_(SessionNonce),
+      Handlers_(std::move(Handlers)),
+      AudioReceiver_(Receiver),
+      TopologyOptions_(TopologyOptions),
+      TopologyExchange_(TopologyOptions.Clock) {}
+
+PeerSession::~PeerSession() { Stop(); }
+
+bool PeerSession::Start() {
+    std::scoped_lock Lock(Mutex_);
+    if (Started_) return true;
+    const auto Trusted = GetTrustedTransportPeer(Transport_, TrustStore_);
+    if (!Trusted || SessionNonce_ == 0 ||
+        !DirectionArbiter_.BindSession(
+            Trusted->Identity.machine_id, SessionNonce_)) {
+        return false;
+    }
+
+    PeerMachine_ = Trusted->Identity.machine_id;
+    LocalCapabilities_ = Trusted->Capabilities;
+    IncomingCoordinator_.set_peer_capabilities(LocalCapabilities_);
+    TopologyExchange_.Begin(
+        PeerMachine_, SessionNonce_, TopologyOptions_.Enabled,
+        LocalCapabilities_.contains(
+            Capability::DisplayTopologyExchange));
+    const auto Gate = CallbackGate_;
+    Transport_->set_reliable_handler(
+        [this, Gate](ByteBuffer Packet) {
+            auto Guard = Gate->TryEnter();
+            if (Guard) OnReliable(std::move(Packet));
+        });
+    Transport_->set_datagram_handler(
+        [this, Gate](ByteBuffer Packet) {
+            auto Guard = Gate->TryEnter();
+            if (Guard) OnDatagram(std::move(Packet));
+        });
+    CapabilityConflict_ = false;
+    Started_ = true;
+    (void)PublishCapabilityGrantLocked();
+    return true;
+}
+
+void PeerSession::Stop() noexcept {
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return;
+        Started_ = false;
+    }
+    CallbackGate_->Close();
+    Transport_->close();
+    CallbackGate_->Wait();
+    {
+        std::scoped_lock Lock(Mutex_);
+        FailLocalDirectionsLocked();
+        if (AudioReceiver_) AudioReceiver_->Reset();
+        LocalCapabilities_ = {};
+        RemoteCapabilities_.reset();
+        TopologyExchange_.Stop();
+        LocalTopologyMachine_.reset();
+        DirectionArbiter_.ResetSession();
+        PeerMachine_ = {};
+        ReliableSequence_ = 1;
+        AudioDatagramSequence_ = 1;
+        TopologySequence_ = 1;
+        CapabilityConflict_ = false;
+    }
+}
+
+void PeerSession::Tick() noexcept {
+    bool DirectionChanged = false;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return;
+        IncomingCoordinator_.tick();
+        if (DirectionArbiter_.State() ==
+                PeerDirectionState::IncomingActive &&
+            !IncomingCoordinator_.RemoteFocused()) {
+            ReleaseIncomingDirectionLocked();
+            DirectionChanged = true;
+        }
+        if (!RemoteCapabilities_ && !CapabilityConflict_) {
+            (void)PublishCapabilityGrantLocked();
+        }
+    }
+    if (DirectionChanged && Handlers_.DirectionChanged) {
+        Handlers_.DirectionChanged();
+    }
+}
+
+void PeerSession::FailLocalDirections() noexcept {
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return;
+        FailLocalDirectionsLocked();
+    }
+    if (Handlers_.DirectionChanged) Handlers_.DirectionChanged();
+}
+
+void PeerSession::SetLocalDesiredMode(DeskMode Mode) noexcept {
+    bool DirectionChanged = false;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return;
+        IncomingCoordinator_.SetLocalDesiredMode(Mode);
+        if (DirectionArbiter_.State() ==
+                PeerDirectionState::IncomingActive &&
+            !IncomingCoordinator_.RemoteFocused()) {
+            ReleaseIncomingDirectionLocked();
+            DirectionChanged = true;
+        }
+    }
+    if (DirectionChanged && Handlers_.DirectionChanged) {
+        Handlers_.DirectionChanged();
+    }
+}
+
+DeskMode PeerSession::IncomingDesiredMode() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return IncomingCoordinator_.DesiredMode();
+}
+
+bool PeerSession::BeginOutgoingFocus(std::uint32_t LeaseMilliseconds) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || CapabilityConflict_ || !RemoteCapabilities_ ||
+        !RemoteCapabilities_->contains(Capability::InputInject)) {
+        ++Stats_.DirectionRejected;
+        return false;
+    }
+    const auto Decision = DirectionArbiter_.BeginOutgoing();
+    if (Decision.Outcome != PeerDirectionOutcome::Admitted ||
+        !Decision.Token) {
+        ++Stats_.DirectionRejected;
+        return false;
+    }
+    OutgoingToken_ = *Decision.Token;
+    if (!Transport_->send_reliable(
+            OutgoingCoordinator_.request_remote_focus(
+                LeaseMilliseconds))) {
+        (void)DirectionArbiter_.Release(*OutgoingToken_);
+        OutgoingToken_.reset();
+        OutgoingCoordinator_.emergency_fail_local();
+        ++Stats_.DirectionRejected;
+        return false;
+    }
+    return true;
+}
+
+bool PeerSession::SetDesiredMode(DeskMode Mode) {
+    bool DirectionChanged = false;
+    bool Sent = false;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return false;
+        auto Packet = OutgoingCoordinator_.set_mode(Mode);
+        Sent = Transport_->send_reliable(std::move(Packet));
+        if (!OutgoingCoordinator_.remote_focused() && OutgoingToken_) {
+            (void)DirectionArbiter_.Release(*OutgoingToken_);
+            OutgoingToken_.reset();
+            DirectionChanged = true;
+        }
+    }
+    if (DirectionChanged && Handlers_.DirectionChanged) {
+        Handlers_.DirectionChanged();
+    }
+    return Sent;
+}
+
+bool PeerSession::RenewOutgoingFocus(
+    std::uint32_t LeaseMilliseconds) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || !OutgoingToken_ ||
+        DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.renew_remote_focus(
+        LeaseMilliseconds);
+    return Packet && Transport_->send_reliable(std::move(*Packet));
+}
+
+bool PeerSession::ReleaseOutgoingFocus() {
+    bool DirectionChanged = false;
+    bool Sent = false;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_ || !OutgoingToken_) return false;
+        auto Packet = OutgoingCoordinator_.release_remote_focus();
+        if (Packet) Sent = Transport_->send_reliable(std::move(*Packet));
+        (void)DirectionArbiter_.Release(*OutgoingToken_);
+        OutgoingToken_.reset();
+        DirectionChanged = true;
+    }
+    if (DirectionChanged && Handlers_.DirectionChanged) {
+        Handlers_.DirectionChanged();
+    }
+    return Sent;
+}
+
+bool PeerSession::SendKey(KeyEventMessage Event) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.key_event(Event);
+    return Packet && Transport_->send_reliable(std::move(*Packet));
+}
+
+bool PeerSession::SendButton(MouseButtonMessage Event) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.mouse_button(Event);
+    return Packet && Transport_->send_reliable(std::move(*Packet));
+}
+
+bool PeerSession::SendPointer(PointerPositionMessage Event) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.pointer_position(Event);
+    return Packet && Transport_->send_datagram(std::move(*Packet));
+}
+
+bool PeerSession::SendPointerMotion(PointerMotionMessage Message) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.PointerMotion(Message);
+    return Packet && Transport_->send_datagram(std::move(*Packet));
+}
+
+bool PeerSession::SendWheel(MouseWheelMessage Message) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.MouseWheel(Message);
+    return Packet && Transport_->send_reliable(std::move(*Packet));
+}
+
+bool PeerSession::SendInputStateSnapshot() {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || DirectionArbiter_.State() !=
+            PeerDirectionState::OutgoingActive) {
+        return false;
+    }
+    auto Packet = OutgoingCoordinator_.InputStateSnapshot();
+    return Packet && Transport_->send_reliable(std::move(*Packet));
+}
+
+bool PeerSession::OutgoingFocused() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && DirectionArbiter_.State() ==
+        PeerDirectionState::OutgoingActive &&
+        OutgoingCoordinator_.remote_focused();
+}
+
+bool PeerSession::IncomingFocused() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && DirectionArbiter_.State() ==
+        PeerDirectionState::IncomingActive &&
+        IncomingCoordinator_.RemoteFocused();
+}
+
+PeerDirectionState PeerSession::DirectionState() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return DirectionArbiter_.State();
+}
+
+bool PeerSession::CanBeginOutgoing() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ && RemoteCapabilities_ &&
+        RemoteCapabilities_->contains(Capability::InputInject) &&
+        DirectionArbiter_.State() == PeerDirectionState::Local;
+}
+
+bool PeerSession::PeerGrantedCapability(Capability Value) const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ && RemoteCapabilities_ &&
+        RemoteCapabilities_->contains(Value);
+}
+
+bool PeerSession::GrantedToPeer(Capability Value) const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && LocalCapabilities_.contains(Value);
+}
+
+bool PeerSession::CanSendAudio() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ &&
+        LocalCapabilities_.contains(Capability::AudioReceive);
+}
+
+bool PeerSession::CanReceiveAudio() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && AudioReceiver_ != nullptr &&
+        LocalCapabilities_.contains(Capability::AudioSend);
+}
+
+bool PeerSession::SendAudioFrame(AudioFrameMessage Frame) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || CapabilityConflict_ ||
+        !LocalCapabilities_.contains(Capability::AudioReceive) ||
+        Frame.stream_id == 0 || !IsDeskLinkAudioFrame(Frame)) {
+        ++Stats_.AudioSendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = AudioDatagramSequence_++;
+    if (AudioDatagramSequence_ == 0) ++AudioDatagramSequence_;
+    if (!Transport_->send_datagram(encode_packet(Header, Frame))) {
+        ++Stats_.AudioSendRejected;
+        return false;
+    }
+    ++Stats_.AudioSent;
+    return true;
+}
+
+bool PeerSession::PublishDisplayTopology(
+    const MachineId& LocalMachine,
+    const DisplayTopologySnapshot& Topology) {
+    std::scoped_lock Lock(Mutex_);
+    DisplayTopologySnapshotMessage Message{
+        LocalMachine, SessionNonce_, Topology};
+    if (!Started_ || CapabilityConflict_ ||
+        !TopologyOptions_.Enabled ||
+        !LocalCapabilities_.contains(
+            Capability::DisplayTopologyExchange) ||
+        (LocalTopologyMachine_ &&
+         *LocalTopologyMachine_ != LocalMachine) ||
+        !IsValidDisplayTopologySnapshotMessage(Message)) {
+        ++Stats_.TopologySendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = TopologySequence_++;
+    if (TopologySequence_ == 0) ++TopologySequence_;
+    if (!Transport_->send_reliable(encode_packet(Header, Message))) {
+        ++Stats_.TopologySendRejected;
+        return false;
+    }
+    LocalTopologyMachine_ = LocalMachine;
+    ++Stats_.TopologySent;
+    return true;
+}
+
+DisplayTopologyExchangeStatus
+PeerSession::DisplayTopologyStatus() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return TopologyExchange_.Status();
+}
+
+std::optional<DisplayTopologySnapshot>
+PeerSession::RemoteDisplayTopology() const {
+    std::scoped_lock Lock(Mutex_);
+    return TopologyExchange_.Snapshot();
+}
+
+SessionStats PeerSession::Stats() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Stats_;
+}
+
+bool PeerSession::ValidateSession(
+    const DecodedPacket& Packet) noexcept {
+    if (Packet.header.session_nonce != SessionNonce_) {
+        ++Stats_.session_rejected;
+        return false;
+    }
+    return true;
+}
+
+void PeerSession::CountDecision(AgentDecision Decision) noexcept {
+    if (Decision != AgentDecision::Accepted &&
+        Decision != AgentDecision::Ignored) {
+        ++Stats_.authorization_rejected;
+    }
+}
+
+bool PeerSession::PublishCapabilityGrantLocked() {
+    if (!Started_) return false;
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = ReliableSequence_++;
+    if (ReliableSequence_ == 0) ++ReliableSequence_;
+    if (!Transport_->send_reliable(encode_packet(
+            Header, CapabilityGrantMessage{
+                LocalCapabilities_.bits()}))) {
+        return false;
+    }
+    ++Stats_.CapabilityGrantsSent;
+    return true;
+}
+
+void PeerSession::ReleaseIncomingDirectionLocked() noexcept {
+    if (IncomingToken_) {
+        (void)DirectionArbiter_.Release(*IncomingToken_);
+        IncomingToken_.reset();
+    }
+}
+
+void PeerSession::FailLocalDirectionsLocked() noexcept {
+    if (OutgoingToken_) {
+        auto Release = OutgoingCoordinator_.release_remote_focus();
+        if (Release) {
+            (void)Transport_->send_reliable(std::move(*Release));
+        }
+    }
+    OutgoingCoordinator_.emergency_fail_local();
+    IncomingCoordinator_.disconnect();
+    OutgoingToken_.reset();
+    IncomingToken_.reset();
+    DirectionArbiter_.FailLocal();
+}
+
+void PeerSession::OnReliable(ByteBuffer Packet) {
+    bool NotifyFocusReady = false;
+    bool NotifyDirectionChanged = false;
+    bool NotifyCollision = false;
+    std::function<void()> DirectionCollisionHandler;
+    std::function<void()> DirectionChangedHandler;
+    std::function<void()> OutgoingFocusReadyHandler;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return;
+        ++Stats_.reliable_received;
+        const auto PeekedType = PeekMessageType(Packet);
+        const bool TopologyEnvelope = PeekedType ==
+            MessageType::DisplayTopologySnapshot;
+        auto Decoded = decode_packet(Packet, false);
+        if (!Decoded.packet) {
+            ++Stats_.decode_rejected;
+            if (TopologyEnvelope) {
+                ++Stats_.TopologyRejected;
+                TopologyExchange_.RejectMalformed();
+            }
+            return;
+        }
+        if (!ValidateSession(*Decoded.packet)) {
+            if (TopologyEnvelope) {
+                ++Stats_.TopologyRejected;
+                TopologyExchange_.RejectMalformed();
+            }
+            return;
+        }
+
+        const auto Type = Decoded.packet->header.type;
+        if (Type == MessageType::CapabilityGrant) {
+            ++Stats_.CapabilityGrantsReceived;
+            const auto Bits = std::get<CapabilityGrantMessage>(
+                Decoded.packet->message).capabilities;
+            const bool InvalidBits = (Bits & ~kKnownCapabilityBits) != 0;
+            const bool ChangedGrant = RemoteCapabilities_ &&
+                RemoteCapabilities_->bits() != Bits;
+            if (InvalidBits || ChangedGrant || CapabilityConflict_) {
+                ++Stats_.CapabilityGrantsRejected;
+                if (!CapabilityConflict_) {
+                    CapabilityConflict_ = true;
+                    RemoteCapabilities_.reset();
+                    FailLocalDirectionsLocked();
+                    NotifyDirectionChanged = true;
+                }
+            } else {
+                const bool FirstGrant = !RemoteCapabilities_;
+                RemoteCapabilities_ = CapabilitySet(Bits);
+                if (FirstGrant) {
+                    (void)PublishCapabilityGrantLocked();
+                    NotifyDirectionChanged = true;
+                }
+            }
+        } else if (Type == MessageType::DisplayTopologySnapshot) {
+            ++Stats_.TopologyReceived;
+            if (TopologyExchange_.Admit(
+                    Decoded.packet->header,
+                    std::get<DisplayTopologySnapshotMessage>(
+                        Decoded.packet->message))) {
+                ++Stats_.TopologyAccepted;
+            } else {
+                ++Stats_.TopologyRejected;
+            }
+            return;
+        }
+        if (Type == MessageType::FocusReady) {
+            if (!OutgoingToken_ ||
+                DirectionArbiter_.State() !=
+                    PeerDirectionState::OutgoingPending ||
+                !OutgoingCoordinator_.accept_focus_ready(
+                    *Decoded.packet) ||
+                !DirectionArbiter_.AdmitOutgoing(
+                    *OutgoingToken_)) {
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            ++Stats_.OutgoingFocusAccepted;
+            NotifyFocusReady = true;
+            NotifyDirectionChanged = true;
+        } else if (Type == MessageType::FocusRequest) {
+            const auto Direction = DirectionArbiter_.BeginIncoming();
+            if (Direction.Outcome ==
+                    PeerDirectionOutcome::CollisionFailLocal) {
+                ++Stats_.DirectionCollisions;
+                FailLocalDirectionsLocked();
+                NotifyCollision = true;
+                NotifyDirectionChanged = true;
+            } else if (Direction.Outcome !=
+                           PeerDirectionOutcome::Admitted ||
+                       !Direction.Token) {
+                ++Stats_.DirectionRejected;
+            } else {
+                IncomingToken_ = *Direction.Token;
+                const auto Decision = IncomingCoordinator_.handle(
+                    *Decoded.packet);
+                CountDecision(Decision);
+                if (Decision != AgentDecision::Accepted) {
+                    ReleaseIncomingDirectionLocked();
+                    ++Stats_.DirectionRejected;
+                } else {
+                    const auto& Request = std::get<FocusRequestMessage>(
+                        Decoded.packet->message);
+                    EnvelopeHeader Response;
+                    Response.session_nonce = SessionNonce_;
+                    Response.epoch =
+                        IncomingCoordinator_.focus_state().epoch();
+                    Response.sequence = ReliableSequence_++;
+                    if (ReliableSequence_ == 0) ++ReliableSequence_;
+                    if (!Transport_->send_reliable(encode_packet(
+                            Response, FocusReadyMessage{
+                                EffectiveLease(
+                                    Request.requested_lease_ms),
+                                Request.request_id}))) {
+                        IncomingCoordinator_.disconnect();
+                        ReleaseIncomingDirectionLocked();
+                        ++Stats_.DirectionRejected;
+                    } else {
+                        ++Stats_.IncomingFocusAccepted;
+                        NotifyDirectionChanged = true;
+                    }
+                }
+            }
+        } else {
+            const bool RequiresIncomingDirection =
+                Type == MessageType::FocusRenew ||
+                Type == MessageType::FocusRelease ||
+                Type == MessageType::KeyEvent ||
+                Type == MessageType::MouseButton ||
+                Type == MessageType::PointerPosition ||
+                Type == MessageType::PointerMotion ||
+                Type == MessageType::InputStateSnapshot ||
+                Type == MessageType::MouseWheel;
+            if (RequiresIncomingDirection &&
+                DirectionArbiter_.State() !=
+                    PeerDirectionState::IncomingActive) {
+                ++Stats_.DirectionRejected;
+                ++Stats_.authorization_rejected;
+            } else {
+                const auto Decision = IncomingCoordinator_.handle(
+                    *Decoded.packet);
+                CountDecision(Decision);
+                if ((Type == MessageType::FocusRelease ||
+                     Type == MessageType::SetMode) &&
+                    Decision == AgentDecision::Accepted &&
+                    !IncomingCoordinator_.RemoteFocused() &&
+                    DirectionArbiter_.State() ==
+                        PeerDirectionState::IncomingActive) {
+                    ReleaseIncomingDirectionLocked();
+                    NotifyDirectionChanged = true;
+                }
+            }
+        }
+        if (NotifyCollision) {
+            DirectionCollisionHandler = Handlers_.DirectionCollision;
+        }
+        if (NotifyDirectionChanged) {
+            DirectionChangedHandler = Handlers_.DirectionChanged;
+        }
+        if (NotifyFocusReady) {
+            OutgoingFocusReadyHandler = Handlers_.OutgoingFocusReady;
+        }
+    }
+    if (DirectionCollisionHandler) {
+        DirectionCollisionHandler();
+    }
+    if (DirectionChangedHandler) {
+        DirectionChangedHandler();
+    }
+    if (OutgoingFocusReadyHandler) {
+        OutgoingFocusReadyHandler();
+    }
+}
+
+void PeerSession::OnDatagram(ByteBuffer Packet) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_) return;
+    ++Stats_.datagrams_received;
+    const auto PeekedType = PeekMessageType(Packet);
+    auto Decoded = decode_packet(Packet, true);
+    if (!Decoded.packet) {
+        ++Stats_.decode_rejected;
+        if (PeekedType == MessageType::AudioFrame) {
+            ++Stats_.AudioRejected;
+        }
+        return;
+    }
+    if (!ValidateSession(*Decoded.packet)) {
+        if (Decoded.packet->header.type == MessageType::AudioFrame) {
+            ++Stats_.AudioRejected;
+        }
+        return;
+    }
+    if (Decoded.packet->header.type == MessageType::AudioFrame) {
+        ++Stats_.AudioReceived;
+        if (!LocalCapabilities_.contains(Capability::AudioSend) ||
+            AudioReceiver_ == nullptr ||
+            !AudioReceiver_->Push(
+                Decoded.packet->header.sequence,
+                std::get<AudioFrameMessage>(
+                    std::move(Decoded.packet->message)))) {
+            ++Stats_.authorization_rejected;
+            ++Stats_.AudioRejected;
+            return;
+        }
+        ++Stats_.AudioAccepted;
+        return;
+    }
+    if (DirectionArbiter_.State() !=
+            PeerDirectionState::IncomingActive) {
+        ++Stats_.DirectionRejected;
+        ++Stats_.authorization_rejected;
+        return;
+    }
+    CountDecision(IncomingCoordinator_.handle(*Decoded.packet));
 }
 
 } // namespace desklink
