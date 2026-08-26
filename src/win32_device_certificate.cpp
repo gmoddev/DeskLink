@@ -391,6 +391,45 @@ bool EncodeExtension(const char* Type,
                                nullptr, Encoded.data(), &Size) != FALSE;
 }
 
+bool SetSafeKeyAcl(NCRYPT_KEY_HANDLE Key) {
+    HANDLE Token{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token)) return false;
+    DWORD TokenSize = 0;
+    (void)GetTokenInformation(Token, TokenUser, nullptr, 0, &TokenSize);
+    std::vector<std::uint8_t> TokenStorage(TokenSize);
+    const bool ReadToken = TokenSize >= sizeof(TOKEN_USER) &&
+        GetTokenInformation(Token, TokenUser, TokenStorage.data(), TokenSize,
+                            &TokenSize) != FALSE;
+    CloseHandle(Token);
+    if (!ReadToken) return false;
+
+    const auto* User = reinterpret_cast<const TOKEN_USER*>(TokenStorage.data());
+    wchar_t* UserSid = nullptr;
+    if (!ConvertSidToStringSidW(User->User.Sid, &UserSid) || !UserSid) {
+        return false;
+    }
+    const std::wstring DescriptorText =
+        std::wstring(L"O:") + UserSid + L"D:P(A;;GA;;;" + UserSid +
+        L")(A;;GA;;;SY)";
+    LocalFree(UserSid);
+
+    PSECURITY_DESCRIPTOR Descriptor{};
+    ULONG DescriptorSize = 0;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            DescriptorText.c_str(), SDDL_REVISION_1, &Descriptor,
+            &DescriptorSize) || !Descriptor || DescriptorSize == 0) {
+        if (Descriptor) LocalFree(Descriptor);
+        return false;
+    }
+    constexpr SECURITY_INFORMATION Information =
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    const auto Status = NCryptSetProperty(
+        Key, NCRYPT_SECURITY_DESCR_PROPERTY,
+        static_cast<PBYTE>(Descriptor), DescriptorSize, Information);
+    LocalFree(Descriptor);
+    return Status == ERROR_SUCCESS;
+}
+
 NCRYPT_KEY_HANDLE CreateKey(NCRYPT_PROV_HANDLE Provider,
                             const std::wstring& KeyName) {
     NCRYPT_KEY_HANDLE Key{};
@@ -404,6 +443,7 @@ NCRYPT_KEY_HANDLE CreateKey(NCRYPT_PROV_HANDLE Provider,
                           reinterpret_cast<PBYTE>(&Length), sizeof(Length), 0) != ERROR_SUCCESS ||
         NCryptSetProperty(Key, NCRYPT_KEY_USAGE_PROPERTY,
                           reinterpret_cast<PBYTE>(&Usage), sizeof(Usage), 0) != ERROR_SUCCESS ||
+        !SetSafeKeyAcl(Key) ||
         NCryptFinalizeKey(Key, 0) != ERROR_SUCCESS) {
         NCryptDeleteKey(Key, 0);
         return 0;
