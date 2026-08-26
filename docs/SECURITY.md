@@ -159,6 +159,20 @@ exist and the foreground window or process cannot be inspected, the policy
 returns `LockPc1` instead of assuming the system default. Manual override is
 still subordinate to the emergency fail-local state.
 
+The product global fullscreen choice uses the same observation boundary even
+when no exact rule exists. It resolves fullscreen to the local-restrictive
+`Game` mode; missing or uninspectable foreground state resolves to `LockPc1`.
+The shell can register only four Ctrl/Alt-or-Shift plus F11/F12 chords and
+reserves `Ctrl+Alt+Pause/Break` for the independent emergency path. A hotkey is
+configuration, not authority: a named peer mismatch, missing active input
+owner, or any later session admission failure leaves input Local.
+
+Clipboard/audio switches store desire only after their local grant consequence
+is present. They cannot add trust or capabilities, infer the other PC's grant,
+or make a module active before its complementary permission and authenticated
+handshake. Crossing presets change only bounded roaming thresholds through the
+same validated graph and Local-before-save coordinator.
+
 The production profile surface is limited to one validated fallback mode and
 32 exact `executable=mode` rules. Fullscreen matching is an explicit CLI option;
 there is no configuration-file discovery, wildcard/regex matching, path lookup,

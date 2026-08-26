@@ -114,6 +114,7 @@ struct CommandLine {
     bool ProfileConfigurationSeen{};
     desklink::DeskMode ProfileDefaultMode{desklink::DeskMode::Roam};
     std::vector<desklink::ForegroundProfileRule> ProfileRules;
+    bool KeepLocalWhenFullscreen{};
     desklink::TlsBackend TlsBackend{desklink::TlsBackend::Auto};
     desklink::ControlRequestPayload ControlPayload{
         desklink::GetStateControlRequest{}};
@@ -318,6 +319,7 @@ void PrintUsage() {
         << L"focus --default-mode roam|lock-pc1|lock-pc2|game sets the fallback policy.\n"
         << L"focus --profile <exe>=<mode> adds an exact executable-name rule.\n"
         << L"focus --profile-fullscreen <exe>=<mode> requires a fullscreen match.\n"
+        << L"focus --keep-local-fullscreen applies fail-local policy to every fullscreen app.\n"
         << L"--console-confirm requires typing yes after comparing the pairing code.\n"
         << L"--tls-provider auto|schannel|openssl selects the packaged TLS runtime.\n";
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
@@ -602,6 +604,12 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.ProfileRules.push_back(*Rule);
             continue;
         }
+        if (Argument == L"--keep-local-fullscreen") {
+            if (Result.KeepLocalWhenFullscreen) return std::nullopt;
+            Result.ProfileConfigurationSeen = true;
+            Result.KeepLocalWhenFullscreen = true;
+            continue;
+        }
         if (Argument == L"--tls-provider") {
             if (ProviderSeen || Index + 1 >= ArgumentCount) return std::nullopt;
             ProviderSeen = true;
@@ -718,6 +726,8 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     }
     desklink::ForegroundProfileEngine ProfileValidator(
         Result.ProfileDefaultMode);
+    ProfileValidator.SetKeepLocalWhenFullscreen(
+        Result.KeepLocalWhenFullscreen);
     if (!ProfileValidator.SetRules(Result.ProfileRules)) return std::nullopt;
     if (Result.ConsoleConfirm &&
         Result.Mode != Operation::PairListen &&
@@ -2293,6 +2303,8 @@ const char* ProfileSourceName(desklink::ProfileModeSource Source) noexcept {
         case desklink::ProfileModeSource::ForegroundUnavailable:
             return "foreground-unavailable";
         case desklink::ProfileModeSource::Emergency: return "emergency";
+        case desklink::ProfileModeSource::FullscreenPolicy:
+            return "fullscreen-policy";
     }
     return "invalid";
 }
@@ -2307,6 +2319,7 @@ public:
                      desklink::MachineId LocalMachine,
                      desklink::DeskMode DefaultMode,
                      std::vector<desklink::ForegroundProfileRule> Rules,
+                     bool KeepLocalWhenFullscreen,
                      bool CaptureRequested,
                      desklink::Win32PointerCalibration PointerCalibration,
                      std::optional<std::filesystem::path>
@@ -2322,8 +2335,10 @@ public:
               ? std::make_unique<desklink::Win32RoamingSettingsStore>(
                     std::move(*EdgeRoamingSettingsPath))
               : nullptr),
-          PointerCalibration_(PointerCalibration),
-          ConfigurationValid_(Profiles_.SetRules(std::move(Rules))) {}
+          PointerCalibration_(PointerCalibration) {
+        Profiles_.SetKeepLocalWhenFullscreen(KeepLocalWhenFullscreen);
+        ConfigurationValid_ = Profiles_.SetRules(std::move(Rules));
+    }
 
     ~HostInputRuntime() override { Stop(); }
 
@@ -2952,7 +2967,7 @@ private:
     }
 
     [[nodiscard]] bool Initialize() {
-        if (!Profiles_.Rules().empty()) {
+        if (Profiles_.RequiresForegroundObservation()) {
             Profiles_.SetForeground(desklink::ReadWin32ForegroundWindow());
         }
         LastBackendFailure_ = BackendFailure::None;
@@ -2976,7 +2991,7 @@ private:
             MaintainRoaming();
         }
 
-        if (Profiles_.Rules().empty()) return true;
+        if (!Profiles_.RequiresForegroundObservation()) return true;
         const auto Weak = weak_from_this();
         desklink::Win32ForegroundHandlers Handlers;
         Handlers.Changed = [Weak](desklink::ForegroundWindowSnapshot Snapshot) {
@@ -3627,18 +3642,16 @@ int RunTrusted(const CommandLine& Command,
 
             const auto* SetMode = std::get_if<
                 desklink::SetDesiredModeControlRequest>(&Request.Payload);
+            const auto* FocusMachine = std::get_if<
+                desklink::FocusMachineControlRequest>(&Request.Payload);
             const bool ReturnLocal = std::holds_alternative<
                 desklink::ReturnLocalControlRequest>(Request.Payload);
-            if (!SetMode && !ReturnLocal) {
+            if (!SetMode && !FocusMachine && !ReturnLocal) {
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::Unsupported,
                     std::nullopt};
             }
 
-            const auto RequestedMode = ReturnLocal
-                ? desklink::DeskMode::LockPc1
-                : SetMode->Mode;
-            DesiredMode.store(RequestedMode);
             std::vector<std::shared_ptr<PeerRuntime>> Peers;
             std::shared_ptr<PeerRuntime> SelectedPeer;
             std::shared_ptr<HostInputRuntime> ActiveInput;
@@ -3648,6 +3661,20 @@ int RunTrusted(const CommandLine& Command,
                 SelectedPeer = ActivePeer;
                 ActiveInput = HostInput;
             }
+            if (FocusMachine &&
+                (!SelectedPeer ||
+                 SelectedPeer->PeerMachine != FocusMachine->Machine ||
+                 !ActiveInput)) {
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::NotReady,
+                    std::nullopt};
+            }
+
+            auto RequestedMode = desklink::DeskMode::LockPc1;
+            if (SetMode) RequestedMode = SetMode->Mode;
+            if (FocusMachine) RequestedMode = desklink::DeskMode::Roam;
+
+            DesiredMode.store(RequestedMode);
             for (const auto& Runtime : Peers) {
                 Runtime->Session.SetLocalDesiredMode(RequestedMode);
             }
@@ -3823,7 +3850,8 @@ int RunTrusted(const CommandLine& Command,
             Input = std::make_shared<HostInputRuntime>(
                 Runtime, Result, Clock, LocalIdentity.machine_id,
                 Command.ProfileDefaultMode,
-                Command.ProfileRules, Command.CaptureInput,
+                Command.ProfileRules, Command.KeepLocalWhenFullscreen,
+                Command.CaptureInput,
                 Command.PointerCalibration,
                 Command.EdgeRoamingSettingsPath);
             *RuntimeTarget = Input;
@@ -4048,6 +4076,7 @@ int RunTrusted(const CommandLine& Command,
         }
         bool RequireRemote = !Command.EdgeRoamingSettingsPath &&
             Command.ProfileRules.empty() &&
+            !Command.KeepLocalWhenFullscreen &&
             Command.ProfileDefaultMode != desklink::DeskMode::LockPc1 &&
             Command.ProfileDefaultMode != desklink::DeskMode::Game;
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS

@@ -571,6 +571,10 @@ void ControlProtocolRoundTripAndValidation() {
     Preferences.InputRoamingDesired = true;
     Preferences.AudioRoute = AudioRoutePreference::PeerToLocal;
     Preferences.AudioGainPermyriad = 7'500;
+    Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
+    Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
+    Preferences.ProfileRules.push_back(
+        ForegroundProfileRule{"game.exe", DeskMode::Game, true});
     Preferences.FirstRunComplete = true;
     CapabilitySet RequestedCapabilities;
     RequestedCapabilities.grant(Capability::InputInject);
@@ -4286,6 +4290,24 @@ void ForegroundProfilePolicyIsBoundedAndDeterministic() {
     Engine.ClearManualOverride();
     CHECK(Engine.Decision().Mode == DeskMode::Game);
 
+    ForegroundProfileEngine FullscreenPolicy;
+    FullscreenPolicy.SetKeepLocalWhenFullscreen(true);
+    CHECK(FullscreenPolicy.RequiresForegroundObservation());
+    CHECK(FullscreenPolicy.Decision().Mode == DeskMode::LockPc1);
+    CHECK(FullscreenPolicy.Decision().Source ==
+          ProfileModeSource::ForegroundUnavailable);
+    FullscreenPolicy.SetForeground(ForegroundWindowSnapshot{
+        20, "browser.exe", false, true});
+    CHECK(FullscreenPolicy.Decision().Mode == DeskMode::Roam);
+    FullscreenPolicy.SetForeground(ForegroundWindowSnapshot{
+        21, "game.exe", true, true});
+    CHECK(FullscreenPolicy.Decision().Mode == DeskMode::Game);
+    CHECK(FullscreenPolicy.Decision().Source ==
+          ProfileModeSource::FullscreenPolicy);
+    CHECK(FullscreenPolicy.SetManualOverride(DeskMode::Roam));
+    CHECK(FullscreenPolicy.Decision().Source ==
+          ProfileModeSource::ManualOverride);
+
     Engine.SetForeground(ForegroundWindowSnapshot{
         12, "", true, true});
     CHECK(Engine.Decision().Source ==
@@ -4454,6 +4476,19 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     Preferences.ClipboardDesired = true;
     Preferences.AudioRoute = AudioRoutePreference::Bidirectional;
     Preferences.AudioGainPermyriad = 7'500;
+    Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
+    Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
+    Preferences.ProfileRules.push_back(
+        ForegroundProfileRule{"game.exe", DeskMode::Game, true});
+
+    CapabilitySet LocalFeatureGrants;
+    CHECK(!CanEnableClipboardIntent(LocalFeatureGrants));
+    CHECK(!CanEnablePeerAudioIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::ClipboardRead);
+    LocalFeatureGrants.grant(Capability::ClipboardWrite);
+    CHECK(CanEnableClipboardIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::AudioSend);
+    CHECK(CanEnablePeerAudioIntent(LocalFeatureGrants));
 
     RuntimePlannerContext Ready;
     Ready.PreferredPeerTrusted = true;
@@ -4584,6 +4619,39 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     Malformed = Preferences;
     Malformed.AudioGainPermyriad = 10'001;
     CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.ReturnLocalHotkey = Malformed.FocusPeerHotkey;
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.FocusPeerHotkey = static_cast<ProductHotkey>(0xffu);
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.ProfileRules.push_back(
+        ForegroundProfileRule{"GAME.EXE", DeskMode::Roam, true});
+    CHECK(!IsValidProductPreferences(Malformed));
+
+    RoamingConfiguration CrossingPresets;
+    CrossingPresets.Links.push_back(RoamingLink{
+        {MakeMachineId(1), "left", DisplayEdgeSide::Right, 0, 10'000},
+        {MakeMachineId(2), "right", DisplayEdgeSide::Left, 0, 10'000}});
+    CHECK(ApplyProductCrossingPreset(
+        CrossingPresets, ProductCrossingPreset::CrossImmediately));
+    CHECK(CrossingPresets.CrossingDefaults.Policy == CrossingPolicy::Push);
+    CHECK(CrossingPresets.Links.front().AToB ==
+          CrossingPresets.CrossingDefaults);
+    CHECK(ApplyProductCrossingPreset(
+        CrossingPresets, ProductCrossingPreset::PauseAndPush));
+    CHECK(CrossingPresets.CrossingDefaults.Policy ==
+          CrossingPolicy::DwellAndPush);
+    CHECK(CrossingPresets.CrossingDefaults.DwellMilliseconds == 180);
+    CHECK(ApplyProductCrossingPreset(
+        CrossingPresets, ProductCrossingPreset::PushTwice));
+    CHECK(CrossingPresets.CrossingDefaults.Policy ==
+          CrossingPolicy::DoublePush);
+    CHECK(CrossingPresets.CrossingDefaults.DoublePushWindowMilliseconds ==
+          600);
+    CHECK(!ApplyProductCrossingPreset(
+        CrossingPresets, static_cast<ProductCrossingPreset>(0xffu)));
 }
 
 #ifdef _WIN32
@@ -4804,6 +4872,31 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     CHECK(*CalibratedFocusArguments == ExpectedCalibratedFocus);
     Focus.PointerCalibration = {};
 
+    Focus.ProfileDefaultMode = DeskMode::Roam;
+    Focus.KeepLocalWhenFullscreen = true;
+    Focus.ProfileRules = {
+        ForegroundProfileRule{"game.exe", DeskMode::Game, true},
+        ForegroundProfileRule{"editor.exe", DeskMode::LockPc1, false}};
+    const auto ProfileArguments = BuildLauncherArguments(Focus);
+    CHECK(ProfileArguments.has_value());
+    CHECK(std::find(
+              ProfileArguments->begin(), ProfileArguments->end(),
+              L"--keep-local-fullscreen") != ProfileArguments->end());
+    const auto FullscreenProfile = std::find(
+        ProfileArguments->begin(), ProfileArguments->end(),
+        L"--profile-fullscreen");
+    CHECK(FullscreenProfile != ProfileArguments->end());
+    CHECK(FullscreenProfile + 1 != ProfileArguments->end());
+    CHECK(*(FullscreenProfile + 1) == L"game.exe=game");
+    const auto ExactProfile = std::find(
+        ProfileArguments->begin(), ProfileArguments->end(), L"--profile");
+    CHECK(ExactProfile != ProfileArguments->end());
+    CHECK(ExactProfile + 1 != ProfileArguments->end());
+    CHECK(*(ExactProfile + 1) == L"editor.exe=lock-pc1");
+    Focus.ProfileDefaultMode = DeskMode::LockPc1;
+    Focus.KeepLocalWhenFullscreen = false;
+    Focus.ProfileRules.clear();
+
     Focus.EdgeRoamingSettingsPath =
         L"C:\\Users\\test\\AppData\\Local\\DeskLink\\roaming.settings";
     const auto EdgeArguments = BuildLauncherArguments(Focus);
@@ -4857,6 +4950,10 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     CHECK(!BuildLauncherArguments(Serve).has_value());
     Serve.ExpectedPeerMachine.reset();
     Serve.BrokerManaged = false;
+    Serve.ProfileRules.push_back(
+        ForegroundProfileRule{"game.exe", DeskMode::Game, true});
+    CHECK(!BuildLauncherArguments(Serve).has_value());
+    Serve.ProfileRules.clear();
 
     LauncherRequest Pair;
     Pair.Operation = LauncherOperation::PairListen;
@@ -5272,6 +5369,11 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Settings.AudioRoute = AudioRoutePreference::PeerToLocal;
     Settings.AudioGainPermyriad = 7'500;
     Settings.Gaming = GamingBehavior::FollowProfileRules;
+    Settings.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
+    Settings.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
+    Settings.ProfileRules = {
+        ForegroundProfileRule{"game.exe", DeskMode::Game, true},
+        ForegroundProfileRule{"editor.exe", DeskMode::LockPc1, false}};
     Settings.AdvancedModeEnabled = true;
     CHECK(First.Save(Settings));
     CHECK(First.Current() == Settings);
@@ -5302,7 +5404,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
         std::fstream Output(
             ReservedPath, std::ios::binary | std::ios::in | std::ios::out);
         CHECK(Output.good());
-        Output.seekp(32);
+        Output.seekp(33);
         Output.put('\1');
     }
     Win32ProductPreferencesStore Reserved(ReservedPath);
@@ -5335,7 +5437,34 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedPreferences->CloseToTray);
     CHECK(MigratedPreferences->RunAtLogin);
     CHECK(MigratedPreferences->FirstRunComplete);
-    CHECK(std::filesystem::file_size(LegacyPath) == 64);
+    CHECK(std::filesystem::file_size(LegacyPath) == 36);
+
+    const auto Version2Path = Directory / "version-2.bin";
+    std::array<std::uint8_t, 64> Version2{};
+    Version2[0] = 'D';
+    Version2[1] = 'L';
+    Version2[2] = 'P';
+    Version2[3] = 'P';
+    Version2[5] = 2;
+    Version2[6] = static_cast<std::uint8_t>(DeskRole::Main);
+    Version2[7] = static_cast<std::uint8_t>(
+        AudioRoutePreference::PeerToLocal);
+    Version2[8] = static_cast<std::uint8_t>(GamingBehavior::KeepLocal);
+    Version2[10] = 0;
+    Version2[11] = 1;
+    Version2[12] = 0x27;
+    Version2[13] = 0x10;
+    {
+        std::ofstream Output(Version2Path, std::ios::binary);
+        CHECK(Output.good());
+        Output.write(
+            reinterpret_cast<const char*>(Version2.data()), Version2.size());
+    }
+    Win32ProductPreferencesStore MigratedVersion2(Version2Path);
+    CHECK(MigratedVersion2.Load());
+    CHECK(MigratedVersion2.Current()->Role == DeskRole::Main);
+    CHECK(MigratedVersion2.Current()->AudioGainPermyriad == 10'000);
+    CHECK(std::filesystem::file_size(Version2Path) == 36);
 
     auto Invalid = Settings;
     Invalid.AudioGainPermyriad = 10'001;

@@ -272,6 +272,10 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
     }, Payload);
 }
 
+void EncodePreferences(Writer& Output,
+                       const ProductPreferences& Preferences);
+std::optional<ProductPreferences> DecodePreferences(Reader& Input);
+
 ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
     Writer Output;
     Output.U16(static_cast<std::uint16_t>(GetCommand(Request.Payload)));
@@ -289,25 +293,7 @@ ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
         } else if constexpr (std::is_same_v<
                                  ValueType,
                                  SetProductPreferencesControlRequest>) {
-            const auto& Preferences = Value.Preferences;
-            Output.U8(static_cast<std::uint8_t>(Preferences.Role));
-            Output.U8(static_cast<std::uint8_t>(Preferences.AudioRoute));
-            Output.U8(static_cast<std::uint8_t>(Preferences.Gaming));
-            std::uint16_t Flags = 0;
-            if (Preferences.PreferredPeerMachine) Flags |= 0x0001u;
-            if (Preferences.RunAtLogin) Flags |= 0x0002u;
-            if (Preferences.CloseToTray) Flags |= 0x0004u;
-            if (Preferences.AutoStartRuntime) Flags |= 0x0008u;
-            if (Preferences.AutoConnect) Flags |= 0x0010u;
-            if (Preferences.InputRoamingDesired) Flags |= 0x0020u;
-            if (Preferences.ClipboardDesired) Flags |= 0x0040u;
-            if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
-            if (Preferences.FirstRunComplete) Flags |= 0x0100u;
-            Output.U16(Flags);
-            Output.U16(Preferences.AudioGainPermyriad);
-            if (Preferences.PreferredPeerMachine) {
-                Output.Raw(*Preferences.PreferredPeerMachine);
-            }
+            EncodePreferences(Output, Value.Preferences);
         } else if constexpr (std::is_same_v<
                                  ValueType,
                                  RequestLocalPermissionChangeControlRequest>) {
@@ -419,39 +405,11 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
             if (Input.Remaining() != 0) return std::nullopt;
             return GetProductPreferencesControlRequest{};
         case ControlCommand::SetProductPreferences: {
-            std::uint8_t RawRole{};
-            std::uint8_t RawAudioRoute{};
-            std::uint8_t RawGaming{};
-            std::uint16_t Flags{};
-            SetProductPreferencesControlRequest Request;
-            if (!Input.U8(RawRole) || !Input.U8(RawAudioRoute) ||
-                !Input.U8(RawGaming) || !Input.U16(Flags) ||
-                !Input.U16(Request.Preferences.AudioGainPermyriad) ||
-                (Flags & 0xfe00u) != 0) {
+            const auto Preferences = DecodePreferences(Input);
+            if (!Preferences || Input.Remaining() != 0) {
                 return std::nullopt;
             }
-            Request.Preferences.Role = static_cast<DeskRole>(RawRole);
-            Request.Preferences.AudioRoute =
-                static_cast<AudioRoutePreference>(RawAudioRoute);
-            Request.Preferences.Gaming = static_cast<GamingBehavior>(RawGaming);
-            Request.Preferences.RunAtLogin = (Flags & 0x0002u) != 0;
-            Request.Preferences.CloseToTray = (Flags & 0x0004u) != 0;
-            Request.Preferences.AutoStartRuntime = (Flags & 0x0008u) != 0;
-            Request.Preferences.AutoConnect = (Flags & 0x0010u) != 0;
-            Request.Preferences.InputRoamingDesired = (Flags & 0x0020u) != 0;
-            Request.Preferences.ClipboardDesired = (Flags & 0x0040u) != 0;
-            Request.Preferences.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
-            Request.Preferences.FirstRunComplete = (Flags & 0x0100u) != 0;
-            if ((Flags & 0x0001u) != 0) {
-                MachineId Machine{};
-                if (!Input.Raw(Machine)) return std::nullopt;
-                Request.Preferences.PreferredPeerMachine = Machine;
-            }
-            if (Input.Remaining() != 0 ||
-                !IsValidProductPreferences(Request.Preferences)) {
-                return std::nullopt;
-            }
-            return Request;
+            return SetProductPreferencesControlRequest{*Preferences};
         }
         case ControlCommand::ListTrustedDevices:
             if (Input.Remaining() != 0) return std::nullopt;
@@ -640,8 +598,20 @@ void EncodePreferences(Writer& Output,
     if (Preferences.FirstRunComplete) Flags |= 0x0100u;
     Output.U16(Flags);
     Output.U16(Preferences.AudioGainPermyriad);
+    Output.U8(static_cast<std::uint8_t>(Preferences.FocusPeerHotkey));
+    Output.U8(static_cast<std::uint8_t>(Preferences.ReturnLocalHotkey));
     if (Preferences.PreferredPeerMachine) {
         Output.Raw(*Preferences.PreferredPeerMachine);
+    }
+    Output.U8(static_cast<std::uint8_t>(Preferences.ProfileRules.size()));
+    for (const auto& Rule : Preferences.ProfileRules) {
+        Output.U8(static_cast<std::uint8_t>(Rule.Mode));
+        Output.U8(Rule.FullscreenOnly ? 1u : 0u);
+        Output.U16(static_cast<std::uint16_t>(Rule.ExecutableName.size()));
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Rule.ExecutableName.data()),
+            Rule.ExecutableName.size()});
     }
 }
 
@@ -649,11 +619,14 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
     std::uint8_t RawRole{};
     std::uint8_t RawAudioRoute{};
     std::uint8_t RawGaming{};
+    std::uint8_t RawFocusHotkey{};
+    std::uint8_t RawReturnHotkey{};
     std::uint16_t Flags{};
     ProductPreferences Preferences;
     if (!Input.U8(RawRole) || !Input.U8(RawAudioRoute) ||
         !Input.U8(RawGaming) || !Input.U16(Flags) ||
         !Input.U16(Preferences.AudioGainPermyriad) ||
+        !Input.U8(RawFocusHotkey) || !Input.U8(RawReturnHotkey) ||
         (Flags & 0xfe00u) != 0) {
         return std::nullopt;
     }
@@ -661,6 +634,10 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
     Preferences.AudioRoute =
         static_cast<AudioRoutePreference>(RawAudioRoute);
     Preferences.Gaming = static_cast<GamingBehavior>(RawGaming);
+    Preferences.FocusPeerHotkey =
+        static_cast<ProductHotkey>(RawFocusHotkey);
+    Preferences.ReturnLocalHotkey =
+        static_cast<ProductHotkey>(RawReturnHotkey);
     Preferences.RunAtLogin = (Flags & 0x0002u) != 0;
     Preferences.CloseToTray = (Flags & 0x0004u) != 0;
     Preferences.AutoStartRuntime = (Flags & 0x0008u) != 0;
@@ -673,6 +650,29 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         MachineId Machine{};
         if (!Input.Raw(Machine)) return std::nullopt;
         Preferences.PreferredPeerMachine = Machine;
+    }
+    std::uint8_t RuleCount{};
+    if (!Input.U8(RuleCount) || RuleCount > kMaximumForegroundProfileRules) {
+        return std::nullopt;
+    }
+    Preferences.ProfileRules.reserve(RuleCount);
+    for (std::uint8_t Index = 0; Index < RuleCount; ++Index) {
+        std::uint8_t RawMode{};
+        std::uint8_t RuleFlags{};
+        std::uint16_t NameSize{};
+        if (!Input.U8(RawMode) || !Input.U8(RuleFlags) ||
+            !Input.U16(NameSize) || (RuleFlags & 0xfeu) != 0 ||
+            NameSize == 0 || NameSize > kMaximumExecutableNameBytes ||
+            Input.Remaining() < NameSize) {
+            return std::nullopt;
+        }
+        ByteBuffer Name(NameSize);
+        if (!Input.Raw(Name)) return std::nullopt;
+        Preferences.ProfileRules.push_back(ForegroundProfileRule{
+            std::string(
+                reinterpret_cast<const char*>(Name.data()), Name.size()),
+            static_cast<DeskMode>(RawMode),
+            (RuleFlags & 0x01u) != 0});
     }
     return IsValidProductPreferences(Preferences)
         ? std::optional<ProductPreferences>(Preferences)

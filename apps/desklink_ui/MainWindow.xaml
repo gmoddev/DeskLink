@@ -145,6 +145,134 @@
                                         AccessKey="R" />
                             </StackPanel>
                         </Border>
+                        <InfoBar x:Name="FeatureStatusBar" IsOpen="False"
+                                 IsClosable="True" Severity="Informational"
+                                 AutomationProperties.LiveSetting="Polite" />
+                        <Border Padding="20" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="Clipboard sharing"
+                                               Style="{StaticResource SubtitleTextBlockStyle}" />
+                                    <TextBlock x:Name="ClipboardIntentLabel"
+                                               Text="Pair a PC to configure clipboard sharing."
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="ClipboardDesiredToggle"
+                                              Grid.Column="1" OffContent="Off"
+                                              OnContent="On"
+                                              Toggled="OnClipboardIntentToggled"
+                                              AutomationProperties.Name="Share text clipboard with paired PC" />
+                            </Grid>
+                        </Border>
+                        <Border Padding="20" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <StackPanel Spacing="12">
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Audio"
+                                                   Style="{StaticResource SubtitleTextBlockStyle}" />
+                                        <TextBlock x:Name="PeerAudioIntentLabel"
+                                                   Text="Pair a PC to configure its audio."
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="PeerAudioDesiredToggle"
+                                                  Grid.Column="1" OffContent="Off"
+                                                  OnContent="On"
+                                                  Toggled="OnPeerAudioIntentToggled"
+                                                  AutomationProperties.Name="Play paired PC audio on this PC" />
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <NumberBox x:Name="PeerAudioGainBox"
+                                               Header="Volume (%)" Value="100"
+                                               Minimum="0" Maximum="100"
+                                               SpinButtonPlacementMode="Compact"
+                                               Width="160" />
+                                    <Button Content="Apply volume"
+                                            Click="OnApplyAudioGain"
+                                            VerticalAlignment="Bottom" />
+                                    <Button x:Name="PeerAudioMuteButton"
+                                            Content="Mute"
+                                            Click="OnToggleAudioMute"
+                                            VerticalAlignment="Bottom" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="20" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <StackPanel Spacing="12">
+                                <TextBlock Text="Switching"
+                                           Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <ToggleSwitch x:Name="GamingBehaviorToggle"
+                                              Header="When a game is fullscreen, keep keyboard and mouse on this PC"
+                                              OffContent="Off" OnContent="On"
+                                              Toggled="OnGamingBehaviorToggled" />
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="CrossingPresetBox"
+                                              Header="How to cross between PCs"
+                                              SelectedIndex="0">
+                                        <ComboBoxItem Content="Cross immediately" />
+                                        <ComboBoxItem Content="Pause and push" />
+                                        <ComboBoxItem Content="Push twice" />
+                                    </ComboBox>
+                                    <Button Grid.Column="1" Content="Apply crossing"
+                                            Click="OnApplyCrossingPreset"
+                                            VerticalAlignment="Bottom" />
+                                </Grid>
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="FocusPeerHotkeyBox"
+                                              Header="Focus paired PC" SelectedIndex="0">
+                                        <ComboBoxItem Content="Off" />
+                                        <ComboBoxItem Content="Ctrl+Alt+F11" />
+                                        <ComboBoxItem Content="Ctrl+Alt+F12" />
+                                        <ComboBoxItem Content="Ctrl+Shift+F11" />
+                                        <ComboBoxItem Content="Ctrl+Shift+F12" />
+                                    </ComboBox>
+                                    <ComboBox x:Name="ReturnLocalHotkeyBox" Grid.Column="1"
+                                              Header="Return to this PC" SelectedIndex="0">
+                                        <ComboBoxItem Content="Off" />
+                                        <ComboBoxItem Content="Ctrl+Alt+F11" />
+                                        <ComboBoxItem Content="Ctrl+Alt+F12" />
+                                        <ComboBoxItem Content="Ctrl+Shift+F11" />
+                                        <ComboBoxItem Content="Ctrl+Shift+F12" />
+                                    </ComboBox>
+                                    <Button Grid.Column="2" Content="Apply hotkeys"
+                                            Click="OnApplyHotkeys"
+                                            VerticalAlignment="Bottom" />
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <Button x:Name="FocusPeerButton"
+                                            Content="Focus paired PC"
+                                            Click="OnFocusPreferredPeer" />
+                                    <TextBlock Text="Ctrl+Alt+Pause/Break always returns input Local."
+                                               VerticalAlignment="Center" Opacity="0.72"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
                         <StackPanel Orientation="Horizontal" Spacing="12">
                             <Button Content="Arrange displays" Click="OnOpenDisplays"
                                     AccessKey="D" />
@@ -442,6 +570,37 @@
                                    Value="0" Minimum="0" Maximum="32000"
                                    SpinButtonPlacementMode="Compact" MaxWidth="320"
                                    HorizontalAlignment="Left" />
+                        <TextBlock Text="Application profiles"
+                                   Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <TextBlock Text="Exact executable names are evaluated locally. If the foreground app cannot be inspected, configured profile policy keeps input on this PC."
+                                   TextWrapping="Wrap" />
+                        <InfoBar x:Name="ProfileStatusBar" IsOpen="False"
+                                 IsClosable="True" Severity="Informational"
+                                 AutomationProperties.LiveSetting="Polite" />
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="190" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="ProfileExecutableBox"
+                                     Header="Executable name"
+                                     PlaceholderText="game.exe" MaxLength="260" />
+                            <ComboBox x:Name="ProfileModeBox" Grid.Column="1"
+                                      Header="While matched" SelectedIndex="0">
+                                <ComboBoxItem Content="Keep on this PC" />
+                                <ComboBoxItem Content="Allow roaming" />
+                                <ComboBoxItem Content="Game mode" />
+                            </ComboBox>
+                            <Button Grid.Column="2" Content="Add profile"
+                                    Click="OnAddProfileRule"
+                                    VerticalAlignment="Bottom" />
+                        </Grid>
+                        <CheckBox x:Name="ProfileFullscreenOnlyCheck"
+                                  Content="Only when the application is fullscreen" />
+                        <TextBlock x:Name="NoProfilesText"
+                                   Text="No application profiles." />
+                        <StackPanel x:Name="ProfileCards" Spacing="8" />
                     </StackPanel>
                 </ScrollViewer>
 

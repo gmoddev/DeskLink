@@ -16,6 +16,53 @@ constexpr UINT kTrayOpen = 1;
 constexpr UINT kTrayReturnLocal = 2;
 constexpr UINT kTrayPause = 3;
 constexpr UINT kTrayExit = 4;
+constexpr UINT kTrayFocusPeer = 5;
+constexpr UINT kTrayClipboard = 6;
+constexpr UINT kTrayAudioMute = 7;
+constexpr int kFocusPeerHotkeyId = 0xD311;
+constexpr int kReturnLocalHotkeyId = 0xD312;
+
+struct ProductHotkeyChord {
+    UINT Modifiers{};
+    UINT Key{};
+};
+
+std::optional<ProductHotkeyChord> HotkeyChord(
+    desklink::ProductHotkey Hotkey) noexcept {
+    switch (Hotkey) {
+        case desklink::ProductHotkey::Off:
+            return std::nullopt;
+        case desklink::ProductHotkey::CtrlAltF11:
+            return ProductHotkeyChord{MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                                      VK_F11};
+        case desklink::ProductHotkey::CtrlAltF12:
+            return ProductHotkeyChord{MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                                      VK_F12};
+        case desklink::ProductHotkey::CtrlShiftF11:
+            return ProductHotkeyChord{MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                                      VK_F11};
+        case desklink::ProductHotkey::CtrlShiftF12:
+            return ProductHotkeyChord{MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                                      VK_F12};
+    }
+    return std::nullopt;
+}
+
+const wchar_t* ProfileModeName(desklink::DeskMode Mode) noexcept {
+    switch (Mode) {
+        case desklink::DeskMode::LockPc1: return L"Keep on this PC";
+        case desklink::DeskMode::Roam: return L"Allow roaming";
+        case desklink::DeskMode::Game: return L"Game mode";
+        case desklink::DeskMode::LockPc2: return L"Keep on paired PC";
+    }
+    return L"Invalid mode";
+}
+
+bool ReceivesPeerAudio(
+    desklink::AudioRoutePreference Route) noexcept {
+    return Route == desklink::AudioRoutePreference::PeerToLocal ||
+           Route == desklink::AudioRoutePreference::Bidirectional;
+}
 
 std::optional<std::filesystem::path> GetDataDirectory() {
     PWSTR RawPath{};
@@ -333,6 +380,7 @@ void MainWindow::InitializeWindowLifecycle() {
 
 MainWindow::~MainWindow() {
     if (PollTimer_) PollTimer_.Stop();
+    UnregisterProductHotkeys();
     RemoveTrayIcon();
     if (MainWindowHandle_) {
         RemoveWindowSubclass(
@@ -359,14 +407,25 @@ void MainWindow::PollBroker() {
         Response->Status == desklink::ControlStatus::Ok && Response->State;
     BrokerUnavailableBar().IsOpen(!BrokerAvailable_);
     if (!BrokerAvailable_) {
+        RuntimeStateLoaded_ = false;
         ApplyState(desklink::ProductShellState::Offline);
+        UpdateFeatureControls();
         if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
         return;
     }
+    const bool FeatureStateChanged = !RuntimeStateLoaded_ ||
+        RuntimeState_.ConnectedPeerCount !=
+            Response->State->ConnectedPeerCount ||
+        RuntimeState_.AudioGainPermyriad !=
+            Response->State->AudioGainPermyriad ||
+        RuntimeState_.AudioMuted != Response->State->AudioMuted;
+    RuntimeState_ = *Response->State;
+    RuntimeStateLoaded_ = true;
     LocalMachine_ = Response->State->LocalMachine;
     BrokerPaused_ = Response->State->RuntimePhase ==
         desklink::BrokerRuntimePhase::Paused;
     ApplyState(StateFromControl(*Response->State));
+    if (FeatureStateChanged) UpdateFeatureControls();
     PollPreferences();
     PollDevices();
     PollNearby();
@@ -380,6 +439,7 @@ void MainWindow::PollPreferences() {
         return;
     }
     const bool WasLoaded = PreferencesLoaded_;
+    const bool Changed = !WasLoaded || Preferences_ != *Response->Preferences;
     Preferences_ = *Response->Preferences;
     PreferencesLoaded_ = true;
     LocalRoleText().Text(RoleName(Preferences_.Role));
@@ -391,6 +451,18 @@ void MainWindow::PollPreferences() {
         (!Preferences_.FirstRunComplete ||
          Preferences_.Role == desklink::DeskRole::Unconfigured)) {
         NavigateTo(L"Onboarding");
+    }
+    if (Changed) {
+        if (!RegisterProductHotkeys(Preferences_) &&
+            (Preferences_.FocusPeerHotkey != desklink::ProductHotkey::Off ||
+             Preferences_.ReturnLocalHotkey != desklink::ProductHotkey::Off)) {
+            ShowFeatureStatus(
+                L"Hotkey unavailable",
+                L"Another application owns a saved DeskLink hotkey. DeskLink left that shortcut inactive; Ctrl+Alt+Pause/Break is unchanged.",
+                Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        }
+        UpdateFeatureControls();
+        RenderProfiles();
     }
 }
 
@@ -436,6 +508,7 @@ void MainWindow::PollDevices() {
         TrustedDevices_ = Response->TrustedDevices->Devices;
         RenderDevices();
         UpdateHome();
+        UpdateFeatureControls();
         if (AddedDevice && !Preferences_.FirstRunComplete) {
             ShowPairingStatus(
                 L"Pairing completed and trust was stored on this PC. Finish setup when ready.",
@@ -1520,6 +1593,10 @@ void MainWindow::OnNudgeMonitorTile(
 void MainWindow::OnSaveMonitorLayout(
     Windows::Foundation::IInspectable const&,
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    SaveMonitorLayout();
+}
+
+void MainWindow::SaveMonitorLayout() {
     using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
     if (!MonitorLayoutLoaded_ || !RoamingSettings_) return;
     auto Candidate = MonitorConfiguration_;
@@ -1625,16 +1702,450 @@ void MainWindow::OnSaveMonitorLayout(
 }
 
 void MainWindow::UpdateHome() {
-    if (TrustedDevices_.empty()) {
+    const auto Device = PreferredDevice();
+    if (!Device) {
         PeerPcName().Text(L"No paired PC");
         PeerStatusText().Text(L"Add a PC to begin");
     } else {
-        PeerPcName().Text(ToHString(TrustedDevices_.front().DisplayName));
+        PeerPcName().Text(ToHString(Device->DisplayName));
         PeerStatusText().Text(
             State_ == desklink::ProductShellState::ConnectedLocal ||
                     State_ == desklink::ProductShellState::RemoteFocus
                 ? L"Paired · Connected now"
                 : L"Paired · Offline");
+    }
+}
+
+const desklink::ControlTrustedDevice* MainWindow::PreferredDevice() const {
+    if (Preferences_.PreferredPeerMachine) {
+        const auto Match = std::find_if(
+            TrustedDevices_.begin(), TrustedDevices_.end(),
+            [&](const auto& Device) {
+                return Device.Machine == *Preferences_.PreferredPeerMachine;
+            });
+        if (Match != TrustedDevices_.end()) return &*Match;
+    }
+    return TrustedDevices_.size() == 1 ? &TrustedDevices_.front() : nullptr;
+}
+
+void MainWindow::ShowFeatureStatus(
+    winrt::hstring const& Title,
+    winrt::hstring const& Message,
+    Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity) {
+    FeatureStatusBar().Title(Title);
+    FeatureStatusBar().Message(Message);
+    FeatureStatusBar().Severity(Severity);
+    FeatureStatusBar().IsOpen(true);
+}
+
+bool MainWindow::SavePreferences(
+    desklink::ProductPreferences const& Preferences,
+    winrt::hstring const& SuccessMessage) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    if (!BrokerAvailable_ || !desklink::IsValidProductPreferences(Preferences)) {
+        ShowFeatureStatus(
+            L"Settings unchanged",
+            L"The requested settings were invalid or the runtime was unavailable. Input remains Local.",
+            InfoBarSeverity::Error);
+        return false;
+    }
+    const auto Response = Send(
+        desklink::SetProductPreferencesControlRequest{Preferences},
+        std::chrono::milliseconds{2'500});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        ShowFeatureStatus(
+            L"Settings unchanged",
+            L"DeskLink could not safely reconcile the runtime and save this change. Input remains Local.",
+            InfoBarSeverity::Error);
+        return false;
+    }
+    Preferences_ = Preferences;
+    PreferencesLoaded_ = true;
+    UpdateFeatureControls();
+    RenderProfiles();
+    if (!SuccessMessage.empty()) {
+        ShowFeatureStatus(
+            L"Settings saved", SuccessMessage, InfoBarSeverity::Success);
+    }
+    return true;
+}
+
+void MainWindow::UpdateFeatureControls() {
+    if (!ContentReady_) return;
+    UpdatingFeatureControls_ = true;
+    const auto Device = PreferredDevice();
+    const auto PeerName = Device
+        ? ToHString(Device->DisplayName)
+        : winrt::hstring(L"paired PC");
+    const auto ThisPcName = LocalPcName().Text();
+
+    ClipboardIntentLabel().Text(Device
+        ? JoinText(L"Share text clipboard with ", PeerName,
+                   L". Both PCs must separately allow read and write access.")
+        : winrt::hstring(L"Pair a PC to configure clipboard sharing."));
+    ClipboardDesiredToggle().IsEnabled(Device != nullptr);
+    ClipboardDesiredToggle().IsOn(Preferences_.ClipboardDesired);
+
+    PeerAudioIntentLabel().Text(Device
+        ? JoinText(L"Play ", PeerName,
+                   JoinText(L" audio on ", ThisPcName, L". The other PC must separately allow capture."))
+        : winrt::hstring(L"Pair a PC to configure its audio."));
+    PeerAudioDesiredToggle().IsEnabled(Device != nullptr);
+    PeerAudioDesiredToggle().IsOn(ReceivesPeerAudio(Preferences_.AudioRoute));
+    PeerAudioGainBox().Value(
+        static_cast<double>(Preferences_.AudioGainPermyriad) / 100.0);
+    PeerAudioGainBox().IsEnabled(Device != nullptr);
+    PeerAudioMuteButton().IsEnabled(
+        Device && RuntimeStateLoaded_ &&
+        RuntimeState_.ConnectedPeerCount != 0 &&
+        ReceivesPeerAudio(Preferences_.AudioRoute));
+    PeerAudioMuteButton().Content(winrt::box_value(
+        RuntimeStateLoaded_ && RuntimeState_.AudioMuted ? L"Unmute" : L"Mute"));
+
+    GamingBehaviorToggle().IsOn(
+        Preferences_.Gaming == desklink::GamingBehavior::KeepLocal);
+    FocusPeerHotkeyBox().SelectedIndex(
+        static_cast<int>(Preferences_.FocusPeerHotkey));
+    ReturnLocalHotkeyBox().SelectedIndex(
+        static_cast<int>(Preferences_.ReturnLocalHotkey));
+    FocusPeerButton().IsEnabled(
+        Device && RuntimeStateLoaded_ && RuntimeState_.ConnectedPeerCount != 0);
+    FocusPeerButton().Content(winrt::box_value(Device
+        ? JoinText(L"Focus ", PeerName)
+        : winrt::hstring(L"Focus paired PC")));
+    UpdatingFeatureControls_ = false;
+}
+
+void MainWindow::RenderProfiles() {
+    if (!ContentReady_) return;
+    using namespace Microsoft::UI::Xaml;
+    using namespace Microsoft::UI::Xaml::Controls;
+    ProfileCards().Children().Clear();
+    NoProfilesText().Visibility(Preferences_.ProfileRules.empty()
+        ? Visibility::Visible : Visibility::Collapsed);
+    for (std::size_t Index = 0; Index < Preferences_.ProfileRules.size();
+         ++Index) {
+        const auto& Rule = Preferences_.ProfileRules[Index];
+        Border Card;
+        Card.Padding(Thickness{12});
+        Card.CornerRadius(CornerRadius{6});
+        Card.BorderThickness(Thickness{1});
+        Grid Layout;
+        Layout.ColumnSpacing(12);
+        Layout.ColumnDefinitions().Append(ColumnDefinition{});
+        ColumnDefinition ActionColumn;
+        ActionColumn.Width(GridLengthHelper::Auto());
+        Layout.ColumnDefinitions().Append(ActionColumn);
+        StackPanel Details;
+        Details.Spacing(3);
+        TextBlock Name;
+        Name.Text(ToHString(Rule.ExecutableName));
+        Name.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        Details.Children().Append(Name);
+        TextBlock Policy;
+        std::wstring Summary(ProfileModeName(Rule.Mode));
+        Summary += Rule.FullscreenOnly ? L" | Fullscreen only" : L" | Any window";
+        Policy.Text(winrt::hstring(Summary));
+        Details.Children().Append(Policy);
+        Layout.Children().Append(Details);
+        Button Remove;
+        Remove.Content(winrt::box_value(L"Remove"));
+        Remove.Tag(winrt::box_value(static_cast<std::uint64_t>(Index)));
+        Remove.Click({this, &MainWindow::OnRemoveProfileRule});
+        Grid::SetColumn(Remove, 1);
+        Layout.Children().Append(Remove);
+        Card.Child(Layout);
+        ProfileCards().Children().Append(Card);
+    }
+}
+
+void MainWindow::SetClipboardDesired(bool Desired) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Device = PreferredDevice();
+    if (!Device) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Pair a PC first",
+            L"Clipboard intent is stored per preferred paired PC.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    if (Desired && !desklink::CanEnableClipboardIntent(Device->Capabilities)) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Permission required on this PC",
+            L"Allow the paired PC to read and replace this PC's text clipboard under Devices & permissions. The other PC must approve its side separately.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    auto Updated = Preferences_;
+    Updated.ClipboardDesired = Desired;
+    (void)SavePreferences(
+        Updated,
+        Desired
+            ? L"Clipboard sharing is desired. It remains off until both stored permission sets and the authenticated module handshake agree."
+            : L"Clipboard sharing is off for this PC.");
+}
+
+void MainWindow::SetPeerAudioDesired(bool Desired) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Device = PreferredDevice();
+    if (!Device) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Pair a PC first",
+            L"Audio intent is stored per preferred paired PC.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    if (Desired && !desklink::CanEnablePeerAudioIntent(Device->Capabilities)) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Permission required on this PC",
+            L"Allow the paired PC to play audio into this PC under Devices & permissions. The paired PC must separately allow its audio to be captured.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    auto Updated = Preferences_;
+    if (Desired) {
+        Updated.AudioRoute = Updated.AudioRoute ==
+                desklink::AudioRoutePreference::LocalToPeer
+            ? desklink::AudioRoutePreference::Bidirectional
+            : desklink::AudioRoutePreference::PeerToLocal;
+    } else {
+        Updated.AudioRoute = Updated.AudioRoute ==
+                desklink::AudioRoutePreference::Bidirectional
+            ? desklink::AudioRoutePreference::LocalToPeer
+            : desklink::AudioRoutePreference::Off;
+    }
+    (void)SavePreferences(
+        Updated,
+        Desired
+            ? L"Peer audio is desired. It remains off until both stored permission sets and authenticated audio admission agree."
+            : L"Peer audio playback is off on this PC.");
+}
+
+void MainWindow::OnClipboardIntentToggled(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (ContentReady_ && !UpdatingFeatureControls_) {
+        SetClipboardDesired(ClipboardDesiredToggle().IsOn());
+    }
+}
+
+void MainWindow::OnPeerAudioIntentToggled(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (ContentReady_ && !UpdatingFeatureControls_) {
+        SetPeerAudioDesired(PeerAudioDesiredToggle().IsOn());
+    }
+}
+
+void MainWindow::OnApplyAudioGain(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Value = PeerAudioGainBox().Value();
+    if (!std::isfinite(Value) || Value < 0.0 || Value > 100.0) {
+        ShowFeatureStatus(
+            L"Volume unchanged", L"Enter a value from 0 through 100 percent.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    auto Updated = Preferences_;
+    Updated.AudioGainPermyriad = static_cast<std::uint16_t>(
+        std::llround(Value * 100.0));
+    (void)SavePreferences(
+        Updated,
+        L"The bounded peer-audio volume was saved. DeskLink never changes the Windows system mixer.");
+}
+
+void MainWindow::OnToggleAudioMute(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Response = Send(desklink::ToggleAudioMuteControlRequest{});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        ShowFeatureStatus(
+            L"Audio unchanged",
+            L"A validated active peer audio session was not available.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    RuntimeState_.AudioMuted = !RuntimeState_.AudioMuted;
+    RuntimeStateLoaded_ = true;
+    UpdateFeatureControls();
+}
+
+void MainWindow::OnGamingBehaviorToggled(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (!ContentReady_ || UpdatingFeatureControls_) return;
+    auto Updated = Preferences_;
+    Updated.Gaming = GamingBehaviorToggle().IsOn()
+        ? desklink::GamingBehavior::KeepLocal
+        : desklink::GamingBehavior::FollowProfileRules;
+    (void)SavePreferences(
+        Updated,
+        GamingBehaviorToggle().IsOn()
+            ? L"Fullscreen applications keep keyboard and mouse on this PC. Uninspectable foreground state also stays Local."
+            : L"Only the exact application profiles below affect foreground behavior.");
+}
+
+void MainWindow::OnApplyCrossingPreset(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (!MonitorLayoutLoaded_) LoadMonitorLayout();
+    if (!MonitorLayoutLoaded_ || !RoamingSettings_) {
+        ShowFeatureStatus(
+            L"Crossing unchanged",
+            L"DeskLink could not load the validated display graph.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    const auto Selection = CrossingPresetBox().SelectedIndex();
+    if (Selection < 0 || Selection > 2 ||
+        !desklink::ApplyProductCrossingPreset(
+            MonitorConfiguration_,
+            static_cast<desklink::ProductCrossingPreset>(Selection))) {
+        ShowFeatureStatus(
+            L"Crossing unchanged", L"Select a valid crossing behavior.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    MarkMonitorDirty();
+    SaveMonitorLayout();
+    if (!MonitorLayoutDirty_) {
+        ShowFeatureStatus(
+            L"Crossing behavior saved",
+            L"The preset was applied to new and existing directions after Local-first atomic graph replacement.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+    }
+}
+
+void MainWindow::OnApplyHotkeys(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Focus = FocusPeerHotkeyBox().SelectedIndex();
+    const auto Return = ReturnLocalHotkeyBox().SelectedIndex();
+    if (Focus < 0 || Focus > 4 || Return < 0 || Return > 4) {
+        ShowFeatureStatus(
+            L"Hotkeys unchanged", L"Select hotkeys from the bounded list.",
+            InfoBarSeverity::Error);
+        return;
+    }
+    auto Updated = Preferences_;
+    Updated.FocusPeerHotkey = static_cast<desklink::ProductHotkey>(Focus);
+    Updated.ReturnLocalHotkey = static_cast<desklink::ProductHotkey>(Return);
+    if (!desklink::IsValidProductPreferences(Updated)) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Hotkeys unchanged",
+            L"Focus and Return to this PC must use different shortcuts. Ctrl+Alt+Pause/Break remains reserved.",
+            InfoBarSeverity::Error);
+        return;
+    }
+    const auto Previous = Preferences_;
+    if (!RegisterProductHotkeys(Updated)) {
+        (void)RegisterProductHotkeys(Previous);
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Hotkey unavailable",
+            L"Windows reports that another application already owns one of these shortcuts.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    if (!SavePreferences(
+            Updated,
+            L"The local shortcuts were registered. They request normal authenticated focus and never bypass admission.")) {
+        (void)RegisterProductHotkeys(Previous);
+    }
+}
+
+void MainWindow::FocusPreferredPeer() {
+    const auto Device = PreferredDevice();
+    const auto Response = Device
+        ? Send(desklink::FocusMachineControlRequest{Device->Machine})
+        : std::nullopt;
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        ShowFeatureStatus(
+            L"Focus stayed on this PC",
+            L"The named peer was not connected and fully admitted for input. DeskLink did not bypass route, trust, capability, nonce, epoch, lease, topology, or peer validation checks.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+    }
+}
+
+void MainWindow::ReturnLocal() {
+    const auto Response = Send(desklink::ReturnLocalControlRequest{});
+    if (Response && Response->Status == desklink::ControlStatus::Ok) {
+        ApplyState(desklink::ProductShellState::ConnectedLocal);
+    }
+}
+
+void MainWindow::OnFocusPreferredPeer(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    FocusPreferredPeer();
+}
+
+void MainWindow::OnAddProfileRule(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Executable = ToUtf8(ProfileExecutableBox().Text());
+    const auto Selection = ProfileModeBox().SelectedIndex();
+    if (!Executable || Selection < 0 || Selection > 2) {
+        ProfileStatusBar().Title(L"Profile unchanged");
+        ProfileStatusBar().Message(
+            L"Enter an exact executable name such as game.exe and choose a behavior.");
+        ProfileStatusBar().Severity(InfoBarSeverity::Error);
+        ProfileStatusBar().IsOpen(true);
+        return;
+    }
+    const auto ModeName = Selection == 0 ? "lock-pc1" :
+        Selection == 1 ? "roam" : "game";
+    const auto Rule = desklink::ParseForegroundProfileRule(
+        *Executable + "=" + ModeName,
+        IsChecked(ProfileFullscreenOnlyCheck()));
+    auto Updated = Preferences_;
+    if (Rule) Updated.ProfileRules.push_back(*Rule);
+    if (!Rule || !desklink::IsValidProductPreferences(Updated)) {
+        ProfileStatusBar().Title(L"Profile unchanged");
+        ProfileStatusBar().Message(
+            L"Use a unique exact executable name without a path. The same name and fullscreen condition cannot be repeated.");
+        ProfileStatusBar().Severity(InfoBarSeverity::Error);
+        ProfileStatusBar().IsOpen(true);
+        return;
+    }
+    if (SavePreferences(Updated, {})) {
+        ProfileExecutableBox().Text(L"");
+        ProfileFullscreenOnlyCheck().IsChecked(false);
+        ProfileStatusBar().Title(L"Profile saved");
+        ProfileStatusBar().Message(
+            L"The bounded local profile will be applied on the next reconciled runtime session.");
+        ProfileStatusBar().Severity(InfoBarSeverity::Success);
+        ProfileStatusBar().IsOpen(true);
+    }
+}
+
+void MainWindow::OnRemoveProfileRule(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Button = Sender.try_as<Microsoft::UI::Xaml::Controls::Button>();
+    const auto Index = Button
+        ? winrt::unbox_value_or<std::uint64_t>(
+              Button.Tag(), std::numeric_limits<std::uint64_t>::max())
+        : std::numeric_limits<std::uint64_t>::max();
+    if (Index >= Preferences_.ProfileRules.size()) return;
+    auto Updated = Preferences_;
+    Updated.ProfileRules.erase(
+        Updated.ProfileRules.begin() + static_cast<std::ptrdiff_t>(Index));
+    if (SavePreferences(Updated, {})) {
+        ProfileStatusBar().Title(L"Profile removed");
+        ProfileStatusBar().Message(
+            L"Foreground policy was reconciled and remains fail-local.");
+        ProfileStatusBar().Severity(
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+        ProfileStatusBar().IsOpen(true);
     }
 }
 
@@ -1856,10 +2367,7 @@ Windows::Foundation::IAsyncAction MainWindow::ConfirmForget(
 void MainWindow::OnReturnLocal(
     Windows::Foundation::IInspectable const&,
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
-    const auto Response = Send(desklink::ReturnLocalControlRequest{});
-    if (Response && Response->Status == desklink::ControlStatus::Ok) {
-        ApplyState(desklink::ProductShellState::ConnectedLocal);
-    }
+    ReturnLocal();
 }
 
 void MainWindow::ApplyState(desklink::ProductShellState State) {
@@ -1944,9 +2452,68 @@ void MainWindow::TogglePaused() {
     }
 }
 
+void MainWindow::UnregisterProductHotkeys() noexcept {
+    if (!LifecycleWindow_) return;
+    (void)UnregisterHotKey(LifecycleWindow_, kFocusPeerHotkeyId);
+    (void)UnregisterHotKey(LifecycleWindow_, kReturnLocalHotkeyId);
+}
+
+bool MainWindow::RegisterProductHotkeys(
+    desklink::ProductPreferences const& Preferences) {
+    if (!LifecycleWindow_) return false;
+    UnregisterProductHotkeys();
+    const auto Focus = HotkeyChord(Preferences.FocusPeerHotkey);
+    const auto Return = HotkeyChord(Preferences.ReturnLocalHotkey);
+    if (Focus && !RegisterHotKey(
+            LifecycleWindow_, kFocusPeerHotkeyId,
+            Focus->Modifiers, Focus->Key)) {
+        return false;
+    }
+    if (Return && !RegisterHotKey(
+            LifecycleWindow_, kReturnLocalHotkeyId,
+            Return->Modifiers, Return->Key)) {
+        UnregisterProductHotkeys();
+        return false;
+    }
+    return true;
+}
+
 void MainWindow::ShowTrayMenu() {
     const auto Menu = CreatePopupMenu();
     if (!Menu) return;
+    const auto Presentation = desklink::PresentProductShellState(State_);
+    std::wstring StateLabel(L"Status: ");
+    StateLabel.append(Presentation.Badge);
+    AppendMenuW(Menu, MF_STRING | MF_DISABLED, 0, StateLabel.c_str());
+    const auto Device = PreferredDevice();
+    if (Device) {
+        const auto PeerName = ToHString(Device->DisplayName);
+        std::wstring FocusLabel(L"Focus ");
+        FocusLabel.append(PeerName.c_str(), PeerName.size());
+        AppendMenuW(
+            Menu,
+            MF_STRING |
+                (RuntimeStateLoaded_ && RuntimeState_.ConnectedPeerCount != 0
+                    ? MF_ENABLED : MF_GRAYED),
+            kTrayFocusPeer, FocusLabel.c_str());
+        std::wstring ClipboardLabel = Preferences_.ClipboardDesired
+            ? L"Turn off clipboard with " : L"Turn on clipboard with ";
+        ClipboardLabel.append(PeerName.c_str(), PeerName.size());
+        AppendMenuW(Menu, MF_STRING, kTrayClipboard, ClipboardLabel.c_str());
+        const auto AudioPercent = std::to_wstring(
+            Preferences_.AudioGainPermyriad / 100u);
+        std::wstring AudioLabel = RuntimeStateLoaded_ && RuntimeState_.AudioMuted
+            ? L"Unmute " : L"Mute ";
+        AudioLabel.append(PeerName.c_str(), PeerName.size());
+        AudioLabel += L" audio (" + AudioPercent + L"%)";
+        AppendMenuW(
+            Menu,
+            MF_STRING |
+                (RuntimeStateLoaded_ && RuntimeState_.ConnectedPeerCount != 0
+                    ? MF_ENABLED : MF_GRAYED),
+            kTrayAudioMute, AudioLabel.c_str());
+    }
+    AppendMenuW(Menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(Menu, MF_STRING, kTrayOpen, L"Open DeskLink");
     AppendMenuW(Menu, MF_STRING, kTrayReturnLocal, L"Return to this PC");
     AppendMenuW(
@@ -1964,8 +2531,21 @@ void MainWindow::ShowTrayMenu() {
     DestroyMenu(Menu);
     switch (Command) {
         case kTrayOpen: ShowFromTray(); break;
+        case kTrayFocusPeer: FocusPreferredPeer(); break;
+        case kTrayClipboard:
+            SetClipboardDesired(!Preferences_.ClipboardDesired);
+            break;
+        case kTrayAudioMute: {
+            const auto Response = Send(desklink::ToggleAudioMuteControlRequest{});
+            if (Response && Response->Status == desklink::ControlStatus::Ok) {
+                RuntimeState_.AudioMuted = !RuntimeState_.AudioMuted;
+                RuntimeStateLoaded_ = true;
+                UpdateFeatureControls();
+            }
+            break;
+        }
         case kTrayReturnLocal:
-            (void)Send(desklink::ReturnLocalControlRequest{});
+            ReturnLocal();
             PollBroker();
             break;
         case kTrayPause: TogglePaused(); break;
@@ -2018,6 +2598,16 @@ LRESULT CALLBACK MainWindow::LifecycleWindowProcedure(
         Message == GetPrepareUpdateMessage()) {
         Self->RequestExit();
         return 0;
+    }
+    if (Message == WM_HOTKEY) {
+        if (WParam == kFocusPeerHotkeyId) {
+            Self->FocusPreferredPeer();
+            return 0;
+        }
+        if (WParam == kReturnLocalHotkeyId) {
+            Self->ReturnLocal();
+            return 0;
+        }
     }
     if (Message == kTrayMessage) {
         switch (LOWORD(LParam)) {

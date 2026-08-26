@@ -2,6 +2,11 @@
 
 #include "desklink/discovery.hpp"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <charconv>
 #include <limits>
@@ -99,13 +104,72 @@ void AppendExpectedPeer(std::vector<std::wstring>& Arguments,
     Arguments.emplace_back(Text.begin(), Text.end());
 }
 
+std::wstring DeskModeArgument(DeskMode Mode) {
+    switch (Mode) {
+        case DeskMode::Roam: return L"roam";
+        case DeskMode::LockPc1: return L"lock-pc1";
+        case DeskMode::LockPc2: return L"lock-pc2";
+        case DeskMode::Game: return L"game";
+    }
+    return {};
+}
+
+std::optional<std::wstring> Utf8ToWide(std::string_view Text) {
+    if (Text.empty()) return std::nullopt;
+    const auto Required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, Text.data(),
+        static_cast<int>(Text.size()), nullptr, 0);
+    if (Required <= 0) return std::nullopt;
+    std::wstring Result(static_cast<std::size_t>(Required), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, Text.data(),
+            static_cast<int>(Text.size()), Result.data(), Required) !=
+        Required) {
+        return std::nullopt;
+    }
+    return Result;
+}
+
+bool HasProfileConfiguration(const LauncherRequest& Request) noexcept {
+    return Request.KeepLocalWhenFullscreen || !Request.ProfileRules.empty() ||
+           Request.ProfileDefaultMode != DeskMode::LockPc1;
+}
+
+bool IsValidProfileConfiguration(const LauncherRequest& Request) {
+    ForegroundProfileEngine Validator(Request.ProfileDefaultMode);
+    Validator.SetKeepLocalWhenFullscreen(Request.KeepLocalWhenFullscreen);
+    return Validator.SetRules(Request.ProfileRules);
+}
+
+bool AppendProfileConfiguration(
+    std::vector<std::wstring>& Arguments,
+    const LauncherRequest& Request) {
+    const auto DefaultMode = DeskModeArgument(Request.ProfileDefaultMode);
+    if (DefaultMode.empty()) return false;
+    Arguments.emplace_back(L"--default-mode");
+    Arguments.push_back(DefaultMode);
+    if (Request.KeepLocalWhenFullscreen) {
+        Arguments.emplace_back(L"--keep-local-fullscreen");
+    }
+    for (const auto& Rule : Request.ProfileRules) {
+        const auto Name = Utf8ToWide(Rule.ExecutableName);
+        const auto Mode = DeskModeArgument(Rule.Mode);
+        if (!Name || Mode.empty()) return false;
+        Arguments.emplace_back(
+            Rule.FullscreenOnly ? L"--profile-fullscreen" : L"--profile");
+        Arguments.push_back(*Name + L"=" + Mode);
+    }
+    return true;
+}
+
 } // namespace
 
 std::optional<std::vector<std::wstring>> BuildLauncherArguments(
     const LauncherRequest& Request) {
     if (Request.Port == 0 || Request.DiscoverySeconds == 0 ||
         Request.DiscoverySeconds > 30 ||
-        !IsValidWin32PointerCalibration(Request.PointerCalibration)) {
+        !IsValidWin32PointerCalibration(Request.PointerCalibration) ||
+        !IsValidProfileConfiguration(Request)) {
         return std::nullopt;
     }
     const auto HasEdgeRoaming =
@@ -147,6 +211,10 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
               [](std::uint8_t Byte) { return Byte == 0; }) ||
           (Request.Operation != LauncherOperation::PairListen &&
            Request.Operation != LauncherOperation::PairConnect)))) {
+        return std::nullopt;
+    }
+    if (HasProfileConfiguration(Request) &&
+        Request.Operation != LauncherOperation::Focus) {
         return std::nullopt;
     }
 
@@ -273,10 +341,12 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             }
             AppendExpectedPeer(Arguments, Request);
             AppendBrokerManagement(Arguments, Request);
-            // Connecting never immediately steals physical input. The wrapper
-            // must issue an explicit authenticated mode=roam request afterward.
-            Arguments.emplace_back(L"--default-mode");
-            Arguments.emplace_back(L"lock-pc1");
+            // A Roam default with edge settings still initializes Local and
+            // merely arms bounded crossing. Direct remote focus always needs a
+            // separate authenticated focus request.
+            if (!AppendProfileConfiguration(Arguments, Request)) {
+                return std::nullopt;
+            }
             AppendProductionProvider(Arguments);
             break;
     }

@@ -519,6 +519,20 @@ local `Game` or `LockPc1` choice takes precedence over a remote peer's `Roam`
 preference. Restrictive mode changes release DeskLink-owned input state and
 disable active capture fail-locally.
 
+The product shell's named `FocusMachine` action is narrower than a raw mode
+change. The broker forwards it only to its current managed child, and the Host
+accepts it only when the requested machine exactly matches the active
+authenticated peer and an input lifecycle owner exists. The resulting Roam
+request still traverses normal capability, route, nonce, epoch, lease,
+topology, `PeerValidated`, `FocusReady`, and initial-snapshot admission.
+
+Application preferences schema 3 stores only two allowlisted local hotkey
+choices and bounded exact foreground rules. The broker registers no hotkeys;
+the product shell owns them for its lifetime. The broker passes policy only on
+an explicit input-roaming launch. Its Roam fallback arms edge observation
+without applying a manual mode override, so live foreground rules and the
+global fullscreen keep-local policy retain their documented precedence.
+
 Audio gain and mute are local render policy owned by the active Host's
 `AudioReceiver`. They run after authenticated audio admission, jitter
 buffering, concealment, and drift correction, immediately before WASAPI

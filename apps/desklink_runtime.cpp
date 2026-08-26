@@ -507,7 +507,8 @@ private:
         CloseHandle(Process.hThread);
         Process_.Reset(Process.hProcess);
         ChildPreferences_ = Preferences;
-        RoamingArmed_ = false;
+        RoamingArmed_ = Request.CaptureInput &&
+            Request.ProfileDefaultMode == desklink::DeskMode::Roam;
         AudioGainApplied_ = false;
         RuntimeLock.unlock();
         std::cout << "[Broker:Process] managed transport started; pid="
@@ -594,6 +595,10 @@ private:
             std::filesystem::is_regular_file(RoamingSettingsPath_)) {
             Request.CaptureInput = true;
             Request.EdgeRoamingSettingsPath = RoamingSettingsPath_;
+            Request.ProfileDefaultMode = desklink::DeskMode::Roam;
+            Request.KeepLocalWhenFullscreen =
+                Preferences.Gaming == desklink::GamingBehavior::KeepLocal;
+            Request.ProfileRules = Preferences.ProfileRules;
         }
         return Launch(Request, Preferences);
     }
@@ -647,9 +652,9 @@ private:
                     desklink::SetAudioGainControlRequest{Gain}});
             if (!GainResponse ||
                 GainResponse->Status != desklink::ControlStatus::Ok) {
-                StopChildAfterControlFailure(
-                    desklink::BrokerRuntimeFailure::Capability);
-                return;
+                std::cerr
+                    << "[Broker:Audio] saved peer gain could not be applied; "
+                       "audio policy remains unchanged and the input session stays active\n";
             }
             std::scoped_lock Lock(Mutex_);
             AudioGainApplied_ = true;

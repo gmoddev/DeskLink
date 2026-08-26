@@ -1,5 +1,7 @@
 #pragma once
 
+#include "desklink/roaming.hpp"
+
 #include <functional>
 #include <string_view>
 
@@ -30,6 +32,18 @@ enum class ProductMonitorSaveStatus {
     StoreFailed,
     StoreFailedRuntimePaused,
 };
+
+enum class ProductCrossingPreset {
+    CrossImmediately,
+    PauseAndPush,
+    PushTwice,
+};
+
+// Applies a plain-language preset to both the defaults used for new routes
+// and every direction of every existing route.
+[[nodiscard]] bool ApplyProductCrossingPreset(
+    RoamingConfiguration& Configuration,
+    ProductCrossingPreset Preset) noexcept;
 
 struct ProductMonitorSaveActions {
     std::function<bool()> ConfirmStoppedLocalWhilePaused;

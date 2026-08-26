@@ -1,15 +1,17 @@
 #pragma once
 
 #include "desklink/capabilities.hpp"
+#include "desklink/profile.hpp"
 #include "desklink/protocol.hpp"
 #include "desklink/types.hpp"
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace desklink {
 
-inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 2;
+inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 3;
 
 enum class DeskRole : std::uint8_t {
     Unconfigured = 0,
@@ -30,6 +32,18 @@ enum class GamingBehavior : std::uint8_t {
     FollowProfileRules = 1,
 };
 
+// Product hotkeys intentionally use a small allowlist rather than persisting
+// arbitrary virtual-key/modifier combinations. This keeps the UI predictable,
+// avoids bare-key capture, and reserves Ctrl+Alt+Pause/Break exclusively for
+// the independent emergency fail-local path.
+enum class ProductHotkey : std::uint8_t {
+    Off = 0,
+    CtrlAltF11 = 1,
+    CtrlAltF12 = 2,
+    CtrlShiftF11 = 3,
+    CtrlShiftF12 = 4,
+};
+
 struct ProductPreferences {
     DeskRole Role{DeskRole::Unconfigured};
     std::optional<MachineId> PreferredPeerMachine;
@@ -42,6 +56,9 @@ struct ProductPreferences {
     AudioRoutePreference AudioRoute{AudioRoutePreference::Off};
     std::uint16_t AudioGainPermyriad{10'000};
     GamingBehavior Gaming{GamingBehavior::KeepLocal};
+    ProductHotkey FocusPeerHotkey{ProductHotkey::Off};
+    ProductHotkey ReturnLocalHotkey{ProductHotkey::Off};
+    std::vector<ForegroundProfileRule> ProfileRules;
     bool AdvancedModeEnabled{};
     bool FirstRunComplete{};
 
@@ -51,6 +68,11 @@ struct ProductPreferences {
 
 [[nodiscard]] bool IsValidProductPreferences(
     const ProductPreferences& Preferences) noexcept;
+[[nodiscard]] bool IsValidProductHotkey(ProductHotkey Hotkey) noexcept;
+[[nodiscard]] bool CanEnableClipboardIntent(
+    CapabilitySet LocalGrantsToPeer) noexcept;
+[[nodiscard]] bool CanEnablePeerAudioIntent(
+    CapabilitySet LocalGrantsToPeer) noexcept;
 
 enum class RuntimePlanBlocker : std::uint32_t {
     None = 0,

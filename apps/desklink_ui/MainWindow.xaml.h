@@ -89,6 +89,36 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnMonitorTilePointerReleased(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& Args);
+    void OnClipboardIntentToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnPeerAudioIntentToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnApplyAudioGain(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnToggleAudioMute(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnGamingBehaviorToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnApplyCrossingPreset(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnApplyHotkeys(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnFocusPreferredPeer(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnAddProfileRule(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnRemoveProfileRule(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
 
     void HideToTray();
     void InitializeWindowLifecycle();
@@ -126,11 +156,29 @@ private:
     void RenderMonitorRoutes();
     void RecomputeMonitorSuggestion(bool SnapDraggedTile);
     void MarkMonitorDirty();
+    void SaveMonitorLayout();
     void ShowMonitorStatus(
         winrt::hstring const& Title,
         winrt::hstring const& Message,
         Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);
     void UpdateHome();
+    void UpdateFeatureControls();
+    void RenderProfiles();
+    void ShowFeatureStatus(
+        winrt::hstring const& Title,
+        winrt::hstring const& Message,
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);
+    [[nodiscard]] bool SavePreferences(
+        desklink::ProductPreferences const& Preferences,
+        winrt::hstring const& SuccessMessage);
+    [[nodiscard]] desklink::ControlTrustedDevice const* PreferredDevice() const;
+    [[nodiscard]] bool RegisterProductHotkeys(
+        desklink::ProductPreferences const& Preferences);
+    void UnregisterProductHotkeys() noexcept;
+    void FocusPreferredPeer();
+    void ReturnLocal();
+    void SetClipboardDesired(bool Desired);
+    void SetPeerAudioDesired(bool Desired);
     void ShowPairingStatus(
         winrt::hstring const& Message,
         Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);
@@ -159,6 +207,7 @@ private:
     Microsoft::UI::Dispatching::DispatcherQueueTimer PollTimer_{nullptr};
     Microsoft::UI::Xaml::Controls::ContentDialog PairingDialog_{nullptr};
     desklink::ProductPreferences Preferences_;
+    desklink::ControlState RuntimeState_;
     std::vector<desklink::ControlNearbyPeer> NearbyPeers_;
     std::vector<desklink::ControlTrustedDevice> TrustedDevices_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore> RoamingSettings_;
@@ -181,6 +230,8 @@ private:
     bool ExplicitExit_{};
     bool ContentReady_{};
     bool PreferencesLoaded_{};
+    bool RuntimeStateLoaded_{};
+    bool UpdatingFeatureControls_{};
     bool DevicesLoaded_{};
     bool BrokerAvailable_{};
     bool PairingDialogActive_{};
