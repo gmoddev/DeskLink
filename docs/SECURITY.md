@@ -523,6 +523,24 @@ grant a capability, admit traffic, select a TLS provider, or change system
 audio settings. The bounded `0..10000` gain cannot amplify PCM beyond its
 admitted level.
 
+### Installer boundary
+
+The Windows installer is current-user only and installs under
+`%LOCALAPPDATA%\Programs\DeskLink`. It does not elevate, install a service,
+alter Firewall/network policy, or package the Windows 10 research provider.
+Setup and Uninstall refuse to proceed while either the Alpha UI or a DeskLink
+runtime holds its lifecycle mutex; they do not force-close a potentially
+Remote session. The compiler accepts only an allowlisted payload, rejects
+reparse points, and rechecks the reviewed Schannel MsQuic digest.
+
+Uninstall removes installer-owned files and DeskLink's current-user startup
+value, but deliberately preserves `%LOCALAPPDATA%\DeskLink`, the CNG device
+identity, certificates, trust records, and preferences. Release signing is a
+separate code-signing identity selected from the current-user certificate
+store. No PFX/private-key path is accepted, and failure to sign and timestamp
+the DeskLink executables, uninstaller, or Setup aborts production packaging;
+there is no automatic unsigned fallback.
+
 ---
 
 ## 13. Dependency policy

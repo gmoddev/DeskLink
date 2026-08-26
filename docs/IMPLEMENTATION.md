@@ -495,6 +495,15 @@ paths, deterministic nonzero display IDs, rectangle transforms, and
 generation-based stale-topology rejection. Bounded reliable mouse-wheel
 transport is implemented with enqueue-before-suppress fail-local capture.
 
+The first installation slice is also implemented as a fixed-path current-user
+package. It checks Alpha/runtime lifecycle mutexes before replacing files,
+accepts only the exact staged Schannel payload, preserves the device identity,
+trust, and preferences outside installer ownership, and removes the optional
+Run value on uninstall. CI proves unsigned development install, in-place
+upgrade, state preservation, and uninstall. Production output remains blocked
+until an explicit current-user Authenticode certificate and timestamp service
+can sign and verify the application executables, uninstaller, and Setup.
+
 Acceptance criteria:
 
 1. Two Windows PCs pair only during an explicit pairing window.

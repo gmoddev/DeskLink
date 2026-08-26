@@ -129,7 +129,7 @@ direction, simultaneous opposite attempts return Local, and reconnect does not
 restore focus. Listener-side capture is rejected unless the absolute
 roaming-settings path is also supplied.
 
-## Portable package
+## Portable package and installer foundation
 
 Configure a Windows MsQuic build and create the ZIP with CPack:
 
@@ -153,11 +153,21 @@ The ZIP contains:
 Do not copy a different `msquic.dll` into the package. Runtime version and hash
 verification remain fail closed.
 
+The Windows CI job also stages the same allowlisted payload into a current-user
+installer. Development artifacts are explicitly named `*-unsigned.exe` and are
+not release candidates. A production installer build requires an explicit
+current-user code-signing certificate and RFC 3161 timestamp, and refuses to
+continue without them. Setup never elevates, installs a service, or changes
+Firewall policy. Active Alpha/runtime mutexes block upgrade and uninstall, and
+the uninstaller preserves `%LOCALAPPDATA%\DeskLink` identity, trust, and
+preferences while removing an enabled current-user startup value. See
+[`WINDOWS_INSTALLER.md`](WINDOWS_INSTALLER.md).
+
 ## Deliberately deferred
 
 - physical reciprocal edge qualification
 - Windows 10 production support
 - two-Windows-11 physical failure-matrix signoff
-- persisted profiles or automatic startup
-- final visual polish, installer, signing, and updates
+- final visual polish, production signing/clean-system installer qualification,
+  and fail-local updates
 - persistent diagnostics or telemetry

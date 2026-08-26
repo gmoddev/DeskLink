@@ -36,6 +36,7 @@
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"DeskLinkAlphaWindow.v1";
+constexpr wchar_t kInstallerMutexName[] = L"Local\\DeskLink.Install.v1";
 constexpr UINT kStatusTimer = 1;
 constexpr UINT kProcessLogMessage = WM_APP + 1;
 constexpr UINT kProcessExitedMessage = WM_APP + 2;
@@ -97,6 +98,12 @@ using UniqueHandle = std::unique_ptr<void, HandleCloser>;
 
 UniqueHandle TakeHandle(HANDLE Handle) {
     return UniqueHandle(Handle == INVALID_HANDLE_VALUE ? nullptr : Handle);
+}
+
+bool IsInstallerActive() noexcept {
+    const auto Handle = TakeHandle(
+        OpenMutexW(SYNCHRONIZE, FALSE, kInstallerMutexName));
+    return Handle || GetLastError() != ERROR_FILE_NOT_FOUND;
 }
 
 std::optional<std::wstring> GetExecutablePath() {
@@ -1233,10 +1240,21 @@ int WINAPI wWinMain(
     InitCommonControlsEx(&Controls);
     (void)SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    if (IsInstallerActive()) {
+        MessageBoxW(nullptr, L"A DeskLink install or uninstall is active.",
+                    L"DeskLink Alpha", MB_OK | MB_ICONINFORMATION);
+        return 1;
+    }
     const auto InstanceMutex = TakeHandle(CreateMutexW(
         nullptr, FALSE, L"Local\\DeskLink.Alpha.v1"));
     if (!InstanceMutex) return 1;
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    const bool InstanceAlreadyExists = GetLastError() == ERROR_ALREADY_EXISTS;
+    if (IsInstallerActive()) {
+        MessageBoxW(nullptr, L"A DeskLink install or uninstall is active.",
+                    L"DeskLink Alpha", MB_OK | MB_ICONINFORMATION);
+        return 1;
+    }
+    if (InstanceAlreadyExists) {
         const auto Existing = FindWindowW(kWindowClass, nullptr);
         if (Existing) PostMessageW(Existing, kActivateMessage, 0, 0);
         return 0;

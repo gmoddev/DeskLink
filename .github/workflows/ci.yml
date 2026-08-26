@@ -103,6 +103,98 @@ jobs:
       - name: Package native alpha wrapper
         run: cpack --config build-msquic/CPackConfig.cmake -C Release
 
+      - name: Stage native alpha wrapper for the installer
+        run: >-
+          cmake --install build-msquic --config Release
+          --prefix installer-stage --component Alpha
+
+      - name: Install verified Inno Setup compiler
+        shell: pwsh
+        run: |
+          $Installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.0-x64.exe'
+          # Inno Setup's /DIR switch is parsed by the child installer. Keep this
+          # temporary path free of spaces so Start-Process cannot split it while
+          # reconstructing the native command line.
+          $ToolRoot = Join-Path $env:RUNNER_TEMP 'inno-7.1.0'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe' -OutFile $Installer
+          $Expected = '0362A383ED217D4C4239B5933866DD96D3EB2102737DA92F80F6057A4B40DF2F'
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash -ne $Expected) {
+            throw 'Downloaded Inno Setup 7.1.0 digest did not match the immutable release artifact.'
+          }
+          $Signature = Get-AuthenticodeSignature -LiteralPath $Installer
+          $Publisher = if ($Signature.SignerCertificate) {
+            $Signature.SignerCertificate.GetNameInfo(
+              [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+              $false)
+          }
+          if ($Signature.Status -ne 'Valid' -or
+              $Publisher -ne 'Pyrsys B.V.') {
+            throw 'Downloaded Inno Setup compiler did not have the expected valid Authenticode publisher.'
+          }
+          $Process = Start-Process -FilePath $Installer -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            '/CURRENTUSER', ('/DIR=' + $ToolRoot)
+          ) -Wait -PassThru
+          if ($Process.ExitCode -ne 0) {
+            throw "Inno Setup compiler installation failed with exit code $($Process.ExitCode)."
+          }
+          $Compiler = Join-Path $ToolRoot 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) {
+            throw "Inno Setup reported success but did not install the compiler at $Compiler."
+          }
+          "DESKLINK_ISCC=$Compiler" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Prove the production signing gate fails closed
+        shell: pwsh
+        run: |
+          $Rejected = $false
+          try {
+            ./scripts/Build-WindowsInstaller.ps1 `
+              -StagePath installer-stage `
+              -OutputPath "$env:RUNNER_TEMP\DeskLink-should-not-build.exe" `
+              -IsccPath $env:DESKLINK_ISCC
+          } catch {
+            $Rejected = $true
+            Write-Host "[Packaging:Installer] expected signing refusal: $($_.Exception.Message)"
+          }
+          if (-not $Rejected) {
+            throw 'Production packaging unexpectedly succeeded without signing authority.'
+          }
+
+      - name: Build unsigned development installers
+        shell: pwsh
+        run: |
+          ./scripts/Build-WindowsInstaller.ps1 `
+            -StagePath installer-stage `
+            -OutputPath DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe `
+            -IsccPath $env:DESKLINK_ISCC `
+            -AppVersion 0.1.0 `
+            -DevelopmentUnsigned
+          ./scripts/Build-WindowsInstaller.ps1 `
+            -StagePath installer-stage `
+            -OutputPath DeskLink-Alpha-0.1.1-windows-x64-unsigned.exe `
+            -IsccPath $env:DESKLINK_ISCC `
+            -AppVersion 0.1.1 `
+            -DevelopmentUnsigned
+
+      - name: Validate current-user install, upgrade, and uninstall
+        shell: pwsh
+        run: |
+          ./scripts/Test-WindowsInstaller.ps1 `
+            -InstallerPath DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe `
+            -UpgradeInstallerPath DeskLink-Alpha-0.1.1-windows-x64-unsigned.exe `
+            -ExpectedUpgradeVersion 0.1.1 `
+            -AllowCurrentUserMutation
+
+      - name: Upload Windows alpha packages
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: DeskLink-Alpha-0.1.0-windows-x64
+          if-no-files-found: error
+          path: |
+            DeskLink-Alpha-0.1.0-windows-x64.zip
+            DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe
+
   Windows10Prototype:
     name: Windows 10 opaque CNG prototype
     runs-on: windows-latest

@@ -562,3 +562,20 @@ User session
 Do not introduce a SYSTEM service until a concrete requirement needs one.
 
 If privileged functions later become necessary, add a small broker service with an allowlisted API. The broker should not own networking, hooks, UI, or arbitrary command execution.
+
+---
+
+## 13. Installer process boundary
+
+The first installer remains a normal current-user process. It places immutable
+application files under `%LOCALAPPDATA%\Programs\DeskLink`, creates a Start
+menu entry and HKCU uninstall registration, and owns no network/session state.
+It does not introduce a broker, service, driver, elevation boundary, Firewall
+rule, or transport listener.
+
+Both application entry points hold named lifecycle mutexes. Setup and Uninstall
+check those mutexes and stop before changing files, so packaging cannot bypass
+the future fail-local update sequence by killing a Remote process. Identity,
+trust, and preferences remain in `%LOCALAPPDATA%\DeskLink` and the current-user
+CNG/certificate stores, outside the installer ownership graph. Upgrade and
+uninstall therefore cannot silently replace or delete peer identity state.

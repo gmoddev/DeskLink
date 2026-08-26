@@ -85,7 +85,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture
 - Production Host profile CLI and serialized live mode-event runtime
 - Native Windows alpha launcher with bounded pairing/session controls,
-  authenticated status/mode IPC, graceful child lifecycle, and Schannel-only ZIP
+  authenticated status/mode IPC, graceful child lifecycle, a Schannel-only
+  ZIP, and a current-user installer foundation
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -99,7 +100,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
-- Final product polish, installer/update flow, and Stream Deck plugin
+- Production signing/clean-system installer qualification, update flow, final
+  product polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 
@@ -159,6 +161,14 @@ physical emergency path. The alpha package is Schannel-only and supports the
 Windows 11 / Server 2022+ production baseline. See
 [`docs/ALPHA_WRAPPER.md`](docs/ALPHA_WRAPPER.md) for the workflow and packaging
 command.
+
+Windows CI also creates an explicitly unsigned current-user development
+installer and validates install, repair-style upgrade, startup cleanup, state
+preservation, and uninstall. Unsigned installers are never production release
+artifacts. Production packaging fails closed unless the DeskLink executables,
+uninstaller, and Setup can be Authenticode-signed and timestamped with an
+explicit current-user certificate. See
+[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 
