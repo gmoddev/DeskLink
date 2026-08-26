@@ -139,6 +139,7 @@ if ($IsccVersion -ne $ExpectedInnoVersion) {
 $RequiredFiles = @(
     'desklink_alpha.exe',
     'desklink_pair.exe',
+    'desklink_update.exe',
     'runtime\schannel\msquic.dll',
     'concrt140.dll',
     'msvcp140.dll',
@@ -171,6 +172,14 @@ $MsQuicPath = Join-Path $StagePath 'runtime\schannel\msquic.dll'
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $MsQuicPath).Hash -ne
     $ExpectedMsQuicHash) {
     throw 'The staged Schannel MsQuic runtime does not match the reviewed 2.6.0 artifact.'
+}
+$UpdaterBytes = [IO.File]::ReadAllBytes(
+    (Join-Path $StagePath 'desklink_update.exe'))
+$UpdaterUtf16 = [Text.Encoding]::Unicode.GetString($UpdaterBytes)
+$UpdaterAscii = [Text.Encoding]::ASCII.GetString($UpdaterBytes)
+if ($UpdaterUtf16.Contains('development-allow-unsigned') -or
+    $UpdaterAscii.Contains('development-allow-unsigned')) {
+    throw 'The staged production updater contains a validation-only unsigned bypass.'
 }
 
 $Certificate = $null
@@ -246,7 +255,8 @@ try {
         }
     } else {
         Assert-AuthenticodeSignature $BuiltInstaller $Certificate.Thumbprint -RequireTimestamp
-        foreach ($Executable in 'desklink_alpha.exe', 'desklink_pair.exe') {
+        foreach ($Executable in 'desklink_alpha.exe', 'desklink_pair.exe',
+                'desklink_update.exe') {
             Assert-AuthenticodeSignature `
                 (Join-Path $TemporaryStage $Executable) $Certificate.Thumbprint -RequireTimestamp
         }

@@ -291,6 +291,18 @@ remote epoch = 0
 The Windows capture layer wires Ctrl+Alt+Pause directly to this behavior and
 stops suppressing local physical input before notifying the control worker.
 
+### Coordinated update
+
+`UpdateCoordinator` requires successful package validation before the first
+lifecycle operation. It then orders `Return Local -> confirm no focus/capture ->
+request runtime shutdown -> wait runtime -> request UI shutdown -> wait UI ->
+install -> validate`. Backend exceptions become failures rather than escaping
+the coordinator. Once candidate installation has been attempted, every install
+or health failure enters rollback; rollback install/validation failure prevents
+restart. The Windows backend binds that state machine to the same-SID control
+pipe, named lifecycle gates, timestamped same-signer installers, a bounded Job
+object, registered version checks, and an installed Alpha self-test.
+
 ---
 
 ## 5. Why the implementation does not contain a generic message bus

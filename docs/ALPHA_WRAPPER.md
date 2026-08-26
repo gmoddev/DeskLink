@@ -163,11 +163,18 @@ the uninstaller preserves `%LOCALAPPDATA%\DeskLink` identity, trust, and
 preferences while removing an enabled current-user startup value. See
 [`WINDOWS_INSTALLER.md`](WINDOWS_INSTALLER.md).
 
+The package also includes `desklink_update.exe`. It accepts only explicit local
+candidate/current-version rollback installers and their SHA-256 values. Before
+Setup, it proves both packages have the installed release signer, returns input
+Local through the typed control API, shuts down the runtime and UI, and rolls
+back on install or health-check failure. It performs no release discovery or
+download. See [`WINDOWS_UPDATES.md`](WINDOWS_UPDATES.md).
+
 ## Deliberately deferred
 
 - physical reciprocal edge qualification
 - Windows 10 production support
 - two-Windows-11 physical failure-matrix signoff
-- final visual polish, production signing/clean-system installer qualification,
-  and fail-local updates
+- final visual polish and production-signed clean-system installer/update
+  qualification
 - persistent diagnostics or telemetry

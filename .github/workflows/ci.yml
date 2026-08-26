@@ -92,7 +92,7 @@ jobs:
       - name: Build adapter, pairing control, and native loopback
         run: >-
           cmake --build build-msquic --config Release
-          --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair desklink_alpha
+          --target desklink_msquic_runtime_tests desklink_msquic_loopback_tests desklink_pair desklink_alpha desklink_update_validation
           --parallel 2
 
       - name: Run pinned-runtime and native MsQuic loopback tests
@@ -184,6 +184,7 @@ jobs:
             -InstallerPath DeskLink-Alpha-0.1.0-windows-x64-unsigned.exe `
             -UpgradeInstallerPath DeskLink-Alpha-0.1.1-windows-x64-unsigned.exe `
             -ExpectedUpgradeVersion 0.1.1 `
+            -UpdateValidationPath build-msquic/Release/desklink_update_validation.exe `
             -AllowCurrentUserMutation
 
       - name: Upload Windows alpha packages

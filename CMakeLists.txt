@@ -58,6 +58,7 @@ add_library(desklink_core
     src/pairing_wire.cpp
     src/agent.cpp
     src/audio.cpp
+    src/update.cpp
     src/in_memory_transport.cpp
 )
 
@@ -275,12 +276,37 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         target_compile_options(desklink_windows PRIVATE
             -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
     endif()
+
+    function(DeskLinkConfigureUpdateTarget Target)
+        target_link_libraries(${Target} PRIVATE
+            desklink_windows wintrust version shell32)
+        target_compile_definitions(${Target} PRIVATE UNICODE _UNICODE)
+        if(MSVC)
+            target_compile_options(${Target} PRIVATE /W4 /permissive-)
+        else()
+            target_compile_options(${Target} PRIVATE
+                -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+        endif()
+        if(MINGW)
+            target_link_options(${Target} PRIVATE
+                -municode -static -static-libgcc -static-libstdc++)
+        endif()
+    endfunction()
+
+    add_executable(desklink_update apps/desklink_update.cpp)
+    DeskLinkConfigureUpdateTarget(desklink_update)
+    if(DESKLINK_BUILD_TESTS)
+        add_executable(desklink_update_validation apps/desklink_update.cpp)
+        target_compile_definitions(desklink_update_validation PRIVATE
+            DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS=1)
+        DeskLinkConfigureUpdateTarget(desklink_update_validation)
+    endif()
 endif()
 
 if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     add_executable(desklink_alpha WIN32 apps/desklink_alpha.cpp)
     target_link_libraries(desklink_alpha PRIVATE desklink_windows comctl32 shell32 ole32)
-    add_dependencies(desklink_alpha desklink_pair)
+    add_dependencies(desklink_alpha desklink_pair desklink_update)
     target_compile_definitions(desklink_alpha PRIVATE UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(desklink_alpha PRIVATE /W4 /permissive-)
@@ -294,7 +320,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     endif()
     DeskLinkStageSchannelRuntime(desklink_alpha)
 
-    install(TARGETS desklink_alpha desklink_pair
+    install(TARGETS desklink_alpha desklink_pair desklink_update
         RUNTIME DESTINATION . COMPONENT Alpha)
     install(FILES "${DESKLINK_MSQUIC_SCHANNEL_DLL}"
         DESTINATION runtime/schannel COMPONENT Alpha)

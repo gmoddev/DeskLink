@@ -37,6 +37,7 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"DeskLinkAlphaWindow.v1";
 constexpr wchar_t kInstallerMutexName[] = L"Local\\DeskLink.Install.v1";
+constexpr wchar_t kUpdateMutexName[] = L"Local\\DeskLink.Update.v1";
 constexpr UINT kStatusTimer = 1;
 constexpr UINT kProcessLogMessage = WM_APP + 1;
 constexpr UINT kProcessExitedMessage = WM_APP + 2;
@@ -100,10 +101,20 @@ UniqueHandle TakeHandle(HANDLE Handle) {
     return UniqueHandle(Handle == INVALID_HANDLE_VALUE ? nullptr : Handle);
 }
 
-bool IsInstallerActive() noexcept {
-    const auto Handle = TakeHandle(
-        OpenMutexW(SYNCHRONIZE, FALSE, kInstallerMutexName));
+bool IsNamedMutexActive(const wchar_t* Name) noexcept {
+    const auto Handle = TakeHandle(OpenMutexW(SYNCHRONIZE, FALSE, Name));
     return Handle || GetLastError() != ERROR_FILE_NOT_FOUND;
+}
+
+bool IsLifecycleOperationActive() noexcept {
+    return IsNamedMutexActive(kInstallerMutexName) ||
+        IsNamedMutexActive(kUpdateMutexName);
+}
+
+UINT GetPrepareUpdateMessage() noexcept {
+    static const UINT Message =
+        RegisterWindowMessageW(L"DeskLink.PrepareUpdate.v1");
+    return Message;
 }
 
 std::optional<std::wstring> GetExecutablePath() {
@@ -119,6 +130,28 @@ std::optional<std::wstring> GetExecutablePath() {
         if (Buffer.size() >= 32'768) return std::nullopt;
         Buffer.resize(Buffer.size() * 2);
     }
+}
+
+bool ValidateInstalledPayloadForUpdate() {
+    if (!IsNamedMutexActive(kUpdateMutexName) ||
+        IsNamedMutexActive(kInstallerMutexName)) {
+        return false;
+    }
+    const auto Executable = GetExecutablePath();
+    if (!Executable) return false;
+    const auto Root = std::filesystem::path(*Executable).parent_path();
+    for (const auto* Relative : {
+             L"desklink_alpha.exe", L"desklink_pair.exe",
+             L"desklink_update.exe", L"runtime\\schannel\\msquic.dll",
+             L"LICENSE", L"ALPHA_WRAPPER.md"}) {
+        const auto Attributes = GetFileAttributesW((Root / Relative).c_str());
+        if (Attributes == INVALID_FILE_ATTRIBUTES ||
+            (Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+            (Attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::optional<std::filesystem::path> GetDataDirectory() {
@@ -265,6 +298,15 @@ private:
     }
 
     LRESULT HandleMessage(UINT Message, WPARAM WParam, LPARAM LParam) {
+        if (Message == GetPrepareUpdateMessage()) {
+            ExitRequested_ = true;
+            AppendLog(
+                L"[App:Lifecycle] coordinated update shutdown requested\r\n");
+            ReturnLocal(false);
+            StopProcessGracefully();
+            DestroyWindow(Window_);
+            return 0;
+        }
         switch (Message) {
             case WM_CREATE:
                 return CreateControls() ? 0 : -1;
@@ -1236,12 +1278,15 @@ private:
 
 int WINAPI wWinMain(
     HINSTANCE Instance, HINSTANCE, PWSTR CommandLine, int ShowCommand) {
+    if (CommandLine && std::wstring_view(CommandLine) == L"--validate-update") {
+        return ValidateInstalledPayloadForUpdate() ? 0 : 1;
+    }
     INITCOMMONCONTROLSEX Controls{sizeof(Controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&Controls);
     (void)SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    if (IsInstallerActive()) {
-        MessageBoxW(nullptr, L"A DeskLink install or uninstall is active.",
+    if (IsLifecycleOperationActive()) {
+        MessageBoxW(nullptr, L"A DeskLink install, update, or uninstall is active.",
                     L"DeskLink Alpha", MB_OK | MB_ICONINFORMATION);
         return 1;
     }
@@ -1249,8 +1294,8 @@ int WINAPI wWinMain(
         nullptr, FALSE, L"Local\\DeskLink.Alpha.v1"));
     if (!InstanceMutex) return 1;
     const bool InstanceAlreadyExists = GetLastError() == ERROR_ALREADY_EXISTS;
-    if (IsInstallerActive()) {
-        MessageBoxW(nullptr, L"A DeskLink install or uninstall is active.",
+    if (IsLifecycleOperationActive()) {
+        MessageBoxW(nullptr, L"A DeskLink install, update, or uninstall is active.",
                     L"DeskLink Alpha", MB_OK | MB_ICONINFORMATION);
         return 1;
     }

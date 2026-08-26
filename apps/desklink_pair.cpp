@@ -50,6 +50,7 @@ constexpr std::chrono::milliseconds kAudioRecoveryMaximumDelay{5'000};
 constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
 constexpr wchar_t kRuntimeMutexName[] = L"Local\\DeskLink.Runtime.v1";
 constexpr wchar_t kInstallerMutexName[] = L"Local\\DeskLink.Install.v1";
+constexpr wchar_t kUpdateMutexName[] = L"Local\\DeskLink.Update.v1";
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
 constexpr std::uint16_t kValidationAcceptedScanCode = 0x7cu;
 constexpr std::uint16_t kValidationStaleEpochScanCode = 0x7bu;
@@ -71,13 +72,16 @@ std::chrono::milliseconds NextAudioRecoveryDelay(
     return std::min(Current * 2, kAudioRecoveryMaximumDelay);
 }
 
-bool IsInstallerActive() noexcept {
-    const auto Handle = OpenMutexW(SYNCHRONIZE, FALSE, kInstallerMutexName);
-    if (Handle) {
-        CloseHandle(Handle);
-        return true;
+bool IsLifecycleOperationActive() noexcept {
+    for (const auto* Name : {kInstallerMutexName, kUpdateMutexName}) {
+        const auto Handle = OpenMutexW(SYNCHRONIZE, FALSE, Name);
+        if (Handle) {
+            CloseHandle(Handle);
+            return true;
+        }
+        if (GetLastError() != ERROR_FILE_NOT_FOUND) return true;
     }
-    return GetLastError() != ERROR_FILE_NOT_FOUND;
+    return false;
 }
 
 struct CommandLine {
@@ -3187,6 +3191,7 @@ int RunTrusted(const CommandLine& Command,
     bool CaptureStartPending{};
     int ExitCode = 0;
     std::atomic<desklink::DeskMode> DesiredMode{desklink::DeskMode::Roam};
+    std::atomic_bool UpdateRequested{};
 
     desklink::Win32ControlPipeServer ControlServer(
         [&](const desklink::ControlRequest& Request) {
@@ -3303,6 +3308,46 @@ int RunTrusted(const CommandLine& Command,
                 }
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::Ok, State};
+            }
+
+            if (std::holds_alternative<
+                    desklink::PrepareForUpdateControlRequest>(
+                    Request.Payload)) {
+                DesiredMode.store(desklink::DeskMode::LockPc1);
+                std::vector<std::shared_ptr<PeerRuntime>> Peers;
+                std::shared_ptr<PeerRuntime> SelectedPeer;
+                std::shared_ptr<HostInputRuntime> ActiveInput;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    Peers = PeerRuntimes;
+                    SelectedPeer = ActivePeer;
+                    ActiveInput = HostInput;
+                }
+                for (const auto& Runtime : Peers) {
+                    Runtime->Session.SetLocalDesiredMode(
+                        desklink::DeskMode::LockPc1);
+                }
+
+                bool Local = true;
+                if (ActiveInput) {
+                    Local = SelectedPeer && ActiveInput->ApplyManualMode(
+                        desklink::DeskMode::LockPc1);
+                    Local = Local && !ActiveInput->RemoteFocused() &&
+                        !ActiveInput->CaptureActive();
+                }
+                for (const auto& Runtime : Peers) {
+                    Local = Local && !Runtime->Session.IncomingFocused();
+                }
+                if (!Local) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::Failed,
+                        std::nullopt};
+                }
+                UpdateRequested.store(true);
+                Result->Changed.notify_all();
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Ok,
+                    std::nullopt};
             }
 
             const auto* SetGain = std::get_if<
@@ -3611,14 +3656,34 @@ int RunTrusted(const CommandLine& Command,
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         });
+        const auto InputHandle = GetStdHandle(STD_INPUT_HANDLE);
         if (Command.ValidationDurationMs == 0) {
-            std::string Line;
-            (void)std::getline(std::cin, Line);
+            for (;;) {
+                if (UpdateRequested.load()) break;
+                const auto WaitResult = InputHandle == INVALID_HANDLE_VALUE ||
+                        InputHandle == nullptr
+                    ? WAIT_FAILED
+                    : WaitForSingleObject(InputHandle, 100);
+                if (WaitResult == WAIT_TIMEOUT) continue;
+                std::string Line;
+                if (WaitResult == WAIT_OBJECT_0) {
+                    (void)std::getline(std::cin, Line);
+                }
+                break;
+            }
         } else {
             std::cout
                 << "[Session:Control] validation duration active; listener will stop automatically\n";
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(Command.ValidationDurationMs));
+            const auto Deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(Command.ValidationDurationMs);
+            while (!UpdateRequested.load() &&
+                   std::chrono::steady_clock::now() < Deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+        if (UpdateRequested.load()) {
+            std::cout
+                << "[App:Lifecycle] update shutdown requested; stopping locally\n";
         }
         StopTicker.store(true);
         Ticker.join();
@@ -3809,6 +3874,11 @@ int RunTrusted(const CommandLine& Command,
         const auto InputHandle = GetStdHandle(STD_INPUT_HANDLE);
         for (;;) {
             ActiveHost->MaintainDisplayTopology();
+            if (UpdateRequested.load()) {
+                std::cout
+                    << "[App:Lifecycle] update shutdown requested; stopping locally\n";
+                break;
+            }
             {
                 std::scoped_lock Lock(Result->Mutex);
                 if (Result->Emergency) break;
@@ -4017,14 +4087,14 @@ int wmain(int ArgumentCount, wchar_t** Arguments) {
     // transport, credential, or admission behavior.
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
-    if (IsInstallerActive()) {
-        std::cerr << "[App:Lifecycle] installer operation is active\n";
+    if (IsLifecycleOperationActive()) {
+        std::cerr << "[App:Lifecycle] install or update operation is active\n";
         return 1;
     }
     const std::unique_ptr<void, decltype(&CloseHandle)> RuntimeMutex(
         CreateMutexW(nullptr, FALSE, kRuntimeMutexName), &CloseHandle);
-    if (!RuntimeMutex || IsInstallerActive()) {
-        std::cerr << "[App:Lifecycle] could not create the runtime update gate\n";
+    if (!RuntimeMutex || IsLifecycleOperationActive()) {
+        std::cerr << "[App:Lifecycle] could not create the runtime lifecycle gate\n";
         return 1;
     }
     const auto Command = ParseCommandLine(ArgumentCount, Arguments);

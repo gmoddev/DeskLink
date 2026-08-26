@@ -87,6 +87,9 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Native Windows alpha launcher with bounded pairing/session controls,
   authenticated status/mode IPC, graceful child lifecycle, a Schannel-only
   ZIP, and a current-user installer foundation
+- Explicit current-user update coordinator with prevalidated same-signer
+  candidate/rollback installers, ordered fail-local shutdown, bounded Setup,
+  post-install health checks, and automatic rollback
 - Simulation CLI
 - Regression/adversarial tests
 
@@ -100,7 +103,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
-- Production signing/clean-system installer qualification, update flow, final
+- Production signing/clean-system installer and update qualification, final
   product polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
@@ -163,12 +166,13 @@ Windows 11 / Server 2022+ production baseline. See
 command.
 
 Windows CI also creates an explicitly unsigned current-user development
-installer and validates install, repair-style upgrade, startup cleanup, state
-preservation, and uninstall. Unsigned installers are never production release
-artifacts. Production packaging fails closed unless the DeskLink executables,
-uninstaller, and Setup can be Authenticode-signed and timestamped with an
-explicit current-user certificate. See
-[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+installer and validates install, fail-closed update rejection, forced rollback,
+coordinated upgrade, startup cleanup, state preservation, and uninstall.
+Unsigned installers are never production release artifacts. Production
+packaging fails closed unless the DeskLink executables, uninstaller, and Setup
+can be Authenticode-signed and timestamped with an explicit current-user
+certificate. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md) and
+[`docs/WINDOWS_UPDATES.md`](docs/WINDOWS_UPDATES.md).
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 

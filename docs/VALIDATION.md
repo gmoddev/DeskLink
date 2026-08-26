@@ -512,16 +512,26 @@ and every production invocation that lacks both an explicit current-user code
 signing certificate and timestamp URL.
 
 On the disposable CI account, the installer test first holds the Alpha
-lifecycle mutex and proves Setup cannot proceed. It then installs version
-0.1.0 without elevation, verifies the full payload and HKCU-only uninstall
-registration, upgrades in place to 0.1.1, seeds DeskLink's optional Run value,
-and uninstalls. The Run value and installer-owned files disappear while a
-sentinel under `%LOCALAPPDATA%\DeskLink` remains byte-for-byte unchanged. The
-test requires an explicit mutation switch and is not run on developer accounts.
+lifecycle mutex and proves Setup cannot proceed. It proves coordinator-mode
+Setup cannot run without the update mutex and that ordinary Setup/runtime
+startup cannot overlap that mutex. After installing 0.1.0, it starts Alpha and
+proves the production updater rejects unsigned packages without stopping the
+UI or changing the version. A validation-only updater then injects candidate
+health failure and must restore 0.1.0 before a clean transaction advances to
+0.1.1. Finally the test seeds DeskLink's optional Run value and uninstalls. The
+Run value and installer-owned files disappear while a sentinel under
+`%LOCALAPPDATA%\DeskLink` remains byte-for-byte unchanged. The test requires an
+explicit mutation switch and is not run on developer accounts.
+
+Portable coordinator tests independently cover exact lifecycle ordering,
+pre-shutdown validation failure, local-confirmation refusal, backend exception
+containment, candidate install/health rollback, rollback failure with no
+restart, and restart failure.
 
 This is an unsigned development-artifact gate. Production qualification still
 requires the actual release-signing identity plus clean Windows 11 and Server
-2022 install/repair/upgrade/uninstall validation.
+2022 signed install/repair/update/rollback/uninstall validation and destructive
+fault injection at each transaction phase.
 
 ---
 

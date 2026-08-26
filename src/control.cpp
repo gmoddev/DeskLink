@@ -159,10 +159,14 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
                                              SetAudioGainControlRequest>) {
             return ControlCommand::SetAudioGain;
         } else if constexpr (std::is_same_v<ValueType,
-                                             ToggleAudioMuteControlRequest>) {
+                                              ToggleAudioMuteControlRequest>) {
             return ControlCommand::ToggleAudioMute;
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetDisplayTopologiesControlRequest>) {
             return ControlCommand::GetDisplayTopologies;
+        } else {
+            return ControlCommand::PrepareForUpdate;
         }
     }, Payload);
 }
@@ -223,6 +227,9 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::GetDisplayTopologies:
             if (Input.Remaining() != 0) return std::nullopt;
             return GetDisplayTopologiesControlRequest{};
+        case ControlCommand::PrepareForUpdate:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return PrepareForUpdateControlRequest{};
         default:
             return std::nullopt;
     }

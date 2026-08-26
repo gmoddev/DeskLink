@@ -489,6 +489,8 @@ SetDesiredMode       implemented
 FocusMachine         typed, currently unsupported
 SetAudioGain         implemented on an active Host peer receiver
 ToggleAudioMute      implemented on an active Host peer receiver
+GetDisplayTopologies implemented read-only
+PrepareForUpdate     implemented fail-local shutdown request
 ```
 
 The local API must not expose:
@@ -575,7 +577,18 @@ rule, or transport listener.
 
 Both application entry points hold named lifecycle mutexes. Setup and Uninstall
 check those mutexes and stop before changing files, so packaging cannot bypass
-the future fail-local update sequence by killing a Remote process. Identity,
-trust, and preferences remain in `%LOCALAPPDATA%\DeskLink` and the current-user
+the fail-local update sequence by killing a Remote process. Identity, trust,
+and preferences remain in `%LOCALAPPDATA%\DeskLink` and the current-user
 CNG/certificate stores, outside the installer ownership graph. Upgrade and
 uninstall therefore cannot silently replace or delete peer identity state.
+
+The update coordinator is a current-user transaction process, not a service or
+network client. It validates exact candidate and rollback hashes, version
+direction, timestamped Authenticode, and signer equality before changing focus.
+The runtime's typed `PrepareForUpdate` request repeats the restrictive mode
+transition, confirms no outgoing capture or incoming focus, and lets the normal
+main-loop teardown close clipboard, audio, sessions, and MsQuic. Only after both
+runtime/UI mutexes disappear can coordinator-bound Setup acquire its own gate.
+The worker runs outside the install directory, validates the installed payload,
+and invokes the prevalidated rollback installer before any optional restart if
+candidate install or health validation fails.

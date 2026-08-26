@@ -49,6 +49,7 @@ The current build proves the core invariants independently of Windows networking
 | Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
 | Native Windows alpha wrapper | Done | Schannel-only typed launcher; manual pairing/session/clipboard controls; Local-first controller; bounded gain/DPI controls; host-with-port rejection; same-user status/mode IPC; bounded in-memory diagnostics; portable ZIP |
 | Current-user Windows installer | Automated foundation done | Fixed LocalAppData install; active-runtime update gate; exact payload and pinned Schannel runtime; HKCU uninstall/startup cleanup; state-preserving upgrade/uninstall; unsigned CI artifact only until production signing and clean-system qualification |
+| Fail-local Windows update coordinator | Automated foundation done | Explicit local packages only; exact hashes; newer-candidate/current-version rollback pair; timestamped same-signer production admission; ordered Local/runtime/UI shutdown; bounded Setup job; installed health check; automatic rollback; unsigned controls isolated to a non-packaged validation target |
 | PCM audio frame | Done | Bounded wire representation |
 | Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment; adaptive 2-12 block target; immediate bounded increases, 200-sample downward hysteresis, explicit rebuffer accounting |
@@ -170,6 +171,9 @@ The current test suite verifies:
 79. reconnect resets update IDs under a fresh session nonce and rejects the prior nonce
 80. Alpha launcher forwards explicit clipboard grants/sync while retaining Schannel pinning and scope validation
 81. Windows clipboard listener starts/stops with publication disabled and neither reads nor writes interactive content
+82. update coordinator ordering, pre-mutation validation/local refusal, exception containment, rollback, and no-restart failure behavior
+83. typed `PrepareForUpdate` control framing plus production updater exclusion of the validation-only unsigned switch
+84. disposable-account Setup/update mutual exclusion, unsigned production rejection without UI shutdown, forced health-check rollback, and successful version advance
 
 Build/test result in the creation environment:
 
@@ -196,7 +200,7 @@ Build/test result in the creation environment:
 
 - final onboarding and tray visual polish beyond the completed companion lifecycle
 - Stream Deck plugin
-- production-signed installer qualification and fail-local update flow
+- production-signed installer/update qualification and destructive-fault matrix
 - diagnostics/telemetry that never logs input or clipboard content
 
 ---

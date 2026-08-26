@@ -29,6 +29,8 @@ These references informed the production-backend recommendations. They are not d
 - Microsoft Learn — CryptProtectData / DPAPI: https://learn.microsoft.com/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata
 - Microsoft Learn — Authenticode timestamping: https://learn.microsoft.com/windows/win32/seccrypto/time-stamping-authenticode-signatures
 - Microsoft Learn — SignTool: https://learn.microsoft.com/windows/win32/seccrypto/signtool
+- Microsoft Learn — WinVerifyTrust: https://learn.microsoft.com/windows/win32/api/wintrust/nf-wintrust-winverifytrust
+- Microsoft Learn — Job Objects: https://learn.microsoft.com/windows/win32/procthread/job-objects
 - Inno Setup — current-user privilege mode: https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm
 - Inno Setup — active-application mutex gate: https://jrsoftware.org/ishelp/topic_setup_appmutex.htm
 - Inno Setup — signed installer and uninstaller: https://jrsoftware.org/ishelp/topic_setup_signtool.htm

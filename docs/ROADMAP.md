@@ -252,9 +252,11 @@ is production-qualified. Image clipboard and file transfer remain excluded.
 - finish first-run pairing/capability review, clear
   tray/connection/route/error state, and bounded support diagnostics with
   secrets and clipboard content excluded;
-- add an update contract of `Return Local -> release owned input -> stop capture
-  -> close sessions -> update/restart`, with rollback and no update while
-  Remote; and
+- **Automated update foundation complete:** explicit same-signer candidate and
+  current-version rollback packages are hash/version validated before an ordered
+  `Return Local -> confirm local -> stop runtime/UI -> install/validate` flow.
+  Candidate install/health failure rolls back before any optional restart.
+  Production-signed and destructive-fault qualification remain open; and
 - validate current-user startup, Private/Domain firewall setup, repair,
   upgrades, sleep/resume, endpoint changes, and uninstall on clean systems.
 

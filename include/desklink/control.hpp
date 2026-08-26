@@ -31,6 +31,7 @@ enum class ControlCommand : std::uint16_t {
     SetAudioGain = 4,
     ToggleAudioMute = 5,
     GetDisplayTopologies = 6,
+    PrepareForUpdate = 7,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -65,13 +66,16 @@ struct ToggleAudioMuteControlRequest {};
 
 struct GetDisplayTopologiesControlRequest {};
 
+struct PrepareForUpdateControlRequest {};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
     FocusMachineControlRequest,
     SetAudioGainControlRequest,
     ToggleAudioMuteControlRequest,
-    GetDisplayTopologiesControlRequest>;
+    GetDisplayTopologiesControlRequest,
+    PrepareForUpdateControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
