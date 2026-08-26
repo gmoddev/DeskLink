@@ -196,7 +196,7 @@ ProfileModeDecision ForegroundProfileEngine::Decision() const noexcept {
         return {*ManualOverride_, ProfileModeSource::ManualOverride,
                 std::nullopt};
     }
-    if (!Rules_.empty() &&
+    if (RequiresForegroundObservation() &&
         (!Foreground_ || !Foreground_->Inspectable)) {
         return {DeskMode::LockPc1,
                 ProfileModeSource::ForegroundUnavailable, std::nullopt};
@@ -208,6 +208,10 @@ ProfileModeDecision ForegroundProfileEngine::Decision() const noexcept {
                 (!Rule.FullscreenOnly || Foreground_->Fullscreen)) {
                 return {Rule.Mode, ProfileModeSource::ProfileRule, Index};
             }
+        }
+        if (KeepLocalWhenFullscreen_ && Foreground_->Fullscreen) {
+            return {DeskMode::Game, ProfileModeSource::FullscreenPolicy,
+                    std::nullopt};
         }
     }
     return {SystemDefault_, ProfileModeSource::SystemDefault, std::nullopt};

@@ -96,7 +96,7 @@ second supported Windows 11/Server 2022+ system is available.
 
 ---
 
-## Product UX PR 5-7 automated validation
+## Product UX PR 5-8 automated validation
 
 The WinUI deployment foundation is built with locked NuGet resolution and an
 unpackaged self-contained x64 payload. Local validation proves:
@@ -155,6 +155,20 @@ resolution against current topology rather than canvas coordinates.
 Clean-system keyboard, Narrator, DPI, high-contrast, and visual qualification
 of the PR 7 surface remains a release gate. The real two-supported-Windows-11-PC
 roaming/fault qualification also remains deferred until that hardware exists.
+
+PR 8 extends the portable and Windows suites with product-preference schema-3
+round trips, exact version-1/version-2 migration, malformed/reserved/trailing
+data rejection, allowlisted and conflicting hotkeys, duplicate profile
+rejection, global fullscreen fail-local precedence, all three product crossing
+presets, and exact launcher propagation into the managed Host child. The
+version-4 local control codec round-trips the new bounded preferences.
+
+The standard Release tree, MsQuic-enabled Release tree, and locked WinUI
+Release payload must all compile. CTest must pass the portable/core, reliability
+soak, native MsQuic runtime, and native Schannel loopback gates. Physical
+focus-hotkey feel, fullscreen transitions, clipboard/audio intention UX, and
+two-supported-Windows-11-PC failure qualification remain PR 9 release gates;
+the user has explicitly deferred that hardware matrix.
 
 Disposable-account CI additionally exercises installed shell activation,
 broker survival after shell exit, update shutdown, rollback, and uninstall.

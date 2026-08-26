@@ -131,6 +131,9 @@
     <ClCompile Include="..\..\src\product.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\src\profile.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\src\protocol.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>

@@ -29,6 +29,19 @@ namespace {
         [](std::uint8_t Value) { return Value == 0; });
 }
 
+[[nodiscard]] bool SameExecutableName(
+    std::string_view Left, std::string_view Right) noexcept {
+    if (Left.size() != Right.size()) return false;
+    for (std::size_t Index = 0; Index < Left.size(); ++Index) {
+        auto A = static_cast<unsigned char>(Left[Index]);
+        auto B = static_cast<unsigned char>(Right[Index]);
+        if (A >= 'A' && A <= 'Z') A = static_cast<unsigned char>(A + 32u);
+        if (B >= 'A' && B <= 'Z') B = static_cast<unsigned char>(B + 32u);
+        if (A != B) return false;
+    }
+    return true;
+}
+
 void AddBlocker(DesiredDeskConfiguration& Configuration,
                 RuntimePlanBlocker Blocker) noexcept {
     Configuration.Blockers |= static_cast<std::uint32_t>(Blocker);
@@ -46,12 +59,78 @@ void AddBlocker(DesiredDeskConfiguration& Configuration,
 
 bool IsValidProductPreferences(
     const ProductPreferences& Preferences) noexcept {
-    return IsValidDeskRole(Preferences.Role) &&
-           IsValidAudioRoute(Preferences.AudioRoute) &&
-           IsValidGamingBehavior(Preferences.Gaming) &&
-           Preferences.AudioGainPermyriad <= 10'000 &&
-           (!Preferences.PreferredPeerMachine ||
-            !IsZeroMachine(*Preferences.PreferredPeerMachine));
+    if (!IsValidDeskRole(Preferences.Role) ||
+        !IsValidAudioRoute(Preferences.AudioRoute) ||
+        !IsValidGamingBehavior(Preferences.Gaming) ||
+        !IsValidProductHotkey(Preferences.FocusPeerHotkey) ||
+        !IsValidProductHotkey(Preferences.ReturnLocalHotkey) ||
+        Preferences.AudioGainPermyriad > 10'000 ||
+        Preferences.ProfileRules.size() > kMaximumForegroundProfileRules ||
+        (Preferences.PreferredPeerMachine &&
+         IsZeroMachine(*Preferences.PreferredPeerMachine)) ||
+        (Preferences.FocusPeerHotkey != ProductHotkey::Off &&
+         Preferences.FocusPeerHotkey == Preferences.ReturnLocalHotkey)) {
+        return false;
+    }
+    for (std::size_t Index = 0; Index < Preferences.ProfileRules.size();
+         ++Index) {
+        const auto& Rule = Preferences.ProfileRules[Index];
+        if (!IsValidForegroundProfileRule(Rule)) return false;
+        for (std::size_t Other = Index + 1;
+             Other < Preferences.ProfileRules.size(); ++Other) {
+            const auto& Candidate = Preferences.ProfileRules[Other];
+            if (Rule.FullscreenOnly == Candidate.FullscreenOnly &&
+                SameExecutableName(
+                    Rule.ExecutableName, Candidate.ExecutableName)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool IsValidProductHotkey(ProductHotkey Hotkey) noexcept {
+    return Hotkey == ProductHotkey::Off ||
+           Hotkey == ProductHotkey::CtrlAltF11 ||
+           Hotkey == ProductHotkey::CtrlAltF12 ||
+           Hotkey == ProductHotkey::CtrlShiftF11 ||
+           Hotkey == ProductHotkey::CtrlShiftF12;
+}
+
+bool CanEnableClipboardIntent(CapabilitySet LocalGrantsToPeer) noexcept {
+    return LocalGrantsToPeer.contains(Capability::ClipboardRead) &&
+           LocalGrantsToPeer.contains(Capability::ClipboardWrite);
+}
+
+bool CanEnablePeerAudioIntent(CapabilitySet LocalGrantsToPeer) noexcept {
+    return LocalGrantsToPeer.contains(Capability::AudioSend);
+}
+
+bool ApplyProductCrossingPreset(
+    RoamingConfiguration& Configuration,
+    ProductCrossingPreset Preset) noexcept {
+    CrossingConfiguration Crossing;
+    switch (Preset) {
+        case ProductCrossingPreset::CrossImmediately:
+            Crossing = {CrossingPolicy::Push, 8, 0, 500};
+            break;
+        case ProductCrossingPreset::PauseAndPush:
+            Crossing = {CrossingPolicy::DwellAndPush, 8, 180, 500};
+            break;
+        case ProductCrossingPreset::PushTwice:
+            Crossing = {CrossingPolicy::DoublePush, 8, 0, 600};
+            break;
+        default:
+            return false;
+    }
+    if (!IsValidCrossingConfiguration(Crossing)) return false;
+
+    Configuration.CrossingDefaults = Crossing;
+    for (auto& Link : Configuration.Links) {
+        Link.AToB = Crossing;
+        Link.BToA = Crossing;
+    }
+    return IsValidRoamingConfiguration(Configuration);
 }
 
 DesiredDeskConfiguration PlanDesiredDeskConfiguration(

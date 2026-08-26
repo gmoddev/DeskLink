@@ -2,6 +2,7 @@
 
 #include "desklink/win32_capture.hpp"
 #include "desklink/control.hpp"
+#include "desklink/profile.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -58,6 +59,9 @@ struct LauncherRequest {
     std::optional<ControlPairingToken> BrokerPairingToken;
     std::filesystem::path EdgeRoamingSettingsPath;
     Win32PointerCalibration PointerCalibration;
+    DeskMode ProfileDefaultMode{DeskMode::LockPc1};
+    std::vector<ForegroundProfileRule> ProfileRules;
+    bool KeepLocalWhenFullscreen{};
 };
 
 // Produces arguments for desklink_pair.exe. Network operations are deliberately

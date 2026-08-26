@@ -276,6 +276,15 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   Advanced. Saving strictly validates the complete graph, pauses/stops the
   managed runtime Local, atomically replaces the settings file, and then
   attempts a fresh-session resume. Canvas movement alone never changes routing;
+- **Product UX PR 8 implemented:** Home exposes concrete preferred-PC
+  clipboard/audio intent, bounded peer-audio volume/mute, fullscreen keep-local
+  behavior, three crossing presets, and fixed-list local focus/return hotkeys.
+  Advanced persists at most 32 exact executable/fullscreen rules. Missing
+  permission never creates consent, focus shortcuts use the named authenticated
+  admission path, crossing changes reuse Local-before-atomic-save, and required
+  but uninspectable foreground state remains Local. Preferences schema 3
+  migrates both previous formats. Alpha remains the installed default pending
+  PR 9 cutover and qualification;
 - **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
   active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
   in-place upgrade, startup-value cleanup, state preservation, a fail-closed

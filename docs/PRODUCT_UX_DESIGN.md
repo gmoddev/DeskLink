@@ -828,6 +828,31 @@ Ready rather than falling back to canvas geometry.
 Gate: two-sided consent remains necessary; feature failure is module-scoped;
 uninspectable profile state and permission mismatch remain Local/off.
 
+Implementation checkpoint: Home now names the preferred authenticated PC in
+clipboard and peer-audio controls. Enabling either intent first checks the
+local stored grants; missing authority explains the exact local permission and
+never manufactures the peer's complementary consent. Persisted desire is still
+planned through the existing `PeerValidated`, capability, nonce, and module
+admission gates. Audio gain remains bounded to 0-100%, mute remains a live
+admitted-session action, and neither touches the system mixer.
+
+The product shell applies **Cross immediately**, **Pause and push**, and
+**Push twice** to the validated defaults and both directions of every existing
+route, then uses the same Local-before-atomic-save coordinator as Arrange
+displays. Focus and Return shortcuts are chosen from a fixed modifier/F11/F12
+allowlist; `Ctrl+Alt+Pause/Break` is reserved. A named focus request reaches the
+existing authenticated input lifecycle only when that exact peer and the Host
+input owner are active, so a shortcut cannot bypass normal admission.
+
+Application preferences schema 3 persists at most 32 exact executable rules,
+optional fullscreen matching, the two bounded shortcuts, and the simple global
+fullscreen keep-local choice. The broker passes these only to the explicit
+input-roaming child. A Roam fallback arms edge observation without installing a
+manual override, preserving emergency, manual, exact-rule, global-fullscreen,
+then default precedence. Any required foreground observation that cannot be
+inspected remains Local. Alpha remains the default installed entry point until
+PR 9.
+
 ### PR 9 — Cutover and product qualification
 
 - Make the broker plus production shell the normal installed experience.

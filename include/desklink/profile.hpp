@@ -25,6 +25,9 @@ struct ForegroundProfileRule {
     std::string ExecutableName;
     DeskMode Mode{DeskMode::Game};
     bool FullscreenOnly{};
+
+    [[nodiscard]] bool operator==(
+        const ForegroundProfileRule&) const noexcept = default;
 };
 
 enum class ProfileModeSource : std::uint8_t {
@@ -33,6 +36,7 @@ enum class ProfileModeSource : std::uint8_t {
     ManualOverride = 2,
     ForegroundUnavailable = 3,
     Emergency = 4,
+    FullscreenPolicy = 5,
 };
 
 struct ProfileModeDecision {
@@ -65,6 +69,15 @@ public:
     }
 
     [[nodiscard]] bool SetSystemDefault(DeskMode Mode) noexcept;
+    void SetKeepLocalWhenFullscreen(bool Enabled) noexcept {
+        KeepLocalWhenFullscreen_ = Enabled;
+    }
+    [[nodiscard]] bool KeepLocalWhenFullscreen() const noexcept {
+        return KeepLocalWhenFullscreen_;
+    }
+    [[nodiscard]] bool RequiresForegroundObservation() const noexcept {
+        return KeepLocalWhenFullscreen_ || !Rules_.empty();
+    }
     void SetForeground(ForegroundWindowSnapshot Snapshot);
     void ClearForeground() noexcept;
     [[nodiscard]] bool SetManualOverride(DeskMode Mode) noexcept;
@@ -79,6 +92,7 @@ private:
     std::vector<ForegroundProfileRule> Rules_;
     std::optional<ForegroundWindowSnapshot> Foreground_;
     std::optional<DeskMode> ManualOverride_;
+    bool KeepLocalWhenFullscreen_{};
     bool Emergency_{};
 };
 

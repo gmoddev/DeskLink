@@ -69,6 +69,10 @@ This repository is a **reference foundation implementation**, not a finished pro
   offline states, explicit snap proposals, keyboard-accessible full-edge
   authoring, one-way/partial-edge Advanced editing, fail-local atomic save, and
   five-second click-through local Identify overlays
+- Product-shell feature settings with concrete paired-PC clipboard/audio
+  intent, bounded peer-audio gain and mute, fullscreen keep-local policy, three
+  plain-language crossing presets, allowlisted focus/return hotkeys, and exact
+  executable/fullscreen profile editing
 - Single-instance Windows companion lifecycle with first-run guidance,
   close-to-tray, tray Open/Return Local/Exit, and optional current-user sign-in
   startup
@@ -94,7 +98,8 @@ This repository is a **reference foundation implementation**, not a finished pro
   ZIP, and a current-user installer foundation
 - Self-contained C++/WinRT product-shell preview with guided role selection,
   Home, Add a PC, untrusted Nearby/manual pairing, Devices & permissions,
-  Advanced, and Diagnostics surfaces backed by the current-user broker;
+  Arrange displays, feature intent, profiles, Advanced, and Diagnostics
+  surfaces backed by the current-user broker;
   pairing-code approval remains local and shell exit rejects any pending offer
 - Explicit current-user update coordinator with prevalidated same-signer
   candidate/rollback installers, ordered fail-local shutdown, bounded Setup,

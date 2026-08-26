@@ -19,8 +19,11 @@ namespace {
 constexpr std::array<std::uint8_t, 4> kLegacyMagic{'D', 'L', 'A', 'S'};
 constexpr std::array<std::uint8_t, 4> kPreferencesMagic{'D', 'L', 'P', 'P'};
 constexpr std::uint16_t kLegacyVersion = 1;
+constexpr std::uint16_t kPreferencesV2Version = 2;
 constexpr std::size_t kLegacySize = 12;
-constexpr std::size_t kPreferencesSize = 64;
+constexpr std::size_t kPreferencesV2Size = 64;
+constexpr std::size_t kPreferencesV3HeaderSize = 36;
+constexpr std::size_t kMaximumPreferencesSize = 16u * 1024u;
 constexpr std::uint16_t kKnownPreferenceFlags = 0x00ffu;
 constexpr wchar_t kRunKey[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -39,9 +42,10 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
     Bytes[Offset + 1] = static_cast<std::uint8_t>(Value);
 }
 
-[[nodiscard]] std::array<std::uint8_t, kPreferencesSize> Encode(
-    const ProductPreferences& Preferences) noexcept {
-    std::array<std::uint8_t, kPreferencesSize> Result{};
+[[nodiscard]] std::optional<ByteBuffer> Encode(
+    const ProductPreferences& Preferences) {
+    if (!IsValidProductPreferences(Preferences)) return std::nullopt;
+    ByteBuffer Result(kPreferencesV3HeaderSize);
     std::copy(
         kPreferencesMagic.begin(), kPreferencesMagic.end(), Result.begin());
     WriteU16(Result, 4, kProductPreferencesSchemaVersion);
@@ -59,21 +63,33 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
     if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
     WriteU16(Result, 10, Flags);
     WriteU16(Result, 12, Preferences.AudioGainPermyriad);
+    Result[14] = static_cast<std::uint8_t>(Preferences.FocusPeerHotkey);
+    Result[15] = static_cast<std::uint8_t>(Preferences.ReturnLocalHotkey);
     if (Preferences.PreferredPeerMachine) {
         std::copy(
             Preferences.PreferredPeerMachine->begin(),
             Preferences.PreferredPeerMachine->end(), Result.begin() + 16);
     }
+    Result[32] = static_cast<std::uint8_t>(Preferences.ProfileRules.size());
+    for (const auto& Rule : Preferences.ProfileRules) {
+        Result.push_back(static_cast<std::uint8_t>(Rule.Mode));
+        Result.push_back(Rule.FullscreenOnly ? 1u : 0u);
+        Result.push_back(static_cast<std::uint8_t>(Rule.ExecutableName.size() >> 8u));
+        Result.push_back(static_cast<std::uint8_t>(Rule.ExecutableName.size()));
+        Result.insert(
+            Result.end(), Rule.ExecutableName.begin(), Rule.ExecutableName.end());
+    }
+    if (Result.size() > kMaximumPreferencesSize) return std::nullopt;
     return Result;
 }
 
-[[nodiscard]] std::optional<ProductPreferences> DecodePreferences(
+[[nodiscard]] std::optional<ProductPreferences> DecodePreferencesV2(
     std::span<const std::uint8_t> Bytes) noexcept {
-    if (Bytes.size() != kPreferencesSize ||
+    if (Bytes.size() != kPreferencesV2Size ||
         !std::equal(
             kPreferencesMagic.begin(), kPreferencesMagic.end(),
             Bytes.begin()) ||
-        ReadU16(Bytes, 4) != kProductPreferencesSchemaVersion ||
+        ReadU16(Bytes, 4) != kPreferencesV2Version ||
         Bytes[9] != 0 || Bytes[14] != 0 || Bytes[15] != 0 ||
         std::any_of(Bytes.begin() + 32, Bytes.end(),
                     [](std::uint8_t Value) { return Value != 0; })) {
@@ -105,6 +121,73 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
     return IsValidProductPreferences(Result)
         ? std::optional<ProductPreferences>(Result)
         : std::nullopt;
+}
+
+[[nodiscard]] std::optional<ProductPreferences> DecodePreferencesV3(
+    std::span<const std::uint8_t> Bytes) {
+    if (Bytes.size() < kPreferencesV3HeaderSize ||
+        Bytes.size() > kMaximumPreferencesSize ||
+        !std::equal(
+            kPreferencesMagic.begin(), kPreferencesMagic.end(),
+            Bytes.begin()) ||
+        ReadU16(Bytes, 4) != kProductPreferencesSchemaVersion ||
+        Bytes[9] != 0 || Bytes[33] != 0 || Bytes[34] != 0 ||
+        Bytes[35] != 0) {
+        return std::nullopt;
+    }
+    const auto Flags = ReadU16(Bytes, 10);
+    if ((Flags & ~kKnownPreferenceFlags) != 0 ||
+        Bytes[32] > kMaximumForegroundProfileRules) {
+        return std::nullopt;
+    }
+
+    ProductPreferences Result;
+    Result.Role = static_cast<DeskRole>(Bytes[6]);
+    Result.AudioRoute = static_cast<AudioRoutePreference>(Bytes[7]);
+    Result.Gaming = static_cast<GamingBehavior>(Bytes[8]);
+    Result.CloseToTray = (Flags & 0x0001u) != 0;
+    Result.RunAtLogin = (Flags & 0x0002u) != 0;
+    Result.FirstRunComplete = (Flags & 0x0004u) != 0;
+    Result.AutoStartRuntime = (Flags & 0x0008u) != 0;
+    Result.AutoConnect = (Flags & 0x0010u) != 0;
+    Result.InputRoamingDesired = (Flags & 0x0020u) != 0;
+    Result.ClipboardDesired = (Flags & 0x0040u) != 0;
+    Result.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
+    Result.AudioGainPermyriad = ReadU16(Bytes, 12);
+    Result.FocusPeerHotkey = static_cast<ProductHotkey>(Bytes[14]);
+    Result.ReturnLocalHotkey = static_cast<ProductHotkey>(Bytes[15]);
+    MachineId Preferred{};
+    std::copy(Bytes.begin() + 16, Bytes.begin() + 32, Preferred.begin());
+    if (std::any_of(
+            Preferred.begin(), Preferred.end(),
+            [](std::uint8_t Value) { return Value != 0; })) {
+        Result.PreferredPeerMachine = Preferred;
+    }
+
+    std::size_t Offset = kPreferencesV3HeaderSize;
+    Result.ProfileRules.reserve(Bytes[32]);
+    for (std::uint8_t Index = 0; Index < Bytes[32]; ++Index) {
+        if (Offset + 4u > Bytes.size()) return std::nullopt;
+        ForegroundProfileRule Rule;
+        Rule.Mode = static_cast<DeskMode>(Bytes[Offset]);
+        const auto RuleFlags = Bytes[Offset + 1u];
+        if ((RuleFlags & 0xfeu) != 0) return std::nullopt;
+        Rule.FullscreenOnly = (RuleFlags & 0x01u) != 0;
+        const auto NameSize = ReadU16(Bytes, Offset + 2u);
+        Offset += 4u;
+        if (NameSize == 0 || NameSize > kMaximumExecutableNameBytes ||
+            Offset + NameSize > Bytes.size()) {
+            return std::nullopt;
+        }
+        Rule.ExecutableName.assign(
+            reinterpret_cast<const char*>(Bytes.data() + Offset), NameSize);
+        Offset += NameSize;
+        Result.ProfileRules.push_back(std::move(Rule));
+    }
+    if (Offset != Bytes.size() || !IsValidProductPreferences(Result)) {
+        return std::nullopt;
+    }
+    return Result;
 }
 
 [[nodiscard]] std::optional<ProductPreferences> DecodeLegacy(
@@ -178,13 +261,12 @@ bool Win32ProductPreferencesStore::Load() {
     }
 
     LARGE_INTEGER Size{};
-    if (GetFileSizeEx(File, &Size) == FALSE ||
-        (Size.QuadPart != static_cast<LONGLONG>(kLegacySize) &&
-         Size.QuadPart != static_cast<LONGLONG>(kPreferencesSize))) {
+    if (GetFileSizeEx(File, &Size) == FALSE || Size.QuadPart <= 0 ||
+        Size.QuadPart > static_cast<LONGLONG>(kMaximumPreferencesSize)) {
         CloseHandle(File);
         return false;
     }
-    std::array<std::uint8_t, kPreferencesSize> Bytes{};
+    ByteBuffer Bytes(static_cast<std::size_t>(Size.QuadPart));
     const auto ByteCount = static_cast<DWORD>(Size.QuadPart);
     DWORD Read{};
     const auto Exact = ReadFile(
@@ -195,8 +277,17 @@ bool Win32ProductPreferencesStore::Load() {
 
     const auto View = std::span<const std::uint8_t>(Bytes.data(), ByteCount);
     const bool Legacy = ByteCount == kLegacySize;
-    const auto Parsed = Legacy ? DecodeLegacy(View) : DecodePreferences(View);
-    if (!Parsed || (Legacy && !WriteAtomic(Path_, Encode(*Parsed)))) {
+    const bool Version2 = ByteCount == kPreferencesV2Size &&
+        std::equal(
+            kPreferencesMagic.begin(), kPreferencesMagic.end(), Bytes.begin()) &&
+        ReadU16(View, 4) == kPreferencesV2Version;
+    const auto Parsed = Legacy
+        ? DecodeLegacy(View)
+        : Version2 ? DecodePreferencesV2(View) : DecodePreferencesV3(View);
+    const auto Migrated = Parsed && (Legacy || Version2) ? Encode(*Parsed)
+                                                        : std::nullopt;
+    if (!Parsed || ((Legacy || Version2) &&
+                    (!Migrated || !WriteAtomic(Path_, *Migrated)))) {
         return false;
     }
     Current_ = *Parsed;
@@ -229,7 +320,8 @@ bool Win32ProductPreferencesStore::Save(ProductPreferences Preferences) {
 
 bool Win32ProductPreferencesStore::SaveLocked(
     const ProductPreferences& Preferences) const {
-    return WriteAtomic(Path_, Encode(Preferences));
+    const auto Bytes = Encode(Preferences);
+    return Bytes && WriteAtomic(Path_, *Bytes);
 }
 
 bool SetWin32RunAtLogin(
