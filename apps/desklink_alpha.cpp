@@ -433,7 +433,7 @@ private:
         CreateControl(L"BUTTON", L"Discover (5s)", BS_PUSHBUTTON,
                       730, 180, 150, 30, DiscoverPeers);
 
-        CreateControl(L"BUTTON", L"Pairing permissions granted to this peer",
+        CreateControl(L"BUTTON", L"Pairing permissions (all off until selected)",
                       BS_GROUPBOX, 15, 252, 900, 112);
         CreateControl(L"BUTTON", L"Allow input injection on this PC",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 32, 277, 260, 24,
@@ -537,8 +537,20 @@ private:
             L"STATIC", L"Use the tray menu to open DeskLink, return Local, or exit.",
             SS_LEFT, 32, 787, 700, 20);
 
-        CheckDlgButton(Window_, GrantInput, BST_CHECKED);
-        CheckDlgButton(Window_, GrantTopology, BST_CHECKED);
+        const auto PairingDefaults = desklink::DefaultManualPairingGrants();
+        const auto ApplyPairingDefault = [&](ControlId Id, bool Enabled) {
+            CheckDlgButton(
+                Window_, Id, Enabled ? BST_CHECKED : BST_UNCHECKED);
+        };
+        ApplyPairingDefault(GrantInput, PairingDefaults.GrantInput);
+        ApplyPairingDefault(GrantAudioSend, PairingDefaults.GrantAudioSend);
+        ApplyPairingDefault(
+            GrantAudioReceive, PairingDefaults.GrantAudioReceive);
+        ApplyPairingDefault(GrantTopology, PairingDefaults.GrantTopology);
+        ApplyPairingDefault(
+            GrantClipboardRead, PairingDefaults.GrantClipboardRead);
+        ApplyPairingDefault(
+            GrantClipboardWrite, PairingDefaults.GrantClipboardWrite);
         CheckDlgButton(
             Window_, KeepRunningOnClose,
             ApplicationSettings_.CloseToTray ? BST_CHECKED : BST_UNCHECKED);

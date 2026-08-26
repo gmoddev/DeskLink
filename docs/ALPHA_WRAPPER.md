@@ -25,7 +25,8 @@ store, and does not implement a second connection or pairing stack.
    Enter only a hostname or IP address in **Address**; the wrapper rejects an
    address that already contains a port because the UDP port has its own field.
 3. On the receiving PC, select only the capabilities the other PC should have,
-   then select **Open pairing window**.
+   then select **Open pairing window**. Every permission starts off; choosing a
+   Main/Companion workflow never enables one automatically.
 4. On the controlling PC, enter the receiving PC's address, select the
    reciprocal capability grants, and select **Pair with address**.
 5. Compare the six-digit code shown by both native confirmation dialogs before
@@ -63,10 +64,10 @@ The audio permission names describe what the peer may do:
 - **Render peer system audio** is a controller-session startup option.
 
 **Exchange monitor layouts** grants `DisplayTopologyExchange` to that peer.
-It is checked explicitly during pairing and defaults on in the alpha UI, but it
-is still a visible user choice. Existing paired peers do not acquire it; re-pair
-both directions to enable topology exchange. The grant shares no input or focus
-authority and cannot modify the saved roaming graph.
+It is checked explicitly during pairing and defaults off with every other
+permission. Existing paired peers do not acquire it; re-pair both directions to
+enable topology exchange. The grant shares no input or focus authority and
+cannot modify the saved roaming graph.
 
 The clipboard permission names also describe what the peer may do:
 

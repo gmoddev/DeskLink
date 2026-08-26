@@ -3647,11 +3647,16 @@ int RunTrusted(const CommandLine& Command,
         std::atomic_bool StopTicker{};
         std::thread Ticker([&] {
             while (!StopTicker.load()) {
+                std::vector<std::shared_ptr<PeerRuntime>> Peers;
                 {
                     std::scoped_lock Lock(RuntimesMutex);
-                    for (const auto& Runtime : PeerRuntimes) {
-                        Runtime->MaintainDisplayTopology();
-                    }
+                    Peers = PeerRuntimes;
+                }
+                // Session maintenance can dispatch callbacks that also need
+                // RuntimesMutex. Keep only the shared ownership snapshot under
+                // the lock so topology refresh cannot deadlock the receiver.
+                for (const auto& Runtime : Peers) {
+                    Runtime->MaintainDisplayTopology();
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }

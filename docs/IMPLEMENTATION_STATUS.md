@@ -215,6 +215,8 @@ Do not add these to solve early implementation friction:
 - permanent elevation
 - virtual HID driver
 - virtual audio driver
+- remote-video capture/streaming or an Indirect Display Driver for KVM or
+  extended-display mode
 - cloud relay
 - UPnP port forwarding
 - dynamic in-process plugin loading from untrusted directories
