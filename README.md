@@ -26,6 +26,8 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
+- Explicit, text-only clipboard synchronization with complementary per-peer
+  read/write grants, a session-scoped module handshake, and loop suppression
 - Default-endpoint notification and bounded audio-only WASAPI recovery
 - Abstract transport interface
 - Authenticated/encrypted session gate and session-nonce binding
@@ -96,6 +98,7 @@ The following are intentionally kept behind interfaces and are the next producti
 - Physical two-PC reciprocal edge-roaming signoff
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
+- Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Final product polish, installer/update flow, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
@@ -215,8 +218,10 @@ code appears on both machines. `--grant-input` grants the newly paired remote PC
 permission to inject input on the PC where that flag is supplied; it is omitted
 by default. `--grant-audio-send` permits that remote PC to send audio into this
 PC. `--grant-audio-receive` permits it to receive loopback audio captured on
-this PC. These independent grants are shown in the confirmation prompt and are
-omitted by default. Trust is stored under the current user's local application-data
+this PC. `--grant-clipboard-read` permits it to read this PC's text clipboard,
+and `--grant-clipboard-write` permits it to replace this PC's text clipboard.
+These independent grants are shown in the confirmation prompt and are omitted
+by default. Trust is stored under the current user's local application-data
 directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 
 `--tls-provider auto|schannel|openssl` controls the packaged MsQuic TLS runtime.
@@ -301,6 +306,28 @@ gain and `control mute` toggles mute. Changes ramp across one five-millisecond
 block, persist through audio-only endpoint recovery, and never change the
 Windows endpoint or system mixer volume.
 
+Text clipboard synchronization is separately opt-in and requires complementary
+grants. To synchronize both directions, pair each PC with both clipboard grants,
+then add `--sync-clipboard` to `serve` and `focus`:
+
+```powershell
+# accepting PC
+desklink_pair.exe serve 43821 --sync-clipboard
+
+# connecting PC
+desklink_pair.exe focus 192.168.1.25 43821 --sync-clipboard
+```
+
+No clipboard message is admitted until `PeerValidated`, fresh nonce negotiation,
+immutable capability exchange, and the clipboard-module handshake all complete.
+DeskLink synchronizes only `CF_UNICODETEXT`, enforces strict UTF-8 and a 48 KiB
+limit, sends no more than 20 updates per second, caps pending remote writes at
+eight, and rejects stale update IDs, wrong peers/nonces, malformed data, and
+one-sided consent. Existing trust records are never upgraded. Clipboard content
+is memory-only and never logged. Clipboard contention or adapter failure stops
+only that update; it cannot change focus, input routing, audio, identity, or TLS.
+Image clipboard and file transfer remain out of scope.
+
 The Host CLI accepts an optional fallback mode plus at most 32 exact executable
 basename rules:
 
@@ -329,10 +356,12 @@ include/desklink/
     session.hpp          Secure session binding over ITransportEndpoint
     agent.hpp            PC2 authorization and injection gate
     input.hpp            Input backend interface
+    clipboard.hpp        Text clipboard consent/nonce/replay gates
     audio.hpp            Exact audio framing and jitter/reorder buffer
     transport.hpp        Authenticated transport abstraction
     win32_input.hpp      Windows SendInput adapter
     win32_capture.hpp    Physical input and fail-local suppression adapter
+    win32_clipboard.hpp  Bounded CF_UNICODETEXT synchronization adapter
     win32_audio.hpp      WASAPI loopback capture and shared render adapters
 
 src/

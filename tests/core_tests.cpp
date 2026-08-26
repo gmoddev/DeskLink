@@ -22,6 +22,7 @@
 #include "desklink/win32_audio.hpp"
 #include "desklink/win32_application_settings.hpp"
 #include "desklink/win32_capture.hpp"
+#include "desklink/win32_clipboard.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_display_topology.hpp"
@@ -48,6 +49,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -1915,6 +1917,322 @@ void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
     CHECK(SessionB.RemoteDisplayTopology() == TopologyA);
 }
 
+void ClipboardProtocolIsUtf8BoundedAndReliableOnly() {
+    using namespace desklink;
+    EnvelopeHeader Header;
+    Header.session_nonce = 0xC11F'B04Du;
+    Header.sequence = 7;
+    ClipboardTextMessage Message{
+        MakeMachineId(31), 9, "DeskLink \xF0\x9F\x93\x8B"};
+    const auto Encoded = encode_packet(Header, Message);
+    CHECK(PeekMessageType(Encoded) == MessageType::ClipboardText);
+    const auto Decoded = decode_packet(Encoded, false);
+    CHECK(Decoded.packet.has_value());
+    CHECK(std::get<ClipboardTextMessage>(
+              Decoded.packet->message) == Message);
+    CHECK(!decode_packet(Encoded, true).packet.has_value());
+    for (std::size_t Length = 0; Length < Encoded.size(); ++Length) {
+        CHECK(!decode_packet(
+                   ByteBuffer(Encoded.begin(), Encoded.begin() + Length),
+                   false).packet.has_value());
+    }
+
+    auto Invalid = Message;
+    Invalid.OriginMachine = {};
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.UpdateId = 0;
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.Text = std::string{"\xC0\xAF", 2};
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.Text = std::string{"a\0b", 3};
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+    Invalid = Message;
+    Invalid.Text.assign(kMaximumClipboardTextBytes + 1, 'x');
+    CHECK(!decode_packet(
+               encode_packet(Header, Invalid), false).packet.has_value());
+
+    const auto Hello = encode_packet(Header, ClipboardHelloMessage{});
+    CHECK(PeekMessageType(Hello) == MessageType::ClipboardHello);
+    CHECK(decode_packet(Hello, false).packet.has_value());
+    CHECK(!decode_packet(Hello, true).packet.has_value());
+    CHECK(!decode_packet(
+               encode_packet(
+                   Header, ClipboardHelloMessage{
+                       static_cast<std::uint16_t>(
+                           kClipboardProtocolVersion + 1),
+                       kMaximumClipboardTextBytes}),
+               false).packet.has_value());
+}
+
+void ClipboardExchangeRequiresConsentNegotiationNonceAndRate() {
+    using namespace desklink;
+    ManualClock Clock;
+    const auto Local = MakeMachineId(41);
+    const auto Peer = MakeMachineId(42);
+    CapabilitySet LocalCapabilities;
+    LocalCapabilities.grant(Capability::ClipboardRead);
+    LocalCapabilities.grant(Capability::ClipboardWrite);
+    CapabilitySet RemoteCapabilities = LocalCapabilities;
+
+    ClipboardExchange Exchange(&Clock);
+    Exchange.Begin(Local, Peer, 88, true, LocalCapabilities);
+    CHECK(!Exchange.CanSend());
+    CHECK(!Exchange.CanReceive());
+    Exchange.SetRemoteCapabilities(RemoteCapabilities);
+    CHECK(Exchange.ShouldSendHello());
+    CHECK(Exchange.MarkHelloSent());
+    CHECK(Exchange.AdmitHello(ClipboardHelloMessage{}) ==
+          ClipboardAdmission::Accepted);
+    CHECK(Exchange.CanSend());
+    CHECK(Exchange.CanReceive());
+
+    const auto First = Exchange.BuildText("first");
+    CHECK(First.has_value());
+    CHECK(First->OriginMachine == Local);
+    CHECK(First->UpdateId == 1);
+    CHECK(!Exchange.BuildText("too fast").has_value());
+    Clock.advance(kClipboardMinimumUpdateInterval);
+    const auto Second = Exchange.BuildText("second");
+    CHECK(Second.has_value());
+    CHECK(Second->UpdateId == 2);
+
+    ClipboardTextMessage Incoming{Peer, 1, "peer text"};
+    CHECK(Exchange.AdmitText(87, Incoming) ==
+          ClipboardAdmission::WrongSession);
+    auto WrongPeer = Incoming;
+    WrongPeer.OriginMachine = MakeMachineId(43);
+    CHECK(Exchange.AdmitText(88, WrongPeer) ==
+          ClipboardAdmission::WrongPeer);
+    CHECK(Exchange.AdmitText(88, Incoming) ==
+          ClipboardAdmission::Accepted);
+    CHECK(Exchange.AdmitText(88, Incoming) ==
+          ClipboardAdmission::StaleUpdate);
+    Incoming.UpdateId = 2;
+    CHECK(Exchange.AdmitText(88, Incoming) ==
+          ClipboardAdmission::RateLimited);
+    Clock.advance(kClipboardMinimumUpdateInterval);
+    Incoming.UpdateId = 3;
+    CHECK(Exchange.AdmitText(88, Incoming) ==
+          ClipboardAdmission::Accepted);
+
+    ClipboardExchange Disabled(&Clock);
+    Disabled.Begin(Local, Peer, 88, false, LocalCapabilities);
+    Disabled.SetRemoteCapabilities(RemoteCapabilities);
+    CHECK(!Disabled.ShouldSendHello());
+    CHECK(Disabled.AdmitHello(ClipboardHelloMessage{}) ==
+          ClipboardAdmission::Disabled);
+}
+
+void PeerSessionClipboardIsComplementaryAndInputIndependent() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0xC11F'0001u;
+    const auto IdentityA = MakeIdentity(121, "Clipboard A");
+    const auto IdentityB = MakeIdentity(122, "Clipboard B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Capabilities.grant(Capability::ClipboardRead);
+    Capabilities.grant(Capability::ClipboardWrite);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::vector<ClipboardTextMessage> AppliedA;
+    std::vector<ClipboardTextMessage> AppliedB;
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce, {}, nullptr, {},
+        ClipboardSessionOptions{
+            true, IdentityA.machine_id, &Clock,
+            [&](ClipboardTextMessage Value) {
+                AppliedA.push_back(std::move(Value));
+                return true;
+            }});
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce, {}, nullptr, {},
+        ClipboardSessionOptions{
+            true, IdentityB.machine_id, &Clock,
+            [&](ClipboardTextMessage Value) {
+                AppliedB.push_back(std::move(Value));
+                return true;
+            }});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.CanSendClipboard());
+    CHECK(SessionA.CanReceiveClipboard());
+    CHECK(SessionB.CanSendClipboard());
+    CHECK(SessionB.CanReceiveClipboard());
+    CHECK(SessionA.PublishClipboardText("from A"));
+    CHECK(AppliedB.size() == 1);
+    CHECK(AppliedB.front().Text == "from A");
+    CHECK(!SessionA.PublishClipboardText("too soon"));
+    Clock.advance(kClipboardMinimumUpdateInterval);
+    CHECK(SessionB.PublishClipboardText("from B"));
+    CHECK(AppliedA.size() == 1);
+    CHECK(AppliedA.front().Text == "from B");
+
+    EnvelopeHeader ReplayHeader;
+    ReplayHeader.session_nonce = Nonce;
+    ReplayHeader.sequence = 700;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        ReplayHeader,
+        ClipboardTextMessage{IdentityA.machine_id, 1, "replayed"})));
+    CHECK(AppliedB.size() == 1);
+    CHECK(SessionB.Stats().ClipboardRejected >= 1);
+
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionB.IncomingFocused());
+    CHECK(SessionA.SendKey(KeyEventMessage{0x20, false, true}));
+    CHECK(InjectorB.keys.size() == 1);
+    CHECK(SessionA.ReleaseOutgoingFocus());
+}
+
+void PeerSessionClipboardDefaultsOffAndRejectsOneSidedConsent() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0xC11F'0002u;
+    const auto IdentityA = MakeIdentity(123, "Clipboard default A");
+    const auto IdentityB = MakeIdentity(124, "Clipboard default B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet GrantedByA;
+    GrantedByA.grant(Capability::InputInject);
+    GrantedByA.grant(Capability::ClipboardRead);
+    CapabilitySet GrantedByB;
+    GrantedByB.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, GrantedByA);
+    SaveTrustedPeer(TrustB, IdentityA, GrantedByB);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce, {}, nullptr, {},
+        ClipboardSessionOptions{
+            true, IdentityA.machine_id, &Clock,
+            [](ClipboardTextMessage) { return true; }});
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(!SessionA.CanSendClipboard());
+    CHECK(!SessionA.CanReceiveClipboard());
+    CHECK(!SessionA.PublishClipboardText("must stay local"));
+    CHECK(SessionA.CanBeginOutgoing());
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.ReleaseOutgoingFocus());
+}
+
+void PeerSessionClipboardFailureAndReconnectStayFailClosed() {
+    using namespace desklink;
+    constexpr std::uint64_t FirstNonce = 0xC11F'0003u;
+    constexpr std::uint64_t SecondNonce = 0xC11F'0004u;
+    const auto IdentityA = MakeIdentity(125, "Clipboard reconnect A");
+    const auto IdentityB = MakeIdentity(126, "Clipboard reconnect B");
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Capabilities.grant(Capability::ClipboardRead);
+    Capabilities.grant(Capability::ClipboardWrite);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+
+    {
+        auto Pair = make_in_memory_transport_pair(
+            TransportPeerInfo{IdentityB, true, true},
+            TransportPeerInfo{IdentityA, true, true});
+        RecordingInjector InjectorA;
+        RecordingInjector InjectorB;
+        AgentCoordinator IncomingA(Clock, InjectorA);
+        AgentCoordinator IncomingB(Clock, InjectorB);
+        HostCoordinator OutgoingA(FirstNonce);
+        HostCoordinator OutgoingB(FirstNonce);
+        PeerSession SessionA(
+            Pair.a, OutgoingA, IncomingA, TrustA, FirstNonce, {}, nullptr, {},
+            ClipboardSessionOptions{
+                true, IdentityA.machine_id, &Clock,
+                [](ClipboardTextMessage) { return true; }});
+        PeerSession SessionB(
+            Pair.b, OutgoingB, IncomingB, TrustB, FirstNonce, {}, nullptr, {},
+            ClipboardSessionOptions{
+                true, IdentityB.machine_id, &Clock,
+                [](ClipboardTextMessage) -> bool {
+                    throw std::runtime_error("clipboard owner rejected write");
+                }});
+        CHECK(SessionA.Start());
+        CHECK(SessionB.Start());
+        CHECK(SessionA.CanSendClipboard());
+        CHECK(SessionA.PublishClipboardText("isolated failure"));
+        CHECK(SessionB.Stats().ClipboardRejected >= 1);
+        CHECK(SessionA.BeginOutgoingFocus());
+        CHECK(SessionA.SendKey(KeyEventMessage{0x21, false, true}));
+        CHECK(InjectorB.keys.size() == 1);
+        CHECK(SessionA.ReleaseOutgoingFocus());
+    }
+
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(SecondNonce);
+    HostCoordinator OutgoingB(SecondNonce);
+    std::vector<ClipboardTextMessage> AppliedB;
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, SecondNonce, {}, nullptr, {},
+        ClipboardSessionOptions{
+            true, IdentityA.machine_id, &Clock,
+            [](ClipboardTextMessage) { return true; }});
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, SecondNonce, {}, nullptr, {},
+        ClipboardSessionOptions{
+            true, IdentityB.machine_id, &Clock,
+            [&](ClipboardTextMessage Message) {
+                AppliedB.push_back(std::move(Message));
+                return true;
+            }});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+
+    EnvelopeHeader StaleHeader;
+    StaleHeader.session_nonce = FirstNonce;
+    StaleHeader.sequence = 91;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        StaleHeader,
+        ClipboardTextMessage{IdentityA.machine_id, 99, "stale session"})));
+    CHECK(AppliedB.empty());
+    CHECK(SessionB.Stats().session_rejected >= 1);
+    CHECK(SessionA.PublishClipboardText("fresh session"));
+    CHECK(AppliedB.size() == 1);
+    CHECK(AppliedB.front().UpdateId == 1);
+    CHECK(AppliedB.front().Text == "fresh session");
+}
+
 void DisplayTopologyProtocolIsBoundedAndStrict() {
     using namespace desklink;
     constexpr std::uint64_t SessionNonce = 0x9021u;
@@ -3735,6 +4053,29 @@ void WindowsCurrentUserControlPipeRoundTrip() {
         std::chrono::milliseconds{25}).has_value());
 }
 
+void WindowsClipboardListenerLifecycleIsContentSilent() {
+    using namespace desklink;
+    std::atomic_uint32_t Published{};
+    std::atomic_uint32_t Failed{};
+    Win32ClipboardSynchronizer Clipboard(
+        Win32ClipboardHandlers{
+            [&](std::string) {
+                ++Published;
+                return true;
+            },
+            [&](std::string) { ++Failed; }});
+    Clipboard.SetLocalPublishing(false);
+    CHECK(Clipboard.Start());
+    CHECK(Clipboard.Running());
+    Clipboard.Stop();
+    CHECK(!Clipboard.Running());
+    const auto Statistics = Clipboard.Stats();
+    CHECK(Published.load() == 0);
+    CHECK(Failed.load() == 0);
+    CHECK(Statistics.LocalPublished == 0);
+    CHECK(Statistics.RemoteApplied == 0);
+}
+
 void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     using namespace desklink;
 
@@ -3744,11 +4085,13 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     Focus.Port = 43'821;
     Focus.CaptureInput = true;
     Focus.ReceiveAudio = true;
+    Focus.SyncClipboard = true;
     const auto FocusArguments = BuildLauncherArguments(Focus);
     CHECK(FocusArguments.has_value());
     const std::vector<std::wstring> ExpectedFocus{
         L"focus", L"desklink-peer.local", L"43821", L"--capture",
-        L"--receive-audio", L"--default-mode", L"lock-pc1",
+        L"--receive-audio", L"--sync-clipboard",
+        L"--default-mode", L"lock-pc1",
         L"--tls-provider", L"schannel"};
     CHECK(*FocusArguments == ExpectedFocus);
 
@@ -3759,7 +4102,8 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     const std::vector<std::wstring> ExpectedCalibratedFocus{
         L"focus", L"desklink-peer.local", L"43821", L"--capture",
         L"--pointer-gain", L"175", L"--pointer-dpi", L"1600",
-        L"--receive-audio", L"--default-mode", L"lock-pc1",
+        L"--receive-audio", L"--sync-clipboard",
+        L"--default-mode", L"lock-pc1",
         L"--tls-provider", L"schannel"};
     CHECK(*CalibratedFocusArguments == ExpectedCalibratedFocus);
     Focus.PointerCalibration = {};
@@ -3784,6 +4128,7 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     LauncherRequest Serve;
     Serve.Operation = LauncherOperation::Serve;
     Serve.SendAudio = true;
+    Serve.SyncClipboard = true;
     Serve.CaptureInput = true;
     Serve.PointerCalibration.GainPercent = 125;
     Serve.PointerCalibration.SourceDpi = 800;
@@ -3792,7 +4137,8 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     const auto ReciprocalServeArguments = BuildLauncherArguments(Serve);
     CHECK(ReciprocalServeArguments.has_value());
     const std::vector<std::wstring> ExpectedReciprocalServe{
-        L"serve", L"43821", L"--send-audio", L"--capture",
+        L"serve", L"43821", L"--send-audio", L"--sync-clipboard",
+        L"--capture",
         L"--pointer-gain", L"125", L"--pointer-dpi", L"800",
         L"--edge-roaming",
         L"C:\\Users\\test\\AppData\\Local\\DeskLink\\roaming.settings",
@@ -3810,11 +4156,14 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     Pair.GrantInput = true;
     Pair.GrantAudioReceive = true;
     Pair.GrantTopology = true;
+    Pair.GrantClipboardRead = true;
+    Pair.GrantClipboardWrite = true;
     const auto PairArguments = BuildLauncherArguments(Pair);
     CHECK(PairArguments.has_value());
     const std::vector<std::wstring> ExpectedPair{
         L"listen", L"43821", L"--grant-input",
         L"--grant-audio-receive", L"--grant-topology",
+        L"--grant-clipboard-read", L"--grant-clipboard-write",
         L"--tls-provider", L"schannel"};
     CHECK(*PairArguments == ExpectedPair);
 
@@ -3829,6 +4178,12 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     Focus.Host = L"desklink-peer.local";
     Focus.GrantInput = true;
     CHECK(!BuildLauncherArguments(Focus).has_value());
+    Pair.SyncClipboard = true;
+    CHECK(!BuildLauncherArguments(Pair).has_value());
+    LauncherRequest Identity;
+    Identity.Operation = LauncherOperation::Identity;
+    Identity.SyncClipboard = true;
+    CHECK(!BuildLauncherArguments(Identity).has_value());
 
     CHECK(QuoteWindowsCommandArgument(L"plain") == L"plain");
     CHECK(QuoteWindowsCommandArgument(L"") == L"\"\"");
@@ -4361,6 +4716,11 @@ int main() {
     PeerSessionFailsLocalOnAnInvalidCapabilityReplay();
     PeerSessionDoesNotTreatRemoteGrantsAsLocalDisclosureConsent();
     PeerSessionPreservesExplicitAudioAndTopologyExchange();
+    ClipboardProtocolIsUtf8BoundedAndReliableOnly();
+    ClipboardExchangeRequiresConsentNegotiationNonceAndRate();
+    PeerSessionClipboardIsComplementaryAndInputIndependent();
+    PeerSessionClipboardDefaultsOffAndRejectsOneSidedConsent();
+    PeerSessionClipboardFailureAndReconnectStayFailClosed();
     DisplayTopologyProtocolIsBoundedAndStrict();
     DisplayTopologyAdmissionFailsClosedAndRecoversOnReconnect();
     RoamingRouteWaitsForAuthenticatedTopology();
@@ -4389,6 +4749,7 @@ int main() {
 #ifdef _WIN32
     WindowsForegroundMonitorPublishesBoundedSnapshot();
     WindowsCurrentUserControlPipeRoundTrip();
+    WindowsClipboardListenerLifecycleIsContentSilent();
     WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned();
     WindowsPointerMotionScalingIsBoundedAndRetainsFractions();
     WindowsDisplayTopologyEnumeratesWhenAvailable();

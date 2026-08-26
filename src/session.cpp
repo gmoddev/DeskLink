@@ -532,7 +532,8 @@ PeerSession::PeerSession(
     std::uint64_t SessionNonce,
     PeerSessionHandlers Handlers,
     AudioReceiver* Receiver,
-    DisplayTopologyExchangeOptions TopologyOptions) noexcept
+    DisplayTopologyExchangeOptions TopologyOptions,
+    ClipboardSessionOptions ClipboardOptions) noexcept
     : Transport_(std::move(Transport)),
       OutgoingCoordinator_(OutgoingCoordinator),
       IncomingCoordinator_(IncomingCoordinator),
@@ -541,7 +542,9 @@ PeerSession::PeerSession(
       Handlers_(std::move(Handlers)),
       AudioReceiver_(Receiver),
       TopologyOptions_(TopologyOptions),
-      TopologyExchange_(TopologyOptions.Clock) {}
+      TopologyExchange_(TopologyOptions.Clock),
+      ClipboardOptions_(std::move(ClipboardOptions)),
+      ClipboardExchange_(ClipboardOptions_.Clock) {}
 
 PeerSession::~PeerSession() { Stop(); }
 
@@ -562,6 +565,9 @@ bool PeerSession::Start() {
         PeerMachine_, SessionNonce_, TopologyOptions_.Enabled,
         LocalCapabilities_.contains(
             Capability::DisplayTopologyExchange));
+    ClipboardExchange_.Begin(
+        ClipboardOptions_.LocalMachine, PeerMachine_, SessionNonce_,
+        ClipboardOptions_.Enabled, LocalCapabilities_);
     const auto Gate = CallbackGate_;
     Transport_->set_reliable_handler(
         [this, Gate](ByteBuffer Packet) {
@@ -595,6 +601,7 @@ void PeerSession::Stop() noexcept {
         LocalCapabilities_ = {};
         RemoteCapabilities_.reset();
         TopologyExchange_.Stop();
+        ClipboardExchange_.Stop();
         LocalTopologyMachine_.reset();
         DirectionArbiter_.ResetSession();
         PeerMachine_ = {};
@@ -620,6 +627,7 @@ void PeerSession::Tick() noexcept {
         if (!RemoteCapabilities_ && !CapabilityConflict_) {
             (void)PublishCapabilityGrantLocked();
         }
+        (void)PublishClipboardHelloLocked();
     }
     if (DirectionChanged && Handlers_.DirectionChanged) {
         Handlers_.DirectionChanged();
@@ -864,6 +872,40 @@ bool PeerSession::SendAudioFrame(AudioFrameMessage Frame) {
     return true;
 }
 
+bool PeerSession::CanSendClipboard() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ && ClipboardExchange_.CanSend();
+}
+
+bool PeerSession::CanReceiveClipboard() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ &&
+        ClipboardOptions_.ApplyText && ClipboardExchange_.CanReceive();
+}
+
+bool PeerSession::PublishClipboardText(std::string Text) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || CapabilityConflict_) {
+        ++Stats_.ClipboardSendRejected;
+        return false;
+    }
+    auto Message = ClipboardExchange_.BuildText(std::move(Text));
+    if (!Message) {
+        ++Stats_.ClipboardSendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = ReliableSequence_++;
+    if (ReliableSequence_ == 0) ++ReliableSequence_;
+    if (!Transport_->send_reliable(encode_packet(Header, *Message))) {
+        ++Stats_.ClipboardSendRejected;
+        return false;
+    }
+    ++Stats_.ClipboardSent;
+    return true;
+}
+
 bool PeerSession::PublishDisplayTopology(
     const MachineId& LocalMachine,
     const DisplayTopologySnapshot& Topology) {
@@ -941,6 +983,26 @@ bool PeerSession::PublishCapabilityGrantLocked() {
     return true;
 }
 
+bool PeerSession::PublishClipboardHelloLocked() {
+    if (!Started_ || CapabilityConflict_ ||
+        !ClipboardExchange_.ShouldSendHello()) {
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = ReliableSequence_++;
+    if (ReliableSequence_ == 0) ++ReliableSequence_;
+    // Mark before synchronous delivery so two in-memory/session callbacks
+    // cannot recursively echo module hellos while each send is still active.
+    if (!ClipboardExchange_.MarkHelloSent() ||
+        !Transport_->send_reliable(encode_packet(
+            Header, ClipboardHelloMessage{}))) {
+        return false;
+    }
+    ++Stats_.ClipboardHellosSent;
+    return true;
+}
+
 void PeerSession::ReleaseIncomingDirectionLocked() noexcept {
     if (IncomingToken_) {
         (void)DirectionArbiter_.Release(*IncomingToken_);
@@ -976,6 +1038,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
         const auto PeekedType = PeekMessageType(Packet);
         const bool TopologyEnvelope = PeekedType ==
             MessageType::DisplayTopologySnapshot;
+        const bool ClipboardEnvelope =
+            PeekedType == MessageType::ClipboardHello ||
+            PeekedType == MessageType::ClipboardText;
         auto Decoded = decode_packet(Packet, false);
         if (!Decoded.packet) {
             ++Stats_.decode_rejected;
@@ -983,6 +1048,7 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 ++Stats_.TopologyRejected;
                 TopologyExchange_.RejectMalformed();
             }
+            if (ClipboardEnvelope) ++Stats_.ClipboardRejected;
             return;
         }
         if (!ValidateSession(*Decoded.packet)) {
@@ -990,6 +1056,7 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 ++Stats_.TopologyRejected;
                 TopologyExchange_.RejectMalformed();
             }
+            if (ClipboardEnvelope) ++Stats_.ClipboardRejected;
             return;
         }
 
@@ -1006,14 +1073,18 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 if (!CapabilityConflict_) {
                     CapabilityConflict_ = true;
                     RemoteCapabilities_.reset();
+                    ClipboardExchange_.SetRemoteCapabilities(std::nullopt);
                     FailLocalDirectionsLocked();
                     NotifyDirectionChanged = true;
                 }
             } else {
                 const bool FirstGrant = !RemoteCapabilities_;
                 RemoteCapabilities_ = CapabilitySet(Bits);
+                ClipboardExchange_.SetRemoteCapabilities(
+                    RemoteCapabilities_);
                 if (FirstGrant) {
                     (void)PublishCapabilityGrantLocked();
+                    (void)PublishClipboardHelloLocked();
                     NotifyDirectionChanged = true;
                 }
             }
@@ -1027,6 +1098,37 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
             } else {
                 ++Stats_.TopologyRejected;
             }
+            return;
+        } else if (Type == MessageType::ClipboardHello) {
+            ++Stats_.ClipboardHellosReceived;
+            if (ClipboardExchange_.AdmitHello(
+                    std::get<ClipboardHelloMessage>(
+                        Decoded.packet->message)) !=
+                    ClipboardAdmission::Accepted) {
+                ++Stats_.ClipboardRejected;
+            } else {
+                (void)PublishClipboardHelloLocked();
+            }
+            return;
+        } else if (Type == MessageType::ClipboardText) {
+            ++Stats_.ClipboardReceived;
+            const auto& Message = std::get<ClipboardTextMessage>(
+                Decoded.packet->message);
+            if (ClipboardExchange_.AdmitText(
+                    Decoded.packet->header.session_nonce, Message) !=
+                    ClipboardAdmission::Accepted ||
+                !ClipboardOptions_.ApplyText) {
+                ++Stats_.ClipboardRejected;
+                return;
+            }
+            bool Applied = false;
+            try {
+                Applied = ClipboardOptions_.ApplyText(Message);
+            } catch (...) {
+                Applied = false;
+            }
+            if (Applied) ++Stats_.ClipboardApplied;
+            else ++Stats_.ClipboardRejected;
             return;
         }
         if (Type == MessageType::FocusReady) {

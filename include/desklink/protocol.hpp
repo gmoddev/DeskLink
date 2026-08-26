@@ -1,5 +1,6 @@
 #pragma once
 
+#include "desklink/clipboard.hpp"
 #include "desklink/display_topology.hpp"
 #include "desklink/types.hpp"
 
@@ -29,6 +30,8 @@ enum class MessageType : std::uint16_t {
     AudioFrame         = 31,
     Heartbeat          = 40,
     DisplayTopologySnapshot = 50,
+    ClipboardHello     = 60,
+    ClipboardText      = 61,
 };
 
 enum class DeskMode : std::uint8_t {
@@ -160,7 +163,9 @@ using Message = std::variant<
     SetAudioGainMessage,
     AudioFrameMessage,
     HeartbeatMessage,
-    DisplayTopologySnapshotMessage>;
+    DisplayTopologySnapshotMessage,
+    ClipboardHelloMessage,
+    ClipboardTextMessage>;
 
 struct DecodedPacket {
     EnvelopeHeader header;

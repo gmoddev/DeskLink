@@ -230,7 +230,7 @@ desklink_pair.exe pair 192.168.1.25 43821 --grant-topology
 ```
 
 Each side independently displays the remote display name, the transcript-derived
-six-digit code, and the exact input/audio/topology capability consequences. The
+six-digit code, and the exact input/audio/topology/clipboard capability consequences. The
 default button is No. Confirmation never occurs automatically, and dismissing either prompt
 rejects the provisional connection. A local Yes sends a bounded mutual-
 confirmation frame; neither side reports success until both durable trust

@@ -132,6 +132,25 @@ Revoking `InputInject` immediately:
 - invokes the owned-input cleanup callback
 - blocks later input traffic
 
+Clipboard authorization is independent from input and audio. Pairing grants
+neither clipboard capability by default, and existing trust records are never
+upgraded. A text update may leave a PC only when that PC's persisted grant lets
+the peer read its clipboard, the peer's immutable session report permits this
+PC to write the destination clipboard, both runtimes explicitly enable
+clipboard sync, and both have completed the clipboard-module handshake after
+`PeerValidated`. Receiving applies the complementary local-write/remote-read
+check again.
+
+The clipboard wire and Windows boundaries are text-only, current-session, and
+bounded: strict UTF-8 without NUL, 48 KiB maximum text, 20 updates per second,
+eight pending remote writes, exact authenticated origin machine, fresh session
+nonce, and monotonic update ID. The Windows adapter reads/writes only
+`CF_UNICODETEXT`, keeps loop-suppression state in memory, and never serializes or
+logs content. Wrong consent, identity, nonce, framing, rate, replay, clipboard
+contention, callback exception, or OS write failure rejects that update. There
+is no retry through input injection, capability fallback, session readmission,
+or focus transition; clipboard failure has no input-lifecycle authority.
+
 Foreground profile metadata is a local policy input, not an authorization
 input. Rules are bounded, exact executable-basename matches with no wildcards,
 regular expressions, command lines, module loading, or target-process code
@@ -415,6 +434,7 @@ Recommended production defaults:
 - no Internet/NAT traversal mode in V1
 - connection rate limits before expensive pairing work
 - datagram receive explicitly enabled only after authenticated session setup
+- clipboard grants and per-session synchronization off by default
 - no session admission before peer certificate-pin validation succeeds
 - no provider fallback after credential, certificate, authentication, or transport failure
 

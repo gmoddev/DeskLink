@@ -10,7 +10,7 @@ surface, not the final DeskLink UI or installer.
 - packaged, hash-pinned MsQuic 2.6.0 with Schannel
 - one wrapper-owned DeskLink operation at a time
 - manual pairing/focus plus explicitly enabled reciprocal edge roaming
-- optional physical input capture and optional audio startup
+- optional physical input capture, audio startup, and text-clipboard sync
 - presentation-only monitor arrangement and explicit saved edge configuration
 - single-instance notification-area lifecycle and optional sign-in startup
 
@@ -41,6 +41,8 @@ store, and does not implement a second connection or pairing stack.
    normalizes it to an 800-DPI reference before gain is applied.
    **Peer audio %** applies 0-100% attenuation to audio rendered from this peer;
    **Mute** toggles that receiver without changing the Windows system volume.
+   **Sync text clipboard** is a separate session opt-in and remains ineffective
+   unless both pairing directions have the complementary clipboard grants.
 8. The controller connects in **Local** mode. Confirm that status reports an
    authenticated connected peer, then select **Focus remote**. When
    **Experimental edge roaming** is checked, this action arms saved Ready links
@@ -66,6 +68,17 @@ is still a visible user choice. Existing paired peers do not acquire it; re-pair
 both directions to enable topology exchange. The grant shares no input or focus
 authority and cannot modify the saved roaming graph.
 
+The clipboard permission names also describe what the peer may do:
+
+- **Peer may read text clipboard** grants `ClipboardRead` on this PC.
+- **Peer may write text clipboard** grants `ClipboardWrite` on this PC.
+- **Sync text clipboard** enables the current session module; it grants nothing.
+
+All three controls default off. Bidirectional synchronization requires both
+grants on both PCs plus session opt-in on both PCs. Existing paired peers are
+not upgraded automatically. Only bounded Unicode text is supported; clipboard
+content is never included in the diagnostic view.
+
 ## Process and failure behavior
 
 The wrapper launches `desklink_pair.exe` by absolute path with
@@ -77,7 +90,7 @@ DeskLink, and never changes either PC's global mouse settings.
 
 Standard output and standard error are captured into a bounded in-memory
 diagnostic view. The wrapper does not persist diagnostics and DeskLink does not
-log keyboard, mouse, or audio content.
+log keyboard, mouse, clipboard, or audio content.
 
 The controlling session starts in `lock-pc1` so merely connecting cannot begin
 capture. **Focus remote** and **RETURN LOCAL** use the existing current-user,

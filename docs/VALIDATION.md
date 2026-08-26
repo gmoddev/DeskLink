@@ -475,6 +475,34 @@ This device smoke does not physically switch or disable the default endpoint;
 that matrix, sustained physical two-PC timing, drift correction, and gain/mute
 remain separate validation.
 
+## Text clipboard validation
+
+The portable suite proves reliable-only canonical hello/text framing, strict
+UTF-8 including overlong/surrogate/NUL rejection, the 48 KiB bound, every
+truncated frame, nonzero authenticated origins/update IDs, explicit default-off
+startup, complementary read/write consent, and refusal to infer support from
+protocol-v2 capability bits without the module handshake. It also covers wrong
+peer and nonce, replay/stale update, 20-per-second gates, one-sided consent,
+fresh reconnect/update-ID reset, and rejection of the prior session nonce.
+
+Session fault tests make the apply callback reject and throw, then successfully
+complete focus and input traffic on the same authenticated connection. This is
+the required proof that clipboard failure has no direction, focus, lease,
+capture, or input-cleanup authority. Typed launcher tests cover both grant flags
+and `--sync-clipboard`, reject them outside their allowed pairing/session scope,
+and preserve production Schannel pinning. The standard Windows build compiles
+the message-only `CF_UNICODETEXT` adapter with bounded open attempts, an
+eight-write queue, strict conversions, current-session memory-only content, and
+exact sequence/text loop suppression.
+
+No default automated test mutates the interactive user's real clipboard.
+Production qualification therefore still requires two supported physical PCs
+to verify consent UX and privacy in both directions, rapid-copy/contention
+behavior, clipboard-owner process exit/delayed rendering interactions, loop
+suppression, interruption, and reconnect. Until that matrix passes, text
+clipboard remains experimental; image clipboard and file transfer remain out
+of scope.
+
 ---
 
 ## Limitations of this validation
@@ -487,6 +515,7 @@ This validation does not yet prove:
 - real packet-loss/jitter characteristics beyond the deterministic adaptive
   target and bounded rebuffer tests
 - physical two-PC audio privacy, interruption, reconnect, and endpoint-change behavior
+- physical two-PC text-clipboard privacy, contention, owner-exit, loop, and reconnect behavior
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

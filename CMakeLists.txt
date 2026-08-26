@@ -39,6 +39,7 @@ if(DESKLINK_BUILD_TESTS)
 endif()
 
 add_library(desklink_core
+    src/clipboard.cpp
     src/control.cpp
     src/discovery.cpp
     src/display_topology.cpp
@@ -261,6 +262,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_audio.cpp
         src/win32_input.cpp
         src/win32_capture.cpp
+        src/win32_clipboard.cpp
         src/win32_pairing.cpp
         src/win32_roaming_settings.cpp
         src/win32_device_certificate.cpp
