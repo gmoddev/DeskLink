@@ -43,6 +43,9 @@ public:
 
     [[nodiscard]] constexpr std::uint64_t bits() const noexcept { return bits_; }
 
+    [[nodiscard]] constexpr bool operator==(
+        const CapabilitySet&) const noexcept = default;
+
 private:
     std::uint64_t bits_{};
 };

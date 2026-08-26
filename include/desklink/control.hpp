@@ -1,11 +1,13 @@
 #pragma once
 
 #include "desklink/protocol.hpp"
+#include "desklink/product.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/types.hpp"
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -15,6 +17,8 @@ inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
 inline constexpr std::uint16_t kControlProtocolVersion = 1;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
+inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
+inline constexpr std::size_t kMaximumControlDisplayName = 64;
 inline constexpr std::size_t kControlFrameHeaderSize = 20;
 inline constexpr std::size_t kMaximumControlFrameSize =
     kControlFrameHeaderSize + kMaximumControlPayload;
@@ -32,6 +36,13 @@ enum class ControlCommand : std::uint16_t {
     ToggleAudioMute = 5,
     GetDisplayTopologies = 6,
     PrepareForUpdate = 7,
+    GetProductPreferences = 8,
+    SetProductPreferences = 9,
+    ListTrustedDevices = 10,
+    RequestLocalPermissionChange = 11,
+    ForgetTrustedDevice = 12,
+    ReturnLocal = 13,
+    GetPairingCandidate = 14,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -40,6 +51,8 @@ enum class ControlStatus : std::uint16_t {
     Unsupported = 2,
     NotReady = 3,
     Failed = 4,
+    ReauthorizationRequired = 5,
+    CleanupFailed = 6,
 };
 
 enum class ControlRole : std::uint8_t {
@@ -68,6 +81,27 @@ struct GetDisplayTopologiesControlRequest {};
 
 struct PrepareForUpdateControlRequest {};
 
+struct GetProductPreferencesControlRequest {};
+
+struct SetProductPreferencesControlRequest {
+    ProductPreferences Preferences;
+};
+
+struct ListTrustedDevicesControlRequest {};
+
+struct RequestLocalPermissionChangeControlRequest {
+    MachineId Machine{};
+    CapabilitySet DesiredCapabilities;
+};
+
+struct ForgetTrustedDeviceControlRequest {
+    MachineId Machine{};
+};
+
+struct ReturnLocalControlRequest {};
+
+struct GetPairingCandidateControlRequest {};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
@@ -75,7 +109,14 @@ using ControlRequestPayload = std::variant<
     SetAudioGainControlRequest,
     ToggleAudioMuteControlRequest,
     GetDisplayTopologiesControlRequest,
-    PrepareForUpdateControlRequest>;
+    PrepareForUpdateControlRequest,
+    GetProductPreferencesControlRequest,
+    SetProductPreferencesControlRequest,
+    ListTrustedDevicesControlRequest,
+    RequestLocalPermissionChangeControlRequest,
+    ForgetTrustedDeviceControlRequest,
+    ReturnLocalControlRequest,
+    GetPairingCandidateControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
@@ -113,11 +154,41 @@ struct ControlTopologyState {
         const ControlTopologyState&) const noexcept = default;
 };
 
+struct ControlTrustedDevice {
+    MachineId Machine{};
+    std::string DisplayName;
+    CapabilitySet Capabilities;
+
+    [[nodiscard]] bool operator==(
+        const ControlTrustedDevice&) const noexcept = default;
+};
+
+struct ControlTrustedDeviceList {
+    std::vector<ControlTrustedDevice> Devices;
+
+    [[nodiscard]] bool operator==(
+        const ControlTrustedDeviceList&) const noexcept = default;
+};
+
+struct ControlPairingCandidate {
+    std::uint64_t OperationId{};
+    MachineId Machine{};
+    std::string DisplayName;
+    std::string VerificationCode;
+    CapabilitySet RequestedCapabilities;
+
+    [[nodiscard]] bool operator==(
+        const ControlPairingCandidate&) const noexcept = default;
+};
+
 struct ControlResponse {
     std::uint64_t RequestId{};
     ControlStatus Status{ControlStatus::Failed};
     std::optional<ControlState> State;
     std::optional<ControlTopologyState> Topologies;
+    std::optional<ProductPreferences> Preferences;
+    std::optional<ControlTrustedDeviceList> TrustedDevices;
+    std::optional<ControlPairingCandidate> PairingCandidate;
 };
 
 enum class ControlDecodeError {
@@ -138,6 +209,10 @@ struct ControlDecodeResult {
 [[nodiscard]] bool IsValidControlState(const ControlState& State) noexcept;
 [[nodiscard]] bool IsValidControlTopologyState(
     const ControlTopologyState& State);
+[[nodiscard]] bool IsValidControlTrustedDeviceList(
+    const ControlTrustedDeviceList& Devices) noexcept;
+[[nodiscard]] bool IsValidControlPairingCandidate(
+    const ControlPairingCandidate& Candidate) noexcept;
 [[nodiscard]] bool IsValidControlResponse(const ControlResponse& Response);
 [[nodiscard]] std::optional<ByteBuffer> EncodeControlRequest(
     const ControlRequest& Request);

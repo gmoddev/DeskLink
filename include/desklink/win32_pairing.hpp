@@ -21,6 +21,7 @@ public:
 
     [[nodiscard]] bool Load();
     [[nodiscard]] bool IsLoaded() const noexcept;
+    [[nodiscard]] std::optional<std::vector<TrustedPeer>> ListPeers() const override;
     [[nodiscard]] std::optional<TrustedPeer> GetPeer(const MachineId& Machine) const override;
     [[nodiscard]] std::optional<TrustedPeer> FindPeerByFingerprint(
         std::string_view Fingerprint) const override;

@@ -56,6 +56,7 @@ function Assert-InstalledPayload() {
     $ExpectedFiles = @(
         'desklink_alpha.exe',
         'desklink_pair.exe',
+        'desklink_runtime.exe',
         'desklink_update.exe',
         'runtime\schannel\msquic.dll',
         'concrt140.dll',

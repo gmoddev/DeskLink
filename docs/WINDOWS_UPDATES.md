@@ -23,7 +23,8 @@ release-signing identity and clean Windows 11 / Windows Server 2022 validation.
    remote focus and capture to be false;
 5. send the typed `PrepareForUpdate` request, which repeats the fail-local
    transition and schedules orderly runtime shutdown;
-6. wait for `Local\DeskLink.Runtime.v1`, then the Alpha UI mutex, to disappear;
+6. wait for `Local\DeskLink.Runtime.v1` and
+   `Local\DeskLink.RuntimeBroker.v1`, then the Alpha UI mutex, to disappear;
 7. run Setup in a bounded kill-on-close job and validate the registered version,
    exact installed executables, their signer, and the Alpha update self-test;
 8. if install or validation fails, run and validate the already-approved

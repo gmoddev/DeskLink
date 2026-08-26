@@ -32,6 +32,7 @@ namespace {
 
 constexpr wchar_t kUpdateMutexName[] = L"Local\\DeskLink.Update.v1";
 constexpr wchar_t kRuntimeMutexName[] = L"Local\\DeskLink.Runtime.v1";
+constexpr wchar_t kBrokerMutexName[] = L"Local\\DeskLink.RuntimeBroker.v1";
 constexpr wchar_t kAlphaMutexName[] = L"Local\\DeskLink.Alpha.v1";
 constexpr wchar_t kInstallerMutexName[] = L"Local\\DeskLink.Install.v1";
 constexpr wchar_t kAlphaWindowClass[] = L"DeskLinkAlphaWindow.v1";
@@ -615,16 +616,18 @@ public:
     }
 
     bool RequestReturnLocal() override {
-        if (!MutexExists(kRuntimeMutexName)) return true;
+        if (!MutexExists(kRuntimeMutexName) &&
+            !MutexExists(kBrokerMutexName)) return true;
         const auto Response = SendControl(
-            desklink::SetDesiredModeControlRequest{desklink::DeskMode::LockPc1});
+            desklink::ReturnLocalControlRequest{});
         return Response &&
             (Response->Status == desklink::ControlStatus::Ok ||
              Response->Status == desklink::ControlStatus::NotReady);
     }
 
     bool ConfirmLocal() override {
-        if (!MutexExists(kRuntimeMutexName)) return true;
+        if (!MutexExists(kRuntimeMutexName) &&
+            !MutexExists(kBrokerMutexName)) return true;
         const auto Response = SendControl(desklink::GetStateControlRequest{});
         return Response && Response->Status == desklink::ControlStatus::Ok &&
             Response->State && !Response->State->RemoteFocused &&
@@ -632,14 +635,16 @@ public:
     }
 
     bool RequestRuntimeShutdown() override {
-        if (!MutexExists(kRuntimeMutexName)) return true;
+        if (!MutexExists(kRuntimeMutexName) &&
+            !MutexExists(kBrokerMutexName)) return true;
         const auto Response = SendControl(
             desklink::PrepareForUpdateControlRequest{});
         return Response && Response->Status == desklink::ControlStatus::Ok;
     }
 
     bool WaitForRuntimeShutdown() override {
-        return WaitForMutexAbsent(kRuntimeMutexName, kShutdownTimeout);
+        return WaitForMutexAbsent(kRuntimeMutexName, kShutdownTimeout) &&
+               WaitForMutexAbsent(kBrokerMutexName, kShutdownTimeout);
     }
 
     bool RequestUiShutdown() override {
@@ -716,9 +721,11 @@ private:
     std::optional<desklink::ControlResponse> SendControl(Payload Value) {
         auto RequestId = ++RequestId_;
         if (RequestId == 0) RequestId = ++RequestId_;
-        return desklink::Win32ControlPipeClient::Send(
-            desklink::ControlRequest{RequestId, std::move(Value)}, {},
-            std::chrono::milliseconds{2'000});
+        desklink::ControlRequest Request{RequestId, std::move(Value)};
+        const auto Broker = desklink::Win32ControlPipeClient::Send(
+            Request, L"broker", std::chrono::milliseconds{2'000});
+        return Broker ? Broker : desklink::Win32ControlPipeClient::Send(
+            Request, {}, std::chrono::milliseconds{2'000});
     }
 
     bool RunInstaller(const std::filesystem::path& Path,
@@ -726,7 +733,8 @@ private:
                       const std::filesystem::path& LogPath) {
         const auto ActualHash = HashFile(Path);
         if (!ActualHash || *ActualHash != ExpectedHash ||
-            MutexExists(kRuntimeMutexName) || MutexExists(kAlphaMutexName)) {
+            MutexExists(kRuntimeMutexName) ||
+            MutexExists(kBrokerMutexName) || MutexExists(kAlphaMutexName)) {
             return false;
         }
 #ifndef DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS
@@ -800,6 +808,7 @@ private:
             return false;
         }
         for (const auto* Name : {L"desklink_alpha.exe", L"desklink_pair.exe",
+                                 L"desklink_runtime.exe",
                                  L"desklink_update.exe"}) {
             const auto Path = InstallRoot_ / Name;
             if (!IsFixedLocalFile(Path)) return false;

@@ -390,6 +390,13 @@ bool DpapiTrustStore::IsLoaded() const noexcept {
     return Loaded_;
 }
 
+std::optional<std::vector<TrustedPeer>> DpapiTrustStore::ListPeers() const {
+    std::scoped_lock Lock(Mutex_);
+    NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));
+    if (!ProcessLock || !Loaded_ || !RefreshLocked()) return std::nullopt;
+    return Peers_;
+}
+
 std::optional<TrustedPeer> DpapiTrustStore::GetPeer(const MachineId& Machine) const {
     std::scoped_lock Lock(Mutex_);
     NamedMutexLock ProcessLock(static_cast<HANDLE>(NamedMutex_));

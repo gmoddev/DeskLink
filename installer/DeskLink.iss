@@ -24,7 +24,7 @@ AppPublisherURL=https://github.com/gmoddev/DeskLink
 AppSupportURL=https://github.com/gmoddev/DeskLink/issues
 AppUpdatesURL=https://github.com/gmoddev/DeskLink/releases
 AppComments=Secure local keyboard, mouse, audio, and clipboard roaming.
-AppMutex=Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1
+AppMutex=Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1
 SetupMutex=Local\DeskLink.Setup.v1
 DefaultDirName={localappdata}\Programs\DeskLink
 DefaultGroupName=DeskLink
@@ -71,10 +71,12 @@ SignedUninstaller=no
 #ifdef SignedBuild
   Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
 #else
   Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion
+  Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 Source: "{#StagePath}\runtime\schannel\msquic.dll"; DestDir: "{app}\runtime\schannel"; Flags: ignoreversion
@@ -100,7 +102,7 @@ const
   InstallerMutexName = 'Local\DeskLink.Install.v1';
   UpdateMutexName = 'Local\DeskLink.Update.v1';
   ApplicationMutexNames =
-    'Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1';
+    'Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1';
 
 function HasExactCommandLineParameter(Value: String): Boolean;
 var

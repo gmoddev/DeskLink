@@ -139,6 +139,7 @@ if ($IsccVersion -ne $ExpectedInnoVersion) {
 $RequiredFiles = @(
     'desklink_alpha.exe',
     'desklink_pair.exe',
+    'desklink_runtime.exe',
     'desklink_update.exe',
     'runtime\schannel\msquic.dll',
     'concrt140.dll',
@@ -256,7 +257,7 @@ try {
     } else {
         Assert-AuthenticodeSignature $BuiltInstaller $Certificate.Thumbprint -RequireTimestamp
         foreach ($Executable in 'desklink_alpha.exe', 'desklink_pair.exe',
-                'desklink_update.exe') {
+                'desklink_runtime.exe', 'desklink_update.exe') {
             Assert-AuthenticodeSignature `
                 (Join-Path $TemporaryStage $Executable) $Certificate.Thumbprint -RequireTimestamp
         }

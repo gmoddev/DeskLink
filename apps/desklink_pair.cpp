@@ -67,6 +67,11 @@ enum class Operation {
     Control,
 };
 
+bool RequiresRuntimeOwnership(Operation Mode) noexcept {
+    return Mode == Operation::PairListen || Mode == Operation::PairConnect ||
+           Mode == Operation::Serve || Mode == Operation::Focus;
+}
+
 std::chrono::milliseconds NextAudioRecoveryDelay(
     std::chrono::milliseconds Current) noexcept {
     return std::min(Current * 2, kAudioRecoveryMaximumDelay);
@@ -242,7 +247,10 @@ void PrintUsage() {
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n"
         << L"  desklink_pair control gain 0..10000\n"
-        << L"  desklink_pair control mute\n\n"
+        << L"  desklink_pair control mute\n"
+        << L"  desklink_pair control preferences\n"
+        << L"  desklink_pair control devices\n"
+        << L"  desklink_pair control return-local\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
         << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
@@ -347,6 +355,23 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (ArgumentCount == 3 &&
             std::wstring_view(Arguments[2]) == L"mute") {
             Result.ControlPayload = desklink::ToggleAudioMuteControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"preferences") {
+            Result.ControlPayload =
+                desklink::GetProductPreferencesControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"devices") {
+            Result.ControlPayload =
+                desklink::ListTrustedDevicesControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"return-local") {
+            Result.ControlPayload = desklink::ReturnLocalControlRequest{};
             return Result;
         }
         return std::nullopt;
@@ -768,6 +793,9 @@ std::string_view ControlStatusName(desklink::ControlStatus Status) noexcept {
         case desklink::ControlStatus::Unsupported: return "unsupported";
         case desklink::ControlStatus::NotReady: return "not_ready";
         case desklink::ControlStatus::Failed: return "failed";
+        case desklink::ControlStatus::ReauthorizationRequired:
+            return "reauthorization_required";
+        case desklink::ControlStatus::CleanupFailed: return "cleanup_failed";
     }
     return "invalid";
 }
@@ -776,8 +804,13 @@ int RunControl(const CommandLine& Command) {
     auto RequestId = static_cast<std::uint64_t>(GetTickCount64()) ^
         (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32u);
     if (RequestId == 0) RequestId = 1;
-    const auto Response = desklink::Win32ControlPipeClient::Send(
-        desklink::ControlRequest{RequestId, Command.ControlPayload});
+    const desklink::ControlRequest Request{
+        RequestId, Command.ControlPayload};
+    auto Response = desklink::Win32ControlPipeClient::Send(
+        Request, L"broker");
+    if (!Response) {
+        Response = desklink::Win32ControlPipeClient::Send(Request);
+    }
     if (!Response) {
         std::cerr << "[Control:Client] current-user DeskLink endpoint was unavailable\n";
         return 1;
@@ -786,6 +819,32 @@ int RunControl(const CommandLine& Command) {
         std::cerr << "[Control:Client] request status="
                   << ControlStatusName(Response->Status) << '\n';
         return 1;
+    }
+    if (Response->Preferences) {
+        const auto& Preferences = *Response->Preferences;
+        std::cout << "[Control:Preferences] role="
+                  << static_cast<unsigned>(Preferences.Role)
+                  << " run_at_login="
+                  << (Preferences.RunAtLogin ? "true" : "false")
+                  << " auto_start_runtime="
+                  << (Preferences.AutoStartRuntime ? "true" : "false")
+                  << " auto_connect="
+                  << (Preferences.AutoConnect ? "true" : "false")
+                  << " first_run_complete="
+                  << (Preferences.FirstRunComplete ? "true" : "false")
+                  << '\n';
+        return 0;
+    }
+    if (Response->TrustedDevices) {
+        std::cout << "[Control:Devices] count="
+                  << Response->TrustedDevices->Devices.size() << '\n';
+        for (const auto& Device : Response->TrustedDevices->Devices) {
+            std::cout << "[Control:Device] machine="
+                      << FormatHex(Device.Machine)
+                      << " name=" << Device.DisplayName
+                      << " grants=" << Device.Capabilities.bits() << '\n';
+        }
+        return 0;
     }
     if (!Response->State) {
         std::cout << "[Control:Client] request applied\n";
@@ -3381,13 +3440,18 @@ int RunTrusted(const CommandLine& Command,
 
             const auto* SetMode = std::get_if<
                 desklink::SetDesiredModeControlRequest>(&Request.Payload);
-            if (!SetMode) {
+            const bool ReturnLocal = std::holds_alternative<
+                desklink::ReturnLocalControlRequest>(Request.Payload);
+            if (!SetMode && !ReturnLocal) {
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::Unsupported,
                     std::nullopt};
             }
 
-            DesiredMode.store(SetMode->Mode);
+            const auto RequestedMode = ReturnLocal
+                ? desklink::DeskMode::LockPc1
+                : SetMode->Mode;
+            DesiredMode.store(RequestedMode);
             std::vector<std::shared_ptr<PeerRuntime>> Peers;
             std::shared_ptr<PeerRuntime> SelectedPeer;
             std::shared_ptr<HostInputRuntime> ActiveInput;
@@ -3398,7 +3462,7 @@ int RunTrusted(const CommandLine& Command,
                 ActiveInput = HostInput;
             }
             for (const auto& Runtime : Peers) {
-                Runtime->Session.SetLocalDesiredMode(SetMode->Mode);
+                Runtime->Session.SetLocalDesiredMode(RequestedMode);
             }
             if (!ActiveInput) {
                 return desklink::ControlResponse{
@@ -3410,7 +3474,7 @@ int RunTrusted(const CommandLine& Command,
                     Request.RequestId, desklink::ControlStatus::NotReady,
                     std::nullopt};
             }
-            const bool Applied = ActiveInput->ApplyManualMode(SetMode->Mode);
+            const bool Applied = ActiveInput->ApplyManualMode(RequestedMode);
             return desklink::ControlResponse{
                 Request.RequestId,
                 Applied ? desklink::ControlStatus::Ok
@@ -4096,16 +4160,22 @@ int wmain(int ArgumentCount, wchar_t** Arguments) {
         std::cerr << "[App:Lifecycle] install or update operation is active\n";
         return 1;
     }
-    const std::unique_ptr<void, decltype(&CloseHandle)> RuntimeMutex(
-        CreateMutexW(nullptr, FALSE, kRuntimeMutexName), &CloseHandle);
-    if (!RuntimeMutex || IsLifecycleOperationActive()) {
-        std::cerr << "[App:Lifecycle] could not create the runtime lifecycle gate\n";
-        return 1;
-    }
     const auto Command = ParseCommandLine(ArgumentCount, Arguments);
     if (!Command) {
         PrintUsage();
         return 2;
+    }
+    std::unique_ptr<void, decltype(&CloseHandle)> RuntimeMutex(
+        nullptr, &CloseHandle);
+    if (RequiresRuntimeOwnership(Command->Mode)) {
+        SetLastError(ERROR_SUCCESS);
+        RuntimeMutex.reset(CreateMutexW(nullptr, FALSE, kRuntimeMutexName));
+        if (!RuntimeMutex || GetLastError() == ERROR_ALREADY_EXISTS ||
+            IsLifecycleOperationActive()) {
+            std::cerr
+                << "[App:Lifecycle] another runtime owner or lifecycle operation is active\n";
+            return 1;
+        }
     }
     return Run(*Command);
 }

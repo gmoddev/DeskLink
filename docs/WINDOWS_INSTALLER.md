@@ -11,9 +11,10 @@ install a service, add Firewall rules, or modify the Windows network profile.
 - The installer accepts only the exact allowlisted alpha payload. Unexpected
   files, reparse points, or a Schannel `msquic.dll` whose SHA-256 differs from
   the reviewed 2.6.0 artifact stop the build.
-- Setup and Uninstall check `Local\DeskLink.Alpha.v1` and
-  `Local\DeskLink.Runtime.v1`. An active UI or runtime blocks replacement and
-  removal; Setup never force-closes or restarts DeskLink.
+- Setup and Uninstall check `Local\DeskLink.Alpha.v1`,
+  `Local\DeskLink.Runtime.v1`, and `Local\DeskLink.RuntimeBroker.v1`. An
+  active UI, transport runtime, or broker blocks replacement and removal;
+  Setup never force-closes or restarts DeskLink.
 - Install/repair/upgrade modifies only installer-owned files. Uninstall also
   removes DeskLink's current-user Run value so an enabled sign-in launch cannot
   point at a deleted executable.

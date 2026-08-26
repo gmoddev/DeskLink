@@ -15,6 +15,7 @@
 #include "desklink/protocol.hpp"
 #include "desklink/roaming.hpp"
 #include "desklink/roaming_runtime.hpp"
+#include "desklink/runtime_broker.hpp"
 #include "desklink/session.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
@@ -404,6 +405,19 @@ void SaveTrustedPeer(desklink::InMemoryTrustStore& Store,
     CHECK(Store.SavePeer(desklink::TrustedPeer{Identity, Capabilities}));
 }
 
+class RecordingRuntimeSafetyController final
+    : public desklink::IRuntimeSafetyController {
+public:
+    bool ReturnLocalAndStopPeer(
+        const desklink::MachineId& Machine) noexcept override {
+        Calls.push_back(Machine);
+        return Succeeds;
+    }
+
+    bool Succeeds{true};
+    std::vector<desklink::MachineId> Calls;
+};
+
 void CallbackGateClosesAndDrainsAdmittedCallbacks() {
     using namespace desklink;
     auto Gate = std::make_shared<CallbackGate>();
@@ -527,7 +541,19 @@ void PointerMotionRoundTripAndValidation() {
 void ControlProtocolRoundTripAndValidation() {
     using namespace desklink;
 
-    const std::array<ControlRequest, 7> Requests{
+    ProductPreferences Preferences;
+    Preferences.Role = DeskRole::Main;
+    Preferences.PreferredPeerMachine = MakeMachineId(8);
+    Preferences.AutoStartRuntime = true;
+    Preferences.AutoConnect = true;
+    Preferences.InputRoamingDesired = true;
+    Preferences.AudioRoute = AudioRoutePreference::PeerToLocal;
+    Preferences.AudioGainPermyriad = 7'500;
+    Preferences.FirstRunComplete = true;
+    CapabilitySet RequestedCapabilities;
+    RequestedCapabilities.grant(Capability::InputInject);
+    RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
+    const std::array<ControlRequest, 14> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -536,6 +562,14 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{5, ToggleAudioMuteControlRequest{}},
         ControlRequest{6, GetDisplayTopologiesControlRequest{}},
         ControlRequest{7, PrepareForUpdateControlRequest{}},
+        ControlRequest{8, GetProductPreferencesControlRequest{}},
+        ControlRequest{9, SetProductPreferencesControlRequest{Preferences}},
+        ControlRequest{10, ListTrustedDevicesControlRequest{}},
+        ControlRequest{11, RequestLocalPermissionChangeControlRequest{
+            MakeMachineId(8), RequestedCapabilities}},
+        ControlRequest{12, ForgetTrustedDeviceControlRequest{MakeMachineId(8)}},
+        ControlRequest{13, ReturnLocalControlRequest{}},
+        ControlRequest{14, GetPairingCandidateControlRequest{}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -546,6 +580,20 @@ void ControlProtocolRoundTripAndValidation() {
         CHECK(Decoded.Decoded->RequestId == Request.RequestId);
         CHECK(Decoded.Decoded->Payload.index() == Request.Payload.index());
     }
+    const auto DecodedPreferenceRequest = DecodeControlRequest(
+        *EncodeControlRequest(Requests[8]));
+    CHECK(DecodedPreferenceRequest.Decoded.has_value());
+    CHECK(std::get<SetProductPreferencesControlRequest>(
+              DecodedPreferenceRequest.Decoded->Payload).Preferences ==
+          Preferences);
+    const auto DecodedPermissionRequest = DecodeControlRequest(
+        *EncodeControlRequest(Requests[10]));
+    CHECK(DecodedPermissionRequest.Decoded.has_value());
+    const auto& PermissionRequest =
+        std::get<RequestLocalPermissionChangeControlRequest>(
+            DecodedPermissionRequest.Decoded->Payload);
+    CHECK(PermissionRequest.Machine == MakeMachineId(8));
+    CHECK(PermissionRequest.DesiredCapabilities == RequestedCapabilities);
 
     ControlState State;
     State.LocalMachine[0] = 0x11;
@@ -590,6 +638,43 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(!EncodeControlResponse(ControlResponse{
         12, ControlStatus::Ok, State, TopologyState}).has_value());
 
+    ControlResponse PreferencesResponse{15, ControlStatus::Ok};
+    PreferencesResponse.Preferences = Preferences;
+    const auto PreferencesFrame = EncodeControlResponse(PreferencesResponse);
+    CHECK(PreferencesFrame.has_value());
+    const auto DecodedPreferences = DecodeControlResponse(*PreferencesFrame);
+    CHECK(DecodedPreferences.Decoded.has_value());
+    CHECK(DecodedPreferences.Decoded->Preferences == Preferences);
+
+    ControlTrustedDeviceList Devices;
+    Devices.Devices.push_back(ControlTrustedDevice{
+        MakeMachineId(8), "Companion PC", RequestedCapabilities});
+    ControlResponse DevicesResponse{16, ControlStatus::Ok};
+    DevicesResponse.TrustedDevices = Devices;
+    const auto DevicesFrame = EncodeControlResponse(DevicesResponse);
+    CHECK(DevicesFrame.has_value());
+    const auto DecodedDevices = DecodeControlResponse(*DevicesFrame);
+    CHECK(DecodedDevices.Decoded.has_value());
+    CHECK(DecodedDevices.Decoded->TrustedDevices == Devices);
+
+    ControlPairingCandidate PairingCandidate{
+        44, MakeMachineId(9), "Nearby PC", "654321",
+        RequestedCapabilities};
+    ControlResponse PairingResponse{17, ControlStatus::Ok};
+    PairingResponse.PairingCandidate = PairingCandidate;
+    const auto PairingFrame = EncodeControlResponse(PairingResponse);
+    CHECK(PairingFrame.has_value());
+    const auto DecodedPairing = DecodeControlResponse(*PairingFrame);
+    CHECK(DecodedPairing.Decoded.has_value());
+    CHECK(DecodedPairing.Decoded->PairingCandidate == PairingCandidate);
+    PairingCandidate.VerificationCode = "not-six";
+    CHECK(!IsValidControlPairingCandidate(PairingCandidate));
+
+    auto DuplicateDevices = Devices;
+    DuplicateDevices.Devices.push_back(Devices.Devices.front());
+    CHECK(!IsValidControlTrustedDeviceList(DuplicateDevices));
+    CHECK(IsValidControlTrustedDeviceList(ControlTrustedDeviceList{}));
+
     CHECK(!EncodeControlRequest(ControlRequest{}).has_value());
     CHECK(!EncodeControlRequest(ControlRequest{
         6, SetDesiredModeControlRequest{static_cast<DeskMode>(99)}}).has_value());
@@ -597,6 +682,11 @@ void ControlProtocolRoundTripAndValidation() {
         7, FocusMachineControlRequest{}}).has_value());
     CHECK(!EncodeControlRequest(ControlRequest{
         8, SetAudioGainControlRequest{10'001}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        9, RequestLocalPermissionChangeControlRequest{
+            MakeMachineId(8), CapabilitySet{1ull << 60u}}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        10, ForgetTrustedDeviceControlRequest{}}).has_value());
     CHECK(!EncodeControlResponse(ControlResponse{
         10, ControlStatus::Failed, State}).has_value());
 
@@ -621,6 +711,112 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(!DecodeControlRequest(Trailing).Decoded.has_value());
     CHECK(DecodeControlRequest(Trailing).Error ==
           ControlDecodeError::InvalidPayload);
+}
+
+void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
+    using namespace desklink;
+
+    CHECK(!RuntimeOwnerMayBeActive(false, true));
+    CHECK(RuntimeOwnerMayBeActive(false, false));
+    CHECK(RuntimeOwnerMayBeActive(true, false));
+    CHECK(RuntimeOwnerMayBeActive(true, true));
+
+    InMemoryTrustStore Store;
+    CapabilitySet Initial;
+    Initial.grant(Capability::InputInject);
+    Initial.grant(Capability::AudioSend);
+    const auto Zulu = MakeIdentity(70, "Zulu PC");
+    const auto Alpha = MakeIdentity(71, "Alpha PC");
+    SaveTrustedPeer(Store, Zulu, Initial);
+    SaveTrustedPeer(Store, Alpha, {});
+
+    RecordingRuntimeSafetyController Safety;
+    RuntimeTrustAuthority Authority(Store, Safety);
+    const auto Listed = Authority.ListTrustedPeers();
+    CHECK(Listed.has_value());
+    CHECK(Listed->size() == 2);
+    CHECK((*Listed)[0].Identity.display_name == "Alpha PC");
+    CHECK((*Listed)[1].Identity.display_name == "Zulu PC");
+
+    CapabilitySet Broader = Initial;
+    Broader.grant(Capability::ClipboardRead);
+    CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Broader) ==
+          TrustMutationStatus::ReauthorizationRequired);
+    CHECK(Safety.Calls.empty());
+    CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
+          Initial.bits());
+
+    CapabilitySet Reduced;
+    Reduced.grant(Capability::InputInject);
+    CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Reduced) ==
+          TrustMutationStatus::Applied);
+    CHECK(Safety.Calls.size() == 1);
+    CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
+          Reduced.bits());
+    CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Reduced) ==
+          TrustMutationStatus::NoChange);
+    CHECK(Safety.Calls.size() == 1);
+
+    Safety.Succeeds = false;
+    CHECK(Authority.RequestPermissionChange(Zulu.machine_id, {}) ==
+          TrustMutationStatus::CleanupFailed);
+    CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
+          Reduced.bits());
+    CHECK(Authority.ForgetPeer(Zulu.machine_id) ==
+          TrustMutationStatus::CleanupFailed);
+    CHECK(Store.GetPeer(Zulu.machine_id).has_value());
+
+    Safety.Succeeds = true;
+    CHECK(Authority.ForgetPeer(Zulu.machine_id) ==
+          TrustMutationStatus::Applied);
+    CHECK(!Store.GetPeer(Zulu.machine_id).has_value());
+    CHECK(Authority.ForgetPeer(Zulu.machine_id) ==
+          TrustMutationStatus::PeerNotFound);
+    CHECK(Authority.RequestPermissionChange(
+              MachineId{}, CapabilitySet{}) ==
+          TrustMutationStatus::InvalidRequest);
+    CHECK(Authority.RequestPermissionChange(
+              Alpha.machine_id,
+              CapabilitySet{kKnownCapabilityBits | (1ull << 60u)}) ==
+          TrustMutationStatus::InvalidRequest);
+
+    ManualClock Clock;
+    BrokerPairingCandidateLease Lease;
+    PairingCandidate Candidate;
+    Candidate.Status = PairingStatus::Ready;
+    Candidate.Identity = MakeIdentity(72, "Pairing PC");
+    Candidate.VerificationCode = "123456";
+    Candidate.TranscriptDigest = MakeDigest(73);
+    CHECK(Lease.Present(BrokerPairingCandidate{
+        1, 55, Candidate, Reduced,
+        Clock.now() + std::chrono::seconds(30)}, Clock.now()));
+    CHECK(!Lease.Present(BrokerPairingCandidate{
+        2, 55, Candidate, Reduced,
+        Clock.now() + std::chrono::seconds(30)}, Clock.now()));
+    Lease.ClientDisconnected(54);
+    CHECK(Lease.Current(Clock.now()).has_value());
+    Lease.ClientDisconnected(55);
+    CHECK(!Lease.Current(Clock.now()).has_value());
+
+    CHECK(Lease.Present(BrokerPairingCandidate{
+        3, 56, Candidate, Reduced,
+        Clock.now() + std::chrono::seconds(1)}, Clock.now()));
+    Clock.advance(std::chrono::seconds(1));
+    CHECK(!Lease.Current(Clock.now()).has_value());
+    CHECK(!Lease.ResolveLocally(3, true, Clock.now()).has_value());
+
+    CHECK(Lease.Present(BrokerPairingCandidate{
+        4, 57, Candidate, Reduced,
+        Clock.now() + std::chrono::seconds(30)}, Clock.now()));
+    CHECK(!Lease.ResolveLocally(4, false, Clock.now()).has_value());
+    CHECK(!Lease.Current(Clock.now()).has_value());
+    CHECK(Lease.Present(BrokerPairingCandidate{
+        5, 57, Candidate, Reduced,
+        Clock.now() + std::chrono::seconds(30)}, Clock.now()));
+    const auto Approved = Lease.ResolveLocally(5, true, Clock.now());
+    CHECK(Approved.has_value());
+    CHECK(Approved->Candidate.VerificationCode == "123456");
+    CHECK(!Lease.Current(Clock.now()).has_value());
 }
 
 class RecordingUpdateBackend final : public desklink::IUpdateBackend {
@@ -4283,6 +4479,32 @@ void WindowsCurrentUserControlPipeRoundTrip() {
         }, Instance);
     CHECK(!Duplicate.Start());
 
+    const auto PipeName = GetWin32ControlPipeName(Instance);
+    CHECK(PipeName.has_value());
+    CHECK(WaitNamedPipeW(PipeName->c_str(), 1'000));
+    const auto RawPipe = CreateFileW(
+        PipeName->c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, 0, nullptr);
+    CHECK(RawPipe != INVALID_HANDLE_VALUE);
+    auto OversizedFrame = *EncodeControlRequest(
+        ControlRequest{99, GetStateControlRequest{}});
+    OversizedFrame.resize(kControlFrameHeaderSize);
+    const auto OversizedPayload = static_cast<std::uint32_t>(
+        kMaximumControlPayload + 1);
+    OversizedFrame[16] = static_cast<std::uint8_t>(OversizedPayload >> 24u);
+    OversizedFrame[17] = static_cast<std::uint8_t>(OversizedPayload >> 16u);
+    OversizedFrame[18] = static_cast<std::uint8_t>(OversizedPayload >> 8u);
+    OversizedFrame[19] = static_cast<std::uint8_t>(OversizedPayload);
+    DWORD Written{};
+    CHECK(WriteFile(RawPipe, OversizedFrame.data(),
+                    static_cast<DWORD>(OversizedFrame.size()),
+                    &Written, nullptr));
+    CHECK(static_cast<std::size_t>(Written) == OversizedFrame.size());
+    std::uint8_t Unexpected{};
+    DWORD Read{};
+    CHECK(!ReadFile(RawPipe, &Unexpected, 1, &Read, nullptr) || Read == 0);
+    CloseHandle(RawPipe);
+
     const auto Response = Win32ControlPipeClient::Send(
         ControlRequest{101, GetStateControlRequest{}}, Instance);
     CHECK(Response.has_value());
@@ -4686,6 +4908,9 @@ void WindowsCryptoAndDpapiTrustStoreWork() {
     CHECK(restored->Capabilities.contains(Capability::InputInject));
     const auto second_identity = MakeIdentity(43, "DPAPI peer two");
     CHECK(second.SavePeer(TrustedPeer{second_identity, CapabilitySet{}}));
+    const auto listed = first.ListPeers();
+    CHECK(listed.has_value());
+    CHECK(listed->size() == 2);
     CHECK(first.GetPeer(second_identity.machine_id).has_value());
     CHECK(second.RemovePeer(identity.machine_id));
     CHECK(!first.GetPeer(identity.machine_id).has_value());
@@ -5040,6 +5265,7 @@ int main() {
     protocol_round_trip();
     PointerMotionRoundTripAndValidation();
     ControlProtocolRoundTripAndValidation();
+    RuntimeBrokerTrustAndPairingAuthorityAreFailClosed();
     UpdateCoordinatorIsOrderedAndFailsLocal();
     MouseWheelRoundTripAndValidation();
     DisplayTopologyMappingIsStableAndInvalidates();

@@ -53,6 +53,7 @@ add_library(desklink_core
     src/monitor_configurator.cpp
     src/profile.cpp
     src/product.cpp
+    src/runtime_broker.cpp
     src/roaming.cpp
     src/roaming_runtime.cpp
     src/topology_exchange.cpp
@@ -303,6 +304,19 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
 
     add_executable(desklink_update apps/desklink_update.cpp)
     DeskLinkConfigureUpdateTarget(desklink_update)
+    add_executable(desklink_runtime apps/desklink_runtime.cpp)
+    target_link_libraries(desklink_runtime PRIVATE desklink_windows shell32)
+    target_compile_definitions(desklink_runtime PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(desklink_runtime PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(desklink_runtime PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    endif()
+    if(MINGW)
+        target_link_options(desklink_runtime PRIVATE
+            -municode -static -static-libgcc -static-libstdc++)
+    endif()
     if(DESKLINK_BUILD_TESTS)
         add_executable(desklink_update_validation apps/desklink_update.cpp)
         target_compile_definitions(desklink_update_validation PRIVATE
@@ -314,7 +328,8 @@ endif()
 if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     add_executable(desklink_alpha WIN32 apps/desklink_alpha.cpp)
     target_link_libraries(desklink_alpha PRIVATE desklink_windows comctl32 shell32 ole32)
-    add_dependencies(desklink_alpha desklink_pair desklink_update)
+    add_dependencies(
+        desklink_alpha desklink_pair desklink_runtime desklink_update)
     target_compile_definitions(desklink_alpha PRIVATE UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(desklink_alpha PRIVATE /W4 /permissive-)
@@ -328,7 +343,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     endif()
     DeskLinkStageSchannelRuntime(desklink_alpha)
 
-    install(TARGETS desklink_alpha desklink_pair desklink_update
+    install(TARGETS desklink_alpha desklink_pair desklink_runtime desklink_update
         RUNTIME DESTINATION . COMPONENT Alpha)
     install(FILES "${DESKLINK_MSQUIC_SCHANNEL_DLL}"
         DESTINATION runtime/schannel COMPONENT Alpha)

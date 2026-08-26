@@ -101,6 +101,11 @@ MachineId DeriveMachineId(const Sha256Digest& CertificatePin) noexcept {
     return Result;
 }
 
+std::optional<std::vector<TrustedPeer>> InMemoryTrustStore::ListPeers() const {
+    std::scoped_lock Lock(Mutex_);
+    return Peers_;
+}
+
 std::optional<TrustedPeer> InMemoryTrustStore::GetPeer(const MachineId& Machine) const {
     std::scoped_lock Lock(Mutex_);
     const auto Match = std::find_if(Peers_.begin(), Peers_.end(), [&](const TrustedPeer& Peer) {

@@ -104,6 +104,10 @@ bool IsNonzeroMachine(const MachineId& Machine) noexcept {
                        [](std::uint8_t Byte) { return Byte != 0; });
 }
 
+bool HasOnlyKnownCapabilities(CapabilitySet Capabilities) noexcept {
+    return (Capabilities.bits() & ~kKnownCapabilityBits) == 0;
+}
+
 void EncodeHeader(Writer& Output, ControlFrameType Type,
                   std::uint64_t RequestId, std::uint32_t PayloadSize) {
     Output.U32(kControlWireMagic);
@@ -165,8 +169,36 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
                                  ValueType,
                                  GetDisplayTopologiesControlRequest>) {
             return ControlCommand::GetDisplayTopologies;
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PrepareForUpdateControlRequest>) {
             return ControlCommand::PrepareForUpdate;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetProductPreferencesControlRequest>) {
+            return ControlCommand::GetProductPreferences;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 SetProductPreferencesControlRequest>) {
+            return ControlCommand::SetProductPreferences;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ListTrustedDevicesControlRequest>) {
+            return ControlCommand::ListTrustedDevices;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 RequestLocalPermissionChangeControlRequest>) {
+            return ControlCommand::RequestLocalPermissionChange;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ForgetTrustedDeviceControlRequest>) {
+            return ControlCommand::ForgetTrustedDevice;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ReturnLocalControlRequest>) {
+            return ControlCommand::ReturnLocal;
+        } else {
+            return ControlCommand::GetPairingCandidate;
         }
     }, Payload);
 }
@@ -185,6 +217,37 @@ ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
         } else if constexpr (std::is_same_v<ValueType,
                                             SetAudioGainControlRequest>) {
             Output.U16(Value.GainPermyriad);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 SetProductPreferencesControlRequest>) {
+            const auto& Preferences = Value.Preferences;
+            Output.U8(static_cast<std::uint8_t>(Preferences.Role));
+            Output.U8(static_cast<std::uint8_t>(Preferences.AudioRoute));
+            Output.U8(static_cast<std::uint8_t>(Preferences.Gaming));
+            std::uint16_t Flags = 0;
+            if (Preferences.PreferredPeerMachine) Flags |= 0x0001u;
+            if (Preferences.RunAtLogin) Flags |= 0x0002u;
+            if (Preferences.CloseToTray) Flags |= 0x0004u;
+            if (Preferences.AutoStartRuntime) Flags |= 0x0008u;
+            if (Preferences.AutoConnect) Flags |= 0x0010u;
+            if (Preferences.InputRoamingDesired) Flags |= 0x0020u;
+            if (Preferences.ClipboardDesired) Flags |= 0x0040u;
+            if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
+            if (Preferences.FirstRunComplete) Flags |= 0x0100u;
+            Output.U16(Flags);
+            Output.U16(Preferences.AudioGainPermyriad);
+            if (Preferences.PreferredPeerMachine) {
+                Output.Raw(*Preferences.PreferredPeerMachine);
+            }
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 RequestLocalPermissionChangeControlRequest>) {
+            Output.Raw(Value.Machine);
+            Output.U64(Value.DesiredCapabilities.bits());
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ForgetTrustedDeviceControlRequest>) {
+            Output.Raw(Value.Machine);
         }
     }, Request.Payload);
     return Output.Take();
@@ -230,9 +293,221 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::PrepareForUpdate:
             if (Input.Remaining() != 0) return std::nullopt;
             return PrepareForUpdateControlRequest{};
+        case ControlCommand::GetProductPreferences:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return GetProductPreferencesControlRequest{};
+        case ControlCommand::SetProductPreferences: {
+            std::uint8_t RawRole{};
+            std::uint8_t RawAudioRoute{};
+            std::uint8_t RawGaming{};
+            std::uint16_t Flags{};
+            SetProductPreferencesControlRequest Request;
+            if (!Input.U8(RawRole) || !Input.U8(RawAudioRoute) ||
+                !Input.U8(RawGaming) || !Input.U16(Flags) ||
+                !Input.U16(Request.Preferences.AudioGainPermyriad) ||
+                (Flags & 0xfe00u) != 0) {
+                return std::nullopt;
+            }
+            Request.Preferences.Role = static_cast<DeskRole>(RawRole);
+            Request.Preferences.AudioRoute =
+                static_cast<AudioRoutePreference>(RawAudioRoute);
+            Request.Preferences.Gaming = static_cast<GamingBehavior>(RawGaming);
+            Request.Preferences.RunAtLogin = (Flags & 0x0002u) != 0;
+            Request.Preferences.CloseToTray = (Flags & 0x0004u) != 0;
+            Request.Preferences.AutoStartRuntime = (Flags & 0x0008u) != 0;
+            Request.Preferences.AutoConnect = (Flags & 0x0010u) != 0;
+            Request.Preferences.InputRoamingDesired = (Flags & 0x0020u) != 0;
+            Request.Preferences.ClipboardDesired = (Flags & 0x0040u) != 0;
+            Request.Preferences.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
+            Request.Preferences.FirstRunComplete = (Flags & 0x0100u) != 0;
+            if ((Flags & 0x0001u) != 0) {
+                MachineId Machine{};
+                if (!Input.Raw(Machine)) return std::nullopt;
+                Request.Preferences.PreferredPeerMachine = Machine;
+            }
+            if (Input.Remaining() != 0 ||
+                !IsValidProductPreferences(Request.Preferences)) {
+                return std::nullopt;
+            }
+            return Request;
+        }
+        case ControlCommand::ListTrustedDevices:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return ListTrustedDevicesControlRequest{};
+        case ControlCommand::RequestLocalPermissionChange: {
+            RequestLocalPermissionChangeControlRequest Request;
+            std::uint64_t CapabilityBits{};
+            if (!Input.Raw(Request.Machine) || !Input.U64(CapabilityBits) ||
+                Input.Remaining() != 0) {
+                return std::nullopt;
+            }
+            Request.DesiredCapabilities = CapabilitySet(CapabilityBits);
+            if (!IsNonzeroMachine(Request.Machine) ||
+                !HasOnlyKnownCapabilities(Request.DesiredCapabilities)) {
+                return std::nullopt;
+            }
+            return Request;
+        }
+        case ControlCommand::ForgetTrustedDevice: {
+            ForgetTrustedDeviceControlRequest Request;
+            if (!Input.Raw(Request.Machine) || Input.Remaining() != 0 ||
+                !IsNonzeroMachine(Request.Machine)) {
+                return std::nullopt;
+            }
+            return Request;
+        }
+        case ControlCommand::ReturnLocal:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return ReturnLocalControlRequest{};
+        case ControlCommand::GetPairingCandidate:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return GetPairingCandidateControlRequest{};
         default:
             return std::nullopt;
     }
+}
+
+void EncodePreferences(Writer& Output,
+                       const ProductPreferences& Preferences) {
+    Output.U8(static_cast<std::uint8_t>(Preferences.Role));
+    Output.U8(static_cast<std::uint8_t>(Preferences.AudioRoute));
+    Output.U8(static_cast<std::uint8_t>(Preferences.Gaming));
+    std::uint16_t Flags = 0;
+    if (Preferences.PreferredPeerMachine) Flags |= 0x0001u;
+    if (Preferences.RunAtLogin) Flags |= 0x0002u;
+    if (Preferences.CloseToTray) Flags |= 0x0004u;
+    if (Preferences.AutoStartRuntime) Flags |= 0x0008u;
+    if (Preferences.AutoConnect) Flags |= 0x0010u;
+    if (Preferences.InputRoamingDesired) Flags |= 0x0020u;
+    if (Preferences.ClipboardDesired) Flags |= 0x0040u;
+    if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
+    if (Preferences.FirstRunComplete) Flags |= 0x0100u;
+    Output.U16(Flags);
+    Output.U16(Preferences.AudioGainPermyriad);
+    if (Preferences.PreferredPeerMachine) {
+        Output.Raw(*Preferences.PreferredPeerMachine);
+    }
+}
+
+std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
+    std::uint8_t RawRole{};
+    std::uint8_t RawAudioRoute{};
+    std::uint8_t RawGaming{};
+    std::uint16_t Flags{};
+    ProductPreferences Preferences;
+    if (!Input.U8(RawRole) || !Input.U8(RawAudioRoute) ||
+        !Input.U8(RawGaming) || !Input.U16(Flags) ||
+        !Input.U16(Preferences.AudioGainPermyriad) ||
+        (Flags & 0xfe00u) != 0) {
+        return std::nullopt;
+    }
+    Preferences.Role = static_cast<DeskRole>(RawRole);
+    Preferences.AudioRoute =
+        static_cast<AudioRoutePreference>(RawAudioRoute);
+    Preferences.Gaming = static_cast<GamingBehavior>(RawGaming);
+    Preferences.RunAtLogin = (Flags & 0x0002u) != 0;
+    Preferences.CloseToTray = (Flags & 0x0004u) != 0;
+    Preferences.AutoStartRuntime = (Flags & 0x0008u) != 0;
+    Preferences.AutoConnect = (Flags & 0x0010u) != 0;
+    Preferences.InputRoamingDesired = (Flags & 0x0020u) != 0;
+    Preferences.ClipboardDesired = (Flags & 0x0040u) != 0;
+    Preferences.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
+    Preferences.FirstRunComplete = (Flags & 0x0100u) != 0;
+    if ((Flags & 0x0001u) != 0) {
+        MachineId Machine{};
+        if (!Input.Raw(Machine)) return std::nullopt;
+        Preferences.PreferredPeerMachine = Machine;
+    }
+    return IsValidProductPreferences(Preferences)
+        ? std::optional<ProductPreferences>(Preferences)
+        : std::nullopt;
+}
+
+bool IsBoundedDisplayName(std::string_view Name) noexcept {
+    if (Name.empty() || Name.size() > kMaximumControlDisplayName) return false;
+    return std::none_of(Name.begin(), Name.end(), [](unsigned char Byte) {
+        return Byte == 0 || Byte == 0x7fu || Byte < 0x20u;
+    });
+}
+
+void EncodeTrustedDevices(Writer& Output,
+                          const ControlTrustedDeviceList& Devices) {
+    Output.U8(static_cast<std::uint8_t>(Devices.Devices.size()));
+    for (const auto& Device : Devices.Devices) {
+        Output.Raw(Device.Machine);
+        Output.U64(Device.Capabilities.bits());
+        Output.U8(static_cast<std::uint8_t>(Device.DisplayName.size()));
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(Device.DisplayName.data()),
+            Device.DisplayName.size()});
+    }
+}
+
+std::optional<ControlTrustedDeviceList> DecodeTrustedDevices(Reader& Input) {
+    std::uint8_t Count{};
+    if (!Input.U8(Count) || Count > kMaximumControlTrustedDevices) {
+        return std::nullopt;
+    }
+    ControlTrustedDeviceList Result;
+    Result.Devices.reserve(Count);
+    for (std::uint8_t Index = 0; Index < Count; ++Index) {
+        ControlTrustedDevice Device;
+        std::uint64_t CapabilityBits{};
+        std::uint8_t NameLength{};
+        if (!Input.Raw(Device.Machine) || !Input.U64(CapabilityBits) ||
+            !Input.U8(NameLength) || NameLength == 0 ||
+            NameLength > kMaximumControlDisplayName ||
+            Input.Remaining() < NameLength) {
+            return std::nullopt;
+        }
+        ByteBuffer Name(NameLength);
+        if (!Input.Raw(Name)) return std::nullopt;
+        Device.DisplayName.assign(
+            reinterpret_cast<const char*>(Name.data()), Name.size());
+        Device.Capabilities = CapabilitySet(CapabilityBits);
+        Result.Devices.push_back(std::move(Device));
+    }
+    return IsValidControlTrustedDeviceList(Result)
+        ? std::optional<ControlTrustedDeviceList>(std::move(Result))
+        : std::nullopt;
+}
+
+void EncodePairingCandidate(Writer& Output,
+                            const ControlPairingCandidate& Candidate) {
+    Output.U64(Candidate.OperationId);
+    Output.Raw(Candidate.Machine);
+    Output.U64(Candidate.RequestedCapabilities.bits());
+    Output.U8(static_cast<std::uint8_t>(Candidate.DisplayName.size()));
+    Output.Raw(ByteSpan{
+        reinterpret_cast<const std::uint8_t*>(Candidate.DisplayName.data()),
+        Candidate.DisplayName.size()});
+    Output.Raw(ByteSpan{
+        reinterpret_cast<const std::uint8_t*>(
+            Candidate.VerificationCode.data()),
+        Candidate.VerificationCode.size()});
+}
+
+std::optional<ControlPairingCandidate> DecodePairingCandidate(Reader& Input) {
+    ControlPairingCandidate Candidate;
+    std::uint64_t CapabilityBits{};
+    std::uint8_t NameLength{};
+    if (!Input.U64(Candidate.OperationId) || !Input.Raw(Candidate.Machine) ||
+        !Input.U64(CapabilityBits) || !Input.U8(NameLength) ||
+        NameLength == 0 || NameLength > kMaximumControlDisplayName ||
+        Input.Remaining() < NameLength + 6u) {
+        return std::nullopt;
+    }
+    ByteBuffer Name(NameLength);
+    ByteBuffer Code(6);
+    if (!Input.Raw(Name) || !Input.Raw(Code)) return std::nullopt;
+    Candidate.DisplayName.assign(
+        reinterpret_cast<const char*>(Name.data()), Name.size());
+    Candidate.VerificationCode.assign(
+        reinterpret_cast<const char*>(Code.data()), Code.size());
+    Candidate.RequestedCapabilities = CapabilitySet(CapabilityBits);
+    return IsValidControlPairingCandidate(Candidate)
+        ? std::optional<ControlPairingCandidate>(std::move(Candidate))
+        : std::nullopt;
 }
 
 void EncodeState(Writer& Output, const ControlState& State) {
@@ -362,7 +637,7 @@ std::optional<ControlTopologyState> DecodeTopologyState(Reader& Input) {
 
 bool IsKnownStatus(ControlStatus Status) noexcept {
     return static_cast<std::uint16_t>(Status) <=
-           static_cast<std::uint16_t>(ControlStatus::Failed);
+           static_cast<std::uint16_t>(ControlStatus::CleanupFailed);
 }
 
 } // namespace
@@ -380,6 +655,19 @@ bool IsValidControlRequest(const ControlRequest& Request) noexcept {
         } else if constexpr (std::is_same_v<ValueType,
                                             SetAudioGainControlRequest>) {
             return Value.GainPermyriad <= 10'000;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 SetProductPreferencesControlRequest>) {
+            return IsValidProductPreferences(Value.Preferences);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 RequestLocalPermissionChangeControlRequest>) {
+            return IsNonzeroMachine(Value.Machine) &&
+                   HasOnlyKnownCapabilities(Value.DesiredCapabilities);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ForgetTrustedDeviceControlRequest>) {
+            return IsNonzeroMachine(Value.Machine);
         } else {
             return true;
         }
@@ -436,16 +724,61 @@ bool IsValidControlTopologyState(const ControlTopologyState& State) {
     return LocalCount == 1;
 }
 
+bool IsValidControlTrustedDeviceList(
+    const ControlTrustedDeviceList& Devices) noexcept {
+    if (Devices.Devices.size() > kMaximumControlTrustedDevices) return false;
+    for (std::size_t Index = 0; Index < Devices.Devices.size(); ++Index) {
+        const auto& Device = Devices.Devices[Index];
+        if (!IsNonzeroMachine(Device.Machine) ||
+            !IsBoundedDisplayName(Device.DisplayName) ||
+            !HasOnlyKnownCapabilities(Device.Capabilities)) {
+            return false;
+        }
+        for (std::size_t Previous = 0; Previous < Index; ++Previous) {
+            if (Devices.Devices[Previous].Machine == Device.Machine) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool IsValidControlPairingCandidate(
+    const ControlPairingCandidate& Candidate) noexcept {
+    return Candidate.OperationId != 0 &&
+           IsNonzeroMachine(Candidate.Machine) &&
+           IsBoundedDisplayName(Candidate.DisplayName) &&
+           Candidate.VerificationCode.size() == 6 &&
+           std::all_of(Candidate.VerificationCode.begin(),
+                       Candidate.VerificationCode.end(),
+                       [](char Value) { return Value >= '0' && Value <= '9'; }) &&
+           HasOnlyKnownCapabilities(Candidate.RequestedCapabilities);
+}
+
 bool IsValidControlResponse(const ControlResponse& Response) {
     if (Response.RequestId == 0 || !IsKnownStatus(Response.Status)) return false;
     if (Response.Status != ControlStatus::Ok &&
-        (Response.State.has_value() || Response.Topologies.has_value())) {
+        (Response.State.has_value() || Response.Topologies.has_value() ||
+         Response.Preferences.has_value() ||
+         Response.TrustedDevices.has_value() ||
+         Response.PairingCandidate.has_value())) {
         return false;
     }
-    if (Response.State && Response.Topologies) return false;
+    const auto PayloadCount = static_cast<unsigned>(Response.State.has_value()) +
+        static_cast<unsigned>(Response.Topologies.has_value()) +
+        static_cast<unsigned>(Response.Preferences.has_value()) +
+        static_cast<unsigned>(Response.TrustedDevices.has_value()) +
+        static_cast<unsigned>(Response.PairingCandidate.has_value());
+    if (PayloadCount > 1) return false;
     return (!Response.State || IsValidControlState(*Response.State)) &&
            (!Response.Topologies ||
-            IsValidControlTopologyState(*Response.Topologies));
+            IsValidControlTopologyState(*Response.Topologies)) &&
+           (!Response.Preferences ||
+            IsValidProductPreferences(*Response.Preferences)) &&
+           (!Response.TrustedDevices ||
+            IsValidControlTrustedDeviceList(*Response.TrustedDevices)) &&
+           (!Response.PairingCandidate ||
+            IsValidControlPairingCandidate(*Response.PairingCandidate));
 }
 
 std::optional<ByteBuffer> EncodeControlRequest(const ControlRequest& Request) {
@@ -475,12 +808,23 @@ std::optional<ByteBuffer> EncodeControlResponse(const ControlResponse& Response)
     if (!IsValidControlResponse(Response)) return std::nullopt;
     Writer Payload;
     Payload.U16(static_cast<std::uint16_t>(Response.Status));
-    const auto PayloadKind = Response.State ? 1u : Response.Topologies ? 2u : 0u;
+    const auto PayloadKind = Response.State ? 1u
+        : Response.Topologies ? 2u
+        : Response.Preferences ? 3u
+        : Response.TrustedDevices ? 4u
+        : Response.PairingCandidate ? 5u
+        : 0u;
     Payload.U8(static_cast<std::uint8_t>(PayloadKind));
     if (Response.State) {
         EncodeState(Payload, *Response.State);
     } else if (Response.Topologies) {
         EncodeTopologyState(Payload, *Response.Topologies);
+    } else if (Response.Preferences) {
+        EncodePreferences(Payload, *Response.Preferences);
+    } else if (Response.TrustedDevices) {
+        EncodeTrustedDevices(Payload, *Response.TrustedDevices);
+    } else if (Response.PairingCandidate) {
+        EncodePairingCandidate(Payload, *Response.PairingCandidate);
     }
     auto PayloadBytes = Payload.Take();
     if (PayloadBytes.size() > kMaximumControlPayload) return std::nullopt;
@@ -497,7 +841,7 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
     Reader Input(Frame.subspan(kControlFrameHeaderSize));
     std::uint16_t RawStatus{};
     std::uint8_t PayloadKind{};
-    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 2) {
+    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 5) {
         return {std::nullopt, ControlDecodeError::InvalidPayload};
     }
     ControlResponse Response;
@@ -511,6 +855,21 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
     } else if (PayloadKind == 2) {
         Response.Topologies = DecodeTopologyState(Input);
         if (!Response.Topologies) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+    } else if (PayloadKind == 3) {
+        Response.Preferences = DecodePreferences(Input);
+        if (!Response.Preferences) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+    } else if (PayloadKind == 4) {
+        Response.TrustedDevices = DecodeTrustedDevices(Input);
+        if (!Response.TrustedDevices) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+    } else if (PayloadKind == 5) {
+        Response.PairingCandidate = DecodePairingCandidate(Input);
+        if (!Response.PairingCandidate) {
             return {std::nullopt, ControlDecodeError::InvalidPayload};
         }
     }
