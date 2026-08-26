@@ -308,6 +308,51 @@ desklink::DisplayTopologySnapshot MakeDisplayTopology(
     return Topology.Current();
 }
 
+desklink::DisplayTopologySnapshot MakePhysicalDisplayTopology(
+    std::string StableIdentity,
+    std::string FriendlyName,
+    desklink::DisplayRect Bounds,
+    desklink::PhysicalDisplaySize Physical,
+    desklink::PhysicalSizeSource Source =
+        desklink::PhysicalSizeSource::Edid,
+    desklink::DisplayOrientation Orientation =
+        desklink::DisplayOrientation::Landscape) {
+    using namespace desklink;
+    DiscoveredDisplay Display{
+        std::move(StableIdentity), std::move(FriendlyName), Bounds, true};
+    Display.PixelWidth = static_cast<std::uint32_t>(
+        static_cast<std::int64_t>(Bounds.Right) - Bounds.Left);
+    Display.PixelHeight = static_cast<std::uint32_t>(
+        static_cast<std::int64_t>(Bounds.Bottom) - Bounds.Top);
+    Display.RefreshMilliHertz = 60'000;
+    Display.PhysicalWidthMillimeters = Physical.WidthMillimeters;
+    Display.PhysicalHeightMillimeters = Physical.HeightMillimeters;
+    Display.PhysicalSize = Source;
+    Display.Orientation = Orientation;
+    DisplayTopologyMap Topology;
+    CHECK(Topology.Update({std::move(Display)}) ==
+          DisplayTopologyUpdate::Changed);
+    return Topology.Current();
+}
+
+struct RecordedPointerSample {
+    std::uint16_t DelayMilliseconds{};
+    desklink::LocalPointerObservation Observation;
+};
+
+std::vector<desklink::RoamingFocusRequest> ReplayRoamingTrace(
+    desklink::RoamingRuntime& Runtime,
+    ManualClock& Clock,
+    std::span<const RecordedPointerSample> Trace) {
+    std::vector<desklink::RoamingFocusRequest> Requests;
+    for (const auto& Sample : Trace) {
+        Clock.advance(std::chrono::milliseconds(Sample.DelayMilliseconds));
+        const auto Request = Runtime.Observe(Sample.Observation);
+        if (Request) Requests.push_back(*Request);
+    }
+    return Requests;
+}
+
 desklink::RoamingRuntimeContext MakeRoamingRuntimeContext(
     desklink::CrossingPolicy Policy = desklink::CrossingPolicy::Push) {
     using namespace desklink;
@@ -1257,6 +1302,20 @@ void RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown() {
         Checked.Configuration.Links[0].Enabled = false;
     });
 
+    RoamingRuntime InvalidCooldownRuntime(Clock);
+    Context = MakeRoamingRuntimeContext();
+    CHECK(InvalidCooldownRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(InvalidCooldownRuntime.Observe(Edge).has_value());
+    Context.PeerValidated = false;
+    CHECK(InvalidCooldownRuntime.UpdateContext(Context).MustFailLocal);
+    CHECK(InvalidCooldownRuntime.State() ==
+          RoamingRuntimeState::LocalCooldown);
+    CHECK(!InvalidCooldownRuntime.Observe({1919, 540, 512, 0}));
+    CHECK(InvalidCooldownRuntime.State() ==
+          RoamingRuntimeState::LocalCooldown);
+    CHECK(!InvalidCooldownRuntime.Observe({1919, 540, -24, 0}));
+    CHECK(InvalidCooldownRuntime.State() == RoamingRuntimeState::Local);
+
     RoamingRuntime CandidateRuntime(Clock);
     Context = MakeRoamingRuntimeContext();
     CHECK(CandidateRuntime.UpdateContext(Context).ReadyRouteCount == 1);
@@ -1298,6 +1357,173 @@ void RoamingRuntimeHandlesExtremeLocalPointerDeltas() {
     CHECK(NegationRuntime.Observe({
         0, 540, std::numeric_limits<std::int32_t>::min(), 0})
               .has_value());
+}
+
+void RoamingRuntimeUsesPhysicalLandingHintsOnlyWhenTrustworthy() {
+    using namespace desklink;
+
+    const auto BuildContext = [] {
+        auto Context = MakeRoamingRuntimeContext();
+        auto& Link = Context.Configuration.Links[0];
+        Link.EndpointA.SegmentStartPermyriad = 0;
+        Link.EndpointA.SegmentEndPermyriad = 5'000;
+        Link.EndpointB.SegmentStartPermyriad = 0;
+        Link.EndpointB.SegmentEndPermyriad = 7'000;
+        Context.LocalTopology = MakePhysicalDisplayTopology(
+            "display-a", "Local physical", {0, 0, 1'000, 1'000},
+            {600, 400});
+        Context.PeerTopology = MakePhysicalDisplayTopology(
+            "display-b", "Peer physical", {0, 0, 1'000, 2'000},
+            {500, 300});
+        return Context;
+    };
+    const auto ObserveLanding = [](RoamingRuntimeContext Context) {
+        ManualClock Clock;
+        RoamingRuntime Runtime(Clock);
+        CHECK(Runtime.UpdateContext(std::move(Context)).ReadyRouteCount == 1);
+        const auto Request = Runtime.Observe({999, 250, 8, 0});
+        CHECK(Request.has_value());
+        return Request->Landing.normalized_y;
+    };
+
+    const auto PhysicalLanding = ObserveLanding(BuildContext());
+    CHECK(PhysicalLanding > 21'700);
+    CHECK(PhysicalLanding < 22'000);
+
+    auto Estimated = BuildContext();
+    Estimated.PeerTopology->Displays[0].PhysicalSize =
+        PhysicalSizeSource::RawDpiEstimate;
+    const auto EstimatedFallback = ObserveLanding(std::move(Estimated));
+    CHECK(EstimatedFallback > 22'800);
+    CHECK(EstimatedFallback < 23'100);
+
+    auto Rotated = BuildContext();
+    Rotated.PeerTopology->Displays[0].Orientation =
+        DisplayOrientation::Portrait;
+    CHECK(ObserveLanding(std::move(Rotated)) == EstimatedFallback);
+
+    auto Contradictory = BuildContext();
+    Contradictory.PeerTopology->Displays[0].PhysicalHeightMillimeters = 500;
+    CHECK(ObserveLanding(std::move(Contradictory)) == EstimatedFallback);
+
+    auto TooShort = BuildContext();
+    TooShort.LocalTopology->Displays[0].PhysicalHeightMillimeters = 40;
+    TooShort.PeerTopology->Displays[0].PhysicalHeightMillimeters = 30;
+    CHECK(ObserveLanding(std::move(TooShort)) == EstimatedFallback);
+}
+
+void RoamingRuntimeRecordedTracesRequireOutwardIntent() {
+    using namespace desklink;
+
+    ManualClock SkimClock;
+    RoamingRuntime SkimRuntime(SkimClock);
+    CHECK(SkimRuntime.UpdateContext(MakeRoamingRuntimeContext())
+              .ReadyRouteCount == 1);
+    const std::array SkimTrace{
+        RecordedPointerSample{0, {1'919, 500, 1, 6}},
+        RecordedPointerSample{1, {1'919, 506, 1, 6}},
+        RecordedPointerSample{1, {1'919, 512, 1, 6}},
+        RecordedPointerSample{1, {1'919, 518, 1, 6}},
+        RecordedPointerSample{1, {1'919, 524, 1, 6}},
+        RecordedPointerSample{1, {1'919, 530, 1, 6}},
+    };
+    CHECK(ReplayRoamingTrace(SkimRuntime, SkimClock, SkimTrace).empty());
+    CHECK(SkimRuntime.State() != RoamingRuntimeState::FocusPending);
+
+    ManualClock PollClock;
+    RoamingRuntime PollRuntime(PollClock);
+    CHECK(PollRuntime.UpdateContext(MakeRoamingRuntimeContext())
+              .ReadyRouteCount == 1);
+    const std::array HighPollTrace{
+        RecordedPointerSample{0, {1'919, 540, 1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+    };
+    CHECK(ReplayRoamingTrace(PollRuntime, PollClock, HighPollTrace).empty());
+    const std::array ThresholdTrace{
+        RecordedPointerSample{1, {1'919, 540, 1, 0}},
+    };
+    CHECK(ReplayRoamingTrace(PollRuntime, PollClock, ThresholdTrace).size() == 1);
+
+    ManualClock DiagonalClock;
+    RoamingRuntime DiagonalRuntime(DiagonalClock);
+    CHECK(DiagonalRuntime.UpdateContext(MakeRoamingRuntimeContext())
+              .ReadyRouteCount == 1);
+    const std::array DiagonalTrace{
+        RecordedPointerSample{0, {1'919, 540, 2, 1}},
+        RecordedPointerSample{1, {1'919, 541, 2, 1}},
+        RecordedPointerSample{1, {1'919, 542, 2, 1}},
+        RecordedPointerSample{1, {1'919, 543, 2, 1}},
+    };
+    CHECK(ReplayRoamingTrace(
+              DiagonalRuntime, DiagonalClock, DiagonalTrace).size() == 1);
+
+    ManualClock VelocityClock;
+    RoamingRuntime VelocityRuntime(VelocityClock);
+    CHECK(VelocityRuntime.UpdateContext(MakeRoamingRuntimeContext())
+              .ReadyRouteCount == 1);
+    const std::array VelocityTrace{
+        RecordedPointerSample{0, {1'919, 540, 512, 2}},
+    };
+    CHECK(ReplayRoamingTrace(
+              VelocityRuntime, VelocityClock, VelocityTrace).size() == 1);
+
+    ManualClock PartialClock;
+    RoamingRuntime PartialRuntime(PartialClock);
+    CHECK(PartialRuntime.UpdateContext(MakeRoamingRuntimeContext())
+              .ReadyRouteCount == 1);
+    const std::array PartialEdgeTrace{
+        RecordedPointerSample{0, {1'919, 50, 512, 0}},
+        RecordedPointerSample{1, {1'919, 100, 512, 0}},
+    };
+    CHECK(ReplayRoamingTrace(
+              PartialRuntime, PartialClock, PartialEdgeTrace).empty());
+
+    ManualClock DwellClock;
+    RoamingRuntime DwellRuntime(DwellClock);
+    CHECK(DwellRuntime.UpdateContext(
+              MakeRoamingRuntimeContext(CrossingPolicy::DwellAndPush))
+              .ReadyRouteCount == 1);
+    const std::array DwellTrace{
+        RecordedPointerSample{0, {1'919, 540, 8, 0}},
+        RecordedPointerSample{99, {1'919, 540, 0, 0}},
+        RecordedPointerSample{1, {1'919, 540, 0, 0}},
+    };
+    CHECK(ReplayRoamingTrace(
+              DwellRuntime, DwellClock, DwellTrace).size() == 1);
+
+    ManualClock DoubleClock;
+    RoamingRuntime DoubleRuntime(DoubleClock);
+    CHECK(DoubleRuntime.UpdateContext(
+              MakeRoamingRuntimeContext(CrossingPolicy::DoublePush))
+              .ReadyRouteCount == 1);
+    const std::array DoublePushTrace{
+        RecordedPointerSample{0, {1'919, 540, 8, 0}},
+        RecordedPointerSample{1, {1'919, 540, -1, 0}},
+        RecordedPointerSample{1, {1'919, 540, 8, 0}},
+    };
+    CHECK(ReplayRoamingTrace(
+              DoubleRuntime, DoubleClock, DoublePushTrace).size() == 1);
+
+    ManualClock CooldownClock;
+    RoamingRuntime CooldownRuntime(CooldownClock);
+    CHECK(CooldownRuntime.UpdateContext(MakeRoamingRuntimeContext())
+              .ReadyRouteCount == 1);
+    const auto First = CooldownRuntime.Observe({1'919, 540, 8, 0});
+    CHECK(First.has_value());
+    CHECK(CooldownRuntime.AdmitFocusReady(*First));
+    CHECK(CooldownRuntime.AdmitRemoteInput(*First));
+    CooldownRuntime.ReturnLocal();
+    CHECK(CooldownRuntime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(!CooldownRuntime.Observe({1'919, 540, 512, 0}));
+    CHECK(CooldownRuntime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(!CooldownRuntime.Observe({1'919, 540, -24, 0}));
+    CHECK(CooldownRuntime.State() == RoamingRuntimeState::Local);
+    CHECK(CooldownRuntime.Observe({1'919, 540, 8, 0}).has_value());
 }
 
 void PeerDirectionArbiterRejectsCollisionsAndStaleTokens() {
@@ -4126,6 +4352,8 @@ int main() {
     RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed();
     RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown();
     RoamingRuntimeHandlesExtremeLocalPointerDeltas();
+    RoamingRuntimeUsesPhysicalLandingHintsOnlyWhenTrustworthy();
+    RoamingRuntimeRecordedTracesRequireOutwardIntent();
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
     PeerSessionResolvesSimultaneousFocusToLocal();

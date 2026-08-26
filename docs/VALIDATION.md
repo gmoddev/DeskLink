@@ -389,6 +389,36 @@ explicit bidirectional audio and topology exchange. The Alpha argument tests
 require Focus or Serve, physical capture, and an absolute settings path before
 the experimental path can start; Serve capture without edge roaming is denied.
 
+Physical-distance landing tests additionally prove that EDID-backed landscape
+segments preserve distance along their shared physical edge only when both
+segments are at least 25 mm and their spans agree within the larger of 5 mm or
+5%. Raw-DPI estimates, rotated displays, contradictory spans, and short segments
+all use the existing proportional fallback. Recorded traces require at least
+60% outward motion, reject edge skims/corners/partial-edge misses, accumulate an
+exact eight-count high-poll-rate Push threshold, admit high-velocity and
+intentional diagonal motion, exercise all three policies, and verify cooldown
+in both roaming directions.
+
+The standalone reliability harness is registered in CTest with 2,000 default
+iterations. A bounded extended run is:
+
+```powershell
+desklink_reliability_soak_tests.exe --iterations 1000000 --seed 123456789
+```
+
+It deterministically alternates reciprocal directions and cycles graceful
+return, cable-loss state, nonce rotation, peer topology change, local monitor
+hot-plug generation change, capability revocation, focus timeout, sleep/wake,
+process termination, and RDP detach. Every iteration also checks complete
+release of a held Ctrl/Alt/extended-Ctrl plus left/right-button chord, reliable
+vertical or horizontal wheel round trip, canonical bounded audio load, active
+request cleanup, fail-local state, outward cooldown rejection, and inward
+cooldown release. On 2026-08-26, the Windows Release suite passed all 8 tests,
+the full Windows AddressSanitizer configuration passed all 9, the extended
+1,000,000-iteration run passed, and isolated Linux passes on the trusted Docker
+worker completed under GCC 13 (3/3) and Clang 17 with Address/Undefined
+sanitizers (3/3). Existing Docker workloads were unchanged.
+
 These tests do not replace physical qualification. Still required on two
 supported Windows 11/Server 2022+ systems are high-poll-rate outward motion,
 visible landing on differently scaled displays, held-state transitions,

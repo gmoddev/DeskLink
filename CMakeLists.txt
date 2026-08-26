@@ -329,4 +329,23 @@ if(DESKLINK_BUILD_TESTS)
             -static -static-libgcc -static-libstdc++)
     endif()
     add_test(NAME desklink_tests COMMAND desklink_tests)
+
+    add_executable(desklink_reliability_soak_tests
+        tests/reliability_soak_tests.cpp)
+    target_link_libraries(desklink_reliability_soak_tests PRIVATE desklink_core)
+    if(MSVC)
+        target_compile_options(desklink_reliability_soak_tests PRIVATE
+            /W4 /permissive-)
+    else()
+        target_compile_options(desklink_reliability_soak_tests PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    endif()
+    if(MINGW)
+        target_link_options(desklink_reliability_soak_tests PRIVATE
+            -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME desklink_reliability_soak_tests
+        COMMAND desklink_reliability_soak_tests --iterations 2000)
+    set_tests_properties(desklink_reliability_soak_tests
+        PROPERTIES TIMEOUT 30)
 endif()

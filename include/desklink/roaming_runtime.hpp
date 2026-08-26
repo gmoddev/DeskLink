@@ -13,6 +13,10 @@
 namespace desklink {
 
 inline constexpr std::chrono::milliseconds kRoamingFocusTimeout{1'500};
+inline constexpr std::uint16_t kRoamingMinimumOutwardIntentPermyriad{6'000};
+inline constexpr std::uint16_t kRoamingPhysicalSpanTolerancePermyriad{500};
+inline constexpr std::uint16_t kRoamingPhysicalSpanToleranceMillimeters{5};
+inline constexpr std::uint16_t kRoamingMinimumPhysicalSegmentMillimeters{25};
 
 enum class RoamingRuntimeState : std::uint8_t {
     Local,

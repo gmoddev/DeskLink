@@ -162,7 +162,7 @@ changing capability replay. The Alpha/CLI listener can opt into capture only
 with an explicit absolute roaming-settings path. Physical two-PC signoff stays
 in milestone 3; it does not reopen this ownership design.
 
-### 2. Physical-distance-aware crossing polish
+### 2. Physical-distance-aware crossing polish — automated implementation complete
 
 - preserve the source pointer's distance along a shared physical edge, in
   millimeters, when both displays have bounded trustworthy physical metadata;
@@ -178,7 +178,19 @@ in milestone 3; it does not reopen this ownership design.
   policies with recorded, replayable traces before choosing a production
   default.
 
-### 3. Reliability and failure qualification
+The runtime now treats physical distance as an optional landing hint only when
+both displays report EDID-backed, landscape geometry. The shared edge must be
+at least 25 mm and the two physical spans must agree within the larger of 5 mm
+or 5%; estimated, rotated, contradictory, or short geometry deterministically
+uses the existing proportional mapping. Route selection, peer/capability
+admission, and saved canvas positions remain independent of physical metadata.
+Bounded outward-intent scoring requires at least 60% outward motion and
+recorded traces cover edge skimming, high-poll-rate accumulation, high velocity,
+diagonal intent, corners, partial edges, all three policies, cooldown, and both
+crossing directions. Physical feel/tuning and selection of a production default
+remain part of milestone 3.
+
+### 3. Reliability and failure qualification — automated harness complete
 
 Build an automated fault/soak harness first, then run the same scenarios on two
 supported physical systems. Include 8 kHz mouse input; held key/button chords;
@@ -192,6 +204,18 @@ admission, no unauthenticated reconnect, and no audio or later module failure
 affecting input cleanup. Every failure must produce bounded diagnostics and a
 deterministic Local state. The owner-deferred two-Windows-11 matrix remains the
 final production gate.
+
+The portable deterministic harness is now a default CTest gate. It alternates
+reciprocal directions and threshold/high-velocity crossings, exercises held
+key/button cleanup plus wheel/audio load, and cycles graceful return, cable
+loss, nonce rotation, peer/local topology change, capability revocation, focus
+timeout, sleep/wake, process termination, and RDP detach. Every cycle must clear
+active focus, settle Local/LocalCooldown, reject outward motion during cooldown,
+and release cooldown only on inward motion. CI runs 2,000 iterations; bounded
+manual runs support up to 1,000,000 iterations with an explicit deterministic
+seed. Real Wi-Fi, endpoint, dock/GPU/DPI, cursor visibility, process, and monitor
+faults still require the deferred physical matrix and are not claimed by the
+model-based harness.
 
 ### 4. Capability-scoped text clipboard
 

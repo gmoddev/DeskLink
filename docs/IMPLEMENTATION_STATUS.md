@@ -32,7 +32,8 @@ The current build proves the core invariants independently of Windows networking
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Display presentation metadata | Done | Checked active resolution/refresh/orientation; EDID physical size with raw-DPI estimate fallback; metadata does not change routing generations |
 | Roaming graph foundation | Done | Strict bounded directional links and normalized edge segments; duplicate/overlapping source routes rejected; stable identities resolve only against current machine topologies |
-| Controlled edge roaming | Experimental reciprocal slice | Explicit Alpha/CLI opt-in on either side; one validated peer-session owner; independent directional grants; nonce-bound direction tokens; collision-to-Local; local observation never suppresses; three intent policies, proportional corner-safe landing, cooldown, 1.5-second focus timeout, active route/session invalidation, and lifecycle-gated suppression. Physical Windows 11 signoff remains open. |
+| Controlled edge roaming | Experimental reciprocal slice | Explicit Alpha/CLI opt-in on either side; one validated peer-session owner; independent directional grants; nonce-bound direction tokens; collision-to-Local; local observation never suppresses; three intent policies, EDID-only physical-distance landing with strict proportional fallback, bounded outward-intent scoring, cooldown, 1.5-second focus timeout, active route/session invalidation, and lifecycle-gated suppression. Physical Windows 11 signoff remains open. |
+| Reliability/fault soak harness | Automated foundation done | Deterministic reciprocal crossing cycles cover ten fail-local scenarios, held key/button cleanup, reliable wheel packets, bounded audio load, nonce/topology invalidation, and cooldown. CTest runs 2,000 iterations; manual runs are bounded to 1,000,000. Real two-PC faults remain deferred. |
 | Roaming preference persistence | Done | Versioned 512 KiB-bounded exact codec and atomic current-user replacement; canvas positions remain presentation-only and trust/identity stay in security stores |
 | Authenticated topology exchange | Done | Explicit trust grant; reliable snapshot bound to PeerValidated session, expected machine, and fresh nonce; canonical 64-display/64 KiB bounds; two-second refresh and five-second fail-closed freshness |
 | Roaming connection/route status | Done | Peer and route state are separate; missing capability/display, unsupported direction, invalid snapshot, and topology synchronization cannot report Ready |
@@ -211,8 +212,12 @@ Each one significantly expands the attack surface and is unnecessary for the fir
 ## Recommended next implementation slice
 
 The pairing, focus, opt-in capture controls, and periodic state reconciliation
-now implement the first complete input path. The next slice is validation on
-two real Windows 11 PCs using this exact sequence:
+now implement the first complete input path. Physical-distance crossing polish
+and the model-based reliability/soak harness are complete. Because a second
+supported Windows 11/Server 2022+ machine is unavailable, the production
+physical matrix remains deferred; it is still required before roaming leaves
+experimental status. The next implementable roadmap slice is capability-scoped
+text clipboard. The deferred physical sequence remains:
 
 ```text
 1. manually pair
@@ -229,8 +234,8 @@ two real Windows 11 PCs using this exact sequence:
 ```
 
 The complete Windows 11 physical matrix remains a production-release gate. It
-does not block the approved staged implementation and controlled experimental
-validation of roaming.
+does not block capability-scoped text clipboard work or controlled experimental
+roaming.
 
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is
@@ -257,7 +262,10 @@ portable intent/landing/cooldown/direction gates and an explicit Windows
 local-observation path that cannot suppress before fresh focus, landing, and
 snapshot admission. One validated session now owns both directions with
 independent grants, nonce-bound tokens, and collision-to-Local; physical
-Windows 11 qualification remains next. The native Windows alpha wrapper provides the manual
+Windows 11 qualification remains deferred. The physical-distance landing hint,
+outward-intent scoring, replayable traces, and deterministic reciprocal
+fault/soak harness are complete; none substitutes for visible cursor, real
+device timing, or hardware-fault qualification. The native Windows alpha wrapper provides the manual
 pairing, session, status, configuration, and experimental arming surface without
 changing any trust or transport boundary.
 See [`ROADMAP.md`](ROADMAP.md).
