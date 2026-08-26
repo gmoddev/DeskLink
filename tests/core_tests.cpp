@@ -11,6 +11,7 @@
 #include "desklink/pairing.hpp"
 #include "desklink/pairing_wire.hpp"
 #include "desklink/profile.hpp"
+#include "desklink/product.hpp"
 #include "desklink/protocol.hpp"
 #include "desklink/roaming.hpp"
 #include "desklink/roaming_runtime.hpp"
@@ -4059,6 +4060,151 @@ void HostInputLifecycleFailuresRemainLocal() {
     CHECK(!NoCapture.ApplyMode(static_cast<DeskMode>(0xffu)));
 }
 
+void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
+    using namespace desklink;
+
+    const MachineId Peer{1};
+    ProductPreferences Preferences;
+    Preferences.Role = DeskRole::Main;
+    Preferences.PreferredPeerMachine = Peer;
+    Preferences.AutoStartRuntime = true;
+    Preferences.AutoConnect = true;
+    Preferences.InputRoamingDesired = true;
+    Preferences.ClipboardDesired = true;
+    Preferences.AudioRoute = AudioRoutePreference::Bidirectional;
+    Preferences.AudioGainPermyriad = 7'500;
+
+    RuntimePlannerContext Ready;
+    Ready.PreferredPeerTrusted = true;
+    Ready.PeerValidated = true;
+    Ready.RoamingRouteReady = true;
+    for (const auto CapabilityValue : {
+             Capability::DisplayTopologyExchange,
+             Capability::ClipboardRead,
+             Capability::ClipboardWrite,
+             Capability::AudioSend,
+             Capability::AudioReceive}) {
+        Ready.LocalGrantsToPeer.grant(CapabilityValue);
+        Ready.PeerGrantsToLocal.grant(CapabilityValue);
+    }
+    Ready.PeerGrantsToLocal.grant(Capability::InputInject);
+
+    const auto Main = PlanDesiredDeskConfiguration(Preferences, Ready);
+    CHECK(Main.PreferencesValid);
+    CHECK(Main.StartRuntime);
+    CHECK(!Main.Listen);
+    CHECK(Main.ConnectPreferredPeer);
+    CHECK(Main.EnableInputRoaming);
+    CHECK(Main.EnableClipboard);
+    CHECK(Main.SendAudio);
+    CHECK(Main.ReceiveAudio);
+    CHECK(Main.InitialMode == DeskMode::LockPc1);
+    CHECK(Main.AudioGainPermyriad == 7'500);
+    CHECK(Main.Blockers == 0);
+
+    Preferences.Role = DeskRole::Companion;
+    const auto Companion = PlanDesiredDeskConfiguration(Preferences, Ready);
+    CHECK(Companion.StartRuntime);
+    CHECK(Companion.Listen);
+    CHECK(!Companion.ConnectPreferredPeer);
+    CHECK(Companion.InitialMode == DeskMode::LockPc1);
+
+    Preferences.Role = DeskRole::Flexible;
+    const auto Flexible = PlanDesiredDeskConfiguration(Preferences, Ready);
+    CHECK(Flexible.Listen);
+    CHECK(Flexible.ConnectPreferredPeer);
+    CHECK(Flexible.InitialMode == DeskMode::LockPc1);
+    CHECK(Ready.LocalGrantsToPeer.bits() ==
+          (static_cast<std::uint64_t>(Capability::DisplayTopologyExchange) |
+           static_cast<std::uint64_t>(Capability::ClipboardRead) |
+           static_cast<std::uint64_t>(Capability::ClipboardWrite) |
+           static_cast<std::uint64_t>(Capability::AudioSend) |
+           static_cast<std::uint64_t>(Capability::AudioReceive)));
+    CHECK(Ready.PeerGrantsToLocal.contains(Capability::InputInject));
+
+    Preferences.Role = DeskRole::Unconfigured;
+    const auto Unconfigured =
+        PlanDesiredDeskConfiguration(Preferences, Ready);
+    CHECK(!Unconfigured.StartRuntime);
+    CHECK(HasRuntimePlanBlocker(
+        Unconfigured, RuntimePlanBlocker::RoleUnconfigured));
+
+    Preferences.Role = DeskRole::Main;
+    Preferences.AutoStartRuntime = false;
+    const auto Disabled = PlanDesiredDeskConfiguration(Preferences, Ready);
+    CHECK(!Disabled.StartRuntime);
+    CHECK(!Disabled.ConnectPreferredPeer);
+    CHECK(HasRuntimePlanBlocker(
+        Disabled, RuntimePlanBlocker::RuntimeDisabled));
+
+    Preferences.AutoStartRuntime = true;
+    Preferences.PreferredPeerMachine.reset();
+    const auto MissingPeer = PlanDesiredDeskConfiguration(Preferences, Ready);
+    CHECK(MissingPeer.StartRuntime);
+    CHECK(!MissingPeer.ConnectPreferredPeer);
+    CHECK(!MissingPeer.EnableInputRoaming);
+    CHECK(HasRuntimePlanBlocker(
+        MissingPeer, RuntimePlanBlocker::PreferredPeerMissing));
+
+    Preferences.PreferredPeerMachine = Peer;
+    auto UntrustedContext = Ready;
+    UntrustedContext.PreferredPeerTrusted = false;
+    const auto Untrusted =
+        PlanDesiredDeskConfiguration(Preferences, UntrustedContext);
+    CHECK(!Untrusted.ConnectPreferredPeer);
+    CHECK(!Untrusted.EnableClipboard);
+    CHECK(HasRuntimePlanBlocker(
+        Untrusted, RuntimePlanBlocker::PeerNotTrusted));
+
+    auto AuthenticatingContext = Ready;
+    AuthenticatingContext.PeerValidated = false;
+    const auto Authenticating =
+        PlanDesiredDeskConfiguration(Preferences, AuthenticatingContext);
+    CHECK(Authenticating.ConnectPreferredPeer);
+    CHECK(!Authenticating.EnableInputRoaming);
+    CHECK(!Authenticating.EnableClipboard);
+    CHECK(!Authenticating.SendAudio);
+    CHECK(!Authenticating.ReceiveAudio);
+    CHECK(HasRuntimePlanBlocker(
+        Authenticating, RuntimePlanBlocker::PeerNotValidated));
+
+    RuntimePlannerContext MissingGrants;
+    MissingGrants.PreferredPeerTrusted = true;
+    MissingGrants.PeerValidated = true;
+    const auto Denied =
+        PlanDesiredDeskConfiguration(Preferences, MissingGrants);
+    CHECK(Denied.ConnectPreferredPeer);
+    CHECK(!Denied.EnableInputRoaming);
+    CHECK(!Denied.EnableClipboard);
+    CHECK(!Denied.SendAudio);
+    CHECK(!Denied.ReceiveAudio);
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::InputCapabilityMissing));
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::TopologyCapabilityMissing));
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::RoamingRouteUnavailable));
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::ClipboardCapabilityMissing));
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::AudioCapabilityMissing));
+
+    auto Malformed = Preferences;
+    Malformed.Role = static_cast<DeskRole>(0xffu);
+    const auto InvalidRole = PlanDesiredDeskConfiguration(Malformed, Ready);
+    CHECK(!InvalidRole.PreferencesValid);
+    CHECK(!InvalidRole.StartRuntime);
+    CHECK(HasRuntimePlanBlocker(
+        InvalidRole, RuntimePlanBlocker::InvalidPreferences));
+
+    Malformed = Preferences;
+    Malformed.PreferredPeerMachine = MachineId{};
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.AudioGainPermyriad = 10'001;
+    CHECK(!IsValidProductPreferences(Malformed));
+}
+
 #ifdef _WIN32
 void WindowsForegroundMonitorPublishesBoundedSnapshot() {
     using namespace desklink;
@@ -4630,27 +4776,91 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     std::error_code Ignored;
     std::filesystem::remove_all(Directory, Ignored);
 
-    Win32ApplicationSettingsStore First(Path);
+    Win32ProductPreferencesStore First(Path);
     CHECK(First.Load());
-    CHECK(First.Current() == Win32ApplicationSettings{});
-    const Win32ApplicationSettings Settings{false, true, true};
+    CHECK(First.Current() == ProductPreferences{});
+    ProductPreferences Settings;
+    Settings.Role = DeskRole::Main;
+    Settings.PreferredPeerMachine = MachineId{1};
+    Settings.CloseToTray = false;
+    Settings.RunAtLogin = true;
+    Settings.FirstRunComplete = true;
+    Settings.AutoStartRuntime = true;
+    Settings.AutoConnect = true;
+    Settings.InputRoamingDesired = true;
+    Settings.ClipboardDesired = true;
+    Settings.AudioRoute = AudioRoutePreference::PeerToLocal;
+    Settings.AudioGainPermyriad = 7'500;
+    Settings.Gaming = GamingBehavior::FollowProfileRules;
+    Settings.AdvancedModeEnabled = true;
     CHECK(First.Save(Settings));
     CHECK(First.Current() == Settings);
     auto Temporary = Path;
     Temporary += L".tmp";
     CHECK(!std::filesystem::exists(Temporary));
 
-    Win32ApplicationSettingsStore Second(Path);
+    Win32ProductPreferencesStore Second(Path);
     CHECK(Second.Load());
     CHECK(Second.Current() == Settings);
+
+    const auto InvalidRolePath = Directory / "invalid-role.bin";
+    CHECK(std::filesystem::copy_file(Path, InvalidRolePath));
+    {
+        std::fstream Output(
+            InvalidRolePath, std::ios::binary | std::ios::in | std::ios::out);
+        CHECK(Output.good());
+        Output.seekp(6);
+        Output.put(static_cast<char>(0xff));
+    }
+    Win32ProductPreferencesStore InvalidRole(InvalidRolePath);
+    CHECK(!InvalidRole.Load());
+    CHECK(!InvalidRole.Current().has_value());
+
+    const auto ReservedPath = Directory / "reserved.bin";
+    CHECK(std::filesystem::copy_file(Path, ReservedPath));
+    {
+        std::fstream Output(
+            ReservedPath, std::ios::binary | std::ios::in | std::ios::out);
+        CHECK(Output.good());
+        Output.seekp(32);
+        Output.put('\1');
+    }
+    Win32ProductPreferencesStore Reserved(ReservedPath);
+    CHECK(!Reserved.Load());
+    CHECK(!Reserved.Current().has_value());
+
     {
         std::ofstream Output(Path, std::ios::binary | std::ios::app);
         CHECK(Output.good());
         Output.put('\0');
     }
-    Win32ApplicationSettingsStore Trailing(Path);
+    Win32ProductPreferencesStore Trailing(Path);
     CHECK(!Trailing.Load());
     CHECK(!Trailing.Current().has_value());
+
+    const auto LegacyPath = Directory / "legacy.bin";
+    const std::array<std::uint8_t, 12> Legacy{
+        'D', 'L', 'A', 'S', 0, 1, 0, 7, 0, 0, 0, 0};
+    {
+        std::ofstream Output(LegacyPath, std::ios::binary);
+        CHECK(Output.good());
+        Output.write(
+            reinterpret_cast<const char*>(Legacy.data()), Legacy.size());
+    }
+    Win32ProductPreferencesStore Migrated(LegacyPath);
+    CHECK(Migrated.Load());
+    const auto MigratedPreferences = Migrated.Current();
+    CHECK(MigratedPreferences.has_value());
+    CHECK(MigratedPreferences->Role == DeskRole::Unconfigured);
+    CHECK(MigratedPreferences->CloseToTray);
+    CHECK(MigratedPreferences->RunAtLogin);
+    CHECK(MigratedPreferences->FirstRunComplete);
+    CHECK(std::filesystem::file_size(LegacyPath) == 64);
+
+    auto Invalid = Settings;
+    Invalid.AudioGainPermyriad = 10'001;
+    CHECK(!Second.Save(Invalid));
+    CHECK(Second.Current() == Settings);
     std::filesystem::remove_all(Directory, Ignored);
 }
 #endif
@@ -4822,6 +5032,7 @@ int main() {
     ClockDriftResamplerIsExactAndBounded();
     JitterTargetIncreaseRebuffersWithinBounds();
     ForegroundProfilePolicyIsBoundedAndDeterministic();
+    ProductPreferencesAndPlannerAreStrictAndFailLocal();
     HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus();
     HostInputLifecycleFailuresRemainLocal();
     DiscoveryPropertiesAreStrictAndRoundTrip();
