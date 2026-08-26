@@ -258,7 +258,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   foundation provides Home, Advanced, and Diagnostics over simulated broker
   states plus single-instance activation, close-to-tray, explicit exit, and
   coordinated-update behavior. The installer carries its exact 243-file
-  allowlisted runtime, while Alpha remains the default until the cutover PR.
+  allowlisted runtime. PR 9A later promotes it to the installed default;
   Production signing and clean supported-system accessibility/update
   qualification remain release gates;
 - **Product UX PR 6 implemented:** the shell consumes real broker state and
@@ -267,7 +267,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   permissions. Pairing is an exclusive managed child with a random operation
   token and expiring candidate lease; shell loss, timeout, ambiguity, or token
   mismatch rejects. Generic IPC still cannot increase authority, while revoke
-  and Forget retain fail-local cleanup. Alpha remains the installed default;
+  and Forget retain fail-local cleanup;
 - **Product UX PR 7 implemented:** Arrange displays is now a production-shell
   page with physically scaled per-PC cards, stable identities, online/offline
   state, local Identify overlays, deterministic snap proposals, and explicit
@@ -283,8 +283,18 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, crossing changes reuse Local-before-atomic-save, and required
   but uninspectable foreground state remains Local. Preferences schema 3
-  migrates both previous formats. Alpha remains the installed default pending
-  PR 9 cutover and qualification;
+  migrates both previous formats;
+- **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu,
+  post-install, sign-in, and updater-restart entry point and starts only its
+  fixed sibling broker with a bounded no-shell launch. Alpha remains an
+  explicitly labeled diagnostics fallback for one migration release. Setup
+  migrates only an exact legacy Alpha Run command. The updater anchors signer
+  trust on the product shell, runs separate shell and broker/state health
+  probes, restores the exact pre-update Run value after rollback, and never
+  owns `%LOCALAPPDATA%\DeskLink` or the CNG identity. Disposable-account tests
+  compare the complete identity snapshot plus byte hashes for a real DPAPI
+  trust record, schema-3 preferences, and saved roaming graph across rollback
+  and upgrade. PR 9B production qualification remains open;
 - **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
   active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
   in-place upgrade, startup-value cleanup, state preservation, a fail-closed

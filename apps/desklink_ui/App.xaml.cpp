@@ -35,6 +35,36 @@ bool HasCommandLineArgument(std::wstring_view Expected) noexcept {
     return Found;
 }
 
+std::optional<std::filesystem::path> GetExecutablePath() {
+    std::wstring Buffer(512, L'\0');
+    for (;;) {
+        const auto Length = GetModuleFileNameW(
+            nullptr, Buffer.data(), static_cast<DWORD>(Buffer.size()));
+        if (Length == 0) return std::nullopt;
+        if (Length < Buffer.size() - 1) {
+            Buffer.resize(Length);
+            return std::filesystem::path(std::move(Buffer));
+        }
+        if (Buffer.size() >= 32'768) return std::nullopt;
+        Buffer.resize(Buffer.size() * 2);
+    }
+}
+
+bool ValidateInstalledProductShell(
+    const std::filesystem::path& Executable) noexcept {
+    if (!desklink::IsWin32DeskLinkUpdateValidationActive()) return false;
+    const auto Root = Executable.parent_path();
+    for (const auto* Relative : {
+             L"desklink.exe", L"desklink_alpha.exe", L"desklink_pair.exe",
+             L"desklink_runtime.exe", L"desklink_update.exe",
+             L"runtime\\schannel\\msquic.dll", L"App.xbf",
+             L"MainWindow.xbf", L"Microsoft.WindowsAppRuntime.dll",
+             L"Microsoft.ui.xaml.dll", L"WindowsAppSDK-LICENSE.txt"}) {
+        if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 namespace winrt::DeskLink::Product::implementation {
@@ -73,20 +103,34 @@ void App::RedirectToPrimary() noexcept {
 }
 
 void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
+    const bool ValidateUpdate = HasCommandLineArgument(L"--validate-update");
+    const auto Executable = GetExecutablePath();
+    if (ValidateUpdate) {
+        if (!Executable || !ValidateInstalledProductShell(*Executable)) {
+            ExitProcess(ERROR_INVALID_DATA);
+        }
+    } else if (desklink::IsWin32DeskLinkLifecycleOperationActive()) {
+        ExitProcess(ERROR_INSTALL_ALREADY_RUNNING);
+    }
     if (IsSecondaryInstance()) {
+        if (ValidateUpdate) ExitProcess(ERROR_BUSY);
         RedirectToPrimary();
         Exit();
         return;
     }
 
+    if (!ValidateUpdate && Executable) {
+        (void)desklink::EnsureWin32RuntimeBroker(*Executable);
+    }
+
     const auto ProductWindow = winrt::make_self<MainWindow>();
     Window_ = *ProductWindow;
-    Window_.Activate();
+    if (!ValidateUpdate) Window_.Activate();
     ProductWindow->InitializeWindowLifecycle();
-    if (HasCommandLineArgument(L"--background")) {
+    if (ValidateUpdate || HasCommandLineArgument(L"--background")) {
         ProductWindow->HideToTray();
     }
-    if (HasCommandLineArgument(L"--smoke-test")) {
+    if (ValidateUpdate || HasCommandLineArgument(L"--smoke-test")) {
         ProductWindow->RequestExit();
     }
 }

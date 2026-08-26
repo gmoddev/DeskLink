@@ -48,4 +48,5 @@
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_display_topology.hpp"
 #include "desklink/win32_monitor_configurator.hpp"
+#include "desklink/win32_product_lifecycle.hpp"
 #include "desklink/win32_roaming_settings.hpp"

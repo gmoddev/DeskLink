@@ -581,8 +581,8 @@ Current implementation:
 User session
 ├── desklink_runtime.exe     one persistent current-user broker
 │   └── desklink_pair.exe    at most one broker-owned transport/session child
-├── desklink_alpha.exe       current engineering shell and tray
-├── desklink.exe             self-contained WinUI product-shell preview
+├── desklink.exe             normal self-contained WinUI product shell/tray
+├── desklink_alpha.exe       temporary explicit diagnostics fallback
 └── future typed local clients, including a Stream Deck plugin
 ```
 
@@ -630,17 +630,24 @@ and invokes the prevalidated rollback installer before any optional restart if
 candidate install or health validation fails.
 
 The product shell is an unpackaged, self-contained C++/WinRT application with a
-locked minimal Windows App SDK component graph. It owns presentation and local
-activation plus bounded current-user roaming preferences only. PR 6 replaces
-its foundation simulations with bounded typed
+locked minimal Windows App SDK component graph. It is the normal Start menu,
+post-install, sign-in, and updater-restart entry point. At launch it probes the
+same-user broker and, when absent and no install/update gate is active, starts
+only the fixed sibling `desklink_runtime.exe` with `CreateProcessW`, no shell,
+no inherited handles, and a bounded readiness wait. It owns presentation and
+local activation plus bounded current-user roaming preferences only. PR 6
+replaces its foundation simulations with bounded typed
 requests to the persistent current-user broker; the shell still cannot open
 transport, directly mutate trust, capture input, or inject input. The broker
 owns discovery and the exclusive pairing child, and presents only an expiring,
 identity-bound candidate for local approval. It uses a separate lifecycle mutex
-and native lifecycle window so Alpha and the preview may coexist; the update
-coordinator requests both to exit. Post-rollback health validation deliberately
-retains the pre-shell executable baseline so a valid rollback to the previous
-Alpha-only release remains possible.
+and native lifecycle window so Alpha diagnostics and the product shell may
+coexist; the update coordinator requests both to exit. The updater now treats
+the signed product shell as the installed signer anchor, runs separate product-
+shell deployment and broker/state health probes, and restarts the shell only
+after validation. Before mutation it snapshots the exact DeskLink Run value;
+successful rollback restores that value so a pre-cutover Alpha-startup package
+remains usable without altering identity, trust, preferences, or roaming state.
 
 PR 7 adds monitor authoring without making canvas geometry authoritative. The
 shell reads the same bounded topology snapshot used by Alpha, builds cards with
