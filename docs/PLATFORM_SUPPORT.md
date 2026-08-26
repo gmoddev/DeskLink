@@ -22,6 +22,13 @@ exporting/replacing the device identity, disabling peer authentication,
 weakening certificate validation, or falling back after a credential,
 certificate, authentication, or general transport failure.
 
+The current-user installer enforces `10.0.20348` as its minimum Windows build,
+matching the Windows Server 2022 / Windows 11 production floor. It packages
+only the stock Schannel runtime. The guarded Windows 10 OpenSSL/CNG prototype
+is never included in that artifact. Development installers are explicitly
+unsigned; production packaging requires verified Authenticode signatures and
+a timestamp. See [`WINDOWS_INSTALLER.md`](WINDOWS_INSTALLER.md).
+
 ## Runtime-selection foundation
 
 PR #9 / commit `10147fe` remains the completed runtime-selection foundation.

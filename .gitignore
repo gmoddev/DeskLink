@@ -23,6 +23,7 @@ compile_commands.json
 *.dll
 *.lib
 /DeskLink-Alpha-*.zip
+/DeskLink-*-windows-x64-*.exe
 /_CPack_Packages/
 /Debug/
 /Release/

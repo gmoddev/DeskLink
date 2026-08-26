@@ -48,6 +48,7 @@ The current build proves the core invariants independently of Windows networking
 | Host input lifecycle safety boundary | Done | Disable capture, release focus, synchronously stop hooks, then enter GAME/LOCK_PC1; exit requires fresh FocusReady + initial snapshot before capture restart/enable |
 | Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
 | Native Windows alpha wrapper | Done | Schannel-only typed launcher; manual pairing/session/clipboard controls; Local-first controller; bounded gain/DPI controls; host-with-port rejection; same-user status/mode IPC; bounded in-memory diagnostics; portable ZIP |
+| Current-user Windows installer | Automated foundation done | Fixed LocalAppData install; active-runtime update gate; exact payload and pinned Schannel runtime; HKCU uninstall/startup cleanup; state-preserving upgrade/uninstall; unsigned CI artifact only until production signing and clean-system qualification |
 | PCM audio frame | Done | Bounded wire representation |
 | Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment; adaptive 2-12 block target; immediate bounded increases, 200-sample downward hysteresis, explicit rebuffer accounting |
@@ -195,7 +196,7 @@ Build/test result in the creation environment:
 
 - final onboarding and tray visual polish beyond the completed companion lifecycle
 - Stream Deck plugin
-- installer/update flow
+- production-signed installer qualification and fail-local update flow
 - diagnostics/telemetry that never logs input or clipboard content
 
 ---

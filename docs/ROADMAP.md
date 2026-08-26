@@ -244,9 +244,14 @@ is production-qualified. Image clipboard and file transfer remain excluded.
 
 ### 5. Installation and daily-use productization
 
-- produce a signed Windows installer and uninstall path, first-run pairing and
-  capability review, clear tray/connection/route/error state, and bounded
-  support diagnostics with secrets and clipboard content excluded;
+- **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
+  active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
+  in-place upgrade, startup-value cleanup, state preservation, a fail-closed
+  production signing gate, and disposable-account CI validation. Production
+  signing and clean-system qualification remain open;
+- finish first-run pairing/capability review, clear
+  tray/connection/route/error state, and bounded support diagnostics with
+  secrets and clipboard content excluded;
 - add an update contract of `Return Local -> release owned input -> stop capture
   -> close sessions -> update/restart`, with rollback and no update while
   Remote; and

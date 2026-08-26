@@ -503,6 +503,26 @@ suppression, interruption, and reconnect. Until that matrix passes, text
 clipboard remains experimental; image clipboard and file transfer remain out
 of scope.
 
+## Windows installer validation
+
+The Windows MsQuic job installs a hash-pinned, Authenticode-verified Inno Setup
+7.1.0 compiler and stages only CMake's `Alpha` component. The packaging script
+rejects unexpected files, reparse points, the wrong Schannel runtime digest,
+and every production invocation that lacks both an explicit current-user code
+signing certificate and timestamp URL.
+
+On the disposable CI account, the installer test first holds the Alpha
+lifecycle mutex and proves Setup cannot proceed. It then installs version
+0.1.0 without elevation, verifies the full payload and HKCU-only uninstall
+registration, upgrades in place to 0.1.1, seeds DeskLink's optional Run value,
+and uninstalls. The Run value and installer-owned files disappear while a
+sentinel under `%LOCALAPPDATA%\DeskLink` remains byte-for-byte unchanged. The
+test requires an explicit mutation switch and is not run on developer accounts.
+
+This is an unsigned development-artifact gate. Production qualification still
+requires the actual release-signing identity plus clean Windows 11 and Server
+2022 install/repair/upgrade/uninstall validation.
+
 ---
 
 ## Limitations of this validation

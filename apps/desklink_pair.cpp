@@ -48,6 +48,8 @@ constexpr std::chrono::seconds kPairingWindow{300};
 constexpr std::chrono::milliseconds kAudioRecoveryInitialDelay{250};
 constexpr std::chrono::milliseconds kAudioRecoveryMaximumDelay{5'000};
 constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
+constexpr wchar_t kRuntimeMutexName[] = L"Local\\DeskLink.Runtime.v1";
+constexpr wchar_t kInstallerMutexName[] = L"Local\\DeskLink.Install.v1";
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
 constexpr std::uint16_t kValidationAcceptedScanCode = 0x7cu;
 constexpr std::uint16_t kValidationStaleEpochScanCode = 0x7bu;
@@ -67,6 +69,15 @@ enum class Operation {
 std::chrono::milliseconds NextAudioRecoveryDelay(
     std::chrono::milliseconds Current) noexcept {
     return std::min(Current * 2, kAudioRecoveryMaximumDelay);
+}
+
+bool IsInstallerActive() noexcept {
+    const auto Handle = OpenMutexW(SYNCHRONIZE, FALSE, kInstallerMutexName);
+    if (Handle) {
+        CloseHandle(Handle);
+        return true;
+    }
+    return GetLastError() != ERROR_FILE_NOT_FOUND;
 }
 
 struct CommandLine {
@@ -4006,6 +4017,16 @@ int wmain(int ArgumentCount, wchar_t** Arguments) {
     // transport, credential, or admission behavior.
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
+    if (IsInstallerActive()) {
+        std::cerr << "[App:Lifecycle] installer operation is active\n";
+        return 1;
+    }
+    const std::unique_ptr<void, decltype(&CloseHandle)> RuntimeMutex(
+        CreateMutexW(nullptr, FALSE, kRuntimeMutexName), &CloseHandle);
+    if (!RuntimeMutex || IsInstallerActive()) {
+        std::cerr << "[App:Lifecycle] could not create the runtime update gate\n";
+        return 1;
+    }
     const auto Command = ParseCommandLine(ArgumentCount, Arguments);
     if (!Command) {
         PrintUsage();
