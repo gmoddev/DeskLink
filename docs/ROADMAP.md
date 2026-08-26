@@ -261,14 +261,20 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   allowlisted runtime, while Alpha remains the default until the cutover PR.
   Production signing and clean supported-system accessibility/update
   qualification remain release gates;
+- **Product UX PR 6 implemented:** the shell consumes real broker state and
+  provides first-run role selection, bounded untrusted Nearby results, manual
+  fallback, broker-owned pairing confirmation, and authenticated Devices &
+  permissions. Pairing is an exclusive managed child with a random operation
+  token and expiring candidate lease; shell loss, timeout, ambiguity, or token
+  mismatch rejects. Generic IPC still cannot increase authority, while revoke
+  and Forget retain fail-local cleanup. Alpha remains the installed default;
 - **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
   active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
   in-place upgrade, startup-value cleanup, state preservation, a fail-closed
   production signing gate, and disposable-account CI validation. Production
   signing and clean-system qualification remain open;
-- finish first-run pairing/capability review, clear
-  tray/connection/route/error state, and bounded support diagnostics with
-  secrets and clipboard content excluded;
+- simplify monitor authoring in the production shell with snap proposals,
+  non-canvas accessibility, stable display identities, and Local-before-save;
 - **Automated update foundation complete:** explicit same-signer candidate and
   current-version rollback packages are hash/version validated before an ordered
   `Return Local -> confirm local -> stop runtime/UI -> install/validate` flow.

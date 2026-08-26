@@ -7,6 +7,7 @@
 #include "desklink/types.hpp"
 
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <string>
 #include <variant>
@@ -15,11 +16,16 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 2;
+inline constexpr std::uint16_t kControlProtocolVersion = 3;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
+inline constexpr std::size_t kMaximumControlNearbyPeers = 64;
 inline constexpr std::size_t kMaximumControlDisplayName = 64;
+inline constexpr std::size_t kMaximumControlHostName = 253;
+inline constexpr std::size_t kControlFingerprintLength =
+    kSha256DigestSize * 2u;
+inline constexpr std::size_t kControlPairingTokenSize = 16;
 inline constexpr std::size_t kControlFrameHeaderSize = 20;
 inline constexpr std::size_t kMaximumControlFrameSize =
     kControlFrameHeaderSize + kMaximumControlPayload;
@@ -46,6 +52,15 @@ enum class ControlCommand : std::uint16_t {
     GetPairingCandidate = 14,
     PauseDeskLink = 15,
     ResumeDeskLink = 16,
+    StartDiscovery = 17,
+    GetNearbyPeers = 18,
+    StopDiscovery = 19,
+    OpenPairingWindow = 20,
+    PairNearbyPeer = 21,
+    PairManualAddress = 22,
+    ResolvePairingCandidate = 23,
+    PresentManagedPairingCandidate = 24,
+    GetManagedPairingDecision = 25,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -109,6 +124,60 @@ struct PauseDeskLinkControlRequest {};
 
 struct ResumeDeskLinkControlRequest {};
 
+struct StartDiscoveryControlRequest {
+    std::uint8_t DurationSeconds{5};
+};
+
+struct GetNearbyPeersControlRequest {};
+
+struct StopDiscoveryControlRequest {};
+
+struct OpenPairingWindowControlRequest {
+    std::uint16_t Port{43'821};
+    CapabilitySet RequestedCapabilities;
+};
+
+struct PairNearbyPeerControlRequest {
+    MachineId Machine{};
+    CapabilitySet RequestedCapabilities;
+};
+
+struct PairManualAddressControlRequest {
+    std::string Host;
+    std::uint16_t Port{43'821};
+    CapabilitySet RequestedCapabilities;
+};
+
+struct ResolvePairingCandidateControlRequest {
+    std::uint64_t OperationId{};
+    bool Approved{};
+};
+
+using ControlPairingToken =
+    std::array<std::uint8_t, kControlPairingTokenSize>;
+
+enum class ControlPairingSource : std::uint8_t {
+    Incoming = 0,
+    Nearby = 1,
+    Manual = 2,
+};
+
+struct PresentManagedPairingCandidateControlRequest {
+    ControlPairingToken Token{};
+    std::uint64_t OperationId{};
+    MachineId Machine{};
+    std::string DisplayName;
+    std::string VerificationCode;
+    std::string CertificateFingerprint;
+    Sha256Digest TranscriptDigest{};
+    CapabilitySet RequestedCapabilities;
+};
+
+struct GetManagedPairingDecisionControlRequest {
+    ControlPairingToken Token{};
+    std::uint64_t OperationId{};
+};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
@@ -125,7 +194,16 @@ using ControlRequestPayload = std::variant<
     ReturnLocalControlRequest,
     GetPairingCandidateControlRequest,
     PauseDeskLinkControlRequest,
-    ResumeDeskLinkControlRequest>;
+    ResumeDeskLinkControlRequest,
+    StartDiscoveryControlRequest,
+    GetNearbyPeersControlRequest,
+    StopDiscoveryControlRequest,
+    OpenPairingWindowControlRequest,
+    PairNearbyPeerControlRequest,
+    PairManualAddressControlRequest,
+    ResolvePairingCandidateControlRequest,
+    PresentManagedPairingCandidateControlRequest,
+    GetManagedPairingDecisionControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
@@ -188,9 +266,46 @@ struct ControlPairingCandidate {
     std::string DisplayName;
     std::string VerificationCode;
     CapabilitySet RequestedCapabilities;
+    ControlPairingSource Source{ControlPairingSource::Incoming};
 
     [[nodiscard]] bool operator==(
         const ControlPairingCandidate&) const noexcept = default;
+};
+
+enum class ControlDiscoveryPhase : std::uint8_t {
+    Idle = 0,
+    Searching = 1,
+    Complete = 2,
+    Failed = 3,
+};
+
+struct ControlNearbyPeer {
+    MachineId Machine{};
+    std::string DisplayName;
+    std::string HostName;
+    CapabilitySet CapabilityHints;
+    std::uint16_t Port{};
+    std::uint16_t ProtocolVersion{};
+    std::uint8_t EndpointCount{};
+    bool PairingOpen{};
+    bool Ambiguous{};
+
+    [[nodiscard]] bool operator==(
+        const ControlNearbyPeer&) const noexcept = default;
+};
+
+struct ControlNearbyPeerList {
+    ControlDiscoveryPhase Phase{ControlDiscoveryPhase::Idle};
+    std::vector<ControlNearbyPeer> Peers;
+
+    [[nodiscard]] bool operator==(
+        const ControlNearbyPeerList&) const noexcept = default;
+};
+
+enum class ControlManagedPairingDecision : std::uint8_t {
+    Pending = 0,
+    Approved = 1,
+    Rejected = 2,
 };
 
 struct ControlResponse {
@@ -201,6 +316,8 @@ struct ControlResponse {
     std::optional<ProductPreferences> Preferences;
     std::optional<ControlTrustedDeviceList> TrustedDevices;
     std::optional<ControlPairingCandidate> PairingCandidate;
+    std::optional<ControlNearbyPeerList> NearbyPeers;
+    std::optional<ControlManagedPairingDecision> PairingDecision;
 };
 
 enum class ControlDecodeError {
@@ -225,6 +342,8 @@ struct ControlDecodeResult {
     const ControlTrustedDeviceList& Devices) noexcept;
 [[nodiscard]] bool IsValidControlPairingCandidate(
     const ControlPairingCandidate& Candidate) noexcept;
+[[nodiscard]] bool IsValidControlNearbyPeerList(
+    const ControlNearbyPeerList& Peers) noexcept;
 [[nodiscard]] bool IsValidControlResponse(const ControlResponse& Response);
 [[nodiscard]] std::optional<ByteBuffer> EncodeControlRequest(
     const ControlRequest& Request);

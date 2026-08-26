@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -123,16 +124,19 @@ public:
 class RuntimeTrustAuthority final {
 public:
     RuntimeTrustAuthority(ITrustStore& TrustStore,
-                          IRuntimeSafetyController& SafetyController) noexcept;
+                          IRuntimeSafetyController& SafetyController,
+                          std::function<bool()> Reload = {}) noexcept;
 
     [[nodiscard]] std::optional<std::vector<TrustedPeer>> ListTrustedPeers() const;
     [[nodiscard]] TrustMutationStatus RequestPermissionChange(
         const MachineId& Machine, CapabilitySet DesiredCapabilities);
     [[nodiscard]] TrustMutationStatus ForgetPeer(const MachineId& Machine);
+    [[nodiscard]] bool ReloadAfterExternalPairing();
 
 private:
     ITrustStore& TrustStore_;
     IRuntimeSafetyController& SafetyController_;
+    std::function<bool()> Reload_;
     mutable std::mutex Mutex_;
 };
 

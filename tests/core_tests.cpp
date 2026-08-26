@@ -29,6 +29,7 @@
 #include "desklink/win32_clipboard.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
+#include "desklink/win32_discovery.hpp"
 #include "desklink/win32_display_topology.hpp"
 #include "desklink/win32_foreground.hpp"
 #include "desklink/win32_launcher.hpp"
@@ -574,7 +575,9 @@ void ControlProtocolRoundTripAndValidation() {
     CapabilitySet RequestedCapabilities;
     RequestedCapabilities.grant(Capability::InputInject);
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
-    const std::array<ControlRequest, 16> Requests{
+    ControlPairingToken PairingToken{};
+    PairingToken[0] = 0x41;
+    const std::array<ControlRequest, 25> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -593,6 +596,27 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{14, GetPairingCandidateControlRequest{}},
         ControlRequest{15, PauseDeskLinkControlRequest{}},
         ControlRequest{16, ResumeDeskLinkControlRequest{}},
+        ControlRequest{17, StartDiscoveryControlRequest{5}},
+        ControlRequest{18, GetNearbyPeersControlRequest{}},
+        ControlRequest{19, StopDiscoveryControlRequest{}},
+        ControlRequest{20, OpenPairingWindowControlRequest{
+            43'821, RequestedCapabilities}},
+        ControlRequest{21, PairNearbyPeerControlRequest{
+            MakeMachineId(9), RequestedCapabilities}},
+        ControlRequest{22, PairManualAddressControlRequest{
+            "192.168.0.108", 43'821, RequestedCapabilities}},
+        ControlRequest{23, ResolvePairingCandidateControlRequest{44, true}},
+        ControlRequest{24, PresentManagedPairingCandidateControlRequest{
+            PairingToken,
+            44,
+            DeriveMachineId(MakeDigest(9)),
+            "Nearby PC",
+            "654321",
+            FormatFingerprint(MakeDigest(9)),
+            MakeDigest(72),
+            RequestedCapabilities}},
+        ControlRequest{25, GetManagedPairingDecisionControlRequest{
+            PairingToken, 44}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -685,7 +709,7 @@ void ControlProtocolRoundTripAndValidation() {
 
     ControlPairingCandidate PairingCandidate{
         44, MakeMachineId(9), "Nearby PC", "654321",
-        RequestedCapabilities};
+        RequestedCapabilities, ControlPairingSource::Nearby};
     ControlResponse PairingResponse{17, ControlStatus::Ok};
     PairingResponse.PairingCandidate = PairingCandidate;
     const auto PairingFrame = EncodeControlResponse(PairingResponse);
@@ -695,6 +719,32 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(DecodedPairing.Decoded->PairingCandidate == PairingCandidate);
     PairingCandidate.VerificationCode = "not-six";
     CHECK(!IsValidControlPairingCandidate(PairingCandidate));
+
+    ControlNearbyPeerList Nearby;
+    Nearby.Phase = ControlDiscoveryPhase::Complete;
+    Nearby.Peers.push_back(ControlNearbyPeer{
+        MakeMachineId(10), "Unverified PC", "desklink-peer.local",
+        RequestedCapabilities, 43'821, kProtocolVersion, 1, true, false});
+    ControlResponse NearbyResponse{18, ControlStatus::Ok};
+    NearbyResponse.NearbyPeers = Nearby;
+    const auto NearbyFrame = EncodeControlResponse(NearbyResponse);
+    CHECK(NearbyFrame.has_value());
+    const auto DecodedNearby = DecodeControlResponse(*NearbyFrame);
+    CHECK(DecodedNearby.Decoded.has_value());
+    CHECK(DecodedNearby.Decoded->NearbyPeers == Nearby);
+    auto UnsafeNearby = Nearby;
+    UnsafeNearby.Peers.front().HostName.assign(
+        kMaximumControlHostName + 1, 'a');
+    CHECK(!IsValidControlNearbyPeerList(UnsafeNearby));
+    ControlResponse DecisionResponse{19, ControlStatus::Ok};
+    DecisionResponse.PairingDecision =
+        ControlManagedPairingDecision::Rejected;
+    const auto DecisionFrame = EncodeControlResponse(DecisionResponse);
+    CHECK(DecisionFrame.has_value());
+    const auto DecodedDecision = DecodeControlResponse(*DecisionFrame);
+    CHECK(DecodedDecision.Decoded.has_value());
+    CHECK(DecodedDecision.Decoded->PairingDecision ==
+          ControlManagedPairingDecision::Rejected);
 
     auto DuplicateDevices = Devices;
     DuplicateDevices.Devices.push_back(Devices.Devices.front());
@@ -713,6 +763,13 @@ void ControlProtocolRoundTripAndValidation() {
             MakeMachineId(8), CapabilitySet{1ull << 60u}}}).has_value());
     CHECK(!EncodeControlRequest(ControlRequest{
         10, ForgetTrustedDeviceControlRequest{}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        11, StartDiscoveryControlRequest{31}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        12, PairManualAddressControlRequest{
+            "host with spaces", 43'821, {}}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        13, GetManagedPairingDecisionControlRequest{}}).has_value());
     CHECK(!EncodeControlResponse(ControlResponse{
         10, ControlStatus::Failed, State}).has_value());
     auto InvalidRuntimeState = State;
@@ -839,6 +896,15 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
 
     RecordingRuntimeSafetyController Safety;
     RuntimeTrustAuthority Authority(Store, Safety);
+    CHECK(!Authority.ReloadAfterExternalPairing());
+    bool Reloaded = false;
+    RuntimeTrustAuthority ReloadingAuthority(
+        Store, Safety, [&Reloaded] {
+            Reloaded = true;
+            return true;
+        });
+    CHECK(ReloadingAuthority.ReloadAfterExternalPairing());
+    CHECK(Reloaded);
     const auto Listed = Authority.ListTrustedPeers();
     CHECK(Listed.has_value());
     CHECK(Listed->size() == 2);
@@ -4521,6 +4587,20 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
 }
 
 #ifdef _WIN32
+void WindowsDiscoveryCancellationIsBounded() {
+    using namespace desklink;
+
+    std::stop_source StopSource;
+    StopSource.request_stop();
+    const auto Started = std::chrono::steady_clock::now();
+    const auto Result = Win32MdnsBrowser::Browse(
+        std::chrono::seconds(30), StopSource.get_token());
+    const auto Elapsed = std::chrono::steady_clock::now() - Started;
+    CHECK(Result.StartStatus == ERROR_CANCELLED);
+    CHECK(Result.Peers.empty());
+    CHECK(Elapsed < std::chrono::seconds(1));
+}
+
 void WindowsForegroundMonitorPublishesBoundedSnapshot() {
     using namespace desklink;
 
@@ -4816,6 +4896,30 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
         L"--grant-clipboard-read", L"--grant-clipboard-write",
         L"--tls-provider", L"schannel"};
     CHECK(*PairArguments == ExpectedPair);
+
+    ControlPairingToken PairingToken{};
+    PairingToken[0] = 0x12;
+    PairingToken[15] = 0xab;
+    Pair.BrokerPairingOperationId = 77;
+    Pair.BrokerPairingToken = PairingToken;
+    const auto BrokerPairArguments = BuildLauncherArguments(Pair);
+    CHECK(BrokerPairArguments.has_value());
+    const auto BrokerPairingFlag = std::find(
+        BrokerPairArguments->begin(), BrokerPairArguments->end(),
+        L"--broker-pairing");
+    CHECK(BrokerPairingFlag != BrokerPairArguments->end());
+    CHECK(BrokerPairingFlag + 2 < BrokerPairArguments->end());
+    CHECK(*(BrokerPairingFlag + 1) == L"77");
+    CHECK(*(BrokerPairingFlag + 2) ==
+          L"120000000000000000000000000000ab");
+    Pair.BrokerPairingToken.reset();
+    CHECK(!BuildLauncherArguments(Pair).has_value());
+    Pair.BrokerPairingOperationId.reset();
+    Pair.BrokerPairingToken = ControlPairingToken{};
+    Pair.BrokerPairingOperationId = 78;
+    CHECK(!BuildLauncherArguments(Pair).has_value());
+    Pair.BrokerPairingToken.reset();
+    Pair.BrokerPairingOperationId.reset();
 
     Focus.Host = L"host with spaces";
     CHECK(!BuildLauncherArguments(Focus).has_value());
@@ -5528,6 +5632,7 @@ int main() {
     AttemptRateLimiterIsBoundedAndExpires();
     CertificatePinsMatchOnlyTheStoredPeer();
 #ifdef _WIN32
+    WindowsDiscoveryCancellationIsBounded();
     WindowsForegroundMonitorPublishesBoundedSnapshot();
     WindowsCurrentUserControlPipeRoundTrip();
     WindowsClipboardListenerLifecycleIsContentSilent();

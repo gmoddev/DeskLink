@@ -248,9 +248,13 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         add_test(NAME desklink_pair_rejects_duplicate_profile
             COMMAND desklink_pair focus 127.0.0.1
                 --profile game.exe=game --profile GAME.EXE=roam)
+        add_test(NAME desklink_pair_rejects_invalid_broker_pairing_token
+            COMMAND desklink_pair listen --broker-pairing 1
+                00000000000000000000000000000000)
         set_tests_properties(
             desklink_pair_rejects_invalid_profile
             desklink_pair_rejects_duplicate_profile
+            desklink_pair_rejects_invalid_broker_pairing_token
             PROPERTIES WILL_FAIL TRUE)
     endif()
 

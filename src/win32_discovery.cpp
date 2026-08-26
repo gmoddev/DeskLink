@@ -484,11 +484,15 @@ void WINAPI ResolveComplete(DWORD Status, void* Context,
 } // namespace
 
 Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
-    std::chrono::milliseconds Duration) {
+    std::chrono::milliseconds Duration, std::stop_token StopToken) {
     Win32DiscoveryBrowseResult Result;
     if (Duration < kMinimumBrowseDuration ||
         Duration > kMaximumBrowseDuration) {
         Result.StartStatus = ERROR_INVALID_PARAMETER;
+        return Result;
+    }
+    if (StopToken.stop_requested()) {
+        Result.StartStatus = ERROR_CANCELLED;
         return Result;
     }
     auto State = std::make_shared<BrowserState>();
@@ -512,16 +516,32 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
         Result.StartStatus = Status;
         return Result;
     }
-    Sleep(static_cast<DWORD>(std::min<std::int64_t>(
-        Duration.count(), (std::numeric_limits<DWORD>::max)())));
+    const auto BrowseDeadline = std::chrono::steady_clock::now() + Duration;
+    while (!StopToken.stop_requested()) {
+        const auto Remaining = BrowseDeadline - std::chrono::steady_clock::now();
+        if (Remaining <= std::chrono::milliseconds::zero()) break;
+        Sleep(static_cast<DWORD>(std::clamp<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(Remaining)
+                .count(),
+            1, 50)));
+    }
     (void)DnsServiceBrowseCancel(&Cancel);
     {
         std::unique_lock Lock(State->Mutex);
-        (void)State->Condition.wait_for(Lock, kResolveWait, [&] {
-            return State->BrowseComplete;
-        });
-        if (!State->BrowseComplete) {
+        const auto CancelDeadline =
+            std::chrono::steady_clock::now() + kResolveWait;
+        while (!State->BrowseComplete && !StopToken.stop_requested() &&
+               std::chrono::steady_clock::now() < CancelDeadline) {
+            (void)State->Condition.wait_for(
+                Lock, std::chrono::milliseconds(50));
+        }
+        if (!State->BrowseComplete && !StopToken.stop_requested()) {
             ++State->BrowseFailures;
+        }
+        if (StopToken.stop_requested()) {
+            BrowseCallbacks().Remove(BrowseToken);
+            Result.StartStatus = ERROR_CANCELLED;
+            return Result;
         }
         State->Operations.reserve(State->Names.size());
         for (const auto& Name : State->Names) {
@@ -553,9 +573,13 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
     }
     {
         std::unique_lock Lock(State->Mutex);
-        (void)State->Condition.wait_for(Lock, kResolveWait, [&] {
-            return State->Outstanding == 0;
-        });
+        const auto ResolveDeadline =
+            std::chrono::steady_clock::now() + kResolveWait;
+        while (State->Outstanding != 0 && !StopToken.stop_requested() &&
+               std::chrono::steady_clock::now() < ResolveDeadline) {
+            (void)State->Condition.wait_for(
+                Lock, std::chrono::milliseconds(50));
+        }
     }
 
     {
@@ -569,6 +593,12 @@ Win32DiscoveryBrowseResult Win32MdnsBrowser::Browse(
         ResolveCallbacks().Remove(Operation->CallbackToken);
     }
     BrowseCallbacks().Remove(BrowseToken);
+
+    if (StopToken.stop_requested()) {
+        Result = {};
+        Result.StartStatus = ERROR_CANCELLED;
+        return Result;
+    }
 
     SteadyClock Clock;
     DiscoveryCache Cache(Clock);

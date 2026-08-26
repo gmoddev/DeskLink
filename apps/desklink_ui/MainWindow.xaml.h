@@ -11,10 +11,46 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnNavigationChanged(
         Microsoft::UI::Xaml::Controls::NavigationView const& Sender,
         Microsoft::UI::Xaml::Controls::NavigationViewSelectionChangedEventArgs const& Args);
-    void OnSimulationChanged(
-        Windows::Foundation::IInspectable const& Sender,
-        Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
     void OnReturnLocal(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnChooseMain(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnChooseCompanion(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnChooseFlexible(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnOpenDevices(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnOpenAddPc(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnRefreshNearby(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnOpenPairingWindow(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnPairManual(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnNearbyConnect(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnFinishOnboarding(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnRefreshDevices(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnDevicePermissions(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnDeviceForget(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
 
@@ -39,14 +75,53 @@ private:
     void ShowFromTray();
     void TogglePaused();
     void ApplyState(desklink::ProductShellState State);
+    void PollBroker();
+    void PollPreferences();
+    void PollNearby();
+    void PollDevices();
+    void PollPairingCandidate();
+    void ChooseRole(desklink::DeskRole Role);
+    void NavigateTo(winrt::hstring const& Tag);
+    void RenderNearby();
+    void RenderDevices();
+    void UpdateHome();
+    void ShowPairingStatus(
+        winrt::hstring const& Message,
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);
+    [[nodiscard]] desklink::CapabilitySet SelectedPairingCapabilities();
+    [[nodiscard]] std::optional<desklink::ControlResponse> Send(
+        desklink::ControlRequestPayload Payload,
+        std::chrono::milliseconds Timeout = std::chrono::milliseconds{500});
+    [[nodiscard]] std::optional<desklink::MachineId> MachineFromTag(
+        Windows::Foundation::IInspectable const& Tag) const;
+    [[nodiscard]] Windows::Foundation::IAsyncAction ShowPairingCandidate(
+        desklink::ControlPairingCandidate Candidate);
+    [[nodiscard]] Windows::Foundation::IAsyncAction ShowPermissionEditor(
+        desklink::ControlTrustedDevice Device);
+    [[nodiscard]] Windows::Foundation::IAsyncAction ConfirmForget(
+        desklink::ControlTrustedDevice Device);
+
     HWND MainWindowHandle_{};
     HWND LifecycleWindow_{};
     NOTIFYICONDATAW TrayIcon_{};
+    Microsoft::UI::Dispatching::DispatcherQueueTimer PollTimer_{nullptr};
+    Microsoft::UI::Xaml::Controls::ContentDialog PairingDialog_{nullptr};
+    desklink::ProductPreferences Preferences_;
+    std::vector<desklink::ControlNearbyPeer> NearbyPeers_;
+    std::vector<desklink::ControlTrustedDevice> TrustedDevices_;
+    std::atomic_uint64_t NextRequestId_{1};
+    std::uint64_t DisplayedPairingOperation_{};
     bool TrayActive_{};
     bool ExplicitExit_{};
     bool ContentReady_{};
+    bool PreferencesLoaded_{};
+    bool DevicesLoaded_{};
+    bool BrokerAvailable_{};
+    bool PairingDialogActive_{};
+    bool ModalDialogActive_{};
+    bool DiscoveryActive_{};
     desklink::ProductShellState State_{
-        desklink::ProductShellState::ConnectedLocal};
+        desklink::ProductShellState::Offline};
 };
 
 } // namespace winrt::DeskLink::Product::implementation

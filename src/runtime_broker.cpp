@@ -165,8 +165,11 @@ BrokerRuntimeSnapshot BrokerReconnectController::Snapshot() const noexcept {
 
 RuntimeTrustAuthority::RuntimeTrustAuthority(
     ITrustStore& TrustStore,
-    IRuntimeSafetyController& SafetyController) noexcept
-    : TrustStore_(TrustStore), SafetyController_(SafetyController) {}
+    IRuntimeSafetyController& SafetyController,
+    std::function<bool()> Reload) noexcept
+    : TrustStore_(TrustStore),
+      SafetyController_(SafetyController),
+      Reload_(std::move(Reload)) {}
 
 std::optional<std::vector<TrustedPeer>>
 RuntimeTrustAuthority::ListTrustedPeers() const {
@@ -228,6 +231,11 @@ TrustMutationStatus RuntimeTrustAuthority::ForgetPeer(
     return TrustStore_.RemovePeer(Machine)
         ? TrustMutationStatus::Applied
         : TrustMutationStatus::StoreFailed;
+}
+
+bool RuntimeTrustAuthority::ReloadAfterExternalPairing() {
+    std::scoped_lock Lock(Mutex_);
+    return Reload_ && Reload_();
 }
 
 bool BrokerPairingCandidateLease::Present(

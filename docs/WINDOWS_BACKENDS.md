@@ -25,6 +25,16 @@ multi-interface results deterministically, and prints candidates without any
 transport or trust-store action. No Windows service, firewall rule, network
 profile, router setting, or persistent background browser is created.
 
+The persistent runtime broker reuses the same native browser for the product
+shell's explicit one-to-30-second Nearby scan. Results are cached in one
+generation, exposed as visibly untrusted typed records, and invalidated on stop
+or replacement. The native browse observes cooperative cancellation in bounded
+increments, so stop and broker shutdown do not wait out a long scan. A pairing
+start accepts only a unique, nonambiguous,
+protocol-compatible cached machine whose advertisement says the pairing window
+is open. Manual host/IP entry remains an explicit fallback through the same
+managed pairing boundary.
+
 ## 1. Current Windows implementation
 
 The repository includes `Win32InputInjector` and the opt-in
@@ -409,8 +419,8 @@ content. Diagnostics expose counts and failure classes only, never text.
 
 ## 10. Local named pipe
 
-Host and Agent expose a current-user-only pipe named from the protocol version
-and current user SID:
+The persistent broker and active session process expose a current-user-only
+pipe named from the endpoint generation and current user SID:
 
 ```text
 \\.\pipe\DeskLink.Control.v1.<current-user-SID>
@@ -422,9 +432,21 @@ first-instance protection. Both endpoints read the opposite process ID and
 compare its token user SID before exchanging data. The client permits at most a
 five-second requested timeout.
 
-The pipe protocol uses exact bounded typed commands and never exposes arbitrary
-transport packets, input injection, OS commands, or module loading. `GetState`
-and `SetDesiredMode` are implemented. `FocusMachine` has a reserved typed
-encoding and returns `Unsupported` until
-persistent host orchestration exists. `SetAudioGain` and `ToggleAudioMute`
-operate only on an active Host receiver and otherwise return `NotReady`.
+The wire protocol is independently versioned (currently version 3) and uses
+exact bounded typed commands; it never exposes arbitrary transport packets,
+input injection, OS commands, or module loading. In addition to runtime state,
+mode, focus, audio, topology, update, and preference operations, it exposes
+bounded trusted-device, discovery, pairing-window, pairing-candidate,
+permission-reduction, forget, pause, resume, and return-local operations.
+Nearby data remains untrusted. Grant additions require cryptographic re-pairing,
+and reductions/forget force cleanup before persisted trust changes.
+
+Managed pairing uses a separate internal command pair on this same-user pipe.
+The broker creates a fresh 128-bit token and operation ID, gives them only to
+its fixed sibling `desklink_pair.exe`, and accepts a candidate only when its
+machine, certificate fingerprint, transcript, grants, operation, and 90-second
+lease all match. The product shell receives only the bounded display candidate
+and resolves its current operation. Shell absence/exit, expiry, token mismatch,
+pipe failure, signing/authentication failure, or child failure rejects rather
+than falling back. A successful child exit causes an in-process trust-store
+reload before the role-driven runtime resumes.

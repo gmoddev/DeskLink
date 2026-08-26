@@ -79,7 +79,8 @@ This repository is a **reference foundation implementation**, not a finished pro
   grants, nonce-bound direction tokens, deterministic collision-to-Local, and
   explicit listener-side roaming opt-in
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
-- Current-user-only named-pipe control API with bounded typed state/mode commands
+- Current-user-only named-pipe control API with bounded typed runtime,
+  preferences, trust, discovery, and managed-pairing commands
 - Persistent current-user runtime broker with role-driven companion listening,
   exact preferred-peer auto-connect, pause/resume, typed fail-closed reconnect
   classification, and network/process reconciliation that always starts Local
@@ -90,9 +91,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Native Windows alpha launcher with bounded pairing/session controls,
   authenticated status/mode IPC, graceful child lifecycle, a Schannel-only
   ZIP, and a current-user installer foundation
-- Self-contained C++/WinRT product-shell preview with Home, Advanced, and
-  Diagnostics surfaces, simulated fail-local states, single-instance
-  activation, close-to-tray lifecycle, and broker-independent UI exit
+- Self-contained C++/WinRT product-shell preview with guided role selection,
+  Home, Add a PC, untrusted Nearby/manual pairing, Devices & permissions,
+  Advanced, and Diagnostics surfaces backed by the current-user broker;
+  pairing-code approval remains local and shell exit rejects any pending offer
 - Explicit current-user update coordinator with prevalidated same-signer
   candidate/rollback installers, ordered fail-local shutdown, bounded Setup,
   post-install health checks, and automatic rollback
@@ -109,9 +111,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
-- Production signing/clean-system installer and update qualification, final
-  broker-backed product UI, onboarding/devices, monitor authoring, feature
-  settings, final product polish, and Stream Deck plugin
+- Production signing/clean-system installer and update qualification, monitor
+  authoring, feature settings, final product polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 Current release-specific defects and workarounds are tracked in
@@ -193,11 +194,20 @@ cmake --build build-product-ui --config Release --target desklink_product_ui
 ```
 
 The build uses locked NuGet dependencies and stages an unpackaged,
-self-contained Windows App SDK payload. `desklink.exe` is a preview against
-simulated broker states in this PR: it performs no pairing, trust, networking,
-capture, or input-injection operation. Closing it leaves the broker running;
-**Exit** ends only the shell. The Alpha remains the normal installed entry
-point until the product cutover PR.
+self-contained Windows App SDK payload. `desklink.exe` is a real client of the
+current-user runtime broker. It provides guided role selection, bounded Nearby
+cards, manual address fallback, broker-owned two-PC code confirmation, and an
+authenticated Devices & permissions list. Nearby names and endpoints remain
+visibly unverified and ambiguity disables Connect. Every pairing grant defaults
+off; both PCs independently review the same code and their own local
+consequences.
+
+The shell can reduce grants or forget a peer only through fail-local broker
+mutations. It cannot add authority through the generic pipe; additions require
+a new two-PC pairing/reauthorization flow. Closing it leaves the broker running,
+but exiting/crashing during a pairing prompt makes the managed child reject the
+candidate. **Exit** ends only the shell. The Alpha remains the normal installed
+entry point until the product cutover PR.
 
 Windows CI also creates an explicitly unsigned current-user development
 installer containing the Alpha and product-shell preview and validates install,

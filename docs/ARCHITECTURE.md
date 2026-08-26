@@ -494,6 +494,9 @@ GetDisplayTopologies implemented read-only
 GetProductPreferences implemented read-only
 SetProductPreferences implemented validated current-user policy
 ListTrustedDevices    implemented bounded metadata/grants only
+Start/Get/StopDiscovery implemented bounded untrusted Nearby cache
+Open/PairNearby/PairManual implemented exclusive broker-owned pairing
+Get/ResolvePairingCandidate implemented expiring local approval
 PauseDeskLink         implemented fail-local supervised stop
 ResumeDeskLink        implemented Local-first supervised start
 ReturnLocal           implemented
@@ -614,9 +617,12 @@ candidate install or health validation fails.
 
 The product shell is an unpackaged, self-contained C++/WinRT application with a
 locked minimal Windows App SDK component graph. It owns presentation and local
-activation only. In its foundation PR it renders simulated broker states and
-cannot open transport, mutate trust, capture input, or inject input. It uses a
-separate lifecycle mutex and native lifecycle window so Alpha and the preview
-may coexist; the update coordinator requests both to exit. Post-rollback health
-validation deliberately retains the pre-shell executable baseline so a valid
-rollback to the previous Alpha-only release remains possible.
+activation only. PR 6 replaces its foundation simulations with bounded typed
+requests to the persistent current-user broker; the shell still cannot open
+transport, directly mutate trust, capture input, or inject input. The broker
+owns discovery and the exclusive pairing child, and presents only an expiring,
+identity-bound candidate for local approval. It uses a separate lifecycle mutex
+and native lifecycle window so Alpha and the preview may coexist; the update
+coordinator requests both to exit. Post-rollback health validation deliberately
+retains the pre-shell executable baseline so a valid rollback to the previous
+Alpha-only release remains possible.

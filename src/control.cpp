@@ -108,6 +108,31 @@ bool HasOnlyKnownCapabilities(CapabilitySet Capabilities) noexcept {
     return (Capabilities.bits() & ~kKnownCapabilityBits) == 0;
 }
 
+bool IsNonzeroPairingToken(const ControlPairingToken& Token) noexcept {
+    return std::any_of(Token.begin(), Token.end(),
+                       [](std::uint8_t Byte) { return Byte != 0; });
+}
+
+bool IsValidControlHostName(std::string_view Host) noexcept {
+    return !Host.empty() && Host.size() <= kMaximumControlHostName &&
+        std::all_of(Host.begin(), Host.end(), [](unsigned char Character) {
+            return Character > 0x20u && Character != 0x7fu &&
+                   Character != static_cast<unsigned char>('"');
+        });
+}
+
+bool IsKnownPairingSource(ControlPairingSource Source) noexcept {
+    return static_cast<std::uint8_t>(Source) <=
+        static_cast<std::uint8_t>(ControlPairingSource::Manual);
+}
+
+bool IsKnownDiscoveryPhase(ControlDiscoveryPhase Phase) noexcept {
+    return static_cast<std::uint8_t>(Phase) <=
+        static_cast<std::uint8_t>(ControlDiscoveryPhase::Failed);
+}
+
+bool IsBoundedDisplayName(std::string_view Name) noexcept;
+
 void EncodeHeader(Writer& Output, ControlFrameType Type,
                   std::uint64_t RequestId, std::uint32_t PayloadSize) {
     Output.U32(kControlWireMagic);
@@ -205,8 +230,44 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
                                  ValueType,
                                  PauseDeskLinkControlRequest>) {
             return ControlCommand::PauseDeskLink;
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ResumeDeskLinkControlRequest>) {
             return ControlCommand::ResumeDeskLink;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 StartDiscoveryControlRequest>) {
+            return ControlCommand::StartDiscovery;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetNearbyPeersControlRequest>) {
+            return ControlCommand::GetNearbyPeers;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 StopDiscoveryControlRequest>) {
+            return ControlCommand::StopDiscovery;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 OpenPairingWindowControlRequest>) {
+            return ControlCommand::OpenPairingWindow;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PairNearbyPeerControlRequest>) {
+            return ControlCommand::PairNearbyPeer;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PairManualAddressControlRequest>) {
+            return ControlCommand::PairManualAddress;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ResolvePairingCandidateControlRequest>) {
+            return ControlCommand::ResolvePairingCandidate;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PresentManagedPairingCandidateControlRequest>) {
+            return ControlCommand::PresentManagedPairingCandidate;
+        } else {
+            return ControlCommand::GetManagedPairingDecision;
         }
     }, Payload);
 }
@@ -256,6 +317,59 @@ ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
                                  ValueType,
                                  ForgetTrustedDeviceControlRequest>) {
             Output.Raw(Value.Machine);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 StartDiscoveryControlRequest>) {
+            Output.U8(Value.DurationSeconds);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 OpenPairingWindowControlRequest>) {
+            Output.U16(Value.Port);
+            Output.U64(Value.RequestedCapabilities.bits());
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PairNearbyPeerControlRequest>) {
+            Output.Raw(Value.Machine);
+            Output.U64(Value.RequestedCapabilities.bits());
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PairManualAddressControlRequest>) {
+            Output.U16(Value.Port);
+            Output.U64(Value.RequestedCapabilities.bits());
+            Output.U16(static_cast<std::uint16_t>(Value.Host.size()));
+            Output.Raw(ByteSpan{
+                reinterpret_cast<const std::uint8_t*>(Value.Host.data()),
+                Value.Host.size()});
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ResolvePairingCandidateControlRequest>) {
+            Output.U64(Value.OperationId);
+            Output.U8(Value.Approved ? 1u : 0u);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PresentManagedPairingCandidateControlRequest>) {
+            Output.Raw(Value.Token);
+            Output.U64(Value.OperationId);
+            Output.Raw(Value.Machine);
+            Output.U64(Value.RequestedCapabilities.bits());
+            Output.U8(static_cast<std::uint8_t>(Value.DisplayName.size()));
+            Output.Raw(ByteSpan{
+                reinterpret_cast<const std::uint8_t*>(Value.DisplayName.data()),
+                Value.DisplayName.size()});
+            Output.Raw(ByteSpan{
+                reinterpret_cast<const std::uint8_t*>(
+                    Value.VerificationCode.data()),
+                Value.VerificationCode.size()});
+            Output.Raw(ByteSpan{
+                reinterpret_cast<const std::uint8_t*>(
+                    Value.CertificateFingerprint.data()),
+                Value.CertificateFingerprint.size()});
+            Output.Raw(Value.TranscriptDigest);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetManagedPairingDecisionControlRequest>) {
+            Output.Raw(Value.Token);
+            Output.U64(Value.OperationId);
         }
     }, Request.Payload);
     return Output.Take();
@@ -376,6 +490,134 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::ResumeDeskLink:
             if (Input.Remaining() != 0) return std::nullopt;
             return ResumeDeskLinkControlRequest{};
+        case ControlCommand::StartDiscovery: {
+            StartDiscoveryControlRequest Request;
+            if (!Input.U8(Request.DurationSeconds) || Input.Remaining() != 0 ||
+                Request.DurationSeconds == 0 || Request.DurationSeconds > 30) {
+                return std::nullopt;
+            }
+            return Request;
+        }
+        case ControlCommand::GetNearbyPeers:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return GetNearbyPeersControlRequest{};
+        case ControlCommand::StopDiscovery:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return StopDiscoveryControlRequest{};
+        case ControlCommand::OpenPairingWindow: {
+            OpenPairingWindowControlRequest Request;
+            std::uint64_t CapabilityBits{};
+            if (!Input.U16(Request.Port) || !Input.U64(CapabilityBits) ||
+                Input.Remaining() != 0 || Request.Port == 0) {
+                return std::nullopt;
+            }
+            Request.RequestedCapabilities = CapabilitySet(CapabilityBits);
+            return HasOnlyKnownCapabilities(Request.RequestedCapabilities)
+                ? std::optional<ControlRequestPayload>(Request)
+                : std::nullopt;
+        }
+        case ControlCommand::PairNearbyPeer: {
+            PairNearbyPeerControlRequest Request;
+            std::uint64_t CapabilityBits{};
+            if (!Input.Raw(Request.Machine) || !Input.U64(CapabilityBits) ||
+                Input.Remaining() != 0 || !IsNonzeroMachine(Request.Machine)) {
+                return std::nullopt;
+            }
+            Request.RequestedCapabilities = CapabilitySet(CapabilityBits);
+            return HasOnlyKnownCapabilities(Request.RequestedCapabilities)
+                ? std::optional<ControlRequestPayload>(Request)
+                : std::nullopt;
+        }
+        case ControlCommand::PairManualAddress: {
+            PairManualAddressControlRequest Request;
+            std::uint64_t CapabilityBits{};
+            std::uint16_t HostLength{};
+            if (!Input.U16(Request.Port) || !Input.U64(CapabilityBits) ||
+                !Input.U16(HostLength) || HostLength == 0 ||
+                HostLength > kMaximumControlHostName ||
+                Input.Remaining() != HostLength) {
+                return std::nullopt;
+            }
+            ByteBuffer Host(HostLength);
+            if (!Input.Raw(Host)) return std::nullopt;
+            Request.Host.assign(
+                reinterpret_cast<const char*>(Host.data()), Host.size());
+            Request.RequestedCapabilities = CapabilitySet(CapabilityBits);
+            return Request.Port != 0 && IsValidControlHostName(Request.Host) &&
+                    HasOnlyKnownCapabilities(Request.RequestedCapabilities)
+                ? std::optional<ControlRequestPayload>(std::move(Request))
+                : std::nullopt;
+        }
+        case ControlCommand::ResolvePairingCandidate: {
+            ResolvePairingCandidateControlRequest Request;
+            std::uint8_t Approved{};
+            if (!Input.U64(Request.OperationId) || !Input.U8(Approved) ||
+                Input.Remaining() != 0 || Request.OperationId == 0 ||
+                Approved > 1) {
+                return std::nullopt;
+            }
+            Request.Approved = Approved != 0;
+            return Request;
+        }
+        case ControlCommand::PresentManagedPairingCandidate: {
+            PresentManagedPairingCandidateControlRequest Request;
+            std::uint64_t CapabilityBits{};
+            std::uint8_t NameLength{};
+            if (!Input.Raw(Request.Token) || !Input.U64(Request.OperationId) ||
+                !Input.Raw(Request.Machine) || !Input.U64(CapabilityBits) ||
+                !Input.U8(NameLength) || NameLength == 0 ||
+                NameLength > kMaximumControlDisplayName ||
+                Input.Remaining() != NameLength + 6u +
+                    kControlFingerprintLength + kSha256DigestSize) {
+                return std::nullopt;
+            }
+            ByteBuffer Name(NameLength);
+            ByteBuffer Code(6);
+            ByteBuffer Fingerprint(kControlFingerprintLength);
+            if (!Input.Raw(Name) || !Input.Raw(Code) ||
+                !Input.Raw(Fingerprint) ||
+                !Input.Raw(Request.TranscriptDigest)) {
+                return std::nullopt;
+            }
+            Request.DisplayName.assign(
+                reinterpret_cast<const char*>(Name.data()), Name.size());
+            Request.VerificationCode.assign(
+                reinterpret_cast<const char*>(Code.data()), Code.size());
+            Request.CertificateFingerprint.assign(
+                reinterpret_cast<const char*>(Fingerprint.data()),
+                Fingerprint.size());
+            Request.RequestedCapabilities = CapabilitySet(CapabilityBits);
+            return IsNonzeroPairingToken(Request.Token) &&
+                    Request.OperationId != 0 &&
+                    IsNonzeroMachine(Request.Machine) &&
+                    IsBoundedDisplayName(Request.DisplayName) &&
+                    Request.VerificationCode.size() == 6 &&
+                    std::all_of(
+                        Request.VerificationCode.begin(),
+                        Request.VerificationCode.end(),
+                        [](char Value) {
+                            return Value >= '0' && Value <= '9';
+                        }) &&
+                    Request.CertificateFingerprint.size() ==
+                        kControlFingerprintLength &&
+                    std::any_of(
+                        Request.TranscriptDigest.begin(),
+                        Request.TranscriptDigest.end(),
+                        [](std::uint8_t Byte) { return Byte != 0; }) &&
+                    HasOnlyKnownCapabilities(Request.RequestedCapabilities)
+                ? std::optional<ControlRequestPayload>(std::move(Request))
+                : std::nullopt;
+        }
+        case ControlCommand::GetManagedPairingDecision: {
+            GetManagedPairingDecisionControlRequest Request;
+            if (!Input.Raw(Request.Token) || !Input.U64(Request.OperationId) ||
+                Input.Remaining() != 0 ||
+                !IsNonzeroPairingToken(Request.Token) ||
+                Request.OperationId == 0) {
+                return std::nullopt;
+            }
+            return Request;
+        }
         default:
             return std::nullopt;
     }
@@ -499,6 +741,7 @@ void EncodePairingCandidate(Writer& Output,
         reinterpret_cast<const std::uint8_t*>(
             Candidate.VerificationCode.data()),
         Candidate.VerificationCode.size()});
+    Output.U8(static_cast<std::uint8_t>(Candidate.Source));
 }
 
 std::optional<ControlPairingCandidate> DecodePairingCandidate(Reader& Input) {
@@ -518,9 +761,84 @@ std::optional<ControlPairingCandidate> DecodePairingCandidate(Reader& Input) {
         reinterpret_cast<const char*>(Name.data()), Name.size());
     Candidate.VerificationCode.assign(
         reinterpret_cast<const char*>(Code.data()), Code.size());
+    std::uint8_t RawSource{};
+    if (!Input.U8(RawSource)) return std::nullopt;
+    Candidate.Source = static_cast<ControlPairingSource>(RawSource);
     Candidate.RequestedCapabilities = CapabilitySet(CapabilityBits);
     return IsValidControlPairingCandidate(Candidate)
         ? std::optional<ControlPairingCandidate>(std::move(Candidate))
+        : std::nullopt;
+}
+
+void EncodeNearbyPeers(Writer& Output,
+                       const ControlNearbyPeerList& Nearby) {
+    Output.U8(static_cast<std::uint8_t>(Nearby.Phase));
+    Output.U8(static_cast<std::uint8_t>(Nearby.Peers.size()));
+    for (const auto& Peer : Nearby.Peers) {
+        Output.Raw(Peer.Machine);
+        Output.U64(Peer.CapabilityHints.bits());
+        Output.U16(Peer.Port);
+        Output.U16(Peer.ProtocolVersion);
+        Output.U8(Peer.EndpointCount);
+        std::uint8_t Flags = 0;
+        if (Peer.PairingOpen) Flags |= 0x01u;
+        if (Peer.Ambiguous) Flags |= 0x02u;
+        Output.U8(Flags);
+        Output.U8(static_cast<std::uint8_t>(Peer.DisplayName.size()));
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(Peer.DisplayName.data()),
+            Peer.DisplayName.size()});
+        Output.U16(static_cast<std::uint16_t>(Peer.HostName.size()));
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(Peer.HostName.data()),
+            Peer.HostName.size()});
+    }
+}
+
+std::optional<ControlNearbyPeerList> DecodeNearbyPeers(Reader& Input) {
+    std::uint8_t RawPhase{};
+    std::uint8_t Count{};
+    if (!Input.U8(RawPhase) || !Input.U8(Count) ||
+        Count > kMaximumControlNearbyPeers) {
+        return std::nullopt;
+    }
+    ControlNearbyPeerList Result;
+    Result.Phase = static_cast<ControlDiscoveryPhase>(RawPhase);
+    Result.Peers.reserve(Count);
+    for (std::uint8_t Index = 0; Index < Count; ++Index) {
+        ControlNearbyPeer Peer;
+        std::uint64_t CapabilityBits{};
+        std::uint8_t Flags{};
+        std::uint8_t NameLength{};
+        std::uint16_t HostLength{};
+        if (!Input.Raw(Peer.Machine) || !Input.U64(CapabilityBits) ||
+            !Input.U16(Peer.Port) || !Input.U16(Peer.ProtocolVersion) ||
+            !Input.U8(Peer.EndpointCount) || !Input.U8(Flags) ||
+            !Input.U8(NameLength) || NameLength == 0 ||
+            NameLength > kMaximumControlDisplayName ||
+            Input.Remaining() < NameLength + 2u) {
+            return std::nullopt;
+        }
+        ByteBuffer Name(NameLength);
+        if (!Input.Raw(Name) || !Input.U16(HostLength) || HostLength == 0 ||
+            HostLength > kMaximumControlHostName ||
+            Input.Remaining() < HostLength) {
+            return std::nullopt;
+        }
+        ByteBuffer Host(HostLength);
+        if (!Input.Raw(Host)) return std::nullopt;
+        Peer.DisplayName.assign(
+            reinterpret_cast<const char*>(Name.data()), Name.size());
+        Peer.HostName.assign(
+            reinterpret_cast<const char*>(Host.data()), Host.size());
+        Peer.CapabilityHints = CapabilitySet(CapabilityBits);
+        Peer.PairingOpen = (Flags & 0x01u) != 0;
+        Peer.Ambiguous = (Flags & 0x02u) != 0;
+        if ((Flags & 0xfcu) != 0) return std::nullopt;
+        Result.Peers.push_back(std::move(Peer));
+    }
+    return IsValidControlNearbyPeerList(Result)
+        ? std::optional<ControlNearbyPeerList>(std::move(Result))
         : std::nullopt;
 }
 
@@ -702,6 +1020,52 @@ bool IsValidControlRequest(const ControlRequest& Request) noexcept {
                                  ValueType,
                                  ForgetTrustedDeviceControlRequest>) {
             return IsNonzeroMachine(Value.Machine);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 StartDiscoveryControlRequest>) {
+            return Value.DurationSeconds != 0 &&
+                   Value.DurationSeconds <= 30;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 OpenPairingWindowControlRequest>) {
+            return Value.Port != 0 &&
+                   HasOnlyKnownCapabilities(Value.RequestedCapabilities);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PairNearbyPeerControlRequest>) {
+            return IsNonzeroMachine(Value.Machine) &&
+                   HasOnlyKnownCapabilities(Value.RequestedCapabilities);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PairManualAddressControlRequest>) {
+            return Value.Port != 0 && IsValidControlHostName(Value.Host) &&
+                   HasOnlyKnownCapabilities(Value.RequestedCapabilities);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ResolvePairingCandidateControlRequest>) {
+            return Value.OperationId != 0;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PresentManagedPairingCandidateControlRequest>) {
+            return IsNonzeroPairingToken(Value.Token) &&
+                   Value.CertificateFingerprint.size() ==
+                       kControlFingerprintLength &&
+                   std::any_of(
+                       Value.TranscriptDigest.begin(),
+                       Value.TranscriptDigest.end(),
+                       [](std::uint8_t Byte) { return Byte != 0; }) &&
+                   IsValidControlPairingCandidate(ControlPairingCandidate{
+                       Value.OperationId,
+                       Value.Machine,
+                       Value.DisplayName,
+                       Value.VerificationCode,
+                       Value.RequestedCapabilities,
+                       ControlPairingSource::Incoming});
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetManagedPairingDecisionControlRequest>) {
+            return IsNonzeroPairingToken(Value.Token) &&
+                   Value.OperationId != 0;
         } else {
             return true;
         }
@@ -803,7 +1167,32 @@ bool IsValidControlPairingCandidate(
            std::all_of(Candidate.VerificationCode.begin(),
                        Candidate.VerificationCode.end(),
                        [](char Value) { return Value >= '0' && Value <= '9'; }) &&
-           HasOnlyKnownCapabilities(Candidate.RequestedCapabilities);
+           HasOnlyKnownCapabilities(Candidate.RequestedCapabilities) &&
+           IsKnownPairingSource(Candidate.Source);
+}
+
+bool IsValidControlNearbyPeerList(
+    const ControlNearbyPeerList& Peers) noexcept {
+    if (!IsKnownDiscoveryPhase(Peers.Phase) ||
+        Peers.Peers.size() > kMaximumControlNearbyPeers ||
+        (Peers.Phase != ControlDiscoveryPhase::Complete &&
+         !Peers.Peers.empty())) {
+        return false;
+    }
+    for (std::size_t Index = 0; Index < Peers.Peers.size(); ++Index) {
+        const auto& Peer = Peers.Peers[Index];
+        if (!IsNonzeroMachine(Peer.Machine) ||
+            !IsBoundedDisplayName(Peer.DisplayName) ||
+            !IsValidControlHostName(Peer.HostName) || Peer.Port == 0 ||
+            Peer.ProtocolVersion == 0 || Peer.EndpointCount == 0 ||
+            !HasOnlyKnownCapabilities(Peer.CapabilityHints)) {
+            return false;
+        }
+        for (std::size_t Previous = 0; Previous < Index; ++Previous) {
+            if (Peers.Peers[Previous].Machine == Peer.Machine) return false;
+        }
+    }
+    return true;
 }
 
 bool IsValidControlResponse(const ControlResponse& Response) {
@@ -812,14 +1201,18 @@ bool IsValidControlResponse(const ControlResponse& Response) {
         (Response.State.has_value() || Response.Topologies.has_value() ||
          Response.Preferences.has_value() ||
          Response.TrustedDevices.has_value() ||
-         Response.PairingCandidate.has_value())) {
+         Response.PairingCandidate.has_value() ||
+         Response.NearbyPeers.has_value() ||
+         Response.PairingDecision.has_value())) {
         return false;
     }
     const auto PayloadCount = static_cast<unsigned>(Response.State.has_value()) +
         static_cast<unsigned>(Response.Topologies.has_value()) +
         static_cast<unsigned>(Response.Preferences.has_value()) +
         static_cast<unsigned>(Response.TrustedDevices.has_value()) +
-        static_cast<unsigned>(Response.PairingCandidate.has_value());
+        static_cast<unsigned>(Response.PairingCandidate.has_value()) +
+        static_cast<unsigned>(Response.NearbyPeers.has_value()) +
+        static_cast<unsigned>(Response.PairingDecision.has_value());
     if (PayloadCount > 1) return false;
     return (!Response.State || IsValidControlState(*Response.State)) &&
            (!Response.Topologies ||
@@ -829,7 +1222,13 @@ bool IsValidControlResponse(const ControlResponse& Response) {
            (!Response.TrustedDevices ||
             IsValidControlTrustedDeviceList(*Response.TrustedDevices)) &&
            (!Response.PairingCandidate ||
-            IsValidControlPairingCandidate(*Response.PairingCandidate));
+            IsValidControlPairingCandidate(*Response.PairingCandidate)) &&
+           (!Response.NearbyPeers ||
+            IsValidControlNearbyPeerList(*Response.NearbyPeers)) &&
+           (!Response.PairingDecision ||
+            static_cast<std::uint8_t>(*Response.PairingDecision) <=
+                static_cast<std::uint8_t>(
+                    ControlManagedPairingDecision::Rejected));
 }
 
 std::optional<ByteBuffer> EncodeControlRequest(const ControlRequest& Request) {
@@ -864,6 +1263,8 @@ std::optional<ByteBuffer> EncodeControlResponse(const ControlResponse& Response)
         : Response.Preferences ? 3u
         : Response.TrustedDevices ? 4u
         : Response.PairingCandidate ? 5u
+        : Response.NearbyPeers ? 6u
+        : Response.PairingDecision ? 7u
         : 0u;
     Payload.U8(static_cast<std::uint8_t>(PayloadKind));
     if (Response.State) {
@@ -876,6 +1277,10 @@ std::optional<ByteBuffer> EncodeControlResponse(const ControlResponse& Response)
         EncodeTrustedDevices(Payload, *Response.TrustedDevices);
     } else if (Response.PairingCandidate) {
         EncodePairingCandidate(Payload, *Response.PairingCandidate);
+    } else if (Response.NearbyPeers) {
+        EncodeNearbyPeers(Payload, *Response.NearbyPeers);
+    } else if (Response.PairingDecision) {
+        Payload.U8(static_cast<std::uint8_t>(*Response.PairingDecision));
     }
     auto PayloadBytes = Payload.Take();
     if (PayloadBytes.size() > kMaximumControlPayload) return std::nullopt;
@@ -892,7 +1297,7 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
     Reader Input(Frame.subspan(kControlFrameHeaderSize));
     std::uint16_t RawStatus{};
     std::uint8_t PayloadKind{};
-    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 5) {
+    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 7) {
         return {std::nullopt, ControlDecodeError::InvalidPayload};
     }
     ControlResponse Response;
@@ -923,6 +1328,20 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
         if (!Response.PairingCandidate) {
             return {std::nullopt, ControlDecodeError::InvalidPayload};
         }
+    } else if (PayloadKind == 6) {
+        Response.NearbyPeers = DecodeNearbyPeers(Input);
+        if (!Response.NearbyPeers) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+    } else if (PayloadKind == 7) {
+        std::uint8_t RawDecision{};
+        if (!Input.U8(RawDecision) ||
+            RawDecision > static_cast<std::uint8_t>(
+                ControlManagedPairingDecision::Rejected)) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+        Response.PairingDecision =
+            static_cast<ControlManagedPairingDecision>(RawDecision);
     }
     if (Input.Remaining() != 0 || !IsValidControlResponse(Response)) {
         return {std::nullopt, ControlDecodeError::InvalidPayload};

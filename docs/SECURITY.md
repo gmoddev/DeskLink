@@ -336,6 +336,28 @@ contains exactly one local entry and at most seven peer entries, is capped at
 machines, and permits a snapshot only for `Ready`. It cannot request focus,
 change mode, grant a capability, write trust, or replace identity.
 
+Product pairing orchestration uses the same current-user transport without
+turning it into a generic trust-write API. The broker first returns Local and
+exclusively stops its ordinary managed runtime, generates a nonzero operation
+ID plus 128-bit random child token, and launches only the fixed sibling
+`desklink_pair.exe`. Candidate presentation must include that token, the exact
+permission mask used to launch the child, and the full transcript/fingerprint
+binding; the broker independently validates the candidate through its expiring
+lease before exposing only name, machine, code, local grants, and
+address-source class to the shell. Approval is reject-default.
+Missing shell mutex, shell exit, 90-second candidate expiry, operation/token
+mismatch, explicit Cancel, child failure, or update shutdown rejects and cannot
+fall back to an in-process prompt or another provider. The normal runtime does
+not restart until the pairing child exits and protected trust is reloaded.
+
+Discovery remains authority-free. The broker caps results at 64, and an
+ambiguous, closed, zero-endpoint, or protocol-incompatible result cannot start
+pairing. A selected result supplies only a cached untrusted endpoint to the
+normal certificate-bound pairing protocol. The generic control pipe can reduce
+or remove existing grants after fail-local cleanup, but any increase returns
+`ReauthorizationRequired`; only a new mutual pairing approval may create the
+broader record.
+
 Configurator drag geometry is untrusted presentation state. It can create only
 a visible suggestion; the user must confirm an explicit link. Before atomic
 replacement the full candidate graph is validated and the companion confirms
@@ -514,6 +536,14 @@ ToggleAudioMute      implemented as local bounded render policy
 GetProductPreferences implemented as validated current-user policy
 SetProductPreferences implemented with fail-local runtime reconciliation
 ListTrustedDevices   implemented as bounded metadata/grants only
+RequestLocalPermissionChange reductions only; additions require re-pairing
+ForgetTrustedDevice  implemented after fail-local cleanup
+Start/Get/StopDiscovery bounded untrusted Nearby observation only
+OpenPairingWindow    fixed-child, five-minute managed listener
+PairNearbyPeer       unique/open/compatible cached record only
+PairManualAddress    bounded explicit fallback through the same pairing lane
+Get/ResolvePairingCandidate expiring reject-default local approval
+Present/GetManagedPairingDecision token-bound internal child bridge only
 PauseDeskLink        implemented as fail-local supervised stop
 ResumeDeskLink       implemented as Local-first supervised start
 ReturnLocal          implemented
