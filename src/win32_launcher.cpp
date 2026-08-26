@@ -1,5 +1,7 @@
 #include "desklink/win32_launcher.hpp"
 
+#include "desklink/discovery.hpp"
+
 #include <algorithm>
 #include <limits>
 
@@ -62,6 +64,19 @@ void AppendProductionProvider(std::vector<std::wstring>& Arguments) {
     Arguments.emplace_back(L"schannel");
 }
 
+void AppendBrokerManagement(std::vector<std::wstring>& Arguments,
+                            const LauncherRequest& Request) {
+    if (Request.BrokerManaged) Arguments.emplace_back(L"--broker-managed");
+}
+
+void AppendExpectedPeer(std::vector<std::wstring>& Arguments,
+                        const LauncherRequest& Request) {
+    if (!Request.ExpectedPeerMachine) return;
+    const auto Text = FormatDiscoveryMachineId(*Request.ExpectedPeerMachine);
+    Arguments.emplace_back(L"--expected-peer");
+    Arguments.emplace_back(Text.begin(), Text.end());
+}
+
 } // namespace
 
 std::optional<std::vector<std::wstring>> BuildLauncherArguments(
@@ -90,6 +105,16 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
         Request.Operation == LauncherOperation::PairConnect ||
         Request.Operation == LauncherOperation::Focus;
     if (HasHost != HostRequired || (HostRequired && !IsValidHost(Request.Host))) {
+        return std::nullopt;
+    }
+    if ((Request.ExpectedPeerMachine &&
+         (Request.Operation != LauncherOperation::Focus ||
+          std::all_of(Request.ExpectedPeerMachine->begin(),
+                      Request.ExpectedPeerMachine->end(),
+                      [](std::uint8_t Byte) { return Byte == 0; }))) ||
+        (Request.BrokerManaged &&
+         Request.Operation != LauncherOperation::Serve &&
+         Request.Operation != LauncherOperation::Focus)) {
         return std::nullopt;
     }
 
@@ -173,6 +198,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
                 Arguments.push_back(
                     Request.EdgeRoamingSettingsPath.native());
             }
+            AppendBrokerManagement(Arguments, Request);
             AppendProductionProvider(Arguments);
             break;
         case LauncherOperation::Focus:
@@ -211,6 +237,8 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
                 Arguments.push_back(
                     Request.EdgeRoamingSettingsPath.native());
             }
+            AppendExpectedPeer(Arguments, Request);
+            AppendBrokerManagement(Arguments, Request);
             // Connecting never immediately steals physical input. The wrapper
             // must issue an explicit authenticated mode=roam request afterward.
             Arguments.emplace_back(L"--default-mode");

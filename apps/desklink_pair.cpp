@@ -92,6 +92,7 @@ bool IsLifecycleOperationActive() noexcept {
 struct CommandLine {
     Operation Mode{Operation::PairListen};
     std::string Host;
+    std::optional<desklink::MachineId> ExpectedPeerMachine;
     std::uint16_t Port{kDefaultPort};
     std::uint32_t DiscoveryDurationMs{3'000};
     bool GrantInput{};
@@ -104,6 +105,7 @@ struct CommandLine {
     bool SendAudio{};
     bool ReceiveAudio{};
     bool SyncClipboard{};
+    bool BrokerManaged{};
     std::optional<std::filesystem::path> EdgeRoamingSettingsPath;
     desklink::Win32PointerCalibration PointerCalibration;
     bool ConsoleConfirm{};
@@ -250,6 +252,7 @@ void PrintUsage() {
         << L"  desklink_pair control mute\n"
         << L"  desklink_pair control preferences\n"
         << L"  desklink_pair control devices\n"
+        << L"  desklink_pair control pause|resume\n"
         << L"  desklink_pair control return-local\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
@@ -264,6 +267,8 @@ void PrintUsage() {
         << L"--pointer-gain scales relative motion; 100 preserves raw counts.\n"
         << L"--pointer-dpi normalizes a known source DPI to an 800-DPI reference.\n"
         << L"--edge-roaming explicitly enables experimental, fail-closed edge switching from a saved monitor graph.\n"
+        << L"--broker-managed runs a trusted session noninteractively under the per-user broker.\n"
+        << L"--expected-peer requires the validated certificate to match one exact machine ID.\n"
         << L"focus --default-mode roam|lock-pc1|lock-pc2|game sets the fallback policy.\n"
         << L"focus --profile <exe>=<mode> adds an exact executable-name rule.\n"
         << L"focus --profile-fullscreen <exe>=<mode> requires a fullscreen match.\n"
@@ -374,6 +379,16 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.ControlPayload = desklink::ReturnLocalControlRequest{};
             return Result;
         }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"pause") {
+            Result.ControlPayload = desklink::PauseDeskLinkControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"resume") {
+            Result.ControlPayload = desklink::ResumeDeskLinkControlRequest{};
+            return Result;
+        }
         return std::nullopt;
     } else {
         return std::nullopt;
@@ -384,6 +399,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     bool DefaultModeSeen = false;
     bool PointerGainSeen = false;
     bool PointerDpiSeen = false;
+    bool ExpectedPeerSeen = false;
     for (; Index < ArgumentCount; ++Index) {
         const std::wstring_view Argument(Arguments[Index]);
         if (Argument == L"--grant-input") {
@@ -458,6 +474,23 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--sync-clipboard") {
             if (Result.SyncClipboard) return std::nullopt;
             Result.SyncClipboard = true;
+            continue;
+        }
+        if (Argument == L"--broker-managed") {
+            if (Result.BrokerManaged) return std::nullopt;
+            Result.BrokerManaged = true;
+            continue;
+        }
+        if (Argument == L"--expected-peer") {
+            if (ExpectedPeerSeen || Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            ExpectedPeerSeen = true;
+            const auto MachineText = ToUtf8(Arguments[++Index]);
+            if (!MachineText) return std::nullopt;
+            Result.ExpectedPeerMachine =
+                desklink::ParseDiscoveryMachineId(*MachineText);
+            if (!Result.ExpectedPeerMachine) return std::nullopt;
             continue;
         }
         if (Argument == L"--edge-roaming") {
@@ -609,6 +642,10 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     if (Result.SendAudio && Result.Mode != Operation::Serve) return std::nullopt;
     if (Result.ReceiveAudio && Result.Mode != Operation::Focus) return std::nullopt;
     if (Result.SyncClipboard && !DirectionalSession) return std::nullopt;
+    if (Result.BrokerManaged && !DirectionalSession) return std::nullopt;
+    if (Result.ExpectedPeerMachine && Result.Mode != Operation::Focus) {
+        return std::nullopt;
+    }
     if (Result.ProfileConfigurationSeen && Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
@@ -1040,6 +1077,7 @@ struct TrustedResult {
     bool Connected{};
     bool Ready{};
     bool Emergency{};
+    bool RetryableFailure{};
     std::string Failure;
 };
 
@@ -3491,18 +3529,23 @@ int RunTrusted(const CommandLine& Command,
     Handlers.PairingOffered = [](std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         Session->Reject();
     };
-    Handlers.Failed = [Result, ReportImmediately = Command.Mode == Operation::Serve](
-                          std::string Message) {
-        std::string Report;
+    Handlers.FailureReported = [
+        Result, ReportImmediately = Command.Mode == Operation::Serve](
+        desklink::MsQuicFailure Failure) {
+        if (ReportImmediately) {
+            // A listener must reject and report an individual unauthenticated
+            // attempt without poisoning the already-admitted session or
+            // forcing the production listener into a restart loop.
+            std::cerr << "[Session:Control] " << Failure.Message << '\n';
+            return;
+        }
         {
             std::scoped_lock Lock(Result->Mutex);
             if (Result->Failure.empty()) {
-                Result->Failure = std::move(Message);
-                if (ReportImmediately) Report = Result->Failure;
+                Result->RetryableFailure = Failure.Disposition ==
+                    desklink::MsQuicFailureDisposition::RetryableAvailability;
+                Result->Failure = std::move(Failure.Message);
             }
-        }
-        if (!Report.empty()) {
-            std::cerr << "[Session:Control] " << Report << '\n';
         }
         Result->Changed.notify_all();
     };
@@ -3574,6 +3617,25 @@ int RunTrusted(const CommandLine& Command,
             if (const auto Input = RuntimeTarget->lock()) {
                 Input->NotifyDirectionCollision();
             }
+        };
+        SessionHandlers.TransportClosed = [
+            Result, Managed = Command.BrokerManaged,
+            Initiator = Command.Mode == Operation::Focus](
+            desklink::TransportCloseReason Reason) {
+            if (!Managed && !Initiator) return;
+            {
+                std::scoped_lock Lock(Result->Mutex);
+                Result->Ready = false;
+                Result->Emergency = true;
+                if (Result->Failure.empty()) {
+                    Result->RetryableFailure =
+                        Reason == desklink::TransportCloseReason::Unavailable;
+                    Result->Failure = Result->RetryableFailure
+                        ? "trusted peer transport became unavailable"
+                        : "trusted peer transport failed protocol checks";
+                }
+            }
+            Result->Changed.notify_all();
         };
 
         auto Runtime = std::make_shared<PeerRuntime>(
@@ -3726,7 +3788,15 @@ int RunTrusted(const CommandLine& Command,
             }
         });
         const auto InputHandle = GetStdHandle(STD_INPUT_HANDLE);
-        if (Command.ValidationDurationMs == 0) {
+        if (Command.BrokerManaged) {
+            while (!UpdateRequested.load()) {
+                {
+                    std::scoped_lock Lock(Result->Mutex);
+                    if (Result->Emergency) break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        } else if (Command.ValidationDurationMs == 0) {
             for (;;) {
                 if (UpdateRequested.load()) break;
                 const auto WaitResult = InputHandle == INVALID_HANDLE_VALUE ||
@@ -3772,11 +3842,27 @@ int RunTrusted(const CommandLine& Command,
             Runtime->Session.Stop();
         }
         Advertiser.Stop();
+        {
+            std::scoped_lock Lock(Result->Mutex);
+            if (!Result->Failure.empty()) {
+                std::cerr << "[Session:Control] " << Result->Failure << '\n';
+                ExitCode = Command.BrokerManaged
+                    ? static_cast<int>(
+                          Result->RetryableFailure
+                              ? desklink::kBrokerManagedRetryableProcessExit
+                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    : 1;
+            }
+        }
     } else {
-        if (!Bootstrap->ConnectTrusted(Command.Host, Command.Port)) {
+        if (!Bootstrap->ConnectTrusted(
+                Command.Host, Command.Port, Command.ExpectedPeerMachine)) {
             std::cerr << "[Session:Control] could not connect to trusted peer "
                       << Command.Host << ':' << Command.Port << '\n';
-            return 1;
+            return Command.BrokerManaged
+                ? static_cast<int>(
+                      desklink::kBrokerManagedActionRequiredProcessExit)
+                : 1;
         }
         {
             std::unique_lock Lock(Result->Mutex);
@@ -3790,7 +3876,12 @@ int RunTrusted(const CommandLine& Command,
                           << '\n';
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                return 1;
+                return Command.BrokerManaged
+                    ? static_cast<int>(
+                          Result->RetryableFailure
+                              ? desklink::kBrokerManagedRetryableProcessExit
+                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    : 1;
             }
         }
         std::shared_ptr<PeerRuntime> ActiveHost;
@@ -3834,7 +3925,12 @@ int RunTrusted(const CommandLine& Command,
                 ActiveHost->Session.Stop();
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                return 1;
+                return Command.BrokerManaged
+                    ? static_cast<int>(
+                          Result->RetryableFailure
+                              ? desklink::kBrokerManagedRetryableProcessExit
+                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    : 1;
             }
         }
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
@@ -3961,6 +4057,10 @@ int RunTrusted(const CommandLine& Command,
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
+            if (Command.BrokerManaged) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
             const auto WaitResult = InputHandle == INVALID_HANDLE_VALUE ||
                     InputHandle == nullptr
                 ? WAIT_FAILED
@@ -3982,7 +4082,12 @@ int RunTrusted(const CommandLine& Command,
             std::scoped_lock Lock(Result->Mutex);
             if (!Result->Failure.empty()) {
                 std::cerr << "[Input:Lifecycle] " << Result->Failure << '\n';
-                ExitCode = 1;
+                ExitCode = Command.BrokerManaged
+                    ? static_cast<int>(
+                          Result->RetryableFailure
+                              ? desklink::kBrokerManagedRetryableProcessExit
+                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    : 1;
             }
         }
     }

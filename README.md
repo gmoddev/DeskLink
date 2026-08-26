@@ -80,6 +80,9 @@ This repository is a **reference foundation implementation**, not a finished pro
   explicit listener-side roaming opt-in
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
+- Persistent current-user runtime broker with role-driven companion listening,
+  exact preferred-peer auto-connect, pause/resume, typed fail-closed reconnect
+  classification, and network/process reconciliation that always starts Local
 - Bounded native Windows DNS-SD/mDNS discovery with late-callback-safe untrusted candidate output
 - Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture

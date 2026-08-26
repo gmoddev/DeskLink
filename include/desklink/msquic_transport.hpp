@@ -36,6 +36,7 @@ public:
     bool send_datagram(ByteBuffer Packet) override;
     void set_reliable_handler(ReceiveHandler Handler) override;
     void set_datagram_handler(ReceiveHandler Handler) override;
+    void set_close_handler(CloseHandler Handler) override;
     [[nodiscard]] TransportPeerInfo peer_info() const override;
     void close() noexcept override;
 

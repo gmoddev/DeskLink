@@ -477,7 +477,8 @@ user SID. The transport uses an explicit one-SID DACL, rejects remote clients,
 and verifies the opposite process token belongs to the same SID on both ends.
 
 Frames carry a fixed magic/version, nonzero request ID, exact payload length,
-and at most 128 payload bytes. Each connection carries one typed request and
+and at most 512 KiB so bounded topology and device lists fit without a second
+generic transport. Each connection carries one typed request and
 one typed response, with bounded I/O waits and a response-consumption
 acknowledgement before disconnect.
 
@@ -490,6 +491,12 @@ FocusMachine         typed, currently unsupported
 SetAudioGain         implemented on an active Host peer receiver
 ToggleAudioMute      implemented on an active Host peer receiver
 GetDisplayTopologies implemented read-only
+GetProductPreferences implemented read-only
+SetProductPreferences implemented validated current-user policy
+ListTrustedDevices    implemented bounded metadata/grants only
+PauseDeskLink         implemented fail-local supervised stop
+ResumeDeskLink        implemented Local-first supervised start
+ReturnLocal           implemented
 PrepareForUpdate     implemented fail-local shutdown request
 ```
 
@@ -551,15 +558,26 @@ where `steam` resolves against an allowlist on the receiving PC.
 
 ## 12. Recommended process model
 
-Initial implementation:
+Current implementation:
 
 ```text
 User session
-├── DeskLink.Host.exe        PC1 only
-├── DeskLink.Agent.exe       remote-capable PCs
-├── DeskLink.UI.exe
-└── Stream Deck plugin
+├── desklink_runtime.exe     one persistent current-user broker
+│   └── desklink_pair.exe    at most one broker-owned transport/session child
+├── desklink_alpha.exe       current engineering shell and tray
+└── future typed local clients, including the WinUI shell/Stream Deck plugin
 ```
+
+The broker converts validated persisted role policy into either a Companion
+listener or an exact-preferred-peer Main connection. It launches the fixed
+sibling executable through `CreateProcessW` with `lpApplicationName`, no shell,
+no inherited handles, and explicit Schannel/expected-peer arguments. Discovery
+chooses only an endpoint; pinned TLS establishes identity. Every child starts
+Local. Only explicit timeout/idle/unreachable/refused availability outcomes may
+schedule bounded reconnect. Security, identity, credential, signing,
+authentication, capability, protocol, and unknown failures require action.
+Pause, configuration/trust mutation, update, and exit first confirm fail-local
+cleanup and child exit; uncertain cleanup blocks a replacement owner.
 
 Do not introduce a SYSTEM service until a concrete requirement needs one.
 

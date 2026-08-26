@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desklink/pairing.hpp"
+#include "desklink/product.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -9,6 +10,88 @@
 #include <vector>
 
 namespace desklink {
+
+inline constexpr auto kBrokerReconnectMinimumDelay =
+    std::chrono::milliseconds{800};
+inline constexpr auto kBrokerReconnectMaximumDelay =
+    std::chrono::seconds{30};
+inline constexpr std::uint32_t kBrokerManagedRetryableProcessExit = 64;
+inline constexpr std::uint32_t kBrokerManagedActionRequiredProcessExit = 65;
+
+enum class BrokerRuntimePhase : std::uint8_t {
+    Stopped = 0,
+    Paused = 1,
+    Listening = 2,
+    Discovering = 3,
+    Connecting = 4,
+    ConnectedLocal = 5,
+    RetryWaiting = 6,
+    ActionRequired = 7,
+};
+
+enum class BrokerRuntimeFailure : std::uint8_t {
+    None = 0,
+    OrdinaryUnavailable = 1,
+    Security = 2,
+    Identity = 3,
+    Credential = 4,
+    Signing = 5,
+    Authentication = 6,
+    Capability = 7,
+    Protocol = 8,
+    Unknown = 9,
+};
+
+struct BrokerRuntimeSnapshot {
+    BrokerRuntimePhase Phase{BrokerRuntimePhase::Stopped};
+    BrokerRuntimeFailure Failure{BrokerRuntimeFailure::None};
+    std::uint16_t RetryAttempt{};
+    IClock::time_point RetryAt{};
+    bool Paused{};
+};
+
+[[nodiscard]] constexpr bool IsRetryableBrokerRuntimeFailure(
+    BrokerRuntimeFailure Failure) noexcept {
+    return Failure == BrokerRuntimeFailure::OrdinaryUnavailable;
+}
+
+[[nodiscard]] std::chrono::milliseconds BrokerReconnectDelay(
+    std::uint16_t Attempt, std::uint64_t JitterSeed) noexcept;
+
+// Exit 64 is reserved for a child that positively classified an ordinary
+// availability failure. Every other non-success exit is terminal until the
+// user resumes or changes configuration.
+[[nodiscard]] constexpr BrokerRuntimeFailure
+ClassifyBrokerManagedProcessExit(std::uint32_t ExitCode) noexcept {
+    return ExitCode == kBrokerManagedRetryableProcessExit
+        ? BrokerRuntimeFailure::OrdinaryUnavailable
+        : BrokerRuntimeFailure::Unknown;
+}
+
+// Pure lifecycle controller for one broker-owned transport process. Only
+// ordinary availability/network failures may schedule another attempt.
+// Security, identity, credential, signing, authentication, capability,
+// protocol, and unknown failures remain Local in ActionRequired until an
+// explicit Resume or configuration change resets the state.
+class BrokerReconnectController final {
+public:
+    explicit BrokerReconnectController(std::uint64_t JitterSeed) noexcept;
+
+    void ResetForConfiguration(IClock::time_point Now) noexcept;
+    void Pause(IClock::time_point Now) noexcept;
+    void Resume(IClock::time_point Now) noexcept;
+    [[nodiscard]] bool Begin(BrokerRuntimePhase Phase) noexcept;
+    void ConnectedLocal() noexcept;
+    void ProcessStopped(BrokerRuntimeFailure Failure,
+                        IClock::time_point Now) noexcept;
+    void NetworkChanged(IClock::time_point Now) noexcept;
+    [[nodiscard]] bool AttemptDue(IClock::time_point Now) const noexcept;
+    [[nodiscard]] BrokerRuntimeSnapshot Snapshot() const noexcept;
+
+private:
+    std::uint64_t JitterSeed_{};
+    BrokerRuntimeSnapshot State_;
+};
 
 enum class TrustMutationStatus : std::uint8_t {
     Applied = 0,

@@ -24,6 +24,17 @@ enum class MsQuicPeerCertificateStatus {
     Expired,
 };
 
+enum class MsQuicFailureDisposition : std::uint8_t {
+    RetryableAvailability = 0,
+    ActionRequired = 1,
+};
+
+struct MsQuicFailure {
+    MsQuicFailureDisposition Disposition{
+        MsQuicFailureDisposition::ActionRequired};
+    std::string Message;
+};
+
 [[nodiscard]] MsQuicPeerCertificateStatus InspectMsQuicPeerCertificateDer(
     ByteSpan CertificateDer) noexcept;
 
@@ -54,6 +65,7 @@ struct MsQuicBootstrapHandlers {
     std::function<void(TrustedSession)> Connected;
     std::function<void(std::shared_ptr<MsQuicPairingSession>)> PairingOffered;
     std::function<void()> PairingCompleted;
+    std::function<void(MsQuicFailure)> FailureReported;
     std::function<void(std::string)> Failed;
 };
 

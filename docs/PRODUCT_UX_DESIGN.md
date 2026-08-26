@@ -698,8 +698,7 @@ write; current Alpha remains operational.
 
 ### PR 3 — Single per-user runtime broker and control contract
 
-Implementation status: broker/control/authority foundation implemented; full
-CI and packaging validation required before merge.
+Implementation status: **complete and merged**.
 
 - Introduce the broker and single-owner lifecycle.
 - Move structured discovery, pairing orchestration, runtime status, and
@@ -716,10 +715,24 @@ inside explicit local reauthorization.
 
 ### PR 4 — Persistent role-driven startup and reconnect
 
+Implementation status: **implemented and locally validated; pull-request CI
+and merge remain**.
+
 - Companion auto-listen/advertise.
 - Main preferred-peer auto-connect with bounded retry policy.
 - Pause/resume/return-local operations.
 - Network-change and process-restart reconciliation.
+
+The broker treats discovery as an endpoint hint only and passes the exact
+persisted preferred MachineId into certificate validation. Managed sessions
+start `LockPc1`; after an admitted peer is observed, the broker may arm an
+already enabled roaming graph but never restores focus automatically. Only a
+positively classified ordinary availability failure retries. Authentication,
+certificate, identity, capability, protocol, credential, signing, and unknown
+failures stop in `ActionRequired`. Transport loss performs intrinsic
+`PeerSession` fail-local cleanup before the supervisor observes it, and a
+nonzero peer QUIC application error is a protocol failure rather than a retry
+signal.
 
 Gate: fresh nonce each reconnect; no automatic focus restoration; security
 failures do not retry/fallback; broker/UI/process/network failure remains Local.

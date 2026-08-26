@@ -579,6 +579,17 @@ bool PeerSession::Start() {
             auto Guard = Gate->TryEnter();
             if (Guard) OnDatagram(std::move(Packet));
         });
+    Transport_->set_close_handler(
+        [this, Gate, Handler = Handlers_.TransportClosed](
+            TransportCloseReason Reason) {
+            auto Guard = Gate->TryEnter();
+            if (!Guard) return;
+            // A known transport loss is stronger than waiting for the focus
+            // lease to expire. Release every DeskLink-owned direction before
+            // the outer runtime observes the close or schedules reconnect.
+            FailLocalDirections();
+            if (Handler) Handler(Reason);
+        });
     CapabilityConflict_ = false;
     Started_ = true;
     (void)PublishCapabilityGrantLocked();

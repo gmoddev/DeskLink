@@ -171,16 +171,35 @@ public:
         DatagramHandler_ = std::move(Handler);
     }
 
+    void set_close_handler(CloseHandler Handler) override {
+        std::scoped_lock Lock(Mutex_);
+        CloseHandler_ = std::move(Handler);
+    }
+
     [[nodiscard]] desklink::TransportPeerInfo peer_info() const override {
         return Peer_;
     }
 
     void close() noexcept override {
-        std::scoped_lock Lock(Mutex_);
-        Closed_ = true;
-        ReliableHandler_ = {};
-        DatagramHandler_ = {};
-        ReliableQueue_.clear();
+        std::shared_ptr<PausableTransportEndpoint> PeerEndpoint;
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (Closed_) return;
+            Closed_ = true;
+            ReliableHandler_ = {};
+            DatagramHandler_ = {};
+            CloseHandler_ = {};
+            ReliableQueue_.clear();
+            PeerEndpoint = PeerEndpoint_.lock();
+        }
+        CloseHandler PeerHandler;
+        if (PeerEndpoint) {
+            std::scoped_lock Lock(PeerEndpoint->Mutex_);
+            PeerHandler = PeerEndpoint->CloseHandler_;
+        }
+        if (PeerHandler) {
+            PeerHandler(desklink::TransportCloseReason::Unavailable);
+        }
     }
 
     void PauseReliable(bool Paused) noexcept {
@@ -222,6 +241,7 @@ private:
     mutable std::mutex Mutex_;
     ReceiveHandler ReliableHandler_;
     ReceiveHandler DatagramHandler_;
+    CloseHandler CloseHandler_;
     std::deque<desklink::ByteBuffer> ReliableQueue_;
     bool ReliablePaused_{};
     bool Closed_{};
@@ -553,7 +573,7 @@ void ControlProtocolRoundTripAndValidation() {
     CapabilitySet RequestedCapabilities;
     RequestedCapabilities.grant(Capability::InputInject);
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
-    const std::array<ControlRequest, 14> Requests{
+    const std::array<ControlRequest, 16> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -570,6 +590,8 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{12, ForgetTrustedDeviceControlRequest{MakeMachineId(8)}},
         ControlRequest{13, ReturnLocalControlRequest{}},
         ControlRequest{14, GetPairingCandidateControlRequest{}},
+        ControlRequest{15, PauseDeskLinkControlRequest{}},
+        ControlRequest{16, ResumeDeskLinkControlRequest{}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -602,6 +624,7 @@ void ControlProtocolRoundTripAndValidation() {
     State.DesiredMode = DeskMode::Roam;
     State.ConnectedPeerCount = 1;
     State.AudioGainPermyriad = 8'000;
+    State.RuntimePhase = BrokerRuntimePhase::ConnectedLocal;
     State.RemoteFocused = true;
     State.CaptureActive = true;
     const auto ResponseFrame = EncodeControlResponse(
@@ -614,6 +637,8 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(Response.Decoded->State.has_value());
     CHECK(Response.Decoded->State->FocusedMachine == State.FocusedMachine);
     CHECK(Response.Decoded->State->CaptureActive);
+    CHECK(Response.Decoded->State->RuntimePhase ==
+          BrokerRuntimePhase::ConnectedLocal);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -689,6 +714,20 @@ void ControlProtocolRoundTripAndValidation() {
         10, ForgetTrustedDeviceControlRequest{}}).has_value());
     CHECK(!EncodeControlResponse(ControlResponse{
         10, ControlStatus::Failed, State}).has_value());
+    auto InvalidRuntimeState = State;
+    InvalidRuntimeState.RuntimePhase = BrokerRuntimePhase::ActionRequired;
+    CHECK(!IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RemoteFocused = false;
+    InvalidRuntimeState.CaptureActive = false;
+    InvalidRuntimeState.FocusedMachine = {};
+    InvalidRuntimeState.RuntimeFailure = BrokerRuntimeFailure::Protocol;
+    CHECK(IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RuntimePhase = BrokerRuntimePhase::RetryWaiting;
+    CHECK(!IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RuntimeFailure =
+        BrokerRuntimeFailure::OrdinaryUnavailable;
+    InvalidRuntimeState.RetryAttempt = 1;
+    CHECK(IsValidControlState(InvalidRuntimeState));
 
     auto WrongType = *EncodeControlRequest(Requests[0]);
     WrongType[7] = static_cast<std::uint8_t>(ControlFrameType::Response);
@@ -720,6 +759,73 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(RuntimeOwnerMayBeActive(false, false));
     CHECK(RuntimeOwnerMayBeActive(true, false));
     CHECK(RuntimeOwnerMayBeActive(true, true));
+
+    ManualClock ReconnectClock;
+    BrokerReconnectController Reconnect(0x1234u);
+    CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
+    CHECK(Reconnect.Begin(BrokerRuntimePhase::Discovering));
+    CHECK(!Reconnect.Begin(BrokerRuntimePhase::ConnectedLocal));
+    Reconnect.ProcessStopped(
+        BrokerRuntimeFailure::OrdinaryUnavailable,
+        ReconnectClock.now());
+    auto ReconnectState = Reconnect.Snapshot();
+    CHECK(ReconnectState.Phase == BrokerRuntimePhase::RetryWaiting);
+    CHECK(ReconnectState.Failure ==
+          BrokerRuntimeFailure::OrdinaryUnavailable);
+    CHECK(ReconnectState.RetryAttempt == 1);
+    const auto FirstDelay = std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+        ReconnectState.RetryAt - ReconnectClock.now());
+    CHECK(FirstDelay >= kBrokerReconnectMinimumDelay);
+    CHECK(FirstDelay <= std::chrono::milliseconds{1'200});
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+    Reconnect.NetworkChanged(ReconnectClock.now());
+    CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
+    CHECK(Reconnect.Begin(BrokerRuntimePhase::Connecting));
+    Reconnect.ConnectedLocal();
+    CHECK(Reconnect.Snapshot().Phase ==
+          BrokerRuntimePhase::ConnectedLocal);
+    CHECK(Reconnect.Snapshot().RetryAttempt == 0);
+
+    Reconnect.ProcessStopped(
+        BrokerRuntimeFailure::Authentication,
+        ReconnectClock.now());
+    CHECK(Reconnect.Snapshot().Phase ==
+          BrokerRuntimePhase::ActionRequired);
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+    Reconnect.NetworkChanged(ReconnectClock.now());
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+    Reconnect.Pause(ReconnectClock.now());
+    CHECK(Reconnect.Snapshot().Phase == BrokerRuntimePhase::Paused);
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+    Reconnect.Resume(ReconnectClock.now());
+    CHECK(Reconnect.Snapshot().Phase == BrokerRuntimePhase::Stopped);
+    CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
+
+    CHECK(IsRetryableBrokerRuntimeFailure(
+        BrokerRuntimeFailure::OrdinaryUnavailable));
+    for (const auto Failure : {
+             BrokerRuntimeFailure::Security,
+             BrokerRuntimeFailure::Identity,
+             BrokerRuntimeFailure::Credential,
+             BrokerRuntimeFailure::Signing,
+             BrokerRuntimeFailure::Authentication,
+             BrokerRuntimeFailure::Capability,
+             BrokerRuntimeFailure::Protocol,
+             BrokerRuntimeFailure::Unknown}) {
+        CHECK(!IsRetryableBrokerRuntimeFailure(Failure));
+    }
+    CHECK(BrokerReconnectDelay(16, 1) <=
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              kBrokerReconnectMaximumDelay));
+    CHECK(ClassifyBrokerManagedProcessExit(
+              kBrokerManagedRetryableProcessExit) ==
+          BrokerRuntimeFailure::OrdinaryUnavailable);
+    CHECK(ClassifyBrokerManagedProcessExit(
+              kBrokerManagedActionRequiredProcessExit) ==
+          BrokerRuntimeFailure::Unknown);
+    CHECK(ClassifyBrokerManagedProcessExit(1) ==
+          BrokerRuntimeFailure::Unknown);
 
     InMemoryTrustStore Store;
     CapabilitySet Initial;
@@ -1974,6 +2080,18 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     CHECK(DirectionChanges >= 6);
     CHECK(SessionA.Stats().CapabilityGrantsReceived >= 1);
     CHECK(SessionB.Stats().CapabilityGrantsReceived >= 1);
+
+    CHECK(SessionB.SetDesiredMode(DeskMode::Roam));
+    CHECK(SessionB.BeginOutgoingFocus(750));
+    CHECK(SessionA.IncomingFocused());
+    CHECK(SessionB.SendKey(KeyEventMessage{0x31, false, true}));
+    CHECK(SessionB.SendButton(
+        MouseButtonMessage{MouseButtonId::Right, true}));
+    const auto ReleasesBeforeClose = InjectorA.release_calls;
+    Pair.b->close();
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(!SessionA.IncomingFocused());
+    CHECK(InjectorA.release_calls == ReleasesBeforeClose + 1);
 }
 
 void PeerSessionResolvesSimultaneousFocusToLocal() {
@@ -4574,6 +4692,24 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
         L"--tls-provider", L"schannel"};
     CHECK(*FocusArguments == ExpectedFocus);
 
+    Focus.ExpectedPeerMachine = MakeMachineId(8);
+    Focus.BrokerManaged = true;
+    const auto ManagedFocusArguments = BuildLauncherArguments(Focus);
+    CHECK(ManagedFocusArguments.has_value());
+    const auto ExpectedPeer = std::find(
+        ManagedFocusArguments->begin(), ManagedFocusArguments->end(),
+        L"--expected-peer");
+    CHECK(ExpectedPeer != ManagedFocusArguments->end());
+    CHECK(ExpectedPeer + 1 != ManagedFocusArguments->end());
+    CHECK(*(ExpectedPeer + 1) ==
+          L"080000000000000000000000000000ad");
+    CHECK(std::find(
+              ManagedFocusArguments->begin(),
+              ManagedFocusArguments->end(),
+              L"--broker-managed") != ManagedFocusArguments->end());
+    Focus.ExpectedPeerMachine.reset();
+    Focus.BrokerManaged = false;
+
     Focus.PointerCalibration.GainPercent = 175;
     Focus.PointerCalibration.SourceDpi = 1'600;
     const auto CalibratedFocusArguments = BuildLauncherArguments(Focus);
@@ -4629,6 +4765,17 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     CHECK(!BuildLauncherArguments(Serve).has_value());
     Serve.PointerCalibration = {};
     CHECK(BuildLauncherArguments(Serve).has_value());
+    Serve.BrokerManaged = true;
+    const auto ManagedServeArguments = BuildLauncherArguments(Serve);
+    CHECK(ManagedServeArguments.has_value());
+    CHECK(std::find(
+              ManagedServeArguments->begin(),
+              ManagedServeArguments->end(),
+              L"--broker-managed") != ManagedServeArguments->end());
+    Serve.ExpectedPeerMachine = MakeMachineId(8);
+    CHECK(!BuildLauncherArguments(Serve).has_value());
+    Serve.ExpectedPeerMachine.reset();
+    Serve.BrokerManaged = false;
 
     LauncherRequest Pair;
     Pair.Operation = LauncherOperation::PairListen;
@@ -4681,6 +4828,9 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     Focus.GrantInput = true;
     CHECK(!BuildLauncherArguments(Focus).has_value());
     Pair.SyncClipboard = true;
+    CHECK(!BuildLauncherArguments(Pair).has_value());
+    Pair.SyncClipboard = false;
+    Pair.BrokerManaged = true;
     CHECK(!BuildLauncherArguments(Pair).has_value());
     LauncherRequest Identity;
     Identity.Operation = LauncherOperation::Identity;
@@ -5243,6 +5393,20 @@ void in_memory_transport_preserves_security_metadata() {
     });
     CHECK(pair.a->send_reliable(ByteBuffer{1, 2, 3}));
     CHECK(received);
+    std::optional<TransportCloseReason> ClosedReason;
+    pair.b->set_close_handler([&](TransportCloseReason Reason) {
+        ClosedReason = Reason;
+    });
+    pair.a->close();
+    CHECK(ClosedReason == TransportCloseReason::Unavailable);
+
+    auto late_pair = make_in_memory_transport_pair(a_sees_b, b_sees_a);
+    late_pair.a->close();
+    std::optional<TransportCloseReason> LateClosedReason;
+    late_pair.b->set_close_handler([&](TransportCloseReason Reason) {
+        LateClosedReason = Reason;
+    });
+    CHECK(LateClosedReason == TransportCloseReason::Unavailable);
 }
 
 } // namespace

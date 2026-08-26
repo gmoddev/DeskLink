@@ -413,9 +413,10 @@ Audio sequence numbers are consumed by the jitter buffer, which intentionally su
 
 The Windows named-pipe control surface uses a separate local-only binary
 protocol implemented in `control.cpp`; it is never carried over QUIC. Its
-20-byte header contains `DLCT` magic, version `1`, request/response frame type,
+20-byte header contains `DLCT` magic, version `2`, request/response frame type,
 a nonzero 64-bit request ID, and an exact 32-bit payload length. Payloads are
-limited to 128 bytes and trailing data is rejected.
+limited to 512 KiB for bounded topology/device responses and trailing data is
+rejected.
 
 Request command numbers are:
 
@@ -428,10 +429,20 @@ Request command numbers are:
 | 5 | `ToggleAudioMute` | empty | toggles mute on the active Host peer receiver; otherwise `NotReady` |
 | 6 | `GetDisplayTopologies` | empty | returns the bounded read-only current topology view |
 | 7 | `PrepareForUpdate` | empty | repeats fail-local mode application and schedules orderly local runtime shutdown |
+| 8 | `GetProductPreferences` | empty | returns strictly decoded current-user product policy |
+| 9 | `SetProductPreferences` | bounded typed preferences | saves validated policy and reconciles the supervised runtime after fail-local cleanup |
+| 10 | `ListTrustedDevices` | empty | returns at most 64 peer machine/name/grant records, never pins or secrets |
+| 11 | `RequestLocalPermissionChange` | exact machine and capability mask | permits reduction after cleanup; additions return `ReauthorizationRequired` |
+| 12 | `ForgetTrustedDevice` | exact machine | stops the affected owner fail-locally before removing trust |
+| 13 | `ReturnLocal` | empty | confirms no remote focus/capture |
+| 14 | `GetPairingCandidate` | empty | returns only the current bounded, expiring local candidate lease |
+| 15 | `PauseDeskLink` | empty | stops the managed child through fail-local cleanup and suppresses reconnect |
+| 16 | `ResumeDeskLink` | empty | clears pause/action state and restarts from Local policy |
 
 Responses contain a bounded status and an optional typed state record. A state
 record includes local/focused machine IDs, role, desired mode, peer count,
-current per-peer audio gain/mute, focus, and capture state. Cross-field validation
+current per-peer audio gain/mute, focus/capture state, retry attempt, typed
+runtime phase, and typed failure class. Cross-field validation
 rejects impossible combinations such as active capture without Host remote
 focus. Each connection exchanges exactly one request/response and completes
 with a fixed acknowledgement byte so the server does not disconnect before the

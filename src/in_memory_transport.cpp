@@ -1,6 +1,7 @@
 #include "desklink/transport.hpp"
 
 #include <mutex>
+#include <optional>
 #include <utility>
 
 namespace desklink {
@@ -26,16 +27,56 @@ public:
         datagram_handler_ = std::move(handler);
     }
 
+    void set_close_handler(CloseHandler handler) override {
+        std::optional<TransportCloseReason> ExistingReason;
+        {
+            std::scoped_lock lock(mutex_);
+            if (!closed_) close_handler_ = handler;
+            else ExistingReason = close_reason_;
+        }
+        if (handler && ExistingReason) {
+            try {
+                handler(*ExistingReason);
+            } catch (...) {
+            }
+        }
+    }
+
     TransportPeerInfo peer_info() const override { return peer_; }
 
     void close() noexcept override {
-        std::scoped_lock lock(mutex_);
-        closed_ = true;
-        reliable_handler_ = {};
-        datagram_handler_ = {};
+        std::shared_ptr<InMemoryEndpoint> peer = peer_endpoint_.lock();
+        {
+            std::scoped_lock lock(mutex_);
+            if (closed_) return;
+            closed_ = true;
+            reliable_handler_ = {};
+            datagram_handler_ = {};
+            close_handler_ = {};
+        }
+        if (peer) peer->remote_closed();
     }
 
 private:
+    void remote_closed() noexcept {
+        CloseHandler Handler;
+        {
+            std::scoped_lock lock(mutex_);
+            if (closed_) return;
+            closed_ = true;
+            reliable_handler_ = {};
+            datagram_handler_ = {};
+            close_reason_ = TransportCloseReason::Unavailable;
+            Handler = std::move(close_handler_);
+        }
+        if (Handler) {
+            try {
+                Handler(TransportCloseReason::Unavailable);
+            } catch (...) {
+            }
+        }
+    }
+
     bool deliver(ByteBuffer packet, bool datagram) {
         std::shared_ptr<InMemoryEndpoint> peer = peer_endpoint_.lock();
         if (!peer) return false;
@@ -56,6 +97,8 @@ private:
     mutable std::mutex mutex_;
     ReceiveHandler reliable_handler_;
     ReceiveHandler datagram_handler_;
+    CloseHandler close_handler_;
+    std::optional<TransportCloseReason> close_reason_;
     bool closed_{};
 };
 
