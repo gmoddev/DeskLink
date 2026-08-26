@@ -69,6 +69,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Single-instance Windows companion lifecycle with first-run guidance,
   close-to-tray, tray Open/Return Local/Exit, and optional current-user sign-in
   startup
+- Explicitly enabled experimental edge roaming with local Raw Input observation,
+  Push/DwellAndPush/DoublePush intent, proportional corner-safe landing,
+  re-entry cooldown, a 1.5-second focus timeout, and fail-closed route/session
+  revalidation before the existing Host lifecycle may suppress input
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
 - Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
@@ -86,7 +90,7 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Physical edge roaming, crossing intent, landing, and hysteresis
+- Reciprocal peer-session ownership and physical two-PC edge-roaming signoff
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Final product polish, installer/update flow, and Stream Deck plugin
@@ -234,6 +238,22 @@ dependency on the controlling PC's total virtual-desktop width. Optional
 `--pointer-gain 25..400` and `--pointer-dpi 100..32000` calibrate those counts;
 omitting DPI preserves raw counts. DeskLink never changes global Windows mouse
 speed, acceleration, or device settings.
+
+Experimental controlled roaming is opt-in. Save an explicit link with
+**Arrange monitors**, enable **Capture and route physical input** plus
+**Experimental edge roaming**, start the controller, and select **Focus
+remote** to arm it while remaining Local. The equivalent CLI form is:
+
+```powershell
+desklink_pair.exe focus 192.168.1.25 43821 --capture `
+  --edge-roaming "$env:LOCALAPPDATA\DeskLink\roaming.settings"
+```
+
+Only the controller-to-receiver direction is active in this slice. A crossing
+requires the trusted current session, `InputInject`, fresh nonce and topology,
+an explicit Ready route, fresh `FocusReady`, accepted landing and snapshot,
+and direction arbitration. Any failure keeps or returns input Local; there is
+no automatic fallback to manual capture or a different route.
 
 Audio is separately opt-in and requires complementary grants on both PCs. To
 send PC2's system mix to PC1, pair PC1 with `--grant-audio-send` and pair PC2

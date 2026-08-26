@@ -32,6 +32,7 @@ The current build proves the core invariants independently of Windows networking
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Display presentation metadata | Done | Checked active resolution/refresh/orientation; EDID physical size with raw-DPI estimate fallback; metadata does not change routing generations |
 | Roaming graph foundation | Done | Strict bounded directional links and normalized edge segments; duplicate/overlapping source routes rejected; stable identities resolve only against current machine topologies |
+| Controlled edge roaming | Experimental outbound slice | Explicit Alpha/CLI opt-in; local observation never suppresses; three intent policies, proportional corner-safe landing, cooldown, 1.5-second focus timeout, active route/session invalidation, and lifecycle-gated suppression are implemented. Reciprocal session ownership and physical Windows 11 signoff remain open. |
 | Roaming preference persistence | Done | Versioned 512 KiB-bounded exact codec and atomic current-user replacement; canvas positions remain presentation-only and trust/identity stay in security stores |
 | Authenticated topology exchange | Done | Explicit trust grant; reliable snapshot bound to PeerValidated session, expected machine, and fresh nonce; canonical 64-display/64 KiB bounds; two-second refresh and five-second fail-closed freshness |
 | Roaming connection/route status | Done | Peer and route state are separate; missing capability/display, unsupported direction, invalid snapshot, and topology synchronization cannot report Ready |
@@ -150,6 +151,10 @@ The current test suite verifies:
 63. physical-size canvas construction, estimate/offline presentation, explicit bidirectional adjacency suggestion, and proof that canvas movement cannot affect stable route resolution
 64. strict atomic application-preference persistence with malformed/trailing-data rejection
 65. first-save DPAPI trust persistence creates only the exact configured parent directory before atomic replacement
+66. all three crossing policies, source-segment bounds, horizontal/vertical and reverse-direction landing, corner clearance, and cooldown
+67. wrong validation/capability/topology/nonce/config state invalidates pending or active roaming and cannot admit Remote
+68. stale focus requests, focus timeout, direction collisions, busy directions, and stale direction tokens fail Local
+69. Alpha launcher accepts edge roaming only for Focus with capture and an absolute typed settings path
 
 Build/test result in the creation environment:
 
@@ -169,7 +174,7 @@ Build/test result in the creation environment:
 ### P1 — required for useful KM roaming
 
 - physical emergency-chord and high-poll-rate timing validation
-- edge hysteresis
+- reciprocal session-direction ownership and physical crossing/cooldown validation
 
 ### P2 — final product surface
 
@@ -242,10 +247,13 @@ topology capability, bounded reliable snapshots, peer/machine/nonce admission,
 freshness timeout, and separate peer/route readiness without edge switching.
 Phase 3 adds the native presentation-only configurator, explicit edge editing,
 offline/route status, Local-before-save atomic replacement, Identify overlays,
-and the single-instance tray/startup lifecycle. Phase 4 controlled crossing is
-next. The native Windows alpha wrapper provides the manual pairing, session,
-status, and configuration surface used for physical validation without changing
-any trust or transport boundary.
+and the single-instance tray/startup lifecycle. The Phase 4 outbound slice adds
+portable intent/landing/cooldown/direction gates and an explicit Windows
+local-observation path that cannot suppress before fresh focus, landing, and
+snapshot admission. Reciprocal peer-session ownership and physical Windows 11
+qualification are next. The native Windows alpha wrapper provides the manual
+pairing, session, status, configuration, and experimental arming surface without
+changing any trust or transport boundary.
 See [`ROADMAP.md`](ROADMAP.md).
 
 ## Experimental compatibility work

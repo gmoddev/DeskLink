@@ -524,6 +524,22 @@ restores remote focus.
    available supported machines. Do not wait for a second Windows 11 PC to
    exercise safe development builds.
 
+The controlled outbound Phase 4 slice is implemented. `RoamingRuntime` owns
+the portable `Local -> EdgeCandidate -> FocusPending -> RemoteReady -> Remote`
+gate, a 1.5-second focus timeout, return cooldown, and active route/session
+invalidation. `PeerDirectionArbiter` rejects stale tokens, busy directions, and
+opposite-direction collisions. The Windows Host's existing capture object runs
+with suppression off while observing local Raw Input and is reused only after
+fresh focus; landing enters the pointer datagram queue and the initial state
+snapshot enters the reliable queue before the lifecycle enables suppression.
+
+This is intentionally one-way per controller session. The Alpha checkbox and
+`--edge-roaming <absolute-settings-path>` are explicit experimental opt-ins;
+the normal Local-first/manual-focus path is unchanged. Bidirectional intent
+continues to persist in the graph, but reciprocal runtime direction remains
+unavailable until a symmetric peer-session owner integrates the arbitration
+layer. Physical two-PC Windows 11 qualification is still deferred.
+
 ### Phase 5: production qualification
 
 Run the complete two-PC Windows 11 matrix before production sign-off:

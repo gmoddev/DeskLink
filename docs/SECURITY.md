@@ -299,6 +299,28 @@ replace the file leaves the previous graph unchanged. Identify overlays are
 local, click-through, no-activate windows and never install capture or input
 suppression.
 
+### Experimental controlled-roaming gate
+
+Edge roaming is disabled unless the user supplies an absolute settings path
+through the explicit Alpha/CLI option and also enables physical capture. Local
+Raw Input observation never enables the atomic suppression gate. A route is
+eligible only inside an already `PeerValidated` trusted session with a nonzero
+current nonce, `InputInject`, fresh canonical local and peer topologies, a
+supported explicit direction, and an unchanged enabled link. The runtime
+records the exact link, peer, nonce, and both topology generations in the focus
+request and revalidates them on `FocusReady` and immediately before suppression.
+
+Landing and initial reconciliation are ordered before suppression. The landing
+must enter the bounded pointer datagram path, the snapshot must enter the
+bounded reliable path, the outgoing direction token must still be current, and
+the portable state must reach `Remote`. Wrong/stale focus, a 1.5-second stall,
+settings mutation, topology or capability loss, nonce change, queue/send/capture
+failure, manual return, emergency, and session failure remain or return Local.
+No failure selects another route, restores manual capture, changes TLS, or
+weakens peer admission. Reciprocal control remains disabled until a symmetric
+session owner integrates the collision arbiter; two uncontrolled sessions are
+not used as a substitute.
+
 ---
 
 ## 8. Protocol hardening

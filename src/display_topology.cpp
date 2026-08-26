@@ -250,6 +250,10 @@ DisplayTopologyUpdate DisplayTopologyMap::Update(std::vector<DiscoveredDisplay> 
         }
         const auto BoundsWidth = Width(Display.Bounds);
         const auto BoundsHeight = Height(Display.Bounds);
+        if (BoundsWidth > kMaximumDisplayPixelDimension ||
+            BoundsHeight > kMaximumDisplayPixelDimension) {
+            return DisplayTopologyUpdate::Invalid;
+        }
         if (Display.PixelWidth == 0) {
             Display.PixelWidth = static_cast<std::uint32_t>(BoundsWidth);
         }

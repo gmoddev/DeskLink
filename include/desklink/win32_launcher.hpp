@@ -3,6 +3,7 @@
 #include "desklink/win32_capture.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@ struct LauncherRequest {
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    std::filesystem::path EdgeRoamingSettingsPath;
     Win32PointerCalibration PointerCalibration;
 };
 

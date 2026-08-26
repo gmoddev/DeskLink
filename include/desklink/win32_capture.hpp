@@ -32,6 +32,13 @@ struct Win32PointerCalibration {
     std::uint16_t SourceDpi{};
 };
 
+struct Win32LocalPointerObservation {
+    std::int32_t ScreenX{};
+    std::int32_t ScreenY{};
+    std::int32_t DeltaX{};
+    std::int32_t DeltaY{};
+};
+
 [[nodiscard]] bool IsValidWin32PointerCalibration(
     const Win32PointerCalibration& Calibration) noexcept;
 
@@ -72,6 +79,7 @@ struct Win32CaptureHandlers {
     std::function<void(MouseButtonMessage)> Button;
     std::function<void(PointerPositionMessage)> Pointer;
     std::function<void(PointerMotionMessage)> PointerMotion;
+    std::function<void(Win32LocalPointerObservation)> LocalPointerMotion;
     std::function<void(MouseWheelMessage)> Wheel;
     std::function<void()> Emergency;
     std::function<void(std::string)> Failed;

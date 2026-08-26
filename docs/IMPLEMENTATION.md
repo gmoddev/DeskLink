@@ -453,9 +453,13 @@ canonical descriptors, monotonic generation, and a five-second freshness lease
 all gate separate route readiness. Phase 3 now adds the presentation-only native
 configurator, offline display/route state, explicit adjacency suggestions,
 advanced directional edge editing, atomic Local-before-save replacement,
-five-second Identify overlays, and the companion tray/startup lifecycle. It
-still does not switch edges. Phase 4 crossing and the full Windows 11 physical
-qualification matrix remain outstanding.
+five-second Identify overlays, and the companion tray/startup lifecycle.
+Phase 4 now adds an explicitly enabled outbound crossing slice: local Raw Input
+observation without suppression, three bounded intent policies, proportional
+corner-safe landing, cooldown, a focus timeout, active-route/session
+invalidation, and fresh-focus/landing/snapshot/direction gates before the
+existing lifecycle may suppress. Reciprocal peer-session ownership and the
+full Windows 11 physical qualification matrix remain outstanding.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under

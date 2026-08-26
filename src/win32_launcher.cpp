@@ -64,6 +64,16 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
         !IsValidWin32PointerCalibration(Request.PointerCalibration)) {
         return std::nullopt;
     }
+    const auto HasEdgeRoaming =
+        !Request.EdgeRoamingSettingsPath.empty();
+    if (HasEdgeRoaming &&
+        (Request.Operation != LauncherOperation::Focus ||
+         !Request.CaptureInput ||
+         !Request.EdgeRoamingSettingsPath.is_absolute() ||
+         Request.EdgeRoamingSettingsPath.native().size() >=
+             kMaximumWindowsCommandLine)) {
+        return std::nullopt;
+    }
 
     const bool HasHost = !Request.Host.empty();
     const bool HostRequired =
@@ -158,6 +168,11 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             }
             if (Request.ReceiveAudio) {
                 Arguments.emplace_back(L"--receive-audio");
+            }
+            if (HasEdgeRoaming) {
+                Arguments.emplace_back(L"--edge-roaming");
+                Arguments.push_back(
+                    Request.EdgeRoamingSettingsPath.native());
             }
             // Connecting never immediately steals physical input. The wrapper
             // must issue an explicit authenticated mode=roam request afterward.

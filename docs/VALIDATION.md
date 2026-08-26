@@ -375,6 +375,23 @@ Production profile-runtime validation additionally requires:
 6. WinEvent, control, `FocusReady`, renewal, and capture-failure concurrency
    remains serialized, and every forwarding/start/snapshot failure fails local.
 
+Controlled-roaming automation now covers Push, DwellAndPush, and DoublePush;
+edge/segment rejection; proportional horizontal, vertical, and reverse
+landing; target corner clearance; re-entry cooldown; the 1.5-second focus
+timeout; presentation-only canvas mutation; and active link/topology/nonce
+invalidation. Negative cases revoke peer validation, `InputInject`, topology
+freshness, or link enablement and prove that none can reach Remote. Direction
+tests reject simultaneous opposite intent, busy ownership, and stale tokens.
+The Alpha argument tests require Focus, physical capture, and an absolute
+settings path before the experimental path can start.
+
+These tests do not replace physical qualification. Still required on two
+supported Windows 11/Server 2022+ systems are high-poll-rate outward motion,
+visible landing on differently scaled displays, held-state transitions,
+cooldown/re-entry feel, emergency/manual return, process/network loss, monitor
+hot-plug, and reconnect without automatic refocus. Reciprocal roaming is not a
+physical test target until the symmetric peer-session owner is implemented.
+
 ---
 
 ## WASAPI foundation validation

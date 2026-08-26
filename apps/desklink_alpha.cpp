@@ -64,6 +64,7 @@ enum ControlId : int {
     OpenPairing,
     PairPeer,
     CaptureInput,
+    EnableEdgeRoaming,
     PointerGain,
     PointerDpi,
     AudioGain,
@@ -404,6 +405,9 @@ private:
         CreateControl(L"BUTTON", L"Capture and route physical input",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 32, 397, 275, 24,
                       CaptureInput);
+        CreateControl(L"BUTTON", L"Experimental edge roaming",
+                      BS_AUTOCHECKBOX | WS_TABSTOP, 32, 513, 245, 24,
+                      EnableEdgeRoaming);
         CreateControl(L"BUTTON", L"Send this PC system audio",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 330, 397, 245, 24,
                       SendAudio);
@@ -444,8 +448,8 @@ private:
             L"BUTTON", L"Mute", BS_PUSHBUTTON,
             745, 475, 90, 28, ToggleAudioMute);
         CreateControl(L"STATIC",
-            L"A controller always connects in Local mode. Press Focus remote after status shows Connected.",
-            SS_LEFT, 32, 514, 840, 24);
+            L"Controller starts Local. Edge roaming requires a saved monitor link and remains fail-local.",
+            SS_LEFT, 285, 514, 590, 24);
 
         CreateControl(L"BUTTON", L"Diagnostics (memory only; input content is never logged)",
                       BS_GROUPBOX, 15, 555, 900, 172);
@@ -783,6 +787,16 @@ private:
             Request->Host = *Address;
             Request->CaptureInput = IsChecked(CaptureInput);
             Request->ReceiveAudio = IsChecked(ReceiveAudio);
+            if (IsChecked(EnableEdgeRoaming)) {
+                if (!Request->CaptureInput) {
+                    MessageBoxW(
+                        Window_,
+                        L"Experimental edge roaming requires physical input capture.",
+                        L"DeskLink Alpha", MB_OK | MB_ICONERROR);
+                    return;
+                }
+                Request->EdgeRoamingSettingsPath = RoamingSettingsPath_;
+            }
             if (Request->CaptureInput) {
                 const auto Gain = ReadUnsignedControl(
                     PointerGainControl_, desklink::kMinimumPointerGainPercent,

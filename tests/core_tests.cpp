@@ -13,6 +13,7 @@
 #include "desklink/profile.hpp"
 #include "desklink/protocol.hpp"
 #include "desklink/roaming.hpp"
+#include "desklink/roaming_runtime.hpp"
 #include "desklink/session.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
@@ -189,6 +190,27 @@ desklink::DisplayTopologySnapshot MakeDisplayTopology(
         std::move(StableIdentity), std::move(FriendlyName), Bounds, true}}) ==
         desklink::DisplayTopologyUpdate::Changed);
     return Topology.Current();
+}
+
+desklink::RoamingRuntimeContext MakeRoamingRuntimeContext(
+    desklink::CrossingPolicy Policy = desklink::CrossingPolicy::Push) {
+    using namespace desklink;
+    auto Configuration = MakeRoamingConfiguration();
+    Configuration.Links[0].Direction = RoamingDirectionMode::AToB;
+    Configuration.Links[0].AToB = {Policy, 8, 100, 500};
+    return RoamingRuntimeContext{
+        MakeMachineId(1),
+        MakeMachineId(2),
+        std::move(Configuration),
+        MakeDisplayTopology("display-a", "Local", {0, 0, 1920, 1080}),
+        MakeDisplayTopology("display-b", "Peer", {0, 0, 2560, 1440}),
+        PeerConnectionStatus::Connected,
+        DisplayTopologyExchangeStatus::Ready,
+        0x1234u,
+        true,
+        true,
+        true,
+    };
 }
 
 desklink::Sha256Digest MakeDigest(std::uint8_t Marker) {
@@ -521,9 +543,34 @@ void DisplayMetadataIsBoundedAndDoesNotChangeRoutingGeneration() {
     Invalid.PixelWidth = kMaximumDisplayPixelDimension + 1;
     CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
     Invalid = Display;
+    Invalid.Bounds.Right = static_cast<std::int32_t>(
+        kMaximumDisplayPixelDimension + 1);
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
+    Invalid.Bounds = {
+        std::numeric_limits<std::int32_t>::min(), 0,
+        std::numeric_limits<std::int32_t>::max(), 1440};
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
+    Invalid.Bounds = {
+        0, std::numeric_limits<std::int32_t>::min(), 2560,
+        std::numeric_limits<std::int32_t>::max()};
+    CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
+    Invalid = Display;
     Invalid.Orientation = static_cast<DisplayOrientation>(99);
     CHECK(Topology.Update({Invalid}) == DisplayTopologyUpdate::Invalid);
     CHECK(Topology.Current().Generation == Generation);
+
+    DisplayTopologyMap BoundaryTopology;
+    auto Boundary = Display;
+    Boundary.Bounds = {
+        -32'768, 0,
+        static_cast<std::int32_t>(
+            kMaximumDisplayPixelDimension - 32'768),
+        1440};
+    Boundary.PixelWidth = kMaximumDisplayPixelDimension;
+    CHECK(BoundaryTopology.Update({Boundary}) ==
+          DisplayTopologyUpdate::Changed);
 }
 
 void EdidPhysicalSizeParsingIsStrictAndBounded() {
@@ -758,6 +805,331 @@ void RoamingEndpointsResolveAgainstCurrentStableTopologies() {
     CHECK(ResolveRoamingEndpoint(
               Configuration.Links[0].EndpointA, Topologies).Endpoint
               ->TopologyGeneration == 2);
+}
+
+void RoamingRuntimeRequiresAuthorizedStableContext() {
+    using namespace desklink;
+    ManualClock Clock;
+    RoamingRuntime Runtime(Clock);
+
+    auto Context = MakeRoamingRuntimeContext();
+    auto Update = Runtime.UpdateContext(Context);
+    CHECK(Update.Valid);
+    CHECK(!Update.MustFailLocal);
+    CHECK(Update.ReadyRouteCount == 1);
+
+    auto Invalid = Context;
+    Invalid.PeerValidated = false;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(!Update.Valid);
+    CHECK(Update.ReadyRouteCount == 0);
+
+    Invalid = Context;
+    Invalid.InputCapabilityGranted = false;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(Update.Valid);
+    CHECK(Update.ReadyRouteCount == 0);
+
+    Invalid = Context;
+    Invalid.DirectionSupported = false;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(Update.ReadyRouteCount == 0);
+
+    Invalid = Context;
+    Invalid.PeerStatus = PeerConnectionStatus::Reconnecting;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(Update.ReadyRouteCount == 0);
+
+    Invalid = Context;
+    Invalid.TopologyStatus = DisplayTopologyExchangeStatus::TimedOut;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(Update.ReadyRouteCount == 0);
+
+    Invalid = Context;
+    Invalid.SessionNonce = 0;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(!Update.Valid);
+
+    Invalid = Context;
+    Invalid.Configuration.Links[0].EndpointB.SegmentStartPermyriad = 0;
+    Invalid.Configuration.Links[0].EndpointB.SegmentEndPermyriad = 300;
+    Update = Runtime.UpdateContext(Invalid);
+    CHECK(Update.Valid);
+    CHECK(Update.ReadyRouteCount == 0);
+}
+
+void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
+    using namespace desklink;
+    constexpr LocalPointerObservation Edge{1919, 540, 8, 0};
+
+    ManualClock PushClock;
+    RoamingRuntime PushRuntime(PushClock);
+    const auto PushContext = MakeRoamingRuntimeContext();
+    CHECK(PushRuntime.UpdateContext(PushContext).ReadyRouteCount == 1);
+    CHECK(!PushRuntime.Observe({1918, 540, 8, 0}));
+    CHECK(PushRuntime.State() == RoamingRuntimeState::Local);
+    CHECK(!PushRuntime.Observe({1919, 50, 8, 0}));
+    CHECK(PushRuntime.State() == RoamingRuntimeState::Local);
+    CHECK(!PushRuntime.Observe({1919, 540, 3, 0}));
+    CHECK(PushRuntime.State() == RoamingRuntimeState::EdgeCandidate);
+    CHECK(!PushRuntime.Observe({1919, 540, -1, 0}));
+    CHECK(PushRuntime.State() == RoamingRuntimeState::Local);
+    const auto Request = PushRuntime.Observe(Edge);
+    CHECK(Request.has_value());
+    CHECK(Request->PeerMachine == MakeMachineId(2));
+    CHECK(Request->SessionNonce == PushContext.SessionNonce);
+    CHECK(Request->Landing.display_id ==
+          DeriveStableDisplayId("display-b"));
+    CHECK(Request->Landing.normalized_x > 0);
+    CHECK(Request->Landing.normalized_x < 400);
+    CHECK(Request->Landing.normalized_y > 32'000);
+    CHECK(Request->Landing.normalized_y < 33'500);
+    CHECK(PushRuntime.State() == RoamingRuntimeState::FocusPending);
+
+    auto Stale = *Request;
+    ++Stale.SessionNonce;
+    CHECK(!PushRuntime.AdmitFocusReady(Stale));
+    CHECK(PushRuntime.State() == RoamingRuntimeState::LocalCooldown);
+
+    ManualClock TimeoutClock;
+    RoamingRuntime TimeoutRuntime(TimeoutClock);
+    CHECK(TimeoutRuntime.UpdateContext(PushContext).ReadyRouteCount == 1);
+    CHECK(TimeoutRuntime.Observe(Edge).has_value());
+    TimeoutClock.advance(kRoamingFocusTimeout -
+                         std::chrono::milliseconds(1));
+    CHECK(!TimeoutRuntime.ExpireFocusPending());
+    TimeoutClock.advance(std::chrono::milliseconds(1));
+    CHECK(TimeoutRuntime.ExpireFocusPending());
+    CHECK(TimeoutRuntime.State() == RoamingRuntimeState::LocalCooldown);
+
+    ManualClock AdmissionClock;
+    RoamingRuntime AdmissionRuntime(AdmissionClock);
+    CHECK(AdmissionRuntime.UpdateContext(PushContext).ReadyRouteCount == 1);
+    const auto Admitted = AdmissionRuntime.Observe(Edge);
+    CHECK(Admitted.has_value());
+    CHECK(AdmissionRuntime.AdmitFocusReady(*Admitted));
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::RemoteReady);
+    CHECK(AdmissionRuntime.AdmitRemoteInput(*Admitted));
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::Remote);
+
+    ManualClock DwellClock;
+    RoamingRuntime DwellRuntime(DwellClock);
+    CHECK(DwellRuntime.UpdateContext(
+              MakeRoamingRuntimeContext(CrossingPolicy::DwellAndPush))
+              .ReadyRouteCount == 1);
+    CHECK(!DwellRuntime.Observe(Edge));
+    DwellClock.advance(std::chrono::milliseconds(99));
+    CHECK(!DwellRuntime.Observe({1919, 540, 0, 0}));
+    DwellClock.advance(std::chrono::milliseconds(1));
+    CHECK(DwellRuntime.Observe({1919, 540, 0, 0}).has_value());
+
+    ManualClock DoubleClock;
+    RoamingRuntime DoubleRuntime(DoubleClock);
+    CHECK(DoubleRuntime.UpdateContext(
+              MakeRoamingRuntimeContext(CrossingPolicy::DoublePush))
+              .ReadyRouteCount == 1);
+    CHECK(!DoubleRuntime.Observe(Edge));
+    CHECK(!DoubleRuntime.Observe({1919, 540, -1, 0}));
+    CHECK(DoubleRuntime.Observe(Edge).has_value());
+
+    ManualClock ExpiredClock;
+    RoamingRuntime ExpiredRuntime(ExpiredClock);
+    CHECK(ExpiredRuntime.UpdateContext(
+              MakeRoamingRuntimeContext(CrossingPolicy::DoublePush))
+              .ReadyRouteCount == 1);
+    CHECK(!ExpiredRuntime.Observe(Edge));
+    ExpiredClock.advance(std::chrono::milliseconds(501));
+    CHECK(!ExpiredRuntime.Observe({1919, 540, -1, 0}));
+    CHECK(ExpiredRuntime.State() == RoamingRuntimeState::Local);
+
+    ManualClock VerticalClock;
+    RoamingRuntime VerticalRuntime(VerticalClock);
+    auto VerticalContext = MakeRoamingRuntimeContext();
+    auto& VerticalLink = VerticalContext.Configuration.Links[0];
+    VerticalLink.EndpointA.Side = DisplayEdgeSide::Bottom;
+    VerticalLink.EndpointA.SegmentStartPermyriad = 0;
+    VerticalLink.EndpointA.SegmentEndPermyriad = 10'000;
+    VerticalLink.EndpointB.Side = DisplayEdgeSide::Top;
+    VerticalLink.EndpointB.SegmentStartPermyriad = 0;
+    VerticalLink.EndpointB.SegmentEndPermyriad = 10'000;
+    CHECK(VerticalRuntime.UpdateContext(VerticalContext).ReadyRouteCount == 1);
+    const auto VerticalRequest = VerticalRuntime.Observe(
+        {960, 1079, 0, 8});
+    CHECK(VerticalRequest.has_value());
+    CHECK(VerticalRequest->Landing.normalized_x > 32'000);
+    CHECK(VerticalRequest->Landing.normalized_x < 33'500);
+    CHECK(VerticalRequest->Landing.normalized_y > 0);
+    CHECK(VerticalRequest->Landing.normalized_y < 700);
+
+    ManualClock ReverseClock;
+    RoamingRuntime ReverseRuntime(ReverseClock);
+    auto ReverseContext = MakeRoamingRuntimeContext();
+    std::swap(ReverseContext.LocalMachine, ReverseContext.PeerMachine);
+    std::swap(ReverseContext.LocalTopology, ReverseContext.PeerTopology);
+    ReverseContext.Configuration.Links[0].Direction =
+        RoamingDirectionMode::BToA;
+    ReverseContext.Configuration.Links[0].BToA = {
+        CrossingPolicy::Push, 8, 100, 500};
+    CHECK(ReverseRuntime.UpdateContext(ReverseContext).ReadyRouteCount == 1);
+    const auto ReverseRequest = ReverseRuntime.Observe({0, 720, -8, 0});
+    CHECK(ReverseRequest.has_value());
+    CHECK(ReverseRequest->PeerMachine == MakeMachineId(1));
+    CHECK(ReverseRequest->Landing.display_id ==
+          DeriveStableDisplayId("display-a"));
+    CHECK(ReverseRequest->Landing.normalized_x > 65'000);
+}
+
+void RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown() {
+    using namespace desklink;
+    constexpr LocalPointerObservation Edge{1919, 540, 8, 0};
+    ManualClock Clock;
+    RoamingRuntime Runtime(Clock);
+    auto Context = MakeRoamingRuntimeContext();
+    CHECK(Runtime.UpdateContext(Context).ReadyRouteCount == 1);
+    const auto Request = Runtime.Observe(Edge);
+    CHECK(Request.has_value());
+
+    auto PresentationOnly = Context;
+    PresentationOnly.Configuration.CanvasLayout[0].X += 50'000;
+    const auto PresentationUpdate = Runtime.UpdateContext(PresentationOnly);
+    CHECK(!PresentationUpdate.MustFailLocal);
+    CHECK(Runtime.State() == RoamingRuntimeState::FocusPending);
+
+    auto Mutated = PresentationOnly;
+    ++Mutated.Configuration.Links[0].LandingInsetPixels;
+    const auto MutationUpdate = Runtime.UpdateContext(Mutated);
+    CHECK(MutationUpdate.MustFailLocal);
+    CHECK(Runtime.State() == RoamingRuntimeState::LocalCooldown);
+
+    CHECK(!Runtime.Observe({1919, 540, -23, 0}));
+    CHECK(Runtime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(!Runtime.Observe({1919, 540, -1, 0}));
+    CHECK(Runtime.State() == RoamingRuntimeState::Local);
+
+    RoamingRuntime TopologyRuntime(Clock);
+    CHECK(TopologyRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(TopologyRuntime.Observe(Edge).has_value());
+    ++Context.PeerTopology->Generation;
+    const auto TopologyUpdate = TopologyRuntime.UpdateContext(Context);
+    CHECK(TopologyUpdate.MustFailLocal);
+    CHECK(TopologyRuntime.State() == RoamingRuntimeState::LocalCooldown);
+
+    RoamingRuntime LocalTopologyRuntime(Clock);
+    Context = MakeRoamingRuntimeContext();
+    CHECK(LocalTopologyRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(LocalTopologyRuntime.Observe(Edge).has_value());
+    ++Context.LocalTopology->Generation;
+    const auto LocalTopologyUpdate =
+        LocalTopologyRuntime.UpdateContext(Context);
+    CHECK(LocalTopologyUpdate.MustFailLocal);
+    CHECK(LocalTopologyRuntime.State() ==
+          RoamingRuntimeState::LocalCooldown);
+
+    RoamingRuntime NonceRuntime(Clock);
+    Context = MakeRoamingRuntimeContext();
+    CHECK(NonceRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(NonceRuntime.Observe(Edge).has_value());
+    ++Context.SessionNonce;
+    const auto NonceUpdate = NonceRuntime.UpdateContext(Context);
+    CHECK(NonceUpdate.MustFailLocal);
+
+    const auto ExpectInvalidation = [&Clock](auto Mutate) {
+        RoamingRuntime CheckedRuntime(Clock);
+        auto CheckedContext = MakeRoamingRuntimeContext();
+        CHECK(CheckedRuntime.UpdateContext(CheckedContext).ReadyRouteCount == 1);
+        CHECK(CheckedRuntime.Observe({1919, 540, 8, 0}).has_value());
+        Mutate(CheckedContext);
+        const auto CheckedUpdate =
+            CheckedRuntime.UpdateContext(std::move(CheckedContext));
+        CHECK(CheckedUpdate.MustFailLocal);
+        CHECK(CheckedRuntime.State() ==
+              RoamingRuntimeState::LocalCooldown);
+    };
+    ExpectInvalidation([](RoamingRuntimeContext& Checked) {
+        Checked.PeerValidated = false;
+    });
+    ExpectInvalidation([](RoamingRuntimeContext& Checked) {
+        Checked.InputCapabilityGranted = false;
+    });
+    ExpectInvalidation([](RoamingRuntimeContext& Checked) {
+        Checked.TopologyStatus = DisplayTopologyExchangeStatus::TimedOut;
+    });
+    ExpectInvalidation([](RoamingRuntimeContext& Checked) {
+        Checked.Configuration.Links[0].Enabled = false;
+    });
+
+    RoamingRuntime CandidateRuntime(Clock);
+    Context = MakeRoamingRuntimeContext();
+    CHECK(CandidateRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(!CandidateRuntime.Observe({1919, 540, 3, 0}));
+    CHECK(CandidateRuntime.State() == RoamingRuntimeState::EdgeCandidate);
+    ++Context.SessionNonce;
+    CHECK(!CandidateRuntime.UpdateContext(Context).MustFailLocal);
+    CHECK(CandidateRuntime.State() == RoamingRuntimeState::Local);
+}
+
+void RoamingRuntimeHandlesExtremeLocalPointerDeltas() {
+    using namespace desklink;
+
+    ManualClock Clock;
+    RoamingRuntime AccumulationRuntime(Clock);
+    auto Context = MakeRoamingRuntimeContext();
+    CHECK(AccumulationRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(!AccumulationRuntime.Observe({1919, 540, 3, 0}));
+    const auto Accumulated = AccumulationRuntime.Observe({
+        1919, 540, std::numeric_limits<std::int32_t>::max(), 0});
+    CHECK(Accumulated.has_value());
+
+    auto Stale = *Accumulated;
+    ++Stale.SessionNonce;
+    CHECK(!AccumulationRuntime.AdmitFocusReady(Stale));
+    CHECK(AccumulationRuntime.State() ==
+          RoamingRuntimeState::LocalCooldown);
+    CHECK(!AccumulationRuntime.Observe({
+        1919, 540, std::numeric_limits<std::int32_t>::min(), 0}));
+    CHECK(AccumulationRuntime.State() == RoamingRuntimeState::Local);
+
+    RoamingRuntime NegationRuntime(Clock);
+    Context = MakeRoamingRuntimeContext();
+    Context.Configuration.Links[0].EndpointA.Side =
+        DisplayEdgeSide::Left;
+    Context.Configuration.Links[0].EndpointB.Side =
+        DisplayEdgeSide::Right;
+    CHECK(NegationRuntime.UpdateContext(Context).ReadyRouteCount == 1);
+    CHECK(NegationRuntime.Observe({
+        0, 540, std::numeric_limits<std::int32_t>::min(), 0})
+              .has_value());
+}
+
+void PeerDirectionArbiterRejectsCollisionsAndStaleTokens() {
+    using namespace desklink;
+    PeerDirectionArbiter Arbiter;
+    const auto Outgoing = Arbiter.BeginOutgoing();
+    CHECK(Outgoing.Outcome == PeerDirectionOutcome::Admitted);
+    CHECK(Outgoing.Token.has_value());
+    CHECK(Arbiter.State() == PeerDirectionState::OutgoingPending);
+
+    const auto Collision = Arbiter.BeginIncoming();
+    CHECK(Collision.Outcome == PeerDirectionOutcome::CollisionFailLocal);
+    CHECK(!Collision.Token);
+    CHECK(Arbiter.State() == PeerDirectionState::Local);
+    CHECK(!Arbiter.AdmitOutgoing(*Outgoing.Token));
+
+    const auto Incoming = Arbiter.BeginIncoming();
+    CHECK(Incoming.Outcome == PeerDirectionOutcome::Admitted);
+    CHECK(Incoming.Token.has_value());
+    CHECK(Arbiter.State() == PeerDirectionState::IncomingActive);
+    CHECK(Arbiter.BeginOutgoing().Outcome ==
+          PeerDirectionOutcome::RejectedBusy);
+    CHECK(Arbiter.Release(*Incoming.Token));
+    CHECK(Arbiter.State() == PeerDirectionState::Local);
+    CHECK(!Arbiter.Release(*Incoming.Token));
+
+    const auto Active = Arbiter.BeginOutgoing();
+    CHECK(Active.Token.has_value());
+    CHECK(Arbiter.AdmitOutgoing(*Active.Token));
+    CHECK(Arbiter.State() == PeerDirectionState::OutgoingActive);
+    CHECK(Arbiter.Release(*Active.Token));
 }
 
 void DisplayTopologyProtocolIsBoundedAndStrict() {
@@ -2552,6 +2924,23 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     CHECK(*CalibratedFocusArguments == ExpectedCalibratedFocus);
     Focus.PointerCalibration = {};
 
+    Focus.EdgeRoamingSettingsPath =
+        L"C:\\Users\\test\\AppData\\Local\\DeskLink\\roaming.settings";
+    const auto EdgeArguments = BuildLauncherArguments(Focus);
+    CHECK(EdgeArguments.has_value());
+    CHECK(std::find(
+              EdgeArguments->begin(), EdgeArguments->end(),
+              L"--edge-roaming") != EdgeArguments->end());
+    CHECK(EdgeArguments->back() == L"schannel");
+    Focus.EdgeRoamingSettingsPath = L"relative\\roaming.settings";
+    CHECK(!BuildLauncherArguments(Focus).has_value());
+    Focus.EdgeRoamingSettingsPath =
+        L"C:\\Users\\test\\AppData\\Local\\DeskLink\\roaming.settings";
+    Focus.CaptureInput = false;
+    CHECK(!BuildLauncherArguments(Focus).has_value());
+    Focus.CaptureInput = true;
+    Focus.EdgeRoamingSettingsPath.clear();
+
     LauncherRequest Pair;
     Pair.Operation = LauncherOperation::PairListen;
     Pair.GrantInput = true;
@@ -3089,6 +3478,11 @@ int main() {
     RoamingGraphValidationAndCodecAreStrict();
     MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks();
     RoamingEndpointsResolveAgainstCurrentStableTopologies();
+    RoamingRuntimeRequiresAuthorizedStableContext();
+    RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed();
+    RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown();
+    RoamingRuntimeHandlesExtremeLocalPointerDeltas();
+    PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     DisplayTopologyProtocolIsBoundedAndStrict();
     DisplayTopologyAdmissionFailsClosedAndRecoversOnReconnect();
     RoamingRouteWaitsForAuthenticatedTopology();

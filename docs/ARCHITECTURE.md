@@ -364,6 +364,22 @@ machine ID, stable display identity, side, and normalized segment can enter the
 runtime graph. Atomic save validates the complete candidate and confirms Local
 before replacement.
 
+The experimental Phase 4 outbound runtime consumes only explicit resolved link
+fields; canvas position and physical-size metadata never enter crossing or
+landing calculations. While Local, the existing Win32 capture object observes
+Raw Input motion with both low-level hooks passing through. A selected policy
+may create a `FocusPending` request only for a Ready route. The serialized Host
+then rechecks the trusted peer, `InputInject`, nonce, both topology generations,
+link settings, and a direction token. Fresh `FocusReady` advances the portable
+gate to `RemoteReady`; the absolute landing datagram and initial reliable input
+snapshot must both be accepted before the lifecycle enables suppression and
+marks the gate `Remote`. Focus stalls expire after 1.5 seconds.
+
+The direction arbiter has portable collision and stale-token coverage, but the
+current operational connection still has fixed Host/Agent roles. Therefore one
+controller session supports outbound roaming only. Reciprocal links remain
+persisted intent until a symmetric peer-session owner is separately reviewed.
+
 ---
 
 ## 9. Audio architecture
