@@ -1,5 +1,24 @@
 # DeskLink Roadmap
 
+## Product direction
+
+DeskLink targets the best coherent-desk experience for two or more trusted
+Windows PCs. The roadmap does not pursue Synergy-style cross-platform feature
+parity while Windows roaming, failure recovery, installation, and daily-use UX
+remain unfinished. Windows-specific display, input, audio, profile, and
+security integration is a product advantage rather than an abstraction to
+remove.
+
+The public reliability invariant is:
+
+> DeskLink never depends on the remote computer to give your input back.
+
+Every release milestone must preserve fail-local ownership: transport loss,
+process failure, lease expiry, topology invalidation, update/restart, or a
+module-local failure releases DeskLink-owned key/button state, disables remote
+suppression, and leaves control local. Audio, clipboard, MCP, and later modules
+must fail independently and cannot take down or retain input.
+
 ## Completed foundation
 
 - portable protocol, capability, lease, epoch, and session core
@@ -117,12 +136,134 @@ The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
 work does not wait for unavailable hardware.
 
-## Later milestones
+## Post-roaming milestones
 
-- symmetric reciprocal peer-session ownership and collision integration
-- physical high-poll-rate edge, landing, cooldown, disconnect, and emergency
-  validation on two supported Windows 11/Server 2022+ systems
-- final product polish, Stream Deck integration, installer, and update flow
+Work proceeds in this order. Automated and single-machine fault work may begin
+without unavailable hardware, but a milestone that requires two supported
+Windows 11/Server 2022+ systems cannot receive production sign-off until that
+physical matrix runs.
+
+### 1. Symmetric roaming ownership
+
+- integrate `PeerDirectionArbiter` with a reusable reciprocal peer-session
+  owner so either trusted machine can initiate an edge crossing;
+- converge simultaneous opposite focus attempts deterministically, bind every
+  direction token to the authenticated peer/session nonce, and never restore
+  remote focus automatically after reconnect; and
+- keep startup, duplicate-session convergence, reconnect, and all error paths
+  Local until a new focus transaction, landing, and reconciliation succeed.
+
+### 2. Physical-distance-aware crossing polish
+
+- preserve the source pointer's distance along a shared physical edge, in
+  millimeters, when both displays have bounded trustworthy physical metadata;
+- promote physical dimensions only into a separately validated optional
+  landing hint. They must never select a route, peer, or capability, and saved
+  canvas coordinates remain presentation-only;
+- retain the current proportional segment mapping as the deterministic fallback
+  for missing, estimated, contradictory, rotated, or too-short geometry;
+- add bounded outward-versus-lateral intent scoring so motion along an edge does
+  not cross accidentally, while high-velocity/high-poll-rate input cannot skip
+  the configured threshold; and
+- tune corner clearance, cooldown, partial edges, and all three crossing
+  policies with recorded, replayable traces before choosing a production
+  default.
+
+### 3. Reliability and failure qualification
+
+Build an automated fault/soak harness first, then run the same scenarios on two
+supported physical systems. Include 8 kHz mouse input; held key/button chords;
+wheel and audio load; cable removal and Wi-Fi reconnect; destination
+sleep/wake; process kill/restart; monitor disable/re-enable and hot-plug;
+dock/GPU/DPI changes; RDP attach/detach; and repeated roaming over long runs.
+
+The hard acceptance criteria are no stuck key, no stuck button, no permanently
+captured or hidden cursor, no stale focus/session/epoch/lease/topology
+admission, no unauthenticated reconnect, and no audio or later module failure
+affecting input cleanup. Every failure must produce bounded diagnostics and a
+deterministic Local state. The owner-deferred two-Windows-11 matrix remains the
+final production gate.
+
+### 4. Capability-scoped text clipboard
+
+- implement text only first using the existing independent `ClipboardRead` and
+  `ClipboardWrite` grants; pairing alone grants neither, existing trust records
+  are never upgraded silently, and per-peer synchronization defaults off;
+- use the authenticated reliable lane with `PeerValidated`, current session
+  nonce, strict framing, bounded text size/rate/queue depth, update identifiers,
+  and loop suppression before touching the Windows clipboard;
+- reject malformed, oversized, stale, replayed, unsupported-format, or
+  wrong-direction updates without retrying through another capability or input
+  injection; and
+- keep image clipboard and file transfer out of this slice until text clipboard
+  passes privacy, reconnect, contention, clipboard-owner exit, and fuzz/fault
+  validation. Clipboard failure must never change focus or input routing.
+
+### 5. Installation and daily-use productization
+
+- produce a signed Windows installer and uninstall path, first-run pairing and
+  capability review, clear tray/connection/route/error state, and bounded
+  support diagnostics with secrets and clipboard content excluded;
+- add an update contract of `Return Local -> release owned input -> stop capture
+  -> close sessions -> update/restart`, with rollback and no update while
+  Remote; and
+- validate current-user startup, Private/Domain firewall setup, repair,
+  upgrades, sleep/resume, endpoint changes, and uninstall on clean systems.
+
+### 6. MCP observation plane
+
+Expose DeskLink as a machine-readable trusted desk, initially through a
+default-off local current-user MCP server (stdio or the existing same-SID local
+boundary), not a new unauthenticated LAN listener. Provide bounded read-only
+resources such as `desklink://desk`, `desklink://peers/{id}`,
+`desklink://topology`, connection/route state, explicit capability grants, and
+current DeskLink mode. Foreground-process and workspace metadata require
+separate opt-in and minimization. Never expose private keys, trust-store
+secrets, clipboard content, raw input, or unrestricted filesystem/process data.
+
+Define and threat-model an MCP-client identity/authorization boundary distinct
+from peer pairing before shipping this phase. Resource content and peer/job
+output are untrusted data, cannot grant capabilities, and cannot override local
+policy or user approval.
+
+### 7. Bounded MCP actions
+
+- add narrow typed tools such as `return_local`, `set_mode`, `focus_peer`,
+  `set_audio_route`, `identify_display`, and `request_capability` rather than a
+  generic shell primitive;
+- introduce explicit default-off MCP permissions independently of existing
+  human peer grants, with no wildcard/admin permission and no silent migration;
+- require current client authorization plus the normal trusted peer, capability,
+  nonce, epoch, lease, and operation admission checks where applicable; and
+- provide bounded audit records, cancellation/timeouts, idempotency tokens, and
+  explicit user confirmation for security-sensitive or disruptive actions.
+  MCP loss or client cancellation must return affected control operations to a
+  safe local state.
+
+### 8. Cross-PC workspace and job orchestration
+
+After the observation and bounded-action surfaces pass security review, add
+separate permissions for workspace read/write, build, test, process launch, and
+artifact transfer. Scope every workspace to a canonical locally approved root.
+Prefer named, locally configured build/test/launch profiles and typed job
+handles over arbitrary command strings; constrain environment, duration,
+output, concurrency, artifact size, and destination. Hash artifacts in transit,
+bind jobs/results to the initiating client and peer session, preserve result
+provenance, and require fresh approval for privilege or scope expansion.
+
+The intended workflow is source inspection on one PC, an approved build on an
+appropriate peer, deployment of a verified artifact, bounded physical or
+automated validation, and collection of results. There remains no normal
+`remote.shell` capability.
+
+### 9. Later extensions
+
+- image clipboard and explicit file transfer after their independent
+  capability/privacy/security design and text-clipboard qualification;
+- richer automatic audio routing and per-application desk profiles;
+- Stream Deck integration implemented as a narrowly permissioned local client
+  of the same typed control model; and
+- broader UX polish informed by real soak/telemetry-free diagnostic traces.
 
 ## Experimental Windows 10 compatibility project
 
