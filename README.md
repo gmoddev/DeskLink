@@ -267,6 +267,16 @@ snapshot, and direction arbitration. Simultaneous opposite attempts return
 both sides Local. Any failure keeps or returns input Local; there is no
 automatic fallback to manual capture or a different route.
 
+When both edge segments have trustworthy EDID-backed landscape dimensions,
+DeskLink preserves the pointer's physical distance along the shared edge. It
+uses this only as a landing hint: estimated, rotated, contradictory, or short
+geometry falls back to deterministic proportional mapping and never changes
+route, peer, or capability admission. Crossing also requires bounded outward
+intent so motion along an edge does not roam accidentally. These behaviors and
+the deterministic reciprocal fault/soak harness are automated, but controlled
+roaming remains experimental until the deferred two-supported-PC physical
+matrix verifies cursor visibility, device timing, feel, and real fault recovery.
+
 Audio is separately opt-in and requires complementary grants on both PCs. To
 send PC2's system mix to PC1, pair PC1 with `--grant-audio-send` and pair PC2
 with `--grant-audio-receive`, then run:

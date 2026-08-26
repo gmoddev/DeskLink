@@ -99,6 +99,26 @@ namespace {
     return 0;
 }
 
+[[nodiscard]] std::int64_t AbsoluteDelta(std::int32_t Value) noexcept {
+    const auto Wide = static_cast<std::int64_t>(Value);
+    return Wide < 0 ? -Wide : Wide;
+}
+
+[[nodiscard]] std::int64_t LateralDelta(
+    DisplayEdgeSide Side, const LocalPointerObservation& Observation) noexcept {
+    return Side == DisplayEdgeSide::Left || Side == DisplayEdgeSide::Right
+        ? AbsoluteDelta(Observation.DeltaY)
+        : AbsoluteDelta(Observation.DeltaX);
+}
+
+[[nodiscard]] bool HasOutwardIntent(
+    std::int64_t Outward, std::int64_t Lateral) noexcept {
+    if (Outward <= 0 || Lateral < 0) return false;
+    const auto Total = Outward + Lateral;
+    return Outward * 10'000 >=
+        Total * kRoamingMinimumOutwardIntentPermyriad;
+}
+
 [[nodiscard]] bool AtEdge(
     const DisplayDescriptor& Display, DisplayEdgeSide Side,
     const LocalPointerObservation& Observation) noexcept {
@@ -136,6 +156,78 @@ namespace {
     return static_cast<std::int32_t>(
         (static_cast<std::int64_t>(Value) * (Length - 1) + 5'000) /
         10'000);
+}
+
+[[nodiscard]] std::optional<std::uint16_t> PhysicalAlongMillimeters(
+    const DisplayDescriptor& Display, DisplayEdgeSide Side) noexcept {
+    if (Display.PhysicalSize != PhysicalSizeSource::Edid ||
+        Display.Orientation != DisplayOrientation::Landscape) {
+        return std::nullopt;
+    }
+    const auto Millimeters =
+        Side == DisplayEdgeSide::Left || Side == DisplayEdgeSide::Right
+        ? Display.PhysicalHeightMillimeters
+        : Display.PhysicalWidthMillimeters;
+    if (Millimeters == 0 ||
+        Millimeters > kMaximumPhysicalDisplayMillimeters) {
+        return std::nullopt;
+    }
+    return Millimeters;
+}
+
+[[nodiscard]] std::optional<std::uint16_t> BuildPhysicalLandingHint(
+    const RoamingEndpoint& Source,
+    const RoamingEndpoint& Target,
+    const DisplayDescriptor& SourceDisplay,
+    const DisplayDescriptor& TargetDisplay,
+    std::uint16_t SourceAlong) noexcept {
+    const auto SourceMillimeters = PhysicalAlongMillimeters(
+        SourceDisplay, Source.Side);
+    const auto TargetMillimeters = PhysicalAlongMillimeters(
+        TargetDisplay, Target.Side);
+    if (!SourceMillimeters || !TargetMillimeters) return std::nullopt;
+
+    const auto SourceSpan = static_cast<std::uint64_t>(
+        Source.SegmentEndPermyriad - Source.SegmentStartPermyriad) *
+        *SourceMillimeters;
+    const auto TargetSpan = static_cast<std::uint64_t>(
+        Target.SegmentEndPermyriad - Target.SegmentStartPermyriad) *
+        *TargetMillimeters;
+    constexpr std::uint64_t PermyriadPerMillimeter = 10'000;
+    const auto MinimumSpan = static_cast<std::uint64_t>(
+        kRoamingMinimumPhysicalSegmentMillimeters) *
+        PermyriadPerMillimeter;
+    if (SourceSpan < MinimumSpan || TargetSpan < MinimumSpan) {
+        return std::nullopt;
+    }
+    const auto MaximumSpan = std::max(SourceSpan, TargetSpan);
+    const auto Difference = SourceSpan > TargetSpan
+        ? SourceSpan - TargetSpan : TargetSpan - SourceSpan;
+    const auto Tolerance = std::max(
+        static_cast<std::uint64_t>(
+            kRoamingPhysicalSpanToleranceMillimeters) *
+            PermyriadPerMillimeter,
+        MaximumSpan * kRoamingPhysicalSpanTolerancePermyriad / 10'000u);
+    if (Difference > Tolerance) return std::nullopt;
+
+    const auto SourcePosition = static_cast<std::uint64_t>(SourceAlong) *
+        *SourceMillimeters;
+    const auto SourceStart = static_cast<std::uint64_t>(
+        Source.SegmentStartPermyriad) * *SourceMillimeters;
+    if (SourcePosition < SourceStart) return std::nullopt;
+    const auto TargetStart = static_cast<std::uint64_t>(
+        Target.SegmentStartPermyriad) * *TargetMillimeters;
+    const auto TargetEnd = static_cast<std::uint64_t>(
+        Target.SegmentEndPermyriad) * *TargetMillimeters;
+    const auto TargetPosition = TargetStart +
+        (SourcePosition - SourceStart);
+    if (TargetPosition < TargetStart || TargetPosition > TargetEnd) {
+        return std::nullopt;
+    }
+    const auto TargetAlong =
+        (TargetPosition + *TargetMillimeters / 2u) / *TargetMillimeters;
+    if (TargetAlong > 10'000u) return std::nullopt;
+    return static_cast<std::uint16_t>(TargetAlong);
 }
 
 [[nodiscard]] std::uint16_t PixelToNormalized(
@@ -182,9 +274,13 @@ namespace {
     if (TargetEnd - TargetStart <= Clearance * 2) {
         return std::nullopt;
     }
-    auto TargetAlong = TargetStart + static_cast<std::int32_t>(
-        (static_cast<std::int64_t>(TargetEnd - TargetStart) * Relative +
-         5'000) / 10'000);
+    const auto PhysicalHint = BuildPhysicalLandingHint(
+        Source, Target, SourceDisplay, TargetDisplay, SourceAlong);
+    auto TargetAlong = PhysicalHint
+        ? PermyriadToPixel(*PhysicalHint, TargetLength)
+        : TargetStart + static_cast<std::int32_t>(
+              (static_cast<std::int64_t>(TargetEnd - TargetStart) * Relative +
+               5'000) / 10'000);
     TargetAlong = std::clamp(
         TargetAlong, TargetStart + Clearance, TargetEnd - Clearance);
 
@@ -239,6 +335,7 @@ struct RoamingRuntime::Candidate {
     IClock::time_point Started{};
     IClock::time_point FirstPush{};
     std::int64_t OutwardDistance{};
+    std::int64_t LateralDistance{};
     bool FirstPushComplete{};
     bool SawInward{};
 };
@@ -362,13 +459,6 @@ RoamingContextUpdate RoamingRuntime::UpdateContext(
 
 std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
     LocalPointerObservation Observation) noexcept {
-    if (!ContextValid_ ||
-        State_ == RoamingRuntimeState::FocusPending ||
-        State_ == RoamingRuntimeState::RemoteReady ||
-        State_ == RoamingRuntimeState::Remote ||
-        State_ == RoamingRuntimeState::ReturnPending) {
-        return std::nullopt;
-    }
     if (State_ == RoamingRuntimeState::LocalCooldown) {
         if (!Cooldown_) {
             State_ = RoamingRuntimeState::Local;
@@ -409,6 +499,13 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
         }
         return std::nullopt;
     }
+    if (!ContextValid_ ||
+        State_ == RoamingRuntimeState::FocusPending ||
+        State_ == RoamingRuntimeState::RemoteReady ||
+        State_ == RoamingRuntimeState::Remote ||
+        State_ == RoamingRuntimeState::ReturnPending) {
+        return std::nullopt;
+    }
 
     const ReadyRoute* Matched{};
     for (const auto& Route : ReadyRoutes_) {
@@ -436,11 +533,15 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
         Candidate_->Route.Link != Matched->Link) {
         Candidate_ = std::make_unique<Candidate>(Candidate{
             *Matched, Context_.SessionNonce, Clock_.now(), {}, 0,
-            false, false});
+            0, false, false});
         State_ = RoamingRuntimeState::EdgeCandidate;
     }
     auto& Candidate = *Candidate_;
     const auto Delta = OutwardDelta(Candidate.Route.Source.Side, Observation);
+    Candidate.LateralDistance = std::min<std::int64_t>(
+        Candidate.LateralDistance +
+            LateralDelta(Candidate.Route.Source.Side, Observation),
+        std::numeric_limits<std::uint16_t>::max());
     if (Delta < 0) {
         Candidate.SawInward = true;
         if (!Candidate.FirstPushComplete) {
@@ -454,25 +555,35 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
     }
     const auto& Crossing = CrossingFor(
         Candidate.Route.Link, Candidate.Route.Key.Direction);
+    const auto IntentReady = HasOutwardIntent(
+        Candidate.OutwardDistance, Candidate.LateralDistance);
+    if (Candidate.LateralDistance >= Crossing.PushDistancePixels &&
+        !IntentReady) {
+        CancelCandidate();
+        return std::nullopt;
+    }
     const auto Now = Clock_.now();
     bool Triggered = false;
     switch (Crossing.Policy) {
         case CrossingPolicy::Push:
             Triggered = Candidate.OutwardDistance >=
-                Crossing.PushDistancePixels;
+                    Crossing.PushDistancePixels && IntentReady;
             break;
         case CrossingPolicy::DwellAndPush:
             Triggered = Candidate.OutwardDistance >=
                     Crossing.PushDistancePixels &&
+                IntentReady &&
                 Now - Candidate.Started >= std::chrono::milliseconds(
                     Crossing.DwellMilliseconds);
             break;
         case CrossingPolicy::DoublePush:
             if (!Candidate.FirstPushComplete &&
-                Candidate.OutwardDistance >= Crossing.PushDistancePixels) {
+                Candidate.OutwardDistance >= Crossing.PushDistancePixels &&
+                IntentReady) {
                 Candidate.FirstPushComplete = true;
                 Candidate.FirstPush = Now;
                 Candidate.OutwardDistance = 0;
+                Candidate.LateralDistance = 0;
                 Candidate.SawInward = false;
             } else if (Candidate.FirstPushComplete &&
                        Now - Candidate.FirstPush > std::chrono::milliseconds(
@@ -481,7 +592,7 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
                 return std::nullopt;
             } else if (Candidate.FirstPushComplete && Candidate.SawInward &&
                        Candidate.OutwardDistance >=
-                           Crossing.PushDistancePixels) {
+                           Crossing.PushDistancePixels && IntentReady) {
                 Triggered = true;
             }
             break;
