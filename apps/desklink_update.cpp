@@ -722,9 +722,14 @@ private:
         auto RequestId = ++RequestId_;
         if (RequestId == 0) RequestId = ++RequestId_;
         desklink::ControlRequest Request{RequestId, std::move(Value)};
-        const auto Broker = desklink::Win32ControlPipeClient::Send(
-            Request, L"broker", std::chrono::milliseconds{2'000});
-        return Broker ? Broker : desklink::Win32ControlPipeClient::Send(
+        if (MutexExists(kBrokerMutexName)) {
+            // The broker is the product authority. It may still be loading the
+            // CNG identity during first launch, so use the control client's
+            // full bounded wait and never bypass an active broker.
+            return desklink::Win32ControlPipeClient::Send(
+                Request, L"broker", std::chrono::milliseconds{5'000});
+        }
+        return desklink::Win32ControlPipeClient::Send(
             Request, {}, std::chrono::milliseconds{2'000});
     }
 
