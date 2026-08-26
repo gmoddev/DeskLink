@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -46,6 +47,8 @@ struct MsQuicTransportEndpoint::State {
     TransportPeerInfo Peer;
     ReceiveHandler ReliableHandler;
     ReceiveHandler DatagramHandler;
+    ITransportEndpoint::CloseHandler ClosedHandler;
+    std::optional<TransportCloseReason> CloseReason;
     ByteBuffer ReliableBuffer;
     std::shared_ptr<State> SelfHold;
     std::mutex Mutex;
@@ -65,19 +68,39 @@ StateHolder HoldState(void* Context) {
     return State->SelfHold;
 }
 
-void ShutdownConnection(const StateHolder& SharedState) noexcept {
+void ShutdownConnection(
+    const StateHolder& SharedState,
+    std::optional<TransportCloseReason> Reason =
+        TransportCloseReason::ProtocolFailure,
+    bool RequestShutdown = true) noexcept {
     HQUIC Connection{};
+    ITransportEndpoint::CloseHandler ClosedHandler;
     {
         std::scoped_lock Lock(SharedState->Mutex);
         if (SharedState->Closed) return;
         SharedState->Closed = true;
         SharedState->ReliableHandler = {};
         SharedState->DatagramHandler = {};
+        if (Reason) {
+            SharedState->CloseReason = Reason;
+            ClosedHandler = std::move(SharedState->ClosedHandler);
+        }
+        else SharedState->ClosedHandler = {};
         Connection = SharedState->Connection;
     }
-    if (Connection) {
+    if (ClosedHandler) {
+        try {
+            ClosedHandler(*Reason);
+        } catch (...) {
+        }
+    }
+    if (RequestShutdown && Connection) {
+        // Error code zero is the only intentional/graceful endpoint close.
+        // Protocol-triggered shutdowns retain the nonzero DeskLink error so
+        // the peer cannot classify them as ordinary availability loss.
+        const QUIC_UINT62 ErrorCode = Reason ? kProtocolError : 0;
         SharedState->Api->ConnectionShutdown(
-            Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, kProtocolError);
+            Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, ErrorCode);
     }
 }
 
@@ -302,10 +325,22 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
         {
-            std::scoped_lock Lock(SharedState->Mutex);
-            SharedState->Closed = true;
-            SharedState->ReliableHandler = {};
-            SharedState->DatagramHandler = {};
+            auto Reason = TransportCloseReason::Unavailable;
+            if (Event->Type ==
+                QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT) {
+                const auto Status =
+                    Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status;
+                if (Status != QUIC_STATUS_CONNECTION_TIMEOUT &&
+                    Status != QUIC_STATUS_CONNECTION_IDLE &&
+                    Status != QUIC_STATUS_UNREACHABLE &&
+                    Status != QUIC_STATUS_CONNECTION_REFUSED) {
+                    Reason = TransportCloseReason::ProtocolFailure;
+                }
+            } else if (
+                Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode != 0) {
+                Reason = TransportCloseReason::ProtocolFailure;
+            }
+            ShutdownConnection(SharedState, Reason, false);
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
@@ -469,12 +504,32 @@ void MsQuicTransportEndpoint::set_datagram_handler(ReceiveHandler Handler) {
     }
 }
 
+void MsQuicTransportEndpoint::set_close_handler(CloseHandler Handler) {
+    std::optional<TransportCloseReason> ExistingReason;
+    {
+        std::scoped_lock Lock(State_->Mutex);
+        if (!State_->Closed && State_->PeerValidated) {
+            State_->ClosedHandler = Handler;
+        } else if (State_->PeerValidated) {
+            ExistingReason = State_->CloseReason;
+        }
+    }
+    if (Handler && ExistingReason) {
+        try {
+            Handler(*ExistingReason);
+        } catch (...) {
+        }
+    }
+}
+
 TransportPeerInfo MsQuicTransportEndpoint::peer_info() const {
     std::scoped_lock Lock(State_->Mutex);
     return State_->Peer;
 }
 
-void MsQuicTransportEndpoint::close() noexcept { ShutdownConnection(State_); }
+void MsQuicTransportEndpoint::close() noexcept {
+    ShutdownConnection(State_, std::nullopt);
+}
 
 std::optional<TransportPeerInfo> VerifyMsQuicPeerCertificate(
     const QUIC_CERTIFICATE* Certificate,

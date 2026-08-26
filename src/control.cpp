@@ -197,8 +197,16 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
                                  ValueType,
                                  ReturnLocalControlRequest>) {
             return ControlCommand::ReturnLocal;
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetPairingCandidateControlRequest>) {
             return ControlCommand::GetPairingCandidate;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 PauseDeskLinkControlRequest>) {
+            return ControlCommand::PauseDeskLink;
+        } else {
+            return ControlCommand::ResumeDeskLink;
         }
     }, Payload);
 }
@@ -362,6 +370,12 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::GetPairingCandidate:
             if (Input.Remaining() != 0) return std::nullopt;
             return GetPairingCandidateControlRequest{};
+        case ControlCommand::PauseDeskLink:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return PauseDeskLinkControlRequest{};
+        case ControlCommand::ResumeDeskLink:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return ResumeDeskLinkControlRequest{};
         default:
             return std::nullopt;
     }
@@ -517,6 +531,9 @@ void EncodeState(Writer& Output, const ControlState& State) {
     Output.U8(static_cast<std::uint8_t>(State.DesiredMode));
     Output.U16(State.ConnectedPeerCount);
     Output.U16(State.AudioGainPermyriad);
+    Output.U16(State.RetryAttempt);
+    Output.U8(static_cast<std::uint8_t>(State.RuntimePhase));
+    Output.U8(static_cast<std::uint8_t>(State.RuntimeFailure));
     std::uint8_t Flags = 0;
     if (State.RemoteFocused) Flags |= 0x01u;
     if (State.CaptureActive) Flags |= 0x02u;
@@ -528,15 +545,22 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     ControlState State;
     std::uint8_t RawRole{};
     std::uint8_t RawMode{};
+    std::uint8_t RawRuntimePhase{};
+    std::uint8_t RawRuntimeFailure{};
     std::uint8_t Flags{};
     if (!Input.Raw(State.LocalMachine) || !Input.Raw(State.FocusedMachine) ||
         !Input.U8(RawRole) || !Input.U8(RawMode) ||
         !Input.U16(State.ConnectedPeerCount) ||
-        !Input.U16(State.AudioGainPermyriad) || !Input.U8(Flags)) {
+        !Input.U16(State.AudioGainPermyriad) ||
+        !Input.U16(State.RetryAttempt) ||
+        !Input.U8(RawRuntimePhase) || !Input.U8(RawRuntimeFailure) ||
+        !Input.U8(Flags)) {
         return std::nullopt;
     }
     State.Role = static_cast<ControlRole>(RawRole);
     State.DesiredMode = static_cast<DeskMode>(RawMode);
+    State.RuntimePhase = static_cast<BrokerRuntimePhase>(RawRuntimePhase);
+    State.RuntimeFailure = static_cast<BrokerRuntimeFailure>(RawRuntimeFailure);
     State.RemoteFocused = (Flags & 0x01u) != 0;
     State.CaptureActive = (Flags & 0x02u) != 0;
     State.AudioMuted = (Flags & 0x04u) != 0;
@@ -640,6 +664,16 @@ bool IsKnownStatus(ControlStatus Status) noexcept {
            static_cast<std::uint16_t>(ControlStatus::CleanupFailed);
 }
 
+bool IsKnownRuntimePhase(BrokerRuntimePhase Phase) noexcept {
+    return static_cast<std::uint8_t>(Phase) <=
+           static_cast<std::uint8_t>(BrokerRuntimePhase::ActionRequired);
+}
+
+bool IsKnownRuntimeFailure(BrokerRuntimeFailure Failure) noexcept {
+    return static_cast<std::uint8_t>(Failure) <=
+           static_cast<std::uint8_t>(BrokerRuntimeFailure::Unknown);
+}
+
 } // namespace
 
 bool IsValidControlRequest(const ControlRequest& Request) noexcept {
@@ -676,7 +710,24 @@ bool IsValidControlRequest(const ControlRequest& Request) noexcept {
 
 bool IsValidControlState(const ControlState& State) noexcept {
     if (!IsValidRole(State.Role) || !IsValidDeskMode(State.DesiredMode) ||
-        State.AudioGainPermyriad > 10'000) {
+        State.AudioGainPermyriad > 10'000 ||
+        !IsKnownRuntimePhase(State.RuntimePhase) ||
+        !IsKnownRuntimeFailure(State.RuntimeFailure)) {
+        return false;
+    }
+    if (State.RuntimePhase == BrokerRuntimePhase::RetryWaiting) {
+        if (!IsRetryableBrokerRuntimeFailure(State.RuntimeFailure) ||
+            State.RetryAttempt == 0) {
+            return false;
+        }
+    } else if (State.RuntimePhase == BrokerRuntimePhase::ActionRequired) {
+        if (State.RuntimeFailure == BrokerRuntimeFailure::None ||
+            IsRetryableBrokerRuntimeFailure(State.RuntimeFailure) ||
+            State.RetryAttempt != 0) {
+            return false;
+        }
+    } else if (State.RuntimeFailure != BrokerRuntimeFailure::None ||
+               State.RetryAttempt != 0) {
         return false;
     }
     if (State.CaptureActive && (!State.RemoteFocused ||

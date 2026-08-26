@@ -496,7 +496,8 @@ sending a request. A first-instance flag and the client-side identity check
 turn cross-user pipe squatting into a startup/availability failure rather than
 command disclosure or execution.
 
-The binary protocol limits payloads to 128 bytes, requires exact
+The binary protocol limits payloads to 512 KiB so bounded topology/device
+responses fit without a generic transport, requires exact
 magic/version/type/request-ID/length framing, permits one request per
 connection, bounds I/O waits, and requires a response-consumption
 acknowledgement. Malformed, oversized, stalled, identity-mismatched, or
@@ -510,6 +511,12 @@ SetDesiredMode       implemented
 FocusMachine         typed, currently unsupported
 SetAudioGain         implemented as local bounded render policy
 ToggleAudioMute      implemented as local bounded render policy
+GetProductPreferences implemented as validated current-user policy
+SetProductPreferences implemented with fail-local runtime reconciliation
+ListTrustedDevices   implemented as bounded metadata/grants only
+PauseDeskLink        implemented as fail-local supervised stop
+ResumeDeskLink       implemented as Local-first supervised start
+ReturnLocal          implemented
 ```
 
 It must not expose a generic transport passthrough or arbitrary input-injection primitive.

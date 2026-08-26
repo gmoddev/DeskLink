@@ -2,6 +2,7 @@
 
 #include "desklink/protocol.hpp"
 #include "desklink/product.hpp"
+#include "desklink/runtime_broker.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/types.hpp"
 
@@ -14,7 +15,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 1;
+inline constexpr std::uint16_t kControlProtocolVersion = 2;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -43,6 +44,8 @@ enum class ControlCommand : std::uint16_t {
     ForgetTrustedDevice = 12,
     ReturnLocal = 13,
     GetPairingCandidate = 14,
+    PauseDeskLink = 15,
+    ResumeDeskLink = 16,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -102,6 +105,10 @@ struct ReturnLocalControlRequest {};
 
 struct GetPairingCandidateControlRequest {};
 
+struct PauseDeskLinkControlRequest {};
+
+struct ResumeDeskLinkControlRequest {};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
@@ -116,7 +123,9 @@ using ControlRequestPayload = std::variant<
     RequestLocalPermissionChangeControlRequest,
     ForgetTrustedDeviceControlRequest,
     ReturnLocalControlRequest,
-    GetPairingCandidateControlRequest>;
+    GetPairingCandidateControlRequest,
+    PauseDeskLinkControlRequest,
+    ResumeDeskLinkControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
@@ -130,6 +139,9 @@ struct ControlState {
     DeskMode DesiredMode{DeskMode::Roam};
     std::uint16_t ConnectedPeerCount{};
     std::uint16_t AudioGainPermyriad{10'000};
+    std::uint16_t RetryAttempt{};
+    BrokerRuntimePhase RuntimePhase{BrokerRuntimePhase::Stopped};
+    BrokerRuntimeFailure RuntimeFailure{BrokerRuntimeFailure::None};
     bool RemoteFocused{};
     bool CaptureActive{};
     bool AudioMuted{};

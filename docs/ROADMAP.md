@@ -244,6 +244,16 @@ is production-qualified. Image clipboard and file transfer remain excluded.
 
 ### 5. Installation and daily-use productization
 
+- **Product UX PRs 1-3 complete:** safer default-off pairing grants, the
+  versioned role/preferences/planner model, and the single current-user broker
+  and trust-authority contract are merged;
+- **Product UX PR 4 implemented:** the broker now owns persistent role-driven
+  Companion listen/advertise and exact preferred-peer Main auto-connect,
+  pause/resume, bounded availability-only backoff, and network/process/config
+  reconciliation. Reconnect remains Local, rotates the session nonce through
+  the normal trusted bootstrap, performs transport-loss input cleanup before
+  notifying the supervisor, and treats nonzero peer protocol shutdown as
+  action-required. CI/merge is the remaining gate before PR 5;
 - **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
   active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
   in-place upgrade, startup-value cleanup, state preservation, a fail-closed

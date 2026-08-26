@@ -39,6 +39,7 @@ DefaultManualPairingGrants() noexcept {
 struct LauncherRequest {
     LauncherOperation Operation{LauncherOperation::Identity};
     std::wstring Host;
+    std::optional<MachineId> ExpectedPeerMachine;
     std::uint16_t Port{43'821};
     std::uint8_t DiscoverySeconds{5};
     bool GrantInput{};
@@ -51,6 +52,7 @@ struct LauncherRequest {
     bool SendAudio{};
     bool ReceiveAudio{};
     bool SyncClipboard{};
+    bool BrokerManaged{};
     std::filesystem::path EdgeRoamingSettingsPath;
     Win32PointerCalibration PointerCalibration;
 };

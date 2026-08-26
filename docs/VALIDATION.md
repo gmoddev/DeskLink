@@ -74,6 +74,28 @@ target.
 
 ---
 
+## Product UX PR 4 automated validation
+
+The persistent role-driven broker slice was validated locally on 2026-08-26:
+
+- the full Release Windows/MsQuic configuration passed 8/8 CTest cases;
+- the independent core/non-MsQuic configuration passed 3/3 CTest cases;
+- the native MsQuic loopback test passed 25 consecutive runs;
+- the private-key-export source gate passed; and
+- CPack produced the portable Windows x64 ZIP.
+
+The security diff review covered every changed source file and found two
+low-severity close-path defects before publication. The resulting regression
+tests now prove that a known transport close performs immediate session
+fail-local/owned-input cleanup, an intentional peer close remains ordinary
+unavailability, and a nonzero peer QUIC application error becomes a protocol
+failure rather than the broker's retryable exit.
+
+Physical two-PC Windows 11 reconnect qualification remains deferred until a
+second supported Windows 11/Server 2022+ system is available.
+
+---
+
 ## Simulation output
 
 The simulation demonstrates:

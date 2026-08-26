@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -37,6 +38,7 @@ struct Results {
     std::vector<std::shared_ptr<desklink::MsQuicPairingSession>> PairingSessions;
     std::vector<desklink::MsQuicBootstrapHandlers::TrustedSession> TrustedSessions;
     std::vector<std::string> Failures;
+    std::vector<desklink::MsQuicFailureDisposition> FailureDispositions;
     std::size_t PairingCompletions{};
 };
 
@@ -368,10 +370,11 @@ desklink::MsQuicBootstrapHandlers MakeHandlers(Results& Shared) {
         }
         Shared.Changed.notify_all();
     };
-    Handlers.Failed = [&](std::string Message) {
+    Handlers.FailureReported = [&](desklink::MsQuicFailure Failure) {
         {
             std::scoped_lock Lock(Shared.Mutex);
-            Shared.Failures.push_back(std::move(Message));
+            Shared.FailureDispositions.push_back(Failure.Disposition);
+            Shared.Failures.push_back(std::move(Failure.Message));
         }
         Shared.Changed.notify_all();
     };
@@ -541,7 +544,25 @@ void RunLoopback(const std::wstring& FirstKeyName,
             Lock, std::chrono::seconds(5), [&] { return Received; }));
     }
 
+    std::mutex CloseMutex;
+    std::condition_variable CloseChanged;
+    std::optional<TransportCloseReason> CloseReason;
+    SecondEndpoint->set_close_handler([&](TransportCloseReason Reason) {
+        {
+            std::scoped_lock Lock(CloseMutex);
+            CloseReason = Reason;
+        }
+        CloseChanged.notify_all();
+    });
     FirstEndpoint->close();
+    {
+        std::unique_lock Lock(CloseMutex);
+        CHECK(CloseChanged.wait_for(
+            Lock, std::chrono::seconds(5), [&] {
+                return CloseReason.has_value();
+            }));
+        CHECK(CloseReason == TransportCloseReason::Unavailable);
+    }
     SecondEndpoint->close();
     FirstEndpoint.reset();
     SecondEndpoint.reset();
@@ -597,7 +618,32 @@ void RunLoopback(const std::wstring& FirstKeyName,
         CHECK(ReceiveChanged.wait_for(
             Lock, std::chrono::seconds(5), [&] { return Received; }));
     }
-    FirstEndpoint->close();
+
+    {
+        std::scoped_lock Lock(CloseMutex);
+        CloseReason.reset();
+    }
+    SecondEndpoint->set_close_handler([&](TransportCloseReason Reason) {
+        {
+            std::scoped_lock Lock(CloseMutex);
+            CloseReason = Reason;
+        }
+        CloseChanged.notify_all();
+    });
+    ByteBuffer MalformedEnvelope(kEnvelopeSize, 0);
+    MalformedEnvelope[8] = 0xff;
+    MalformedEnvelope[9] = 0xff;
+    MalformedEnvelope[10] = 0xff;
+    MalformedEnvelope[11] = 0xff;
+    CHECK(SecondEndpoint->send_reliable(std::move(MalformedEnvelope)));
+    {
+        std::unique_lock Lock(CloseMutex);
+        CHECK(CloseChanged.wait_for(
+            Lock, std::chrono::seconds(5), [&] {
+                return CloseReason.has_value();
+            }));
+        CHECK(CloseReason == TransportCloseReason::ProtocolFailure);
+    }
     SecondEndpoint->close();
     FirstEndpoint.reset();
     SecondEndpoint.reset();
@@ -772,6 +818,13 @@ void RunTrustedValidationRejection(
         : std::chrono::seconds(5);
     CHECK(WaitForFailure(Shared, Timeout));
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    {
+        std::scoped_lock Lock(Shared.Mutex);
+        CHECK(!Shared.FailureDispositions.empty());
+        CHECK(Shared.FailureDispositions.size() == Shared.Failures.size());
+        CHECK(Shared.FailureDispositions.back() ==
+              MsQuicFailureDisposition::ActionRequired);
+    }
     CheckNoApplicationAdmission(Shared);
 
     SecondCrypto.ReleaseStall();

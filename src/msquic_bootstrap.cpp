@@ -400,7 +400,9 @@ std::string AddressKey(const QUIC_ADDR* Address) {
 }
 
 void ReportFailure(const std::shared_ptr<MsQuicBootstrap::State>& State,
-                   std::string_view Message) noexcept;
+                   std::string_view Message,
+                   MsQuicFailureDisposition Disposition =
+                       MsQuicFailureDisposition::ActionRequired) noexcept;
 void ShutdownConnection(const ConnectionHolder& State,
                         QUIC_UINT62 ErrorCode = kBootstrapError) noexcept;
 QUIC_STATUS QUIC_API BootstrapConnectionCallback(
@@ -500,15 +502,66 @@ struct MsQuicPairingSession::State {
 namespace {
 
 void ReportFailure(const std::shared_ptr<MsQuicBootstrap::State>& State,
-                   std::string_view Message) noexcept {
+                   std::string_view Message,
+                   MsQuicFailureDisposition Disposition) noexcept {
     try {
+        std::function<void(MsQuicFailure)> ClassifiedHandler;
         std::function<void(std::string)> Handler;
         {
             std::scoped_lock Lock(State->Mutex);
+            ClassifiedHandler = State->Handlers.FailureReported;
             Handler = State->Handlers.Failed;
         }
-        if (Handler) Handler(std::string(Message));
+        if (ClassifiedHandler) {
+            ClassifiedHandler(MsQuicFailure{
+                Disposition, std::string(Message)});
+        } else if (Handler) {
+            Handler(std::string(Message));
+        }
     } catch (...) {
+    }
+}
+
+bool IsRetryableAvailabilityStatus(QUIC_STATUS Status) noexcept {
+    return Status == QUIC_STATUS_CONNECTION_TIMEOUT ||
+           Status == QUIC_STATUS_CONNECTION_IDLE ||
+           Status == QUIC_STATUS_UNREACHABLE ||
+           Status == QUIC_STATUS_CONNECTION_REFUSED;
+}
+
+void ReportTrustedPreAdmissionShutdown(
+    const ConnectionHolder& State,
+    const QUIC_CONNECTION_EVENT& Event) noexcept {
+    try {
+        if (Event.Type ==
+            QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT) {
+            const auto Status =
+                Event.SHUTDOWN_INITIATED_BY_TRANSPORT.Status;
+            ReportFailure(
+                State->Owner,
+                "trusted connection closed before nonce negotiation "
+                "(transport status " +
+                    std::to_string(static_cast<std::uint32_t>(Status)) +
+                    ", error code " +
+                    std::to_string(
+                        Event.SHUTDOWN_INITIATED_BY_TRANSPORT.ErrorCode) +
+                    ")",
+                IsRetryableAvailabilityStatus(Status)
+                    ? MsQuicFailureDisposition::RetryableAvailability
+                    : MsQuicFailureDisposition::ActionRequired);
+        } else {
+            ReportFailure(
+                State->Owner,
+                "trusted connection closed before nonce negotiation "
+                "(peer error code " +
+                    std::to_string(
+                        Event.SHUTDOWN_INITIATED_BY_PEER.ErrorCode) +
+                    ")");
+        }
+    } catch (...) {
+        ReportFailure(
+            State->Owner,
+            "trusted connection closed before nonce negotiation");
     }
 }
 
@@ -1609,8 +1662,7 @@ QUIC_STATUS BootstrapConnectionCallbackImpl(
                 State->Closed = true;
             }
             if (ReportSessionFailure) {
-                ReportFailure(State->Owner,
-                              "trusted connection closed before nonce negotiation");
+                ReportTrustedPreAdmissionShutdown(State, *Event);
             } else if (ReportPairingFailure) {
                 ReportPreAdmissionShutdown(State, *Event);
             }

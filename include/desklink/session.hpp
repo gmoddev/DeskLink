@@ -173,6 +173,7 @@ struct PeerSessionHandlers {
     std::function<void()> OutgoingFocusReady;
     std::function<void()> DirectionChanged;
     std::function<void()> DirectionCollision;
+    std::function<void(TransportCloseReason)> TransportClosed;
 };
 
 // Owns both directions of one authenticated peer connection. Capability grants

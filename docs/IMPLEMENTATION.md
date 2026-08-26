@@ -497,6 +497,19 @@ coordinators on the validated connection, exchanges immutable per-direction
 persisted grants without mutating trust, binds direction tokens to the peer and
 nonce, and converges collision/duplicate/reconnect paths to Local. The full
 Windows 11 physical qualification matrix remains outstanding.
+The Product UX PR 4 slice now adds a persistent current-user runtime broker.
+Validated Main preferences resolve only the exact trusted preferred MachineId
+from untrusted mDNS hints and pass that identity into certificate validation;
+Companion preferences launch the bounded listener/advertiser. The broker owns
+one fixed-path child, starts every session Local, may arm already configured
+edge roaming only after admitted peer state is visible, and never restores
+focus automatically. Pause, configuration/trust mutation, update, and process
+failure use the existing fail-local control path before another owner may
+start. Only explicit availability failures back off and retry; all security,
+identity, authentication, protocol, capability, credential, signing, and
+unknown failures require user action. Transport closure now releases session
+direction/input state before supervisor notification, while nonzero peer QUIC
+application errors are classified as protocol failure.
 The opt-in low-level keyboard, Raw Input mouse, and suppression backend now
 supplies the physical input path. Periodic reliable input-state snapshots now
 converge DeskLink-owned normal/extended scan-code and mouse-button holds under
