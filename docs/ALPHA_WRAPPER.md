@@ -9,7 +9,7 @@ surface, not the final DeskLink UI or installer.
 - Windows 11 or Windows Server 2022 and newer
 - packaged, hash-pinned MsQuic 2.6.0 with Schannel
 - one wrapper-owned DeskLink operation at a time
-- manual pairing/focus plus explicitly enabled outbound edge roaming
+- manual pairing/focus plus explicitly enabled reciprocal edge roaming
 - optional physical input capture and optional audio startup
 - presentation-only monitor arrangement and explicit saved edge configuration
 - single-instance notification-area lifecycle and optional sign-in startup
@@ -30,9 +30,12 @@ store, and does not implement a second connection or pairing stack.
    reciprocal capability grants, and select **Pair with address**.
 5. Compare the six-digit code shown by both native confirmation dialogs before
    accepting.
-6. After pairing finishes, select **Start receiver** on the receiving PC.
+6. After pairing finishes, select **Start receiver** on the receiving PC. To
+   let that PC initiate a reverse crossing, enable both physical capture and
+   experimental edge roaming before starting it.
 7. Select the desired capture/audio options and **Start controller** on the
-   controlling PC.
+   controlling PC. Enable both physical capture and experimental edge roaming
+   there for forward crossings.
    **Pointer gain** defaults to 100%. **Mouse DPI** defaults to 0, which keeps
    raw device counts. If the physical mouse DPI is known, entering 100..32000
    normalizes it to an 800-DPI reference before gain is applied.
@@ -107,8 +110,11 @@ by the existing Host lifecycle and begins only after the current trusted
 session, capability, nonce, topology generation, fresh focus response, landing
 queue, initial snapshot, and direction token are all admitted. A 1.5-second
 focus stall, settings/topology mutation, capture or send failure, manual
-return, emergency chord, or session failure returns Local. This Alpha slice
-supports outbound controller-to-receiver roaming only.
+return, emergency chord, or session failure returns Local. One authenticated
+peer session owns both directions. Independent local trust records gate each
+direction, simultaneous opposite attempts return Local, and reconnect does not
+restore focus. Listener-side capture is rejected unless the absolute
+roaming-settings path is also supplied.
 
 ## Portable package
 
@@ -136,7 +142,7 @@ verification remain fail closed.
 
 ## Deliberately deferred
 
-- reciprocal/bidirectional session ownership and physical edge qualification
+- physical reciprocal edge qualification
 - Windows 10 production support
 - two-Windows-11 physical failure-matrix signoff
 - persisted profiles or automatic startup

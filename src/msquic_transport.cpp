@@ -17,8 +17,8 @@
 namespace desklink {
 namespace {
 
-constexpr std::size_t kEnvelopeSize = 36;
 constexpr QUIC_UINT62 kProtocolError = 0x444C0001u;
+constexpr std::size_t kMaximumPreHandlerBuffered = 1024u * 1024u;
 
 struct SendContext {
     explicit SendContext(ByteBuffer Packet) : Bytes(std::move(Packet)) {
@@ -82,30 +82,60 @@ void ShutdownConnection(const StateHolder& SharedState) noexcept {
 }
 
 void HandleReliableBytes(const StateHolder& SharedState, ByteSpan Bytes) {
-    std::vector<ByteBuffer> Packets;
-    bool Invalid = false;
-    {
-        std::scoped_lock Lock(SharedState->Mutex);
-        if (SharedState->Closed || !SharedState->PeerValidated) {
-            Invalid = !SharedState->Closed;
-        } else {
-            const auto MaximumBuffered = kEnvelopeSize + kMaxReliablePayload;
-            if (Bytes.size() > MaximumBuffered ||
-                SharedState->ReliableBuffer.size() > MaximumBuffered - Bytes.size()) {
+    std::size_t Offset = 0;
+    for (;;) {
+        ByteBuffer Packet;
+        ITransportEndpoint::ReceiveHandler Handler;
+        bool Invalid = false;
+        {
+            std::scoped_lock Lock(SharedState->Mutex);
+            if (SharedState->Closed) return;
+            if (!SharedState->PeerValidated) {
                 Invalid = true;
-            } else {
-                SharedState->ReliableBuffer.insert(
-                    SharedState->ReliableBuffer.end(), Bytes.begin(), Bytes.end());
-                if (!SharedState->ReliableHandler) return;
-                while (SharedState->ReliableBuffer.size() >= 12) {
-                    const auto PayloadSize = ReadPayloadSize(SharedState->ReliableBuffer);
-                    if (PayloadSize > kMaxReliablePayload) {
-                        Invalid = true;
-                        break;
+            } else if (!SharedState->ReliableHandler) {
+                const auto Remaining = Bytes.size() - Offset;
+                if (Remaining > kMaximumPreHandlerBuffered ||
+                    SharedState->ReliableBuffer.size() >
+                        kMaximumPreHandlerBuffered - Remaining) {
+                    Invalid = true;
+                } else {
+                    SharedState->ReliableBuffer.insert(
+                        SharedState->ReliableBuffer.end(),
+                        Bytes.begin() + static_cast<std::ptrdiff_t>(Offset),
+                        Bytes.end());
+                    return;
+                }
+            }
+            if (!Invalid) {
+                if (SharedState->ReliableBuffer.size() < 12 && Offset < Bytes.size()) {
+                    const auto Needed = 12 - SharedState->ReliableBuffer.size();
+                    const auto Count = std::min(Needed, Bytes.size() - Offset);
+                    SharedState->ReliableBuffer.insert(
+                        SharedState->ReliableBuffer.end(),
+                        Bytes.begin() + static_cast<std::ptrdiff_t>(Offset),
+                        Bytes.begin() + static_cast<std::ptrdiff_t>(Offset + Count));
+                    Offset += Count;
+                }
+                if (SharedState->ReliableBuffer.size() < 12) return;
+                const auto PayloadSize = ReadPayloadSize(SharedState->ReliableBuffer);
+                if (PayloadSize > kMaxReliablePayload) {
+                    Invalid = true;
+                } else {
+                    const auto PacketSize =
+                        kEnvelopeSize + static_cast<std::size_t>(PayloadSize);
+                    if (SharedState->ReliableBuffer.size() < PacketSize &&
+                        Offset < Bytes.size()) {
+                        const auto Needed =
+                            PacketSize - SharedState->ReliableBuffer.size();
+                        const auto Count = std::min(Needed, Bytes.size() - Offset);
+                        SharedState->ReliableBuffer.insert(
+                            SharedState->ReliableBuffer.end(),
+                            Bytes.begin() + static_cast<std::ptrdiff_t>(Offset),
+                            Bytes.begin() + static_cast<std::ptrdiff_t>(Offset + Count));
+                        Offset += Count;
                     }
-                    const auto PacketSize = kEnvelopeSize + static_cast<std::size_t>(PayloadSize);
-                    if (SharedState->ReliableBuffer.size() < PacketSize) break;
-                    Packets.emplace_back(
+                    if (SharedState->ReliableBuffer.size() < PacketSize) return;
+                    Packet.assign(
                         SharedState->ReliableBuffer.begin(),
                         SharedState->ReliableBuffer.begin() +
                             static_cast<std::ptrdiff_t>(PacketSize));
@@ -115,21 +145,22 @@ void HandleReliableBytes(const StateHolder& SharedState, ByteSpan Bytes) {
                             static_cast<std::ptrdiff_t>(PacketSize));
                 }
             }
-        }
-    }
-    if (Invalid) {
-        ShutdownConnection(SharedState);
-        return;
-    }
-    for (auto& Packet : Packets) {
-        ITransportEndpoint::ReceiveHandler Handler;
-        {
-            std::scoped_lock Lock(SharedState->Mutex);
-            if (SharedState->Closed) break;
             Handler = SharedState->ReliableHandler;
         }
-        if (!Handler) break;
-        Handler(std::move(Packet));
+        if (Invalid || !Handler) {
+            ShutdownConnection(SharedState);
+            return;
+        }
+        try {
+            Handler(std::move(Packet));
+        } catch (...) {
+            ShutdownConnection(SharedState);
+            return;
+        }
+        if (Offset == Bytes.size()) {
+            std::scoped_lock Lock(SharedState->Mutex);
+            if (SharedState->ReliableBuffer.empty()) return;
+        }
     }
 }
 
@@ -140,9 +171,10 @@ QUIC_STATUS QUIC_API RejectStreamCallback(HQUIC Stream, void* Context, QUIC_STRE
 }
 
 QUIC_STATUS QUIC_API StreamCallback(HQUIC Stream, void* Context, QUIC_STREAM_EVENT* Event) {
-    const auto SharedState = HoldState(Context);
-    if (!SharedState) return QUIC_STATUS_SUCCESS;
-    switch (Event->Type) {
+    try {
+        const auto SharedState = HoldState(Context);
+        if (!SharedState) return QUIC_STATUS_SUCCESS;
+        switch (Event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE:
         {
             bool PeerValidated = false;
@@ -176,15 +208,25 @@ QUIC_STATUS QUIC_API StreamCallback(HQUIC Stream, void* Context, QUIC_STREAM_EVE
         return QUIC_STATUS_SUCCESS;
     default:
         return QUIC_STATUS_SUCCESS;
+        }
+    } catch (...) {
+        try {
+            if (const auto SharedState = HoldState(Context)) {
+                ShutdownConnection(SharedState);
+            }
+        } catch (...) {
+        }
+        return QUIC_STATUS_INTERNAL_ERROR;
     }
 }
 
 QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
                                         void* Context,
                                         QUIC_CONNECTION_EVENT* Event) {
-    const auto SharedState = HoldState(Context);
-    if (!SharedState) return QUIC_STATUS_SUCCESS;
-    switch (Event->Type) {
+    try {
+        const auto SharedState = HoldState(Context);
+        if (!SharedState) return QUIC_STATUS_SUCCESS;
+        switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         {
             bool Accept = false;
@@ -227,7 +269,7 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
                 ShutdownConnection(SharedState);
                 return QUIC_STATUS_SUCCESS;
             }
-            if (Event->DATAGRAM_RECEIVED.Buffer->Length > kMaxDatagramPayload) {
+            if (Event->DATAGRAM_RECEIVED.Buffer->Length > kMaxEncodedDatagramSize) {
                 return QUIC_STATUS_SUCCESS;
             }
             ITransportEndpoint::ReceiveHandler Handler;
@@ -244,7 +286,11 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
             }
             if (Handler) {
                 const auto& Buffer = *Event->DATAGRAM_RECEIVED.Buffer;
-                Handler(ByteBuffer(Buffer.Buffer, Buffer.Buffer + Buffer.Length));
+                try {
+                    Handler(ByteBuffer(Buffer.Buffer, Buffer.Buffer + Buffer.Length));
+                } catch (...) {
+                    ShutdownConnection(SharedState);
+                }
             }
         }
         return QUIC_STATUS_SUCCESS;
@@ -275,6 +321,15 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
         return QUIC_STATUS_SUCCESS;
     default:
         return QUIC_STATUS_SUCCESS;
+        }
+    } catch (...) {
+        try {
+            if (const auto SharedState = HoldState(Context)) {
+                ShutdownConnection(SharedState);
+            }
+        } catch (...) {
+        }
+        return QUIC_STATUS_INTERNAL_ERROR;
     }
 }
 
@@ -291,7 +346,7 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
         PeerValidation != MsQuicPeerValidation::PeerValidated ||
         !Peer.authenticated || !Peer.encrypted ||
         !ParseFingerprint(Peer.identity.public_key_fingerprint) ||
-        InitialReliableBytes.size() > kEnvelopeSize + kMaxReliablePayload) {
+        InitialReliableBytes.size() > kMaximumPreHandlerBuffered) {
         return {};
     }
 
@@ -372,7 +427,7 @@ bool MsQuicTransportEndpoint::send_reliable(ByteBuffer Packet) {
 }
 
 bool MsQuicTransportEndpoint::send_datagram(ByteBuffer Packet) {
-    if (Packet.empty() || Packet.size() > kMaxDatagramPayload ||
+    if (Packet.empty() || Packet.size() > kMaxEncodedDatagramSize ||
         Packet.size() > std::numeric_limits<std::uint32_t>::max()) {
         return false;
     }

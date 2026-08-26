@@ -326,11 +326,12 @@ record to grant B `InputInject`. A missing reverse grant never inherits the
 forward grant and never silently downgrades authentication. The UI shows the
 unavailable direction and may offer an explicit one-way configuration.
 
-The current production runtime has directional Host/Agent roles. Before a
-reciprocal link can report both directions `Ready`, Phase 4 must add a symmetric
-peer-session owner or an equivalently reviewed direction-arbitration layer.
-One authenticated connection may host inbound and outbound coordinators, but
-only one control direction may be active per peer at a time:
+The runtime now uses one reciprocal `PeerSession` per authenticated peer. It
+owns inbound and outbound coordinators and exchanges the exact persisted local
+capability masks after `PeerValidated`. This exchange never mutates trust; the
+first value is immutable for the nonce and a conflicting/unknown replay fails
+both directions Local. Only one control direction may be pending or active per
+peer at a time:
 
 - an incoming focus request is rejected while outgoing focus is pending/active;
 - an outgoing request is rejected while incoming control is active;
@@ -339,9 +340,11 @@ only one control direction may be active per peer at a time:
 - epochs and leases remain issued and checked by the destination independently
   for each direction.
 
-Do not simulate reciprocal roaming with two uncontrolled concurrent sessions.
-Until this role work passes its review and tests, experimental roaming is
-one-way even if the UI preserves reciprocal intent.
+Every direction token is bound to the authenticated peer machine, session
+nonce, generation, and direction. Reconnect invalidates all old tokens and
+starts Local. Duplicate authenticated sessions and competing capture owners
+are rejected during startup convergence. Reciprocal roaming is never simulated
+with two uncontrolled concurrent sessions.
 
 Graph validation rejects self-links, duplicate links, overlapping active source
 segments, zero-length segments, unknown sides/directions, excessive counts,
@@ -510,7 +513,7 @@ tray Open/Return Local/Exit, ordered shutdown, and opt-in current-user sign-in
 startup. Automatic peer reconnection remains companion follow-up work and never
 restores remote focus.
 
-### Phase 4: roaming implementation and experimental testing
+### Phase 4: roaming implementation and experimental testing — automated slice complete
 
 1. add symmetric peer-session direction arbitration and independent directional
    capability tests;
@@ -524,21 +527,24 @@ restores remote focus.
    available supported machines. Do not wait for a second Windows 11 PC to
    exercise safe development builds.
 
-The controlled outbound Phase 4 slice is implemented. `RoamingRuntime` owns
+The controlled reciprocal Phase 4 slice is implemented. `RoamingRuntime` owns
 the portable `Local -> EdgeCandidate -> FocusPending -> RemoteReady -> Remote`
 gate, a 1.5-second focus timeout, return cooldown, and active route/session
 invalidation. `PeerDirectionArbiter` rejects stale tokens, busy directions, and
-opposite-direction collisions. The Windows Host's existing capture object runs
+opposite-direction collisions. `PeerSession` owns both coordinators on one
+authenticated connection, exchanges independent directional grants without
+mutating trust, binds direction tokens to peer/nonce/generation, and starts
+Local after every reconnect. The Windows input lifecycle's capture object runs
 with suppression off while observing local Raw Input and is reused only after
 fresh focus; landing enters the pointer datagram queue and the initial state
 snapshot enters the reliable queue before the lifecycle enables suppression.
 
-This is intentionally one-way per controller session. The Alpha checkbox and
-`--edge-roaming <absolute-settings-path>` are explicit experimental opt-ins;
-the normal Local-first/manual-focus path is unchanged. Bidirectional intent
-continues to persist in the graph, but reciprocal runtime direction remains
-unavailable until a symmetric peer-session owner integrates the arbitration
-layer. Physical two-PC Windows 11 qualification is still deferred.
+The Alpha checkbox and `--edge-roaming <absolute-settings-path>` are explicit
+experimental opt-ins on either side; listener-side capture is rejected unless
+that path is also supplied. The normal Local-first/manual-focus path is
+unchanged. Automated tests cover both directions, independent grants,
+simultaneous opposite requests, stale peer/nonce tokens, and invalid capability
+replay. Physical two-PC Windows 11 qualification is still deferred.
 
 ### Phase 5: production qualification
 

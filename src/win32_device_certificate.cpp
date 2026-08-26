@@ -1,11 +1,14 @@
 #include "desklink/win32_device_certificate.hpp"
 
+#include <bcrypt.h>
 #include <ncrypt.h>
+#include <sddl.h>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cwchar>
+#include <iostream>
 #include <utility>
 #include <vector>
 
@@ -124,15 +127,235 @@ bool HasUsablePrivateKey(PCCERT_CONTEXT Certificate) noexcept {
     return true;
 }
 
-PCCERT_CONTEXT FindCertificate(HCERTSTORE Store, std::wstring_view KeyName) {
-    PCCERT_CONTEXT Current = nullptr;
-    while ((Current = CertEnumCertificatesInStore(Store, Current)) != nullptr) {
-        if (CertVerifyTimeValidity(nullptr, Current->pCertInfo) == 0 &&
-            HasMatchingKeyName(Current, KeyName) && HasUsablePrivateKey(Current)) {
-            return CertDuplicateCertificateContext(Current);
+bool HasExpectedEnhancedUsage(PCCERT_CONTEXT Certificate) {
+    DWORD Size = 0;
+    if (!CertGetEnhancedKeyUsage(
+            Certificate, CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG, nullptr, &Size) ||
+        Size < sizeof(CERT_ENHKEY_USAGE)) {
+        return false;
+    }
+    std::vector<std::uint8_t> Storage(Size);
+    if (!CertGetEnhancedKeyUsage(
+            Certificate, CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG,
+            reinterpret_cast<PCERT_ENHKEY_USAGE>(Storage.data()), &Size)) {
+        return false;
+    }
+    const auto* Usage = reinterpret_cast<const CERT_ENHKEY_USAGE*>(Storage.data());
+    bool Client = false;
+    bool Server = false;
+    for (DWORD Index = 0; Index < Usage->cUsageIdentifier; ++Index) {
+        if (!Usage->rgpszUsageIdentifier[Index]) return false;
+        const std::string_view Oid(Usage->rgpszUsageIdentifier[Index]);
+        Client = Client || Oid == szOID_PKIX_KP_CLIENT_AUTH;
+        Server = Server || Oid == szOID_PKIX_KP_SERVER_AUTH;
+    }
+    return Client && Server && Usage->cUsageIdentifier == 2;
+}
+
+bool HasSafeKeyAcl(NCRYPT_KEY_HANDLE Key) {
+    constexpr SECURITY_INFORMATION Information =
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    DWORD Size = 0;
+    if (NCryptGetProperty(
+            Key, NCRYPT_SECURITY_DESCR_PROPERTY, nullptr, 0, &Size,
+            Information) != ERROR_SUCCESS || Size == 0) {
+        return false;
+    }
+    std::vector<std::uint8_t> Storage(Size);
+    if (NCryptGetProperty(
+            Key, NCRYPT_SECURITY_DESCR_PROPERTY, Storage.data(), Size, &Size,
+            Information) != ERROR_SUCCESS) {
+        return false;
+    }
+    const auto Descriptor = reinterpret_cast<PSECURITY_DESCRIPTOR>(Storage.data());
+    if (!IsValidSecurityDescriptor(Descriptor)) return false;
+
+    PSID Owner = nullptr;
+    BOOL OwnerDefaulted = FALSE;
+    if (!GetSecurityDescriptorOwner(Descriptor, &Owner, &OwnerDefaulted) ||
+        !Owner || !IsValidSid(Owner)) {
+        return false;
+    }
+    HANDLE Token{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token)) return false;
+    DWORD TokenSize = 0;
+    (void)GetTokenInformation(Token, TokenUser, nullptr, 0, &TokenSize);
+    std::vector<std::uint8_t> TokenStorage(TokenSize);
+    const bool ReadToken = TokenSize >= sizeof(TOKEN_USER) &&
+        GetTokenInformation(Token, TokenUser, TokenStorage.data(), TokenSize,
+                            &TokenSize) != FALSE;
+    CloseHandle(Token);
+    if (!ReadToken) return false;
+    const auto* User = reinterpret_cast<const TOKEN_USER*>(TokenStorage.data());
+    if (!EqualSid(Owner, User->User.Sid)) return false;
+
+    PACL Dacl = nullptr;
+    BOOL DaclPresent = FALSE;
+    BOOL DaclDefaulted = FALSE;
+    if (!GetSecurityDescriptorDacl(
+            Descriptor, &DaclPresent, &Dacl, &DaclDefaulted) ||
+        !DaclPresent || !Dacl) {
+        return false;
+    }
+    std::array<BYTE, SECURITY_MAX_SID_SIZE> WorldStorage{};
+    std::array<BYTE, SECURITY_MAX_SID_SIZE> UsersStorage{};
+    std::array<BYTE, SECURITY_MAX_SID_SIZE> AuthenticatedStorage{};
+    DWORD WorldSize = static_cast<DWORD>(WorldStorage.size());
+    DWORD UsersSize = static_cast<DWORD>(UsersStorage.size());
+    DWORD AuthenticatedSize = static_cast<DWORD>(AuthenticatedStorage.size());
+    if (!CreateWellKnownSid(WinWorldSid, nullptr, WorldStorage.data(), &WorldSize) ||
+        !CreateWellKnownSid(WinBuiltinUsersSid, nullptr, UsersStorage.data(), &UsersSize) ||
+        !CreateWellKnownSid(WinAuthenticatedUserSid, nullptr,
+                            AuthenticatedStorage.data(), &AuthenticatedSize)) {
+        return false;
+    }
+    constexpr ACCESS_MASK Dangerous =
+        GENERIC_ALL | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER | DELETE;
+    for (DWORD Index = 0; Index < Dacl->AceCount; ++Index) {
+        void* RawAce = nullptr;
+        if (!GetAce(Dacl, Index, &RawAce) || !RawAce) return false;
+        const auto* Header = static_cast<const ACE_HEADER*>(RawAce);
+        if (Header->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+        const auto* Ace = static_cast<const ACCESS_ALLOWED_ACE*>(RawAce);
+        auto* Sid = const_cast<DWORD*>(&Ace->SidStart);
+        if ((Ace->Mask & Dangerous) != 0 &&
+            (EqualSid(Sid, WorldStorage.data()) ||
+             EqualSid(Sid, UsersStorage.data()) ||
+             EqualSid(Sid, AuthenticatedStorage.data()))) {
+            return false;
         }
     }
-    return nullptr;
+    return true;
+}
+
+bool KeyMatchesCertificate(NCRYPT_KEY_HANDLE Key,
+                           PCCERT_CONTEXT Certificate) {
+    constexpr std::array<std::uint8_t, 32> Challenge{
+        0x31, 0x8d, 0x3a, 0xeb, 0x22, 0x74, 0x8a, 0xc9,
+        0xee, 0x89, 0xd9, 0x55, 0xf4, 0x89, 0x5b, 0xd1,
+        0x02, 0xa8, 0xa5, 0x99, 0x6d, 0x38, 0xea, 0x3b,
+        0x70, 0x01, 0xb7, 0x0c, 0x24, 0x15, 0xf7, 0x63};
+    BCRYPT_PSS_PADDING_INFO Padding{
+        const_cast<wchar_t*>(BCRYPT_SHA256_ALGORITHM), 32};
+    DWORD SignatureSize = 0;
+    if (NCryptSignHash(
+            Key, &Padding, const_cast<PBYTE>(Challenge.data()),
+            static_cast<DWORD>(Challenge.size()), nullptr, 0, &SignatureSize,
+            NCRYPT_PAD_PSS_FLAG) != ERROR_SUCCESS || SignatureSize == 0) {
+        return false;
+    }
+    ByteBuffer Signature(SignatureSize);
+    if (NCryptSignHash(
+            Key, &Padding, const_cast<PBYTE>(Challenge.data()),
+            static_cast<DWORD>(Challenge.size()), Signature.data(), SignatureSize,
+            &SignatureSize, NCRYPT_PAD_PSS_FLAG) != ERROR_SUCCESS) {
+        return false;
+    }
+    Signature.resize(SignatureSize);
+    BCRYPT_KEY_HANDLE PublicKey{};
+    if (!CryptImportPublicKeyInfoEx2(
+            X509_ASN_ENCODING, &Certificate->pCertInfo->SubjectPublicKeyInfo,
+            0, nullptr, &PublicKey)) {
+        return false;
+    }
+    const auto Status = BCryptVerifySignature(
+        PublicKey, &Padding, const_cast<PUCHAR>(Challenge.data()),
+        static_cast<ULONG>(Challenge.size()), Signature.data(),
+        static_cast<ULONG>(Signature.size()), BCRYPT_PAD_PSS);
+    BCryptDestroyKey(PublicKey);
+    return BCRYPT_SUCCESS(Status);
+}
+
+bool IsAdmissibleCertificate(PCCERT_CONTEXT Certificate,
+                             std::wstring_view KeyName) {
+    if (!Certificate || !Certificate->pCertInfo) {
+        std::cerr << "[Transport:Credential] rejected missing certificate metadata\n";
+        return false;
+    }
+    if (CertVerifyTimeValidity(nullptr, Certificate->pCertInfo) != 0) {
+        std::cerr << "[Transport:Credential] rejected certificate validity window\n";
+        return false;
+    }
+    if (!HasMatchingKeyName(Certificate, KeyName)) {
+        std::cerr << "[Transport:Credential] rejected certificate key reference\n";
+        return false;
+    }
+    if (!Certificate->pCertInfo->SubjectPublicKeyInfo.Algorithm.pszObjId ||
+        std::strcmp(Certificate->pCertInfo->SubjectPublicKeyInfo.Algorithm.pszObjId,
+                    szOID_RSA_RSA) != 0) {
+        std::cerr << "[Transport:Credential] rejected non-RSA certificate\n";
+        return false;
+    }
+    BYTE KeyUsage = 0;
+    if (!CertGetIntendedKeyUsage(
+            X509_ASN_ENCODING, Certificate->pCertInfo, &KeyUsage, sizeof(KeyUsage)) ||
+        KeyUsage != CERT_DIGITAL_SIGNATURE_KEY_USAGE ||
+        !HasExpectedEnhancedUsage(Certificate) ||
+        !CryptVerifyCertificateSignatureEx(
+            static_cast<HCRYPTPROV_LEGACY>(0), X509_ASN_ENCODING,
+            CRYPT_VERIFY_CERT_SIGN_SUBJECT_CERT,
+            const_cast<CERT_CONTEXT*>(Certificate),
+            CRYPT_VERIFY_CERT_SIGN_ISSUER_CERT,
+            const_cast<CERT_CONTEXT*>(Certificate), 0, nullptr)) {
+        std::cerr << "[Transport:Credential] rejected certificate usage or self-signature\n";
+        return false;
+    }
+
+    HCRYPTPROV_OR_NCRYPT_KEY_HANDLE Handle{};
+    DWORD KeySpec = 0;
+    BOOL MustFree = FALSE;
+    if (!CryptAcquireCertificatePrivateKey(
+            Certificate,
+            CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG | CRYPT_ACQUIRE_SILENT_FLAG,
+            nullptr, &Handle, &KeySpec, &MustFree) ||
+        (KeySpec != AT_KEYEXCHANGE && KeySpec != CERT_NCRYPT_KEY_SPEC)) {
+        std::cerr << "[Transport:Credential] rejected inaccessible CNG private key\n";
+        return false;
+    }
+    const auto Key = static_cast<NCRYPT_KEY_HANDLE>(Handle);
+    const auto ActualName = ReadWideKeyProperty(Key, NCRYPT_NAME_PROPERTY);
+    const auto Algorithm = ReadWideKeyProperty(Key, NCRYPT_ALGORITHM_PROPERTY);
+    const auto AlgorithmGroup = ReadWideKeyProperty(
+        Key, NCRYPT_ALGORITHM_GROUP_PROPERTY);
+    const auto Length = ReadDwordKeyProperty(Key, NCRYPT_LENGTH_PROPERTY);
+    const auto ExportPolicy = ReadDwordKeyProperty(
+        Key, NCRYPT_EXPORT_POLICY_PROPERTY);
+    const auto Usage = ReadDwordKeyProperty(Key, NCRYPT_KEY_USAGE_PROPERTY);
+    const bool MetadataValid = ActualName && *ActualName == KeyName &&
+        Algorithm && *Algorithm == NCRYPT_RSA_ALGORITHM &&
+        AlgorithmGroup && *AlgorithmGroup == NCRYPT_RSA_ALGORITHM_GROUP &&
+        Length && *Length >= kRsaKeyBits && ExportPolicy && *ExportPolicy == 0 &&
+        Usage && *Usage == NCRYPT_ALLOW_SIGNING_FLAG;
+    const bool AclValid = MetadataValid && HasSafeKeyAcl(Key);
+    const bool Valid = AclValid && KeyMatchesCertificate(Key, Certificate);
+    if (!MetadataValid) {
+        std::cerr << "[Transport:Credential] rejected CNG key properties\n";
+    } else if (!AclValid) {
+        std::cerr << "[Transport:Credential] rejected CNG key ACL\n";
+    } else if (!Valid) {
+        std::cerr << "[Transport:Credential] rejected certificate/key mismatch\n";
+    }
+    if (MustFree) NCryptFreeObject(Key);
+    return Valid;
+}
+
+PCCERT_CONTEXT FindCertificate(HCERTSTORE Store, std::wstring_view KeyName) {
+    PCCERT_CONTEXT Match = nullptr;
+    bool AmbiguousOrInvalid = false;
+    PCCERT_CONTEXT Current = nullptr;
+    while ((Current = CertEnumCertificatesInStore(Store, Current)) != nullptr) {
+        if (!HasMatchingKeyName(Current, KeyName)) continue;
+        if (Match || !IsAdmissibleCertificate(Current, KeyName)) {
+            AmbiguousOrInvalid = true;
+            continue;
+        }
+        Match = CertDuplicateCertificateContext(Current);
+    }
+    if (AmbiguousOrInvalid && Match) {
+        CertFreeCertificateContext(Match);
+        Match = nullptr;
+    }
+    return Match;
 }
 
 std::optional<Sha256Digest> HashCertificate(PCCERT_CONTEXT Certificate,
@@ -168,24 +391,59 @@ bool EncodeExtension(const char* Type,
                                nullptr, Encoded.data(), &Size) != FALSE;
 }
 
-NCRYPT_KEY_HANDLE OpenOrCreateKey(NCRYPT_PROV_HANDLE Provider,
-                                  const std::wstring& KeyName,
-                                  bool& Created) {
-    NCRYPT_KEY_HANDLE Key{};
-    if (NCryptOpenKey(Provider, &Key, KeyName.c_str(), 0, 0) == ERROR_SUCCESS) {
-        return Key;
+bool SetSafeKeyAcl(NCRYPT_KEY_HANDLE Key) {
+    HANDLE Token{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token)) return false;
+    DWORD TokenSize = 0;
+    (void)GetTokenInformation(Token, TokenUser, nullptr, 0, &TokenSize);
+    std::vector<std::uint8_t> TokenStorage(TokenSize);
+    const bool ReadToken = TokenSize >= sizeof(TOKEN_USER) &&
+        GetTokenInformation(Token, TokenUser, TokenStorage.data(), TokenSize,
+                            &TokenSize) != FALSE;
+    CloseHandle(Token);
+    if (!ReadToken) return false;
+
+    const auto* User = reinterpret_cast<const TOKEN_USER*>(TokenStorage.data());
+    wchar_t* UserSid = nullptr;
+    if (!ConvertSidToStringSidW(User->User.Sid, &UserSid) || !UserSid) {
+        return false;
     }
+    const std::wstring DescriptorText =
+        std::wstring(L"O:") + UserSid + L"D:P(A;;GA;;;" + UserSid +
+        L")(A;;GA;;;SY)";
+    LocalFree(UserSid);
+
+    PSECURITY_DESCRIPTOR Descriptor{};
+    ULONG DescriptorSize = 0;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            DescriptorText.c_str(), SDDL_REVISION_1, &Descriptor,
+            &DescriptorSize) || !Descriptor || DescriptorSize == 0) {
+        if (Descriptor) LocalFree(Descriptor);
+        return false;
+    }
+    constexpr SECURITY_INFORMATION Information =
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    const auto Status = NCryptSetProperty(
+        Key, NCRYPT_SECURITY_DESCR_PROPERTY,
+        static_cast<PBYTE>(Descriptor), DescriptorSize, Information);
+    LocalFree(Descriptor);
+    return Status == ERROR_SUCCESS;
+}
+
+NCRYPT_KEY_HANDLE CreateKey(NCRYPT_PROV_HANDLE Provider,
+                            const std::wstring& KeyName) {
+    NCRYPT_KEY_HANDLE Key{};
     if (NCryptCreatePersistedKey(
             Provider, &Key, NCRYPT_RSA_ALGORITHM, KeyName.c_str(), 0, 0) != ERROR_SUCCESS) {
         return 0;
     }
-    Created = true;
     DWORD Length = kRsaKeyBits;
     DWORD Usage = NCRYPT_ALLOW_SIGNING_FLAG;
     if (NCryptSetProperty(Key, NCRYPT_LENGTH_PROPERTY,
                           reinterpret_cast<PBYTE>(&Length), sizeof(Length), 0) != ERROR_SUCCESS ||
         NCryptSetProperty(Key, NCRYPT_KEY_USAGE_PROPERTY,
                           reinterpret_cast<PBYTE>(&Usage), sizeof(Usage), 0) != ERROR_SUCCESS ||
+        !SetSafeKeyAcl(Key) ||
         NCryptFinalizeKey(Key, 0) != ERROR_SUCCESS) {
         NCryptDeleteKey(Key, 0);
         return 0;
@@ -294,11 +552,25 @@ std::optional<Win32DeviceCertificate> Win32DeviceCertificate::LoadOrCreate(
             CertCloseStore(Store, 0);
             return std::nullopt;
         }
-        bool CreatedKey = false;
-        NCRYPT_KEY_HANDLE Key = OpenOrCreateKey(Provider, KeyName, CreatedKey);
+        NCRYPT_KEY_HANDLE ExistingKey{};
+        if (NCryptOpenKey(
+                Provider, &ExistingKey, KeyName.c_str(), 0,
+                NCRYPT_SILENT_FLAG) == ERROR_SUCCESS) {
+            NCryptFreeObject(ExistingKey);
+            NCryptFreeObject(Provider);
+            CertCloseStore(Store, 0);
+            // Never silently issue a replacement certificate for an existing
+            // identity. Rotation requires explicit re-pairing and approval.
+            std::wcerr << L"[Transport:Credential] rejected existing CNG key "
+                       << L"without an admissible certificate: " << KeyName
+                       << L'\n';
+            return std::nullopt;
+        }
+        NCRYPT_KEY_HANDLE Key = CreateKey(Provider, KeyName);
         PCCERT_CONTEXT Generated = Key ? CreateCertificate(Key, KeyName) : nullptr;
         PCCERT_CONTEXT Stored = nullptr;
-        bool Added = Generated && CertAddCertificateContextToStore(
+        bool Added = Generated && IsAdmissibleCertificate(Generated, KeyName) &&
+            CertAddCertificateContextToStore(
             Store, Generated, CERT_STORE_ADD_REPLACE_EXISTING, &Stored);
         if (Generated) CertFreeCertificateContext(Generated);
         if (Added && !HasUsablePrivateKey(Stored)) {
@@ -306,7 +578,9 @@ std::optional<Win32DeviceCertificate> Win32DeviceCertificate::LoadOrCreate(
             Stored = nullptr;
             Added = false;
         }
-        if (!Added && CreatedKey && Key) {
+        if (!Added && Key) {
+            std::wcerr << L"[Transport:Credential] rejected generated CNG "
+                       << L"credential: " << KeyName << L'\n';
             NCryptDeleteKey(Key, 0);
             Key = 0;
         }

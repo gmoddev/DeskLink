@@ -2,8 +2,10 @@
 
 #include "desklink/agent.hpp"
 #include "desklink/audio.hpp"
+#include "desklink/callback_gate.hpp"
 #include "desklink/host.hpp"
 #include "desklink/pairing.hpp"
+#include "desklink/roaming_runtime.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
 
@@ -30,6 +32,13 @@ struct SessionStats {
     std::uint64_t TopologyReceived{};
     std::uint64_t TopologyAccepted{};
     std::uint64_t TopologyRejected{};
+    std::uint64_t CapabilityGrantsSent{};
+    std::uint64_t CapabilityGrantsReceived{};
+    std::uint64_t CapabilityGrantsRejected{};
+    std::uint64_t DirectionRejected{};
+    std::uint64_t DirectionCollisions{};
+    std::uint64_t IncomingFocusAccepted{};
+    std::uint64_t OutgoingFocusAccepted{};
 };
 
 struct DisplayTopologyExchangeOptions {
@@ -71,6 +80,7 @@ private:
     void count_decision(AgentDecision decision) noexcept;
 
     std::shared_ptr<ITransportEndpoint> transport_;
+    std::shared_ptr<CallbackGate> CallbackGate_{std::make_shared<CallbackGate>()};
     AgentCoordinator& coordinator_;
     const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
@@ -129,6 +139,7 @@ private:
     void on_datagram(ByteBuffer packet);
 
     std::shared_ptr<ITransportEndpoint> transport_;
+    std::shared_ptr<CallbackGate> CallbackGate_{std::make_shared<CallbackGate>()};
     HostCoordinator& coordinator_;
     const ITrustStore& trust_store_;
     std::uint64_t session_nonce_{};
@@ -142,6 +153,102 @@ private:
     SessionStats stats_;
     mutable std::recursive_mutex Mutex_;
     bool started_{};
+};
+
+struct PeerSessionHandlers {
+    std::function<void()> OutgoingFocusReady;
+    std::function<void()> DirectionChanged;
+    std::function<void()> DirectionCollision;
+};
+
+// Owns both directions of one authenticated peer connection. Capability grants
+// are exchanged after transport validation and describe only the persisted
+// local trust decision; they never mutate either trust store.
+class PeerSession final {
+public:
+    PeerSession(std::shared_ptr<ITransportEndpoint> Transport,
+                HostCoordinator& OutgoingCoordinator,
+                AgentCoordinator& IncomingCoordinator,
+                const ITrustStore& TrustStore,
+                std::uint64_t SessionNonce,
+                PeerSessionHandlers Handlers = {},
+                AudioReceiver* Receiver = nullptr,
+                DisplayTopologyExchangeOptions TopologyOptions = {}) noexcept;
+    ~PeerSession();
+
+    [[nodiscard]] bool Start();
+    void Stop() noexcept;
+    void Tick() noexcept;
+    void FailLocalDirections() noexcept;
+
+    void SetLocalDesiredMode(DeskMode Mode) noexcept;
+    [[nodiscard]] DeskMode IncomingDesiredMode() const noexcept;
+    [[nodiscard]] bool BeginOutgoingFocus(
+        std::uint32_t LeaseMilliseconds = 750);
+    [[nodiscard]] bool SetDesiredMode(DeskMode Mode);
+    [[nodiscard]] bool RenewOutgoingFocus(
+        std::uint32_t LeaseMilliseconds = 750);
+    [[nodiscard]] bool ReleaseOutgoingFocus();
+    [[nodiscard]] bool SendKey(KeyEventMessage Event);
+    [[nodiscard]] bool SendButton(MouseButtonMessage Event);
+    [[nodiscard]] bool SendPointer(PointerPositionMessage Event);
+    [[nodiscard]] bool SendPointerMotion(PointerMotionMessage Message);
+    [[nodiscard]] bool SendWheel(MouseWheelMessage Message);
+    [[nodiscard]] bool SendInputStateSnapshot();
+
+    [[nodiscard]] bool OutgoingFocused() const noexcept;
+    [[nodiscard]] bool IncomingFocused() const noexcept;
+    [[nodiscard]] PeerDirectionState DirectionState() const noexcept;
+    [[nodiscard]] bool CanBeginOutgoing() const noexcept;
+    [[nodiscard]] bool PeerGrantedCapability(Capability Value) const noexcept;
+    [[nodiscard]] bool GrantedToPeer(Capability Value) const noexcept;
+
+    [[nodiscard]] bool CanSendAudio() const noexcept;
+    [[nodiscard]] bool CanReceiveAudio() const noexcept;
+    [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
+    [[nodiscard]] bool PublishDisplayTopology(
+        const MachineId& LocalMachine,
+        const DisplayTopologySnapshot& Topology);
+    [[nodiscard]] DisplayTopologyExchangeStatus
+    DisplayTopologyStatus() const noexcept;
+    [[nodiscard]] std::optional<DisplayTopologySnapshot>
+    RemoteDisplayTopology() const;
+    [[nodiscard]] SessionStats Stats() const noexcept;
+
+private:
+    void OnReliable(ByteBuffer Packet);
+    void OnDatagram(ByteBuffer Packet);
+    [[nodiscard]] bool ValidateSession(
+        const DecodedPacket& Packet) noexcept;
+    void CountDecision(AgentDecision Decision) noexcept;
+    [[nodiscard]] bool PublishCapabilityGrantLocked();
+    void ReleaseIncomingDirectionLocked() noexcept;
+    void FailLocalDirectionsLocked() noexcept;
+
+    std::shared_ptr<ITransportEndpoint> Transport_;
+    std::shared_ptr<CallbackGate> CallbackGate_{std::make_shared<CallbackGate>()};
+    HostCoordinator& OutgoingCoordinator_;
+    AgentCoordinator& IncomingCoordinator_;
+    const ITrustStore& TrustStore_;
+    std::uint64_t SessionNonce_{};
+    PeerSessionHandlers Handlers_;
+    AudioReceiver* AudioReceiver_{};
+    CapabilitySet LocalCapabilities_;
+    std::optional<CapabilitySet> RemoteCapabilities_;
+    DisplayTopologyExchangeOptions TopologyOptions_;
+    DisplayTopologyExchangeTracker TopologyExchange_;
+    std::optional<MachineId> LocalTopologyMachine_;
+    PeerDirectionArbiter DirectionArbiter_;
+    std::optional<PeerDirectionToken> OutgoingToken_;
+    std::optional<PeerDirectionToken> IncomingToken_;
+    std::uint64_t ReliableSequence_{1};
+    std::uint64_t AudioDatagramSequence_{1};
+    std::uint64_t TopologySequence_{1};
+    SessionStats Stats_;
+    MachineId PeerMachine_{};
+    mutable std::recursive_mutex Mutex_;
+    bool CapabilityConflict_{};
+    bool Started_{};
 };
 
 } // namespace desklink

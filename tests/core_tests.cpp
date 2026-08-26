@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -111,7 +112,10 @@ public:
     bool ReconcileState(const desklink::InputStateSnapshotMessage& Snapshot) override {
         snapshots.push_back(Snapshot); return ReconcileSucceeds;
     }
-    void release_owned_state() noexcept override { ++release_calls; }
+    bool release_owned_state() noexcept override {
+        ++release_calls;
+        return ReleaseSucceeds;
+    }
 
     std::vector<desklink::KeyEventMessage> keys;
     std::vector<desklink::MouseButtonMessage> buttons;
@@ -120,8 +124,120 @@ public:
     std::vector<desklink::MouseWheelMessage> wheels;
     std::vector<desklink::InputStateSnapshotMessage> snapshots;
     bool ReconcileSucceeds{true};
+    bool ReleaseSucceeds{true};
     int release_calls{};
 };
+
+class PausableTransportEndpoint final
+    : public desklink::ITransportEndpoint,
+      public std::enable_shared_from_this<PausableTransportEndpoint> {
+public:
+    explicit PausableTransportEndpoint(desklink::TransportPeerInfo Peer)
+        : Peer_(std::move(Peer)) {}
+
+    void Connect(
+        const std::shared_ptr<PausableTransportEndpoint>& PeerEndpoint) {
+        PeerEndpoint_ = PeerEndpoint;
+    }
+
+    bool send_reliable(desklink::ByteBuffer Packet) override {
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (Closed_) return false;
+            if (ReliablePaused_) {
+                ReliableQueue_.push_back(std::move(Packet));
+                return true;
+            }
+        }
+        return Deliver(std::move(Packet), false);
+    }
+
+    bool send_datagram(desklink::ByteBuffer Packet) override {
+        return Deliver(std::move(Packet), true);
+    }
+
+    void set_reliable_handler(ReceiveHandler Handler) override {
+        std::scoped_lock Lock(Mutex_);
+        ReliableHandler_ = std::move(Handler);
+    }
+
+    void set_datagram_handler(ReceiveHandler Handler) override {
+        std::scoped_lock Lock(Mutex_);
+        DatagramHandler_ = std::move(Handler);
+    }
+
+    [[nodiscard]] desklink::TransportPeerInfo peer_info() const override {
+        return Peer_;
+    }
+
+    void close() noexcept override {
+        std::scoped_lock Lock(Mutex_);
+        Closed_ = true;
+        ReliableHandler_ = {};
+        DatagramHandler_ = {};
+        ReliableQueue_.clear();
+    }
+
+    void PauseReliable(bool Paused) noexcept {
+        std::scoped_lock Lock(Mutex_);
+        ReliablePaused_ = Paused;
+    }
+
+    [[nodiscard]] bool FlushOneReliable() {
+        desklink::ByteBuffer Packet;
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (ReliableQueue_.empty()) return false;
+            Packet = std::move(ReliableQueue_.front());
+            ReliableQueue_.pop_front();
+        }
+        return Deliver(std::move(Packet), false);
+    }
+
+private:
+    [[nodiscard]] bool Deliver(
+        desklink::ByteBuffer Packet, bool Datagram) {
+        const auto PeerEndpoint = PeerEndpoint_.lock();
+        if (!PeerEndpoint) return false;
+        ReceiveHandler Handler;
+        {
+            std::scoped_lock Lock(PeerEndpoint->Mutex_);
+            if (PeerEndpoint->Closed_) return false;
+            Handler = Datagram
+                ? PeerEndpoint->DatagramHandler_
+                : PeerEndpoint->ReliableHandler_;
+        }
+        if (!Handler) return false;
+        Handler(std::move(Packet));
+        return true;
+    }
+
+    desklink::TransportPeerInfo Peer_;
+    std::weak_ptr<PausableTransportEndpoint> PeerEndpoint_;
+    mutable std::mutex Mutex_;
+    ReceiveHandler ReliableHandler_;
+    ReceiveHandler DatagramHandler_;
+    std::deque<desklink::ByteBuffer> ReliableQueue_;
+    bool ReliablePaused_{};
+    bool Closed_{};
+};
+
+struct PausableTransportPair {
+    std::shared_ptr<PausableTransportEndpoint> A;
+    std::shared_ptr<PausableTransportEndpoint> B;
+};
+
+PausableTransportPair MakePausableTransportPair(
+    desklink::TransportPeerInfo AViewOfB,
+    desklink::TransportPeerInfo BViewOfA) {
+    auto A = std::make_shared<PausableTransportEndpoint>(
+        std::move(AViewOfB));
+    auto B = std::make_shared<PausableTransportEndpoint>(
+        std::move(BViewOfA));
+    A->Connect(B);
+    B->Connect(A);
+    return {std::move(A), std::move(B)};
+}
 
 class DeterministicPairingCrypto final : public desklink::IPairingCrypto {
 public:
@@ -223,16 +339,99 @@ desklink::Sha256Digest MakeDigest(std::uint8_t Marker) {
 
 desklink::PeerIdentity MakeIdentity(std::uint8_t Marker, std::string Name) {
     desklink::PeerIdentity Result;
-    Result.machine_id = MakeMachineId(Marker);
+    Result.machine_id = desklink::DeriveMachineId(MakeDigest(Marker));
     Result.display_name = std::move(Name);
     Result.public_key_fingerprint = desklink::FormatFingerprint(MakeDigest(Marker));
     return Result;
 }
 
 void SaveTrustedPeer(desklink::InMemoryTrustStore& Store,
-                     const desklink::PeerIdentity& Identity,
-                     desklink::CapabilitySet Capabilities = {}) {
+                      const desklink::PeerIdentity& Identity,
+                      desklink::CapabilitySet Capabilities = {}) {
+    const auto Fingerprint = desklink::ParseFingerprint(
+        Identity.public_key_fingerprint);
+    CHECK(Fingerprint.has_value());
+    CHECK(Identity.machine_id == desklink::DeriveMachineId(*Fingerprint));
     CHECK(Store.SavePeer(desklink::TrustedPeer{Identity, Capabilities}));
+}
+
+void CallbackGateClosesAndDrainsAdmittedCallbacks() {
+    using namespace desklink;
+    auto Gate = std::make_shared<CallbackGate>();
+    std::mutex Mutex;
+    std::condition_variable Condition;
+    bool Entered = false;
+    bool Release = false;
+    std::atomic_bool Drained{};
+    std::atomic_bool DrainStarted{};
+
+    std::thread Callback([&] {
+        auto Guard = Gate->TryEnter();
+        CHECK(static_cast<bool>(Guard));
+        std::unique_lock Lock(Mutex);
+        Entered = true;
+        Condition.notify_all();
+        Condition.wait(Lock, [&] { return Release; });
+    });
+    {
+        std::unique_lock Lock(Mutex);
+        CHECK(Condition.wait_for(
+            Lock, std::chrono::seconds(1), [&] { return Entered; }));
+    }
+    Gate->Close();
+    CHECK(!Gate->TryEnter());
+    std::thread Drainer([&] {
+        DrainStarted = true;
+        Gate->Wait();
+        Drained = true;
+    });
+    while (!DrainStarted.load()) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(!Drained.load());
+    {
+        std::scoped_lock Lock(Mutex);
+        Release = true;
+    }
+    Condition.notify_all();
+    Callback.join();
+    Drainer.join();
+    CHECK(Drained.load());
+
+    auto ReentrantGate = std::make_shared<CallbackGate>();
+    auto Guard = ReentrantGate->TryEnter();
+    CHECK(static_cast<bool>(Guard));
+    bool OtherEntered = false;
+    bool ReleaseOther = false;
+    bool ReentrantWaitStarted = false;
+    std::mutex ReentrantMutex;
+    std::condition_variable ReentrantCondition;
+    std::thread OtherCallback([&] {
+        auto OtherGuard = ReentrantGate->TryEnter();
+        CHECK(static_cast<bool>(OtherGuard));
+        std::unique_lock Lock(ReentrantMutex);
+        OtherEntered = true;
+        ReentrantCondition.notify_all();
+        ReentrantCondition.wait(Lock, [&] { return ReleaseOther; });
+    });
+    {
+        std::unique_lock Lock(ReentrantMutex);
+        ReentrantCondition.wait(Lock, [&] { return OtherEntered; });
+    }
+    std::thread Releaser([&] {
+        std::unique_lock Lock(ReentrantMutex);
+        ReentrantCondition.wait(Lock, [&] { return ReentrantWaitStarted; });
+        ReleaseOther = true;
+        ReentrantCondition.notify_all();
+    });
+    ReentrantGate->Close();
+    {
+        std::scoped_lock Lock(ReentrantMutex);
+        ReentrantWaitStarted = true;
+    }
+    ReentrantCondition.notify_all();
+    ReentrantGate->Wait();
+    OtherCallback.join();
+    Releaser.join();
 }
 
 void protocol_round_trip() {
@@ -1104,6 +1303,13 @@ void RoamingRuntimeHandlesExtremeLocalPointerDeltas() {
 void PeerDirectionArbiterRejectsCollisionsAndStaleTokens() {
     using namespace desklink;
     PeerDirectionArbiter Arbiter;
+    const auto Peer = MakeMachineId(91);
+    CHECK(Arbiter.BeginOutgoing().Outcome ==
+          PeerDirectionOutcome::RejectedUnbound);
+    CHECK(!Arbiter.BindSession({}, 5));
+    CHECK(!Arbiter.BindSession(Peer, 0));
+    CHECK(Arbiter.BindSession(Peer, 5));
+    CHECK(Arbiter.BoundTo(Peer, 5));
     const auto Outgoing = Arbiter.BeginOutgoing();
     CHECK(Outgoing.Outcome == PeerDirectionOutcome::Admitted);
     CHECK(Outgoing.Token.has_value());
@@ -1130,6 +1336,357 @@ void PeerDirectionArbiterRejectsCollisionsAndStaleTokens() {
     CHECK(Arbiter.AdmitOutgoing(*Active.Token));
     CHECK(Arbiter.State() == PeerDirectionState::OutgoingActive);
     CHECK(Arbiter.Release(*Active.Token));
+
+    const auto ReconnectToken = Arbiter.BeginOutgoing();
+    CHECK(ReconnectToken.Token.has_value());
+    Arbiter.ResetSession();
+    CHECK(!Arbiter.BoundTo(Peer, 5));
+    CHECK(!Arbiter.AdmitOutgoing(*ReconnectToken.Token));
+    CHECK(Arbiter.BindSession(Peer, 6));
+    CHECK(!Arbiter.AdmitOutgoing(*ReconnectToken.Token));
+    const auto Fresh = Arbiter.BeginOutgoing();
+    CHECK(Fresh.Token.has_value());
+    CHECK(Fresh.Token->PeerMachine == Peer);
+    CHECK(Fresh.Token->SessionNonce == 6);
+    CHECK(Arbiter.AdmitOutgoing(*Fresh.Token));
+    auto Forged = *Fresh.Token;
+    Forged.SessionNonce = 5;
+    CHECK(!Arbiter.Release(Forged));
+    CHECK(Arbiter.Release(*Fresh.Token));
+}
+
+void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x71'82'93u;
+    const auto IdentityA = MakeIdentity(101, "Peer A");
+    const auto IdentityB = MakeIdentity(102, "Peer B");
+    TransportPeerInfo AViewOfB{IdentityB, true, true};
+    TransportPeerInfo BViewOfA{IdentityA, true, true};
+    auto Pair = make_in_memory_transport_pair(AViewOfB, BViewOfA);
+
+    CapabilitySet GrantedToA;
+    GrantedToA.grant(Capability::InputInject);
+    GrantedToA.grant(Capability::DisplayTopologyExchange);
+    CapabilitySet GrantedToB;
+    GrantedToB.grant(Capability::InputInject);
+    GrantedToB.grant(Capability::DisplayTopologyExchange);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, GrantedToB);
+    SaveTrustedPeer(TrustB, IdentityA, GrantedToA);
+
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t ReadyA{};
+    std::size_t ReadyB{};
+    std::size_t DirectionChanges{};
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        PeerSessionHandlers{
+            [&] { ++ReadyA; },
+            [&] { ++DirectionChanges; },
+            {}});
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        PeerSessionHandlers{
+            [&] { ++ReadyB; },
+            [&] { ++DirectionChanges; },
+            {}});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.PeerGrantedCapability(Capability::InputInject));
+    CHECK(SessionB.PeerGrantedCapability(Capability::InputInject));
+    CHECK(SessionA.GrantedToPeer(Capability::InputInject));
+    CHECK(SessionB.GrantedToPeer(Capability::InputInject));
+    CHECK(DirectionChanges >= 2);
+
+    CHECK(SessionA.BeginOutgoingFocus(750));
+    CHECK(ReadyA == 1);
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionB.IncomingFocused());
+    CHECK(SessionA.DirectionState() ==
+          PeerDirectionState::OutgoingActive);
+    CHECK(SessionB.DirectionState() ==
+          PeerDirectionState::IncomingActive);
+    CHECK(!SessionB.BeginOutgoingFocus(750));
+    CHECK(SessionA.SendKey(KeyEventMessage{0x30, false, true}));
+    CHECK(SessionA.SendButton(
+        MouseButtonMessage{MouseButtonId::Left, true}));
+    CHECK(SessionA.SendPointerMotion(PointerMotionMessage{4, -2}));
+    CHECK(InjectorB.keys.size() == 1);
+    CHECK(InjectorB.buttons.size() == 1);
+    CHECK(InjectorB.motions.size() == 1);
+    CHECK(SessionA.ReleaseOutgoingFocus());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(InjectorB.release_calls == 1);
+
+    CHECK(SessionB.BeginOutgoingFocus(750));
+    CHECK(ReadyB == 1);
+    CHECK(SessionB.SendWheel(
+        MouseWheelMessage{MouseWheelAxis::Vertical, 120}));
+    CHECK(InjectorA.wheels.size() == 1);
+    CHECK(SessionB.SetDesiredMode(DeskMode::Game));
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(InjectorA.release_calls == 1);
+    CHECK(DirectionChanges >= 6);
+    CHECK(SessionA.Stats().CapabilityGrantsReceived >= 1);
+    CHECK(SessionB.Stats().CapabilityGrantsReceived >= 1);
+}
+
+void PeerSessionResolvesSimultaneousFocusToLocal() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x44'55'66u;
+    const auto IdentityA = MakeIdentity(103, "Collision A");
+    const auto IdentityB = MakeIdentity(104, "Collision B");
+    auto Pair = MakePausableTransportPair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet InputCapability;
+    InputCapability.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, InputCapability);
+    SaveTrustedPeer(TrustB, IdentityA, InputCapability);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t CollisionsA{};
+    std::size_t CollisionsB{};
+    PeerSession SessionA(
+        Pair.A, OutgoingA, IncomingA, TrustA, Nonce,
+        PeerSessionHandlers{{}, {}, [&] { ++CollisionsA; }});
+    PeerSession SessionB(
+        Pair.B, OutgoingB, IncomingB, TrustB, Nonce,
+        PeerSessionHandlers{{}, {}, [&] { ++CollisionsB; }});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.CanBeginOutgoing());
+    CHECK(SessionB.CanBeginOutgoing());
+
+    Pair.A->PauseReliable(true);
+    Pair.B->PauseReliable(true);
+    CHECK(SessionA.BeginOutgoingFocus(750));
+    CHECK(SessionB.BeginOutgoingFocus(750));
+    CHECK(SessionA.DirectionState() ==
+          PeerDirectionState::OutgoingPending);
+    CHECK(SessionB.DirectionState() ==
+          PeerDirectionState::OutgoingPending);
+    CHECK(Pair.A->FlushOneReliable());
+    CHECK(Pair.B->FlushOneReliable());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(!SessionB.OutgoingFocused());
+    CHECK(CollisionsA == 1);
+    CHECK(CollisionsB == 1);
+    CHECK(SessionA.Stats().DirectionCollisions == 1);
+    CHECK(SessionB.Stats().DirectionCollisions == 1);
+}
+
+void PeerSessionRequiresTheRemoteDirectionalGrant() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x99'88'77u;
+    const auto IdentityA = MakeIdentity(105, "Grant A");
+    const auto IdentityB = MakeIdentity(106, "Grant B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet GrantedToB;
+    GrantedToB.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, GrantedToB);
+    SaveTrustedPeer(TrustB, IdentityA, CapabilitySet{});
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce);
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(!SessionA.PeerGrantedCapability(Capability::InputInject));
+    CHECK(SessionB.PeerGrantedCapability(Capability::InputInject));
+    CHECK(!SessionA.BeginOutgoingFocus());
+    CHECK(SessionB.BeginOutgoingFocus());
+    CHECK(SessionA.IncomingFocused());
+    CHECK(SessionB.ReleaseOutgoingFocus());
+
+    EnvelopeHeader WrongNonce;
+    WrongNonce.session_nonce = Nonce + 1;
+    WrongNonce.sequence = 500;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        WrongNonce, FocusRequestMessage{750, 42})));
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.Stats().session_rejected == 1);
+}
+
+void PeerSessionFailsLocalOnAnInvalidCapabilityReplay() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x12'34'56u;
+    const auto IdentityA = MakeIdentity(107, "Grant replay A");
+    const auto IdentityB = MakeIdentity(108, "Grant replay B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet InputCapability;
+    InputCapability.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, InputCapability);
+    SaveTrustedPeer(TrustB, IdentityA, InputCapability);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t DirectionChanges{};
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce);
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        PeerSessionHandlers{
+            {}, [&] { ++DirectionChanges; }, {}});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionB.BeginOutgoingFocus());
+    CHECK(SessionB.OutgoingFocused());
+    CHECK(SessionA.IncomingFocused());
+
+    EnvelopeHeader Header;
+    Header.session_nonce = Nonce;
+    Header.sequence = 900;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        Header, CapabilityGrantMessage{std::uint64_t{1} << 63})));
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(!SessionB.PeerGrantedCapability(Capability::InputInject));
+    CHECK(!SessionB.BeginOutgoingFocus());
+    CHECK(SessionB.Stats().CapabilityGrantsRejected == 1);
+    CHECK(DirectionChanges >= 1);
+}
+
+void PeerSessionDoesNotTreatRemoteGrantsAsLocalDisclosureConsent() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x65'43'21u;
+    const auto IdentityA = MakeIdentity(109, "Disclosure A");
+    const auto IdentityB = MakeIdentity(110, "Disclosure B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet ReportedByB;
+    ReportedByB.grant(Capability::AudioReceive);
+    ReportedByB.grant(Capability::DisplayTopologyExchange);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, CapabilitySet{});
+    SaveTrustedPeer(TrustB, IdentityA, ReportedByB);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce, {}, nullptr,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce, {}, nullptr,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.PeerGrantedCapability(Capability::AudioReceive));
+    CHECK(SessionA.PeerGrantedCapability(
+        Capability::DisplayTopologyExchange));
+    CHECK(!SessionA.GrantedToPeer(Capability::AudioReceive));
+    CHECK(!SessionA.GrantedToPeer(
+        Capability::DisplayTopologyExchange));
+    CHECK(!SessionA.CanSendAudio());
+    AudioFrameMessage Frame;
+    Frame.stream_id = 1;
+    Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x22);
+    CHECK(!SessionA.SendAudioFrame(Frame));
+    CHECK(!SessionA.PublishDisplayTopology(
+        IdentityA.machine_id,
+        MakeDisplayTopology("disclosure-a", "Disclosure A")));
+}
+
+void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x24'68'10u;
+    const auto IdentityA = MakeIdentity(111, "Modules A");
+    const auto IdentityB = MakeIdentity(112, "Modules B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet ModuleCapabilities;
+    ModuleCapabilities.grant(Capability::AudioSend);
+    ModuleCapabilities.grant(Capability::AudioReceive);
+    ModuleCapabilities.grant(Capability::DisplayTopologyExchange);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, ModuleCapabilities);
+    SaveTrustedPeer(TrustB, IdentityA, ModuleCapabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    AudioReceiver ReceiverA([](AudioFrameMessage) { return true; });
+    AudioReceiver ReceiverB([](AudioFrameMessage) { return true; });
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce, {}, &ReceiverA,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce, {}, &ReceiverB,
+        DisplayTopologyExchangeOptions{true, &Clock});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.CanSendAudio());
+    CHECK(SessionA.CanReceiveAudio());
+    CHECK(SessionB.CanSendAudio());
+    CHECK(SessionB.CanReceiveAudio());
+    AudioFrameMessage Frame;
+    Frame.stream_id = 1;
+    Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x33);
+    CHECK(SessionA.SendAudioFrame(Frame));
+    CHECK(SessionB.SendAudioFrame(Frame));
+    CHECK(SessionA.Stats().AudioAccepted == 1);
+    CHECK(SessionB.Stats().AudioAccepted == 1);
+
+    const auto TopologyA = MakeDisplayTopology("modules-a", "Modules A");
+    const auto TopologyB = MakeDisplayTopology("modules-b", "Modules B");
+    CHECK(SessionA.PublishDisplayTopology(
+        IdentityA.machine_id, TopologyA));
+    CHECK(SessionB.PublishDisplayTopology(
+        IdentityB.machine_id, TopologyB));
+    CHECK(SessionA.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+    CHECK(SessionB.DisplayTopologyStatus() ==
+          DisplayTopologyExchangeStatus::Ready);
+    CHECK(SessionA.RemoteDisplayTopology() == TopologyB);
+    CHECK(SessionB.RemoteDisplayTopology() == TopologyA);
 }
 
 void DisplayTopologyProtocolIsBoundedAndStrict() {
@@ -1505,6 +2062,38 @@ void stale_epoch_rejected_after_refocus() {
     auto stale = decode_packet(encode_packet(stale_h, KeyEventMessage{0x2A, false, true}), false);
     CHECK(stale.packet.has_value());
     CHECK(agent.handle(*stale.packet) == AgentDecision::RejectedEpoch);
+}
+
+void FailedInputCleanupIsRetriedAndBlocksReadmission() {
+    using namespace desklink;
+    ManualClock Clock;
+    RecordingInjector Injector;
+    AgentCoordinator Agent(Clock, Injector);
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Agent.set_peer_capabilities(Capabilities);
+
+    EnvelopeHeader Header;
+    const auto Request = decode_packet(
+        encode_packet(Header, FocusRequestMessage{750, 1}), false);
+    CHECK(Request.packet.has_value());
+    CHECK(Agent.handle(*Request.packet) == AgentDecision::Accepted);
+    const auto Epoch = Agent.focus_state().epoch();
+
+    Injector.ReleaseSucceeds = false;
+    Header.epoch = Epoch;
+    const auto Release = decode_packet(
+        encode_packet(Header, FocusReleaseMessage{}), false);
+    CHECK(Release.packet.has_value());
+    CHECK(Agent.handle(*Release.packet) == AgentDecision::RejectedMalformed);
+    CHECK(Agent.InputCleanupPending());
+    CHECK(Agent.handle(*Request.packet) == AgentDecision::RejectedLease);
+
+    Injector.ReleaseSucceeds = true;
+    Agent.tick();
+    CHECK(!Agent.InputCleanupPending());
+    CHECK(Injector.release_calls >= 2);
+    CHECK(Agent.handle(*Request.packet) == AgentDecision::Accepted);
 }
 
 void host_agent_focus_transaction() {
@@ -2393,6 +2982,7 @@ void PinnedIdentityMismatchIsRefused() {
 
     auto pinned = presented.identity;
     pinned.public_key_fingerprint = FormatFingerprint(MakeDigest(99));
+    pinned.machine_id = DeriveMachineId(MakeDigest(99));
     InMemoryTrustStore trust;
     SaveTrustedPeer(trust, pinned);
 
@@ -2422,20 +3012,29 @@ void PairingRequiresMatchingUserVerification() {
     CHECK(first_offer.has_value());
     CHECK(second_offer.has_value());
 
-    const auto first_candidate = first.InspectOffer(*second_offer);
-    const auto second_candidate = second.InspectOffer(*first_offer);
+    const auto first_commitment = first.CreateCommitment(*first_offer, true);
+    const auto second_commitment = second.CreateCommitment(*second_offer, false);
+    CHECK(first_commitment.has_value() && second_commitment.has_value());
+    CHECK(first.VerifyCommitment(*second_commitment, *second_offer, false));
+    CHECK(second.VerifyCommitment(*first_commitment, *first_offer, true));
+    CHECK(!first.VerifyCommitment(*second_commitment, *second_offer, true));
+    const auto first_candidate = first.InspectOffer(*first_offer, *second_offer, true);
+    const auto second_candidate = second.InspectOffer(*second_offer, *first_offer, false);
     CHECK(first_candidate.Status == PairingStatus::Ready);
     CHECK(second_candidate.Status == PairingStatus::Ready);
     CHECK(first_candidate.VerificationCode == second_candidate.VerificationCode);
     CHECK(first_candidate.VerificationCode.size() == 6);
-    CHECK(!first.ConfirmOffer(*second_offer, "000000", CapabilitySet{}));
+    CHECK(!first.ConfirmOffer(
+        *first_offer, *second_offer, true, "000000", CapabilitySet{}));
 
     CapabilitySet grant_to_second;
     grant_to_second.grant(Capability::InputInject);
     CHECK(first.ConfirmOffer(
-        *second_offer, first_candidate.VerificationCode, grant_to_second));
+        *first_offer, *second_offer, true,
+        first_candidate.VerificationCode, grant_to_second));
     CHECK(second.ConfirmOffer(
-        *first_offer, second_candidate.VerificationCode, CapabilitySet{}));
+        *second_offer, *first_offer, false,
+        second_candidate.VerificationCode, CapabilitySet{}));
     CHECK(IsTrustedPeer(first_trust, first_candidate.Identity));
     CHECK(IsTrustedPeer(second_trust, second_candidate.Identity));
     CHECK(first_trust.GetPeer(second_offer->Machine)->Capabilities.contains(Capability::InputInject));
@@ -2462,20 +3061,24 @@ void PairingTranscriptDetectsPinTamperingAndExpiry() {
 
     auto tampered_offer = *second_offer;
     tampered_offer.CertificatePin[0] ^= 0x5Au;
-    const auto tampered_code = first.InspectOffer(tampered_offer).VerificationCode;
-    const auto genuine_code = second.InspectOffer(*first_offer).VerificationCode;
-    CHECK(tampered_code != genuine_code);
+    const auto second_commitment = second.CreateCommitment(*second_offer, false);
+    CHECK(second_commitment.has_value());
+    CHECK(!first.VerifyCommitment(*second_commitment, tampered_offer, false));
+    const auto genuine_code = second.InspectOffer(
+        *second_offer, *first_offer, false).VerificationCode;
 
     clock.advance(std::chrono::milliseconds(5001));
     CHECK(!first.IsPairingOpen());
-    CHECK(first.InspectOffer(*second_offer).Status == PairingStatus::WindowClosed);
-    CHECK(!first.ConfirmOffer(*second_offer, genuine_code, CapabilitySet{}));
+    CHECK(first.InspectOffer(*first_offer, *second_offer, true).Status ==
+          PairingStatus::WindowClosed);
+    CHECK(!first.ConfirmOffer(
+        *first_offer, *second_offer, true, genuine_code, CapabilitySet{}));
 }
 
 void PairingWireIsBoundedAndFragmentSafe() {
     using namespace desklink;
     PairingOffer Offer{
-        MakeMachineId(31), "DeskLink peer", MakeDigest(31), {}};
+        DeriveMachineId(MakeDigest(31)), "DeskLink peer", MakeDigest(31), {}};
     for (std::size_t Index = 0; Index < Offer.Nonce.size(); ++Index) {
         Offer.Nonce[Index] = static_cast<std::uint8_t>(Index + 1);
     }
@@ -2497,8 +3100,12 @@ void PairingWireIsBoundedAndFragmentSafe() {
     CHECK(Decoder.TakeOffer().has_value());
     CHECK(Decoder.Status() == PairingWireStatus::Incomplete);
 
-    const auto Confirmation = EncodePairingConfirmationFrame();
-    CHECK(Confirmation.size() == kPairingFrameHeaderSize);
+    CapabilitySet ConfirmedCapabilities;
+    ConfirmedCapabilities.grant(Capability::InputInject);
+    const auto Confirmation = EncodePairingConfirmationFrame(
+        MakeDigest(90), ConfirmedCapabilities);
+    CHECK(Confirmation.size() ==
+          kPairingFrameHeaderSize + kSha256DigestSize + sizeof(std::uint64_t));
     ByteBuffer Combined = *Frame;
     Combined.insert(Combined.end(), Confirmation.begin(), Confirmation.end());
     Decoder.Reset();
@@ -2507,7 +3114,10 @@ void PairingWireIsBoundedAndFragmentSafe() {
     CHECK(Decoder.TakeOffer().has_value());
     CHECK(Decoder.Status() == PairingWireStatus::Ready);
     CHECK(Decoder.ReadyType() == PairingWireFrameType::Confirmation);
-    CHECK(Decoder.TakeConfirmation());
+    const auto DecodedConfirmation = Decoder.TakeConfirmation();
+    CHECK(DecodedConfirmation.has_value());
+    CHECK(DecodedConfirmation->TranscriptDigest == MakeDigest(90));
+    CHECK(DecodedConfirmation->Capabilities.contains(Capability::InputInject));
     CHECK(Decoder.Status() == PairingWireStatus::Incomplete);
 
     Decoder.Reset();
@@ -2515,17 +3125,20 @@ void PairingWireIsBoundedAndFragmentSafe() {
           PairingWireStatus::Incomplete);
     CHECK(Decoder.Push(ByteSpan{Confirmation.data() + 2, Confirmation.size() - 2}) ==
           PairingWireStatus::Ready);
-    CHECK(Decoder.TakeConfirmation());
+    CHECK(Decoder.TakeConfirmation().has_value());
 
     auto BadMagic = *Frame;
     BadMagic[0] ^= 0xFFu;
     CHECK(!DecodePairingOfferFrame(BadMagic));
+    auto VersionOne = *Frame;
+    VersionOne[4] = 1;
+    CHECK(!DecodePairingOfferFrame(VersionOne));
     auto ExtraByte = *Frame;
     ExtraByte.push_back(0);
     CHECK(!DecodePairingOfferFrame(ExtraByte));
     auto ConfirmationWithBody = Confirmation;
-    ConfirmationWithBody[7] = 1;
-    ConfirmationWithBody.push_back(0);
+    ConfirmationWithBody[7] = static_cast<std::uint8_t>(
+        ConfirmationWithBody[7] - 1);
     Decoder.Reset();
     CHECK(Decoder.Push(ConfirmationWithBody) == PairingWireStatus::InvalidFrame);
     auto InvalidUtf8 = Offer;
@@ -2559,6 +3172,7 @@ void CertificatePinsMatchOnlyTheStoredPeer() {
 
     auto identity = MakeIdentity(60, "Pinned peer");
     identity.public_key_fingerprint = FormatFingerprint(*digest);
+    identity.machine_id = DeriveMachineId(*digest);
     InMemoryTrustStore trust;
     SaveTrustedPeer(trust, identity);
 
@@ -2941,6 +3555,30 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
     Focus.CaptureInput = true;
     Focus.EdgeRoamingSettingsPath.clear();
 
+    LauncherRequest Serve;
+    Serve.Operation = LauncherOperation::Serve;
+    Serve.SendAudio = true;
+    Serve.CaptureInput = true;
+    Serve.PointerCalibration.GainPercent = 125;
+    Serve.PointerCalibration.SourceDpi = 800;
+    Serve.EdgeRoamingSettingsPath =
+        L"C:\\Users\\test\\AppData\\Local\\DeskLink\\roaming.settings";
+    const auto ReciprocalServeArguments = BuildLauncherArguments(Serve);
+    CHECK(ReciprocalServeArguments.has_value());
+    const std::vector<std::wstring> ExpectedReciprocalServe{
+        L"serve", L"43821", L"--send-audio", L"--capture",
+        L"--pointer-gain", L"125", L"--pointer-dpi", L"800",
+        L"--edge-roaming",
+        L"C:\\Users\\test\\AppData\\Local\\DeskLink\\roaming.settings",
+        L"--tls-provider", L"schannel"};
+    CHECK(*ReciprocalServeArguments == ExpectedReciprocalServe);
+    Serve.EdgeRoamingSettingsPath.clear();
+    CHECK(!BuildLauncherArguments(Serve).has_value());
+    Serve.CaptureInput = false;
+    CHECK(!BuildLauncherArguments(Serve).has_value());
+    Serve.PointerCalibration = {};
+    CHECK(BuildLauncherArguments(Serve).has_value());
+
     LauncherRequest Pair;
     Pair.Operation = LauncherOperation::PairListen;
     Pair.GrantInput = true;
@@ -3185,7 +3823,12 @@ void WindowsCryptoAndDpapiTrustStoreWork() {
     CHECK(restored.has_value());
     CHECK(restored->Identity == identity);
     CHECK(restored->Capabilities.contains(Capability::InputInject));
+    const auto second_identity = MakeIdentity(43, "DPAPI peer two");
+    CHECK(second.SavePeer(TrustedPeer{second_identity, CapabilitySet{}}));
+    CHECK(first.GetPeer(second_identity.machine_id).has_value());
     CHECK(second.RemovePeer(identity.machine_id));
+    CHECK(!first.GetPeer(identity.machine_id).has_value());
+    CHECK(first.GetPeer(second_identity.machine_id).has_value());
     std::filesystem::remove(path, ignored);
 
     const auto KeyName = std::wstring(L"DeskLink-Test-") + std::to_wstring(
@@ -3455,6 +4098,7 @@ void in_memory_transport_preserves_security_metadata() {
 } // namespace
 
 int main() {
+    CallbackGateClosesAndDrainsAdmittedCallbacks();
     AudioFrameAssemblerProducesExactBoundedBlocks();
     AudioReceiverIsBoundedAndFailsClosed();
     AudioReceiverGainAndMuteAreBoundedAndRamped();
@@ -3483,6 +4127,12 @@ int main() {
     RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown();
     RoamingRuntimeHandlesExtremeLocalPointerDeltas();
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
+    PeerSessionSupportsReciprocalFocusAndIndependentGrants();
+    PeerSessionResolvesSimultaneousFocusToLocal();
+    PeerSessionRequiresTheRemoteDirectionalGrant();
+    PeerSessionFailsLocalOnAnInvalidCapabilityReplay();
+    PeerSessionDoesNotTreatRemoteGrantsAsLocalDisclosureConsent();
+    PeerSessionPreservesExplicitAudioAndTopologyExchange();
     DisplayTopologyProtocolIsBoundedAndStrict();
     DisplayTopologyAdmissionFailsClosedAndRecoversOnReconnect();
     RoamingRouteWaitsForAuthenticatedTopology();
@@ -3492,6 +4142,7 @@ int main() {
     capability_and_lease_gate_input();
     DesiredModeControlIsCapabilityGatedAndFailsLocal();
     stale_epoch_rejected_after_refocus();
+    FailedInputCleanupIsRetriedAndBlocksReadmission();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();
     out_of_order_pointer_rejected();

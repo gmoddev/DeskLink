@@ -29,9 +29,9 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Default-endpoint notification and bounded audio-only WASAPI recovery
 - Abstract transport interface
 - Authenticated/encrypted session gate and session-nonce binding
-- Manual pairing transcript with short authentication code confirmation
+- Pairing-v2 role-bound commit/reveal transcript with short authentication code confirmation
 - Stored peer certificate-pin enforcement for every operational session
-- Windows CNG randomness/SHA-256 and user-scoped DPAPI trust store
+- Windows CNG randomness/SHA-256 and generation-checked, SID-scoped cross-session user DPAPI trust store
 - Optional MsQuic stream/datagram endpoint adapter pinned to MsQuic 2.6.0
 - Integrity-checked MsQuic runtime selection with Schannel as the production provider
 - Experimental, explicitly selected OpenSSL 3.5/CNG credential prototype for Windows 10 R&D
@@ -73,9 +73,12 @@ This repository is a **reference foundation implementation**, not a finished pro
   Push/DwellAndPush/DoublePush intent, proportional corner-safe landing,
   re-entry cooldown, a 1.5-second focus timeout, and fail-closed route/session
   revalidation before the existing Host lifecycle may suppress input
+- One authenticated reciprocal peer-session owner with independent directional
+  grants, nonce-bound direction tokens, deterministic collision-to-Local, and
+  explicit listener-side roaming opt-in
 - Low-level-hook wheel capture with enqueue-before-suppress fail-local behavior
 - Current-user-only named-pipe control API with bounded typed state/mode commands
-- Bounded native Windows DNS-SD/mDNS discovery with untrusted candidate output
+- Bounded native Windows DNS-SD/mDNS discovery with late-callback-safe untrusted candidate output
 - Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture
 - Production Host profile CLI and serialized live mode-event runtime
@@ -90,7 +93,7 @@ The following are intentionally kept behind interfaces and are the next producti
 
 - Two-PC Windows 11 MsQuic failure-injection and reconnect validation
 - Windows 10 OpenSSL/CNG production admission and release integration
-- Reciprocal peer-session ownership and physical two-PC edge-roaming signoff
+- Physical two-PC reciprocal edge-roaming signoff
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Final product polish, installer/update flow, and Stream Deck plugin
@@ -219,7 +222,8 @@ directory with DPAPI protection. DeskLink does not modify Windows Firewall.
 `--tls-provider auto|schannel|openssl` controls the packaged MsQuic TLS runtime.
 `auto` is the default. The loader resolves `runtime/<provider>/msquic.dll`
 relative to the executable, verifies its build-pinned SHA-256 and MsQuic 2.6.0
-provider/version metadata, and never uses the current directory or `PATH`.
+provider/version metadata, locks and rejects reparse points across the runtime
+path while loading, and never uses the current directory or `PATH`.
 Production packages include only the Schannel runtime. Research builds may add
 the pinned, patched OpenSSL runtime explicitly; they verify `msquic.dll`,
 `libcrypto`, and `libssl` before loading. No runtime or credential failure can
@@ -241,19 +245,27 @@ speed, acceleration, or device settings.
 
 Experimental controlled roaming is opt-in. Save an explicit link with
 **Arrange monitors**, enable **Capture and route physical input** plus
-**Experimental edge roaming**, start the controller, and select **Focus
-remote** to arm it while remaining Local. The equivalent CLI form is:
+**Experimental edge roaming** on each PC that may initiate a crossing, then
+start the receiver and controller. Each side observes only its own Local edge
+until a crossing is admitted. The equivalent CLI forms are:
 
 ```powershell
+# accepting PC, with reciprocal roaming enabled
+desklink_pair.exe serve 43821 --capture `
+  --edge-roaming "$env:LOCALAPPDATA\DeskLink\roaming.settings"
+
+# connecting PC
 desklink_pair.exe focus 192.168.1.25 43821 --capture `
   --edge-roaming "$env:LOCALAPPDATA\DeskLink\roaming.settings"
 ```
 
-Only the controller-to-receiver direction is active in this slice. A crossing
-requires the trusted current session, `InputInject`, fresh nonce and topology,
-an explicit Ready route, fresh `FocusReady`, accepted landing and snapshot,
-and direction arbitration. Any failure keeps or returns input Local; there is
-no automatic fallback to manual capture or a different route.
+One authenticated connection owns both directions, but only one direction may
+be pending or active at a time. Each crossing requires the destination's
+independent `InputInject` grant, the trusted current session, fresh nonce and
+topology, an explicit Ready route, fresh `FocusReady`, accepted landing and
+snapshot, and direction arbitration. Simultaneous opposite attempts return
+both sides Local. Any failure keeps or returns input Local; there is no
+automatic fallback to manual capture or a different route.
 
 Audio is separately opt-in and requires complementary grants on both PCs. To
 send PC2's system mix to PC1, pair PC1 with `--grant-audio-send` and pair PC2

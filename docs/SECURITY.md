@@ -39,6 +39,16 @@ The objective is not to make that permission harmless. The objective is to ensur
 
 If a peer with `input.inject` is itself compromised, an attacker controlling that peer can exercise the granted input capability until it is revoked. Capability separation limits blast radius but cannot make a compromised trusted endpoint trustworthy.
 
+Two in-scope local threats remain explicit release blockers rather than being
+misrepresented as fixed by current-user ACLs:
+
+- another process already running as the same Windows user can invoke DPAPI and
+  access that user's CNG objects; hostile same-user trust isolation requires a
+  separately secured broker/service identity and trusted approval UI;
+- receiver-process death after an injected DOWN cannot be made race-free by a
+  journal written by that same process; a surviving component must own the
+  injection transition or virtual-HID lifetime.
+
 ---
 
 ## 3. Pairing and identity
@@ -48,8 +58,10 @@ The pairing core now requires a persistent certificate identity and an interacti
 Recommended flow:
 
 1. User explicitly opens a pairing window of no more than five minutes on both PCs.
-2. Peers exchange machine IDs, display names, certificate SHA-256 pins, and fresh 32-byte nonces.
-3. Both derive a six-digit authentication string from the canonical SHA-256 transcript.
+2. Each connection sends a role-bound SHA-256 commitment before revealing its
+   machine ID, display name, certificate SHA-256 pin, and fresh 32-byte nonce.
+3. Each verifies the reveal, then both derive a six-digit authentication string
+   from the initiator/responder transcript.
 4. Both display the same code/words.
 5. User confirms the match.
 6. Each stores the peer's public identity/fingerprint.
@@ -67,14 +79,20 @@ output. Discovery cannot open pairing, persist a peer, connect, select/fallback
 a TLS provider, grant a capability, request focus, or admit a session.
 
 The Windows implementation uses CNG for cryptographic randomness/SHA-256 and
-current-user DPAPI for the bounded trust store. Device-certificate private-key
+current-user DPAPI for the bounded trust store. A protected global mutex named
+with the owner SID and normalized trust-path hash coordinates the user's console
+and RDP logon sessions. Reload-before-mutation, monotonic generations, and atomic
+replacement prevent lost updates and make live readers observe revocation. DPAPI is not an
+isolation boundary against another hostile process already running as the same
+Windows user; closing that in-scope threat requires the separately approved
+identity/trust broker described below. Device-certificate private-key
 creation uses a named current-user Microsoft Software Key Storage Provider key;
 the self-signed SHA-256 certificate is stored in the current-user `MY` store.
 The private key is non-exportable. Its export policy, key name, certificate, and
 pin must not be changed to accommodate a transport provider or older platform.
 
-First-time exchange is isolated on `desklink/pair/1`. It accepts only one
-strictly bounded offer while the manual window is open, binds the offer pin to
+First-time exchange is isolated on `desklink/pair/2`; version 1 is refused. It
+accepts a strictly bounded commit/reveal transaction while the manual window is open, binds the offer pin to
 the TLS leaf, and never exposes an operational transport endpoint. Confirmed
 peers reconnect on `desklink/session/1`, where both certificates must match the
 stored pins.
@@ -188,7 +206,10 @@ the nonblocking capture queue; otherwise that physical event passes locally.
 
 The Windows injector tracks only keys/buttons injected by DeskLink.
 
-On cleanup it generates UP transitions for those owned inputs.
+On cleanup it generates UP transitions for those owned inputs. Each successful
+UP clears only its corresponding ownership bit. Failed UP events remain owned,
+are surfaced as pending cleanup, are retried by the Agent tick, and block fresh
+focus/input admission until cleanup succeeds.
 
 It must not blindly release every key reported down by Windows because that would corrupt legitimate local physical input state.
 
@@ -199,7 +220,12 @@ Cleanup is invoked on:
 - capability revocation
 - Agent disconnect
 
-A later hardened Windows implementation can move the cleanup watchdog into a minimal current-user helper process so an Agent crash can still release DeskLink-owned state.
+Agent-process death while an injected input is held is not yet fully mitigated.
+A post-injection journal cannot close the crash window; the surviving component
+must own the injection/state transition (or use a virtual HID whose teardown
+releases state). That crash-domain work must be designed with the isolated
+identity/trust broker so it does not create a new same-user privileged injection
+API.
 
 ---
 
@@ -317,9 +343,15 @@ the portable state must reach `Remote`. Wrong/stale focus, a 1.5-second stall,
 settings mutation, topology or capability loss, nonce change, queue/send/capture
 failure, manual return, emergency, and session failure remain or return Local.
 No failure selects another route, restores manual capture, changes TLS, or
-weakens peer admission. Reciprocal control remains disabled until a symmetric
-session owner integrates the collision arbiter; two uncontrolled sessions are
-not used as a substitute.
+weakens peer admission. Reciprocal control uses one validated `PeerSession`,
+not two uncontrolled connections. Each side reports its exact persisted local
+grant only after `PeerValidated`; the value cannot write trust or upgrade a
+capability and is immutable for the session nonce. It cannot authorize local
+audio/topology disclosure, which remains gated by this PC's persisted grant.
+Unknown or changing grant bits fail both directions Local. Direction tokens bind the exact peer machine,
+nonce, generation, and direction. Simultaneous opposite focus attempts,
+duplicate sessions, stale tokens, reconnect, and any capability conflict never
+admit an application direction or restore focus automatically.
 
 ---
 
@@ -331,7 +363,7 @@ Limits:
 
 ```text
 reliable payload: 64 KiB
-QUIC datagram payload: 1200 bytes
+QUIC datagram payload: 1164 bytes (1200 bytes including the 36-byte envelope)
 focus lease request: 100..5000 ms on wire
 Agent effective lease: 100..2000 ms
 audio sample rate: 8 kHz..192 kHz
@@ -352,6 +384,9 @@ It also rejects:
 - inconsistent audio payload length
 
 Production transport parsing must preserve these limits before allocating large buffers.
+Reliable stream limits apply per declared frame, not per receive callback;
+coalesced frames are dispatched incrementally and only one incomplete frame is
+retained after handler installation.
 
 ---
 

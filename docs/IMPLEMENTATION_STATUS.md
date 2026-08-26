@@ -32,7 +32,7 @@ The current build proves the core invariants independently of Windows networking
 | Stable multi-monitor mapping | Done | Active DisplayConfig target identities; deterministic nonzero IDs; negative-origin rectangle transform; topology-generation invalidation |
 | Display presentation metadata | Done | Checked active resolution/refresh/orientation; EDID physical size with raw-DPI estimate fallback; metadata does not change routing generations |
 | Roaming graph foundation | Done | Strict bounded directional links and normalized edge segments; duplicate/overlapping source routes rejected; stable identities resolve only against current machine topologies |
-| Controlled edge roaming | Experimental outbound slice | Explicit Alpha/CLI opt-in; local observation never suppresses; three intent policies, proportional corner-safe landing, cooldown, 1.5-second focus timeout, active route/session invalidation, and lifecycle-gated suppression are implemented. Reciprocal session ownership and physical Windows 11 signoff remain open. |
+| Controlled edge roaming | Experimental reciprocal slice | Explicit Alpha/CLI opt-in on either side; one validated peer-session owner; independent directional grants; nonce-bound direction tokens; collision-to-Local; local observation never suppresses; three intent policies, proportional corner-safe landing, cooldown, 1.5-second focus timeout, active route/session invalidation, and lifecycle-gated suppression. Physical Windows 11 signoff remains open. |
 | Roaming preference persistence | Done | Versioned 512 KiB-bounded exact codec and atomic current-user replacement; canvas positions remain presentation-only and trust/identity stay in security stores |
 | Authenticated topology exchange | Done | Explicit trust grant; reliable snapshot bound to PeerValidated session, expected machine, and fresh nonce; canonical 64-display/64 KiB bounds; two-second refresh and five-second fail-closed freshness |
 | Roaming connection/route status | Done | Peer and route state are separate; missing capability/display, unsupported direction, invalid snapshot, and topology synchronization cannot report Ready |
@@ -41,7 +41,7 @@ The current build proves the core invariants independently of Windows networking
 | Companion lifecycle | Done | Single instance; first-run guidance; close-to-tray default; tray Open/Return Local/Exit; ordered shutdown; atomic preferences and optional current-user sign-in startup |
 | Mouse-wheel transport | Done | Reliable ordered axis + signed delta; `-1200..1200` bound; enqueue-before-suppress fail-local hook path |
 | Current-user control IPC | Done | SID-derived named pipe; explicit one-user DACL; remote rejection; mutual process-SID checks; bounded typed state/mode/audio plus read-only canonical topology snapshots for at most eight machines/512 KiB |
-| LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
+| LAN DNS-SD/mDNS discovery | Done | Native Windows link-local advertise/browse/resolve; bounded opaque callback registry safely ignores delayed/duplicate completions; strict TXT bounds; deterministic conflict reporting; no automatic trust, pairing, or connection |
 | Foreground profile foundation | Done | At most 32 exact executable-name rules; optional fullscreen match; emergency/manual/profile/default precedence; uninspectable configured foreground fails local |
 | Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
 | Host input lifecycle safety boundary | Done | Disable capture, release focus, synchronously stop hooks, then enter GAME/LOCK_PC1; exit requires fresh FocusReady + initial snapshot before capture restart/enable |
@@ -57,14 +57,14 @@ The current build proves the core invariants independently of Windows networking
 | Per-peer audio gain/mute | Done | Host-local 0-10000 permyriad attenuation; five-millisecond ramp; endpoint-recovery persistence; no system mixer changes |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
-| Manual pairing core | Done | Bounded window + canonical transcript + user-confirmed six-digit code |
+| Manual pairing core | Done | `/pair/2` role-bound commit-before-reveal, fresh per-connection nonce, certificate/machine binding, user-confirmed six-digit code, mutual durable completion; v1 downgrade refused |
 | Peer certificate pinning | Done | Stored machine ID and SHA-256 certificate pin required by sessions |
-| Windows trust provider | Done | CNG randomness/hash + current-user DPAPI atomic trust store |
+| Windows trust provider | Partial security boundary | CNG randomness/hash + DPAPI v2 generation, protected SID-scoped global lock across logon sessions, reload-before-write/read, and atomic replacement; hostile same-user isolation still requires an approved broker |
 | MsQuic endpoint adapter | Done | Optional v2.6.0 stream framing/datagram adapter for established connections |
 | Production platform baseline | Done | Windows 11/Server 2022+ with stock Schannel; Windows 10 unsupported |
-| MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, fail-closed unavailable provider |
+| MsQuic runtime selection | Done | Application-owned path, pinned hash/version/provider, locked non-reparse ancestry and leaf through loading, fail-closed unavailable provider |
 | Windows 10 opaque CNG prototype | R&D Stage 2 | Explicit built-in OpenSSL 3.5 provider; exportable and mismatched credentials rejected; not production-admitted |
-| Fail-closed peer admission | R&D Stage 3 | `PeerValidated` gates CONNECTED effects, streams, datagrams, pairing/session delivery, and endpoint traffic; four-second watchdog |
+| Fail-closed peer admission | R&D Stage 3 | `PeerValidated` gates CONNECTED effects, streams, datagrams, pairing/session delivery, and endpoint traffic; fixed four-worker/64-pending validation executor plus one owned four-second deadline worker |
 | CNG identity invariance | R&D Stage 4 | Exact before/after snapshots cover key/provider/algorithm/export policy/public key/certificate hash/pin; build rejects private-key export APIs |
 | Windows device identity | Done | Current-user CNG key + self-signed SHA-256 certificate lifecycle |
 | MsQuic connection bootstrap | Done | Registration/configuration, listener, client, deferred mutual pin validation |
@@ -153,8 +153,13 @@ The current test suite verifies:
 65. first-save DPAPI trust persistence creates only the exact configured parent directory before atomic replacement
 66. all three crossing policies, source-segment bounds, horizontal/vertical and reverse-direction landing, corner clearance, and cooldown
 67. wrong validation/capability/topology/nonce/config state invalidates pending or active roaming and cannot admit Remote
-68. stale focus requests, focus timeout, direction collisions, busy directions, and stale direction tokens fail Local
-69. Alpha launcher accepts edge roaming only for Focus with capture and an absolute typed settings path
+68. stale focus requests, focus timeout, direction collisions, busy directions, and peer/nonce/generation-bound stale direction tokens fail Local
+69. reciprocal `PeerSession` focus/input in both directions with independent persisted capability grants
+70. simultaneous opposite focus attempts deterministically return both sessions Local
+71. missing reverse grants, wrong nonce, and invalid/changing capability replay cannot admit a direction
+72. peer-reported grants cannot substitute for local audio/topology disclosure consent
+73. reciprocal sessions preserve explicitly granted bidirectional audio and topology exchange
+74. Alpha launcher accepts edge roaming for Focus or Serve only with capture and an absolute typed settings path
 
 Build/test result in the creation environment:
 
@@ -174,7 +179,7 @@ Build/test result in the creation environment:
 ### P1 — required for useful KM roaming
 
 - physical emergency-chord and high-poll-rate timing validation
-- reciprocal session-direction ownership and physical crossing/cooldown validation
+- physical reciprocal crossing/cooldown validation
 
 ### P2 — final product surface
 
@@ -247,11 +252,12 @@ topology capability, bounded reliable snapshots, peer/machine/nonce admission,
 freshness timeout, and separate peer/route readiness without edge switching.
 Phase 3 adds the native presentation-only configurator, explicit edge editing,
 offline/route status, Local-before-save atomic replacement, Identify overlays,
-and the single-instance tray/startup lifecycle. The Phase 4 outbound slice adds
+and the single-instance tray/startup lifecycle. The Phase 4 reciprocal slice adds
 portable intent/landing/cooldown/direction gates and an explicit Windows
 local-observation path that cannot suppress before fresh focus, landing, and
-snapshot admission. Reciprocal peer-session ownership and physical Windows 11
-qualification are next. The native Windows alpha wrapper provides the manual
+snapshot admission. One validated session now owns both directions with
+independent grants, nonce-bound tokens, and collision-to-Local; physical
+Windows 11 qualification remains next. The native Windows alpha wrapper provides the manual
 pairing, session, status, configuration, and experimental arming surface without
 changing any trust or transport boundary.
 See [`ROADMAP.md`](ROADMAP.md).

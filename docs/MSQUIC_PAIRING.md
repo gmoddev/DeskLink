@@ -4,14 +4,16 @@
 
 DeskLink now has three separate security layers for production transport work:
 
-1. `PairingCoordinator` opens a bounded manual pairing window, generates a fresh
-   nonce, and derives a six-digit verification code from both machine IDs,
-   display names, certificate SHA-256 pins, and nonces.
+1. `PairingCoordinator` opens a bounded manual pairing window. Each connection
+   generates a fresh 32-byte nonce, commits to its role-bound offer before
+   either nonce is revealed, and derives a six-digit verification code from the
+   initiator/responder transcript.
 2. `ITrustStore` persists the confirmed peer identity and capability grant. On
    Windows, `DpapiTrustStore` protects the complete bounded trust database with
    current-user DPAPI and replaces it atomically.
-3. `HostSession` and `AgentSession` require the authenticated transport identity
-   to match the stored machine ID and certificate pin before accepting traffic.
+3. `HostSession`, `AgentSession`, and the production reciprocal `PeerSession`
+   require the authenticated transport identity to match the stored machine ID
+   and certificate pin before accepting traffic.
 
 Authentication, encryption, and pairing are intentionally separate checks. A
 valid TLS connection from an unknown certificate is not a DeskLink session.
@@ -23,27 +25,32 @@ PC1                                              PC2
  |                                                |
  | BeginPairing(60 s)                             | BeginPairing(60 s)
  | CreateOffer(machine, cert pin, nonce)          | CreateOffer(...)
- |--------- peer-validated pairing TLS offer ----->|
- |<-------- peer-validated pairing TLS offer ------|
+ |--------------- commitment -------------------->|
+ |<-------------- commitment ---------------------|
+ |------------------ reveal --------------------->|
+ |<----------------- reveal ----------------------|
  |                                                |
  | display six-digit transcript code              | display same code
  | user confirms physical match                   | user confirms physical match
  |---------------- confirmation ----------------->|
  |<--------------- confirmation ------------------|
- | persist PC2 pin                                 | persist PC1 pin
+ | persist PC2 pin; completion/FIN  <----------->  | persist PC1 pin
 ```
 
 The TLS peers are certificate-valid and their exact leaf DER pins are bound to
 the provisional offers, but they are not trusted DeskLink peers yet.
-Modification or substitution produces a different verification code on each
-PC. The UI must require the user to compare and confirm both codes; it must not
-confirm automatically. Each side sends a bounded confirmation frame only after
-local confirmation. Trust persistence begins only after both confirmation
-frames have arrived on the peer-validated stream. Pairing never admits an
-application session; successful pairing closes the connection and requires a
-fresh trusted reconnect.
+The commit-before-reveal exchange prevents a provisional peer from adaptively
+choosing its nonce after learning the other nonce. Commitments and the final
+transcript bind initiator/responder roles, machine IDs, display names, exact DER
+pins, and nonces. Modification, role reversal, or substitution fails the
+commitment or produces a different code. The UI requires explicit comparison.
+Each confirmation binds the transcript and exact local capability grant. Trust
+persistence begins only after both confirmations arrive and the local send
+completes. Success is reported only after both sides persist and exchange
+completion records; the ordered stream is then closed gracefully. Pairing never
+admits an application session and requires a fresh reconnect.
 
-Mutual pairing confirmation closes the local window and clears its nonce. A
+Mutual pairing persistence closes the local window. A
 window may be open for at most five minutes. An established pairing connection
 has a separate bounded two-minute idle timeout so a human can compare both
 prompts without extending operational-session timeouts.
@@ -65,9 +72,12 @@ complete validation from its pin. Servers must require client authentication.
 Privileged messages must not use 0-RTT.
 
 `MsQuicBootstrap` copies the bounded DER leaf during the callback, returns
-`QUIC_STATUS_PENDING`, validates on a separate worker, and completes the
+`QUIC_STATUS_PENDING`, validates in a fixed four-worker bounded executor, and completes the
 handshake with `ConnectionCertificateValidationComplete()`. Trusted sessions
-are promoted to `MsQuicTransportEndpoint` only after the stored pin matches.
+are promoted to `MsQuicTransportEndpoint` only after the stored pin matches. A
+single owned deadline worker enforces the four-second timeout, the global
+pending-validation budget is 64, saturation rejects, and shutdown drains
+workers before referenced trust/crypto state may be destroyed.
 
 ## Bootstrap and pairing lanes
 
@@ -75,17 +85,17 @@ The bootstrap owns the MsQuic API table, registration, four client/server
 configurations, listener, and outgoing connections. It uses separate ALPNs:
 
 ```text
-desklink/pair/1     one provisional, bounded PairingOffer exchange
+desklink/pair/2     role-bound commit/reveal, confirmation, and completion
 desklink/session/1  mutually pinned operational DeskLink session
 ```
 
 The pairing lane is available only while the local manual window is open. It
-accepts one bidirectional stream, one frame no larger than 153 bytes, valid
+accepts one bidirectional stream, frames no larger than 153 bytes, valid
 UTF-8 display names, and no 0-RTT. The offer's certificate pin must match the
 exact TLS leaf presented on that connection before the UI callback receives
 the six-digit candidate. Dropping or rejecting the callback closes the
-connection. Confirmation persists trust and also closes the provisional
-connection; the peer must reconnect on the operational ALPN.
+connection. Version 1 is not accepted as a fallback. Mutual completion closes
+the provisional stream; the peer must reconnect on the operational ALPN.
 
 Inbound connection attempts are limited per source address. Pairing has a
 separate stricter limiter, and both limiter key tables are bounded.
@@ -134,8 +144,10 @@ R&D project; it is not yet a supported DeskLink transport target.
 
 DeskLink loads MsQuic from the application-owned
 `runtime/<provider>/msquic.dll` directory instead of relying on normal DLL
-search order. The binary is checked against its build-pinned SHA-256 before
-loading, then queried for MsQuic version and TLS provider. `auto` selects
+search order. Every path ancestor is opened without delete sharing and rejected
+if it is a reparse point. The binary is checked against its build-pinned SHA-256
+while a non-share-write/non-share-delete, non-reparse file handle remains open
+through `LoadLibraryExW`, then queried for MsQuic version and TLS provider. `auto` selects
 Schannel on Windows 11/Server 2022-or-newer. The loader's OpenSSL selector is
 retained for the explicitly staged compatibility R&D. Stage 2 research builds
 also pin and verify `libcrypto-3-x64.dll` and `libssl-3-x64.dll`, then load the
@@ -186,10 +198,12 @@ initiator opens the single reliable stream and sends a bounded 16-byte `DLSN`
 version-1 preface containing a cryptographically random, nonzero 64-bit session
 nonce. The acceptor validates the preface before the transport endpoint is
 delivered. Both endpoint callbacks receive the same nonce and whether they
-initiated the connection, so `HostSession` and `AgentSession` can reject packets
-from previous connections. The preface and reliable stream reject 0-RTT data;
-early post-preface packets remain bounded and buffered until a receive handler
-is installed. Every reconnect negotiates a different nonce.
+initiated the connection, so session owners can reject packets from previous
+connections. The preface and reliable stream reject 0-RTT data; early
+post-preface packets remain bounded and buffered until a receive handler is
+installed. Every reconnect negotiates a different nonce. `PeerSession` binds
+both direction tokens to that nonce and authenticated peer machine, starts
+Local, and never restores either focus direction automatically.
 
 ## Manual trusted focus
 
@@ -205,7 +219,7 @@ every 50 ms. This control-plane proof does not capture or suppress local input.
 The optional `desklink_pair` executable is the first current-user control
 surface. It loads or creates the persistent CNG device identity, opens the
 DPAPI-protected trust store in `%LOCALAPPDATA%\DeskLink`, and runs one explicit
-five-minute pairing operation over `desklink/pair/1`.
+five-minute pairing operation over `desklink/pair/2`.
 
 ```powershell
 # PC that will accept the connection and grant remote input/topology exchange
@@ -219,7 +233,7 @@ Each side independently displays the remote display name, the transcript-derived
 six-digit code, and the exact input/audio/topology capability consequences. The
 default button is No. Confirmation never occurs automatically, and dismissing either prompt
 rejects the provisional connection. A local Yes sends a bounded mutual-
-confirmation frame; neither side reports success or persists new trust until it
-also receives the peer's confirmation. The tool does not create a firewall rule
+confirmation frame; neither side reports success until both durable trust
+writes and completion acknowledgements have crossed the ordered stream. The tool does not create a firewall rule
 or listen beyond the bounded pairing operation. Existing trust records are not
 migrated to `DisplayTopologyExchange`; re-pair both sides to add it.

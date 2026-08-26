@@ -14,7 +14,7 @@
 namespace desklink {
 
 inline constexpr std::string_view kMsQuicSessionAlpn = "desklink/session/1";
-inline constexpr std::string_view kMsQuicPairingAlpn = "desklink/pair/1";
+inline constexpr std::string_view kMsQuicPairingAlpn = "desklink/pair/2";
 
 enum class MsQuicPeerCertificateStatus {
     Valid,

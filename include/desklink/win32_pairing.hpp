@@ -17,6 +17,7 @@ public:
 class DpapiTrustStore final : public ITrustStore {
 public:
     explicit DpapiTrustStore(std::filesystem::path Path);
+    ~DpapiTrustStore();
 
     [[nodiscard]] bool Load();
     [[nodiscard]] bool IsLoaded() const noexcept;
@@ -27,12 +28,15 @@ public:
     [[nodiscard]] bool RemovePeer(const MachineId& Machine) override;
 
 private:
+    [[nodiscard]] bool RefreshLocked() const;
     [[nodiscard]] bool SaveLocked() const;
 
     std::filesystem::path Path_;
     mutable std::mutex Mutex_;
-    std::vector<TrustedPeer> Peers_;
-    bool Loaded_{};
+    void* NamedMutex_{};
+    mutable std::vector<TrustedPeer> Peers_;
+    mutable std::uint64_t Generation_{};
+    mutable bool Loaded_{};
 };
 
 } // namespace desklink
