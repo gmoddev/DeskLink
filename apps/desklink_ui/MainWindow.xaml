@@ -18,6 +18,9 @@
                 <NavigationViewItem x:Name="DevicesNavigation"
                                     Content="Devices &amp; permissions"
                                     Icon="People" Tag="Devices" AccessKey="P" />
+                <NavigationViewItem x:Name="DisplaysNavigation"
+                                    Content="Arrange displays"
+                                    Icon="Map" Tag="Displays" AccessKey="D" />
                 <NavigationViewItem Content="Advanced" Icon="Setting"
                                     Tag="Advanced" />
                 <NavigationViewItem Content="Diagnostics" Icon="View"
@@ -143,8 +146,8 @@
                             </StackPanel>
                         </Border>
                         <StackPanel Orientation="Horizontal" Spacing="12">
-                            <Button Content="Arrange displays" IsEnabled="False"
-                                    AutomationProperties.HelpText="Available in the next product UX stage" />
+                            <Button Content="Arrange displays" Click="OnOpenDisplays"
+                                    AccessKey="D" />
                             <Button Content="Devices &amp; permissions"
                                     Click="OnOpenDevices" AccessKey="P" />
                             <Button Content="Add another PC" Click="OnOpenAddPc" />
@@ -234,6 +237,190 @@
                                  IsClosable="True" Severity="Informational" />
                         <TextBlock x:Name="NoDevicesText" Text="No paired PCs yet." />
                         <StackPanel x:Name="DeviceCards" Spacing="12" />
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer x:Name="DisplaysPage" Visibility="Collapsed"
+                              HorizontalScrollMode="Disabled"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Spacing="18">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Arrange displays"
+                                           Style="{StaticResource TitleTextBlockStyle}" />
+                                <TextBlock Text="Match the physical layout of your desk. Moving cards alone never changes input routing."
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="Refresh layouts"
+                                    Click="OnRefreshMonitorLayout" />
+                            <Button Grid.Column="2" Content="Identify displays"
+                                    Click="OnIdentifyDisplays" />
+                        </Grid>
+                        <InfoBar x:Name="MonitorStatusBar" IsOpen="False"
+                                 IsClosable="True" Severity="Informational" />
+                        <Grid Visibility="Collapsed" IsHitTestVisible="False">
+                            <Border x:Name="MonitorLocalPalette"
+                                    Background="{ThemeResource ControlFillColorDefaultBrush}" />
+                            <Border x:Name="MonitorPeerPalette"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+                            <Border x:Name="MonitorOfflinePalette"
+                                    Background="{ThemeResource ControlFillColorDefaultBrush}" />
+                            <Border x:Name="MonitorNormalBorderPalette"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                            <Border x:Name="MonitorSuggestedBorderPalette"
+                                    BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </Grid>
+                        <Border Padding="12" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <ScrollViewer HorizontalScrollMode="Enabled"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollMode="Enabled"
+                                          VerticalScrollBarVisibility="Auto"
+                                          ZoomMode="Disabled">
+                                <Canvas x:Name="MonitorCanvas" MinWidth="780" Height="430"
+                                        Background="Transparent"
+                                        AutomationProperties.Name="Physical desk layout" />
+                            </ScrollViewer>
+                        </Border>
+                        <Border x:Name="MonitorSuggestionCard" Padding="14"
+                                CornerRadius="8" Visibility="Collapsed"
+                                BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                                BorderThickness="1">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Proposed connection"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock x:Name="MonitorSuggestionText"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Text="This remains inactive until you accept it and save the desk layout."
+                                               Opacity="0.72" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="Accept connection"
+                                        Click="OnAcceptMonitorSuggestion" />
+                            </Grid>
+                        </Border>
+                        <Expander Header="Keyboard-accessible connection editor">
+                            <StackPanel Spacing="12" Padding="0,12,0,4">
+                                <TextBlock Text="Create the same full-edge, two-way connection without using the canvas."
+                                           TextWrapping="Wrap" />
+                                <Grid ColumnSpacing="10" RowSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="180" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="180" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="AccessibleSourceDisplay"
+                                              Header="From display" />
+                                    <ComboBox x:Name="AccessibleSourceSide"
+                                              Grid.Column="1" Header="From edge"
+                                              SelectedIndex="2">
+                                        <ComboBoxItem Content="Left" />
+                                        <ComboBoxItem Content="Top" />
+                                        <ComboBoxItem Content="Right" />
+                                        <ComboBoxItem Content="Bottom" />
+                                    </ComboBox>
+                                    <ComboBox x:Name="AccessibleTargetDisplay"
+                                              Grid.Column="2" Header="To display" />
+                                    <ComboBox x:Name="AccessibleTargetSide"
+                                              Grid.Column="3" Header="To edge"
+                                              SelectedIndex="0">
+                                        <ComboBoxItem Content="Left" />
+                                        <ComboBoxItem Content="Top" />
+                                        <ComboBoxItem Content="Right" />
+                                        <ComboBoxItem Content="Bottom" />
+                                    </ComboBox>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="Move From display:" VerticalAlignment="Center" />
+                                    <Button Content="Left" Tag="Left"
+                                            Click="OnNudgeMonitorTile" />
+                                    <Button Content="Up" Tag="Up"
+                                            Click="OnNudgeMonitorTile" />
+                                    <Button Content="Down" Tag="Down"
+                                            Click="OnNudgeMonitorTile" />
+                                    <Button Content="Right" Tag="Right"
+                                            Click="OnNudgeMonitorTile" />
+                                    <TextBlock Text="10 physical-layout units per press"
+                                               VerticalAlignment="Center" Opacity="0.72" />
+                                </StackPanel>
+                                <Button Content="Add two-way full-edge connection"
+                                        Click="OnAddAccessibleConnection"
+                                        HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </Expander>
+                        <Expander Header="Advanced edge mapping">
+                            <StackPanel Spacing="12" Padding="0,12,0,4">
+                                <TextBlock Text="Use exact edge percentages or one-way routing. Invalid or overlapping source segments are rejected."
+                                           TextWrapping="Wrap" />
+                                <Grid ColumnSpacing="10" RowSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="120" />
+                                    </Grid.ColumnDefinitions>
+                                    <NumberBox x:Name="AdvancedSourceStart" Header="From start %"
+                                               Value="0" Minimum="0" Maximum="99"
+                                               SpinButtonPlacementMode="Compact" />
+                                    <NumberBox x:Name="AdvancedSourceEnd" Grid.Column="1"
+                                               Header="From end %" Value="100"
+                                               Minimum="1" Maximum="100"
+                                               SpinButtonPlacementMode="Compact" />
+                                    <ComboBox x:Name="AdvancedDirection" Grid.Column="2"
+                                              Header="Direction" SelectedIndex="0">
+                                        <ComboBoxItem Content="Both" />
+                                        <ComboBoxItem Content="From → To" />
+                                        <ComboBoxItem Content="From ← To" />
+                                    </ComboBox>
+                                    <TextBlock Grid.Column="3" Text="Uses the displays and edges selected above."
+                                               VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    <NumberBox x:Name="AdvancedTargetStart" Grid.Column="4"
+                                               Header="To start %" Value="0"
+                                               Minimum="0" Maximum="99"
+                                               SpinButtonPlacementMode="Compact" />
+                                    <NumberBox x:Name="AdvancedTargetEnd" Grid.Column="5"
+                                               Header="To end %" Value="100"
+                                               Minimum="1" Maximum="100"
+                                               SpinButtonPlacementMode="Compact" />
+                                </Grid>
+                                <Button Content="Add advanced connection"
+                                        Click="OnAddAdvancedConnection"
+                                        HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </Expander>
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Saved connections"
+                                       Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <TextBlock x:Name="NoMonitorRoutesText"
+                                       Text="No saved or pending connections." />
+                            <StackPanel x:Name="MonitorRouteCards" Spacing="8" />
+                        </StackPanel>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="MonitorUnsavedText"
+                                       Text="No unsaved changes."
+                                       VerticalAlignment="Center"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <Button Grid.Column="1" Content="Save desk layout"
+                                    Click="OnSaveMonitorLayout" AccessKey="S" />
+                        </Grid>
                     </StackPanel>
                 </ScrollViewer>
 

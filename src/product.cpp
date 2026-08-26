@@ -1,4 +1,5 @@
 #include "desklink/product.hpp"
+#include "desklink/product_shell.hpp"
 
 #include <algorithm>
 
@@ -166,6 +167,36 @@ bool HasRuntimePlanBlocker(
     const auto Bit = static_cast<std::uint32_t>(Blocker);
     if (Bit == 0) return Configuration.Blockers == 0;
     return (Configuration.Blockers & Bit) == Bit;
+}
+
+ProductMonitorSaveStatus ApplyProductMonitorLayout(
+    bool RuntimeWasPaused,
+    const ProductMonitorSaveActions& Actions) {
+    if (!Actions.ConfirmStoppedLocalWhilePaused ||
+        !Actions.PauseAndStopRuntime || !Actions.SaveAtomically ||
+        !Actions.ResumeRuntime) {
+        return ProductMonitorSaveStatus::CleanupFailed;
+    }
+    const bool LocalConfirmed = RuntimeWasPaused
+        ? Actions.ConfirmStoppedLocalWhilePaused()
+        : Actions.PauseAndStopRuntime();
+    if (!LocalConfirmed) return ProductMonitorSaveStatus::CleanupFailed;
+
+    const bool Saved = Actions.SaveAtomically();
+    if (RuntimeWasPaused) {
+        return Saved
+            ? ProductMonitorSaveStatus::AppliedRuntimePaused
+            : ProductMonitorSaveStatus::StoreFailed;
+    }
+    const bool Resumed = Actions.ResumeRuntime();
+    if (!Saved) {
+        return Resumed
+            ? ProductMonitorSaveStatus::StoreFailed
+            : ProductMonitorSaveStatus::StoreFailedRuntimePaused;
+    }
+    return Resumed
+        ? ProductMonitorSaveStatus::Applied
+        : ProductMonitorSaveStatus::AppliedRuntimePaused;
 }
 
 } // namespace desklink

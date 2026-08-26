@@ -96,7 +96,7 @@ second supported Windows 11/Server 2022+ system is available.
 
 ---
 
-## Product UX PR 5-6 automated validation
+## Product UX PR 5-7 automated validation
 
 The WinUI deployment foundation is built with locked NuGet resolution and an
 unpackaged self-contained x64 payload. Local validation proves:
@@ -109,7 +109,7 @@ unpackaged self-contained x64 payload. Local validation proves:
   close-to-tray background lifetime, and bounded explicit exit;
 - the full Windows core regression suite after the new fail-local presentation
   mapping tests;
-- all 34 interactive UI Automation controls have accessible names; and
+- interactive UI Automation controls have accessible names; and
 - real Inno Setup 7.1.0 compilation of the unsigned development installer.
 
 PR 5 intentionally drove the shell from simulated broker states. PR 6 replaces
@@ -140,6 +140,22 @@ The pairing child and broker also reject a managed operation when the product
 shell is absent, exits, rejects, times out, supplies a stale operation ID, or
 cannot complete the local pipe exchange. No such path admits a session or
 mutates trust.
+
+PR 7 adds release and Debug builds of the production monitor page plus focused
+core coverage for its save coordinator. The tests prove that an active runtime
+is paused/stopped before the atomic-write callback, a previously paused runtime
+must still confirm Local, cleanup failure never reaches persistence, and every
+runtime stopped by the operation receives exactly one resume attempt after
+either write success or failure. Store and resume failures remain explicit and
+fail Local. Existing monitor-model tests continue to prove bounded physical
+sizing, stable/offline identities, deterministic full-edge suggestions,
+presentation-only canvas movement, strict graph validation, and route
+resolution against current topology rather than canvas coordinates.
+
+Clean-system keyboard, Narrator, DPI, high-contrast, and visual qualification
+of the PR 7 surface remains a release gate. The real two-supported-Windows-11-PC
+roaming/fault qualification also remains deferred until that hardware exists.
+
 Disposable-account CI additionally exercises installed shell activation,
 broker survival after shell exit, update shutdown, rollback, and uninstall.
 Production signing plus clean Windows 11 and Server 2022 Desktop Experience

@@ -5519,6 +5519,66 @@ void ProductShellPresentationIsFailLocalAndBounded() {
     }
 }
 
+void ProductMonitorLayoutSaveIsOrderedAndFailsLocal() {
+    using namespace desklink;
+
+    std::vector<std::string> Events;
+    const auto Actions = [&](bool Local, bool Pause, bool Save, bool Resume) {
+        return ProductMonitorSaveActions{
+            [&, Local] {
+                Events.emplace_back("local");
+                return Local;
+            },
+            [&, Pause] {
+                Events.emplace_back("pause");
+                return Pause;
+            },
+            [&, Save] {
+                Events.emplace_back("save");
+                return Save;
+            },
+            [&, Resume] {
+                Events.emplace_back("resume");
+                return Resume;
+            }};
+    };
+
+    CHECK(ApplyProductMonitorLayout(
+        false, Actions(true, true, true, true)) ==
+        ProductMonitorSaveStatus::Applied);
+    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+
+    Events.clear();
+    CHECK(ApplyProductMonitorLayout(
+        false, Actions(true, false, true, true)) ==
+        ProductMonitorSaveStatus::CleanupFailed);
+    CHECK((Events == std::vector<std::string>{"pause"}));
+
+    Events.clear();
+    CHECK(ApplyProductMonitorLayout(
+        true, Actions(true, true, true, true)) ==
+        ProductMonitorSaveStatus::AppliedRuntimePaused);
+    CHECK((Events == std::vector<std::string>{"local", "save"}));
+
+    Events.clear();
+    CHECK(ApplyProductMonitorLayout(
+        false, Actions(true, true, false, true)) ==
+        ProductMonitorSaveStatus::StoreFailed);
+    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+
+    Events.clear();
+    CHECK(ApplyProductMonitorLayout(
+        false, Actions(true, true, true, false)) ==
+        ProductMonitorSaveStatus::AppliedRuntimePaused);
+    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+
+    Events.clear();
+    CHECK(ApplyProductMonitorLayout(
+        false, Actions(true, true, false, false)) ==
+        ProductMonitorSaveStatus::StoreFailedRuntimePaused);
+    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+}
+
 void in_memory_transport_preserves_security_metadata() {
     using namespace desklink;
     TransportPeerInfo a_sees_b;
@@ -5575,6 +5635,7 @@ int main() {
     DiscoveryPropertiesAreStrictAndRoundTrip();
     DiscoveryCacheExpiresAndFlagsConflicts();
     ProductShellPresentationIsFailLocalAndBounded();
+    ProductMonitorLayoutSaveIsOrderedAndFailsLocal();
     protocol_round_trip();
     PointerMotionRoundTripAndValidation();
     ControlProtocolRoundTripAndValidation();

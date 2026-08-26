@@ -268,13 +268,19 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   token and expiring candidate lease; shell loss, timeout, ambiguity, or token
   mismatch rejects. Generic IPC still cannot increase authority, while revoke
   and Forget retain fail-local cleanup. Alpha remains the installed default;
+- **Product UX PR 7 implemented:** Arrange displays is now a production-shell
+  page with physically scaled per-PC cards, stable identities, online/offline
+  state, local Identify overlays, deterministic snap proposals, and explicit
+  acceptance. A keyboard-accessible editor supplies card movement and full-edge
+  two-way authoring without the canvas; one-way and partial segments remain in
+  Advanced. Saving strictly validates the complete graph, pauses/stops the
+  managed runtime Local, atomically replaces the settings file, and then
+  attempts a fresh-session resume. Canvas movement alone never changes routing;
 - **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
   active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
   in-place upgrade, startup-value cleanup, state preservation, a fail-closed
   production signing gate, and disposable-account CI validation. Production
   signing and clean-system qualification remain open;
-- simplify monitor authoring in the production shell with snap proposals,
-  non-canvas accessibility, stable display identities, and Local-before-save;
 - **Automated update foundation complete:** explicit same-signer candidate and
   current-version rollback packages are hash/version validated before an ordered
   `Return Local -> confirm local -> stop runtime/UI -> install/validate` flow.

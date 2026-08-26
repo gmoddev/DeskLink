@@ -65,9 +65,10 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Bounded same-user topology inspection for the companion UI; canonical remote
   snapshots remain authenticated-session data and expire with normal topology
   readiness
-- Native monitor configurator with per-PC physical-size canvas, offline states,
-  explicit bidirectional adjacency suggestions, one-way/partial-edge advanced
-  editing, atomic save, and five-second click-through local Identify overlays
+- Production-shell monitor configurator with per-PC physical-size canvas,
+  offline states, explicit snap proposals, keyboard-accessible full-edge
+  authoring, one-way/partial-edge Advanced editing, fail-local atomic save, and
+  five-second click-through local Identify overlays
 - Single-instance Windows companion lifecycle with first-run guidance,
   close-to-tray, tray Open/Return Local/Exit, and optional current-user sign-in
   startup
@@ -201,6 +202,16 @@ authenticated Devices & permissions list. Nearby names and endpoints remain
 visibly unverified and ambiguity disables Connect. Every pairing grant defaults
 off; both PCs independently review the same code and their own local
 consequences.
+
+**Arrange displays** now opens the production-shell authoring surface. Display
+cards use stable DisplayConfig identities and checked EDID/raw-DPI physical-size
+metadata; placement remains presentation-only. A snapped edge is only a visible
+proposal until **Accept connection** and **Save desk layout** complete. Saving
+pauses and stops the managed runtime, confirms Local, atomically replaces the
+validated graph, and only then attempts a fresh-session resume. The keyboard-
+accessible editor can move cards and create the same full-edge bidirectional
+link without dragging; partial percentages and one-way routes remain under
+Advanced.
 
 The shell can reduce grants or forget a peer only through fail-local broker
 mutations. It cannot add authority through the generic pipe; additions require
