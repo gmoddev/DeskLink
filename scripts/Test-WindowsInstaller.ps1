@@ -90,24 +90,24 @@ function Assert-InstalledPayload() {
 function Add-U16(
     [Collections.Generic.List[byte]] $Bytes,
     [uint16] $Value) {
-    $Bytes.Add([byte]($Value -shr 8))
-    $Bytes.Add([byte]$Value)
+    $Bytes.Add([byte](($Value -shr 8) -band 0xFF))
+    $Bytes.Add([byte]($Value -band 0xFF))
 }
 
 function Add-U32(
     [Collections.Generic.List[byte]] $Bytes,
     [uint32] $Value) {
-    $Bytes.Add([byte]($Value -shr 24))
-    $Bytes.Add([byte]($Value -shr 16))
-    $Bytes.Add([byte]($Value -shr 8))
-    $Bytes.Add([byte]$Value)
+    $Bytes.Add([byte](($Value -shr 24) -band 0xFF))
+    $Bytes.Add([byte](($Value -shr 16) -band 0xFF))
+    $Bytes.Add([byte](($Value -shr 8) -band 0xFF))
+    $Bytes.Add([byte]($Value -band 0xFF))
 }
 
 function Add-U64(
     [Collections.Generic.List[byte]] $Bytes,
     [uint64] $Value) {
     for ($Shift = 56; $Shift -ge 0; $Shift -= 8) {
-        $Bytes.Add([byte]($Value -shr $Shift))
+        $Bytes.Add([byte](($Value -shr $Shift) -band 0xFF))
     }
 }
 
