@@ -164,7 +164,9 @@ Do not copy a different `msquic.dll` into the package. Runtime version and hash
 verification remain fail closed.
 
 The Windows CI job also stages the same allowlisted payload into a current-user
-installer. Development artifacts are explicitly named `*-unsigned.exe` and are
+installer together with the separate self-contained WinUI product-shell
+preview. Alpha remains the default Start menu/run target until the later
+product cutover. Development artifacts are explicitly named `*-unsigned.exe` and are
 not release candidates. A production installer build requires an explicit
 current-user code-signing certificate and RFC 3161 timestamp, and refuses to
 continue without them. Setup never elevates, installs a service, or changes

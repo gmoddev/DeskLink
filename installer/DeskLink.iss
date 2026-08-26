@@ -24,7 +24,7 @@ AppPublisherURL=https://github.com/gmoddev/DeskLink
 AppSupportURL=https://github.com/gmoddev/DeskLink/issues
 AppUpdatesURL=https://github.com/gmoddev/DeskLink/releases
 AppComments=Secure local keyboard, mouse, audio, and clipboard roaming.
-AppMutex=Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1
+AppMutex=Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1
 SetupMutex=Local\DeskLink.Setup.v1
 DefaultDirName={localappdata}\Programs\DeskLink
 DefaultGroupName=DeskLink
@@ -50,6 +50,7 @@ OutputDir={#OutputPath}
 OutputBaseFilename={#OutputName}
 UninstallDisplayIcon={app}\desklink_alpha.exe
 AppReadmeFile={app}\ALPHA_WRAPPER.md
+LicenseFile={#StagePath}\ui\WindowsAppSDK-LICENSE.txt
 VersionInfoCompany=DeskLink
 VersionInfoDescription=DeskLink current-user installer
 VersionInfoProductName=DeskLink
@@ -69,16 +70,19 @@ SignedUninstaller=no
 
 [Files]
 #ifdef SignedBuild
+  Source: "{#StagePath}\ui\desklink.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
 #else
+  Source: "{#StagePath}\ui\desklink.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion
 #endif
+Source: "{#StagePath}\ui\*"; Excludes: "desklink.exe"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagePath}\runtime\schannel\msquic.dll"; DestDir: "{app}\runtime\schannel"; Flags: ignoreversion
 Source: "{#StagePath}\concrt140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\msvcp140.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -93,6 +97,7 @@ Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\DeskLink"; Filename: "{app}\desklink_alpha.exe"; WorkingDir: "{app}"; Comment: "Open DeskLink"
+Name: "{group}\DeskLink Product UI Preview"; Filename: "{app}\desklink.exe"; WorkingDir: "{app}"; Comment: "Open the WinUI product shell preview"
 
 [Run]
 Filename: "{app}\desklink_alpha.exe"; Description: "Open DeskLink"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
@@ -102,7 +107,7 @@ const
   InstallerMutexName = 'Local\DeskLink.Install.v1';
   UpdateMutexName = 'Local\DeskLink.Update.v1';
   ApplicationMutexNames =
-    'Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1';
+    'Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1';
 
 function HasExactCommandLineParameter(Value: String): Boolean;
 var

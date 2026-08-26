@@ -24,7 +24,8 @@ release-signing identity and clean Windows 11 / Windows Server 2022 validation.
 5. send the typed `PrepareForUpdate` request, which repeats the fail-local
    transition and schedules orderly runtime shutdown;
 6. wait for `Local\DeskLink.Runtime.v1` and
-   `Local\DeskLink.RuntimeBroker.v1`, then the Alpha UI mutex, to disappear;
+   `Local\DeskLink.RuntimeBroker.v1`, then the Alpha and product-shell UI
+   mutexes, to disappear;
 7. run Setup in a bounded kill-on-close job and validate the registered version,
    exact installed executables, their signer, and the Alpha update self-test;
 8. if install or validation fails, run and validate the already-approved
@@ -80,7 +81,7 @@ package mutation before local confirmation. Windows disposable-account CI proves
 - ordinary Setup and application startup cannot overlap the update gate;
 - coordinator-mode Setup cannot be impersonated without that gate;
 - the production updater rejects unsigned development packages before disturbing
-  a running Alpha UI;
+  running Alpha and product-shell UI processes;
 - an injected post-install health failure restores the prior version; and
 - a valid development transaction advances the version before normal uninstall.
 
@@ -88,6 +89,12 @@ The unsigned acceptance and injected-health controls exist only in the separate
 `desklink_update_validation.exe` test target. The installer stages
 `desklink_update.exe` and rejects a staged binary containing the unsigned-test
 switch.
+
+The current installer validates and signs `desklink.exe`, but post-install and
+rollback health retains the original required executable baseline during the
+preview transition. This is deliberate: a failed first shell-bearing update
+must be able to roll back to a valid older Alpha-only package. Shell shutdown is
+still coordinated whenever the shell mutex/window exists.
 
 Production qualification still requires the actual timestamped release signer,
 revocation behavior, signed candidate/rollback transactions, power loss and

@@ -8,10 +8,15 @@ install a service, add Firewall rules, or modify the Windows network profile.
 
 ## Security and lifecycle contract
 
-- The installer accepts only the exact allowlisted alpha payload. Unexpected
-  files, reparse points, or a Schannel `msquic.dll` whose SHA-256 differs from
-  the reviewed 2.6.0 artifact stop the build.
+- The installer accepts only the exact allowlisted Alpha payload plus the
+  validated WinUI self-contained graph. Unexpected files, reparse points,
+  invalid Microsoft runtime signatures, or a Schannel `msquic.dll` whose
+  SHA-256 differs from the reviewed 2.6.0 artifact stop the build.
+- The pinned Windows App SDK license plus Runtime, WinUI, and C++/WinRT notices
+  are hash-validated, installed with the self-contained payload, and the SDK
+  terms are presented by Setup.
 - Setup and Uninstall check `Local\DeskLink.Alpha.v1`,
+  `Local\DeskLink.Shell.v1`,
   `Local\DeskLink.Runtime.v1`, and `Local\DeskLink.RuntimeBroker.v1`. An
   active UI, transport runtime, or broker blocks replacement and removal;
   Setup never force-closes or restarts DeskLink.
@@ -36,8 +41,8 @@ be published as a production release.
 
 A production build has no unsigned fallback. It requires an Authenticode code
 signing certificate in the current user's Windows certificate store, selected
-by thumbprint, plus an RFC 3161 timestamp URL. The build signs all three DeskLink
-executables, the generated uninstaller, and Setup; it then verifies the signer
+by thumbprint, plus an RFC 3161 timestamp URL. The build signs every DeskLink
+executable, the generated uninstaller, and Setup; it then verifies the signer
 and timestamp before copying the artifact to its destination. The release
 signing key is separate from DeskLink's device CNG identity. The build accepts
 no PFX, PEM, private-key path, or exported DeskLink key.
@@ -45,6 +50,12 @@ no PFX, PEM, private-key path, or exported DeskLink key.
 ```powershell
 cmake --install build-msquic --config Release `
   --prefix installer-stage --component Alpha
+
+.\scripts\Build-WinUiShell.ps1 `
+  -Configuration Release -LockedMode
+.\scripts\Stage-WinUiShell.ps1 `
+  -BuildPath build-winui\Release `
+  -StagePath installer-stage\ui
 
 .\scripts\Build-WindowsInstaller.ps1 `
   -StagePath installer-stage `
@@ -69,12 +80,14 @@ account to verify:
 
 1. an active DeskLink lifecycle mutex blocks Setup;
 2. installation remains current-user and installs the complete allowlisted
-   payload;
-3. unsigned packages are rejected by the production updater before UI shutdown;
-4. injected candidate health failure rolls back to the current version;
-5. a coordinated update advances the registered version;
-6. uninstall removes binaries, registration, and the startup value; and
-7. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
+   Alpha and self-contained WinUI payload;
+3. product-shell secondary activation and bounded exit work, and shell exit
+   leaves the broker responsive;
+4. unsigned packages are rejected by the production updater before UI shutdown;
+5. injected candidate health failure rolls back to the current version;
+6. a coordinated update advances the registered version;
+7. uninstall removes binaries, registration, and the startup value; and
+8. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
 
 `Test-WindowsInstaller.ps1` refuses to run unless
 `-AllowCurrentUserMutation` is supplied. Use that switch only on an isolated

@@ -90,6 +90,9 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Native Windows alpha launcher with bounded pairing/session controls,
   authenticated status/mode IPC, graceful child lifecycle, a Schannel-only
   ZIP, and a current-user installer foundation
+- Self-contained C++/WinRT product-shell preview with Home, Advanced, and
+  Diagnostics surfaces, simulated fail-local states, single-instance
+  activation, close-to-tray lifecycle, and broker-independent UI exit
 - Explicit current-user update coordinator with prevalidated same-signer
   candidate/rollback installers, ordered fail-local shutdown, bounded Setup,
   post-install health checks, and automatic rollback
@@ -107,7 +110,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Production signing/clean-system installer and update qualification, final
-  product polish, and Stream Deck plugin
+  broker-backed product UI, onboarding/devices, monitor authoring, feature
+  settings, final product polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 Current release-specific defects and workarounds are tracked in
@@ -179,9 +183,27 @@ Windows 11 / Server 2022+ production baseline. See
 [`docs/ALPHA_WRAPPER.md`](docs/ALPHA_WRAPPER.md) for the workflow and packaging
 command.
 
+### Product UI preview
+
+Windows builds can opt into the deployment-qualified WinUI 3 shell foundation:
+
+```powershell
+cmake -S . -B build-product-ui -DDESKLINK_BUILD_PRODUCT_UI=ON
+cmake --build build-product-ui --config Release --target desklink_product_ui
+```
+
+The build uses locked NuGet dependencies and stages an unpackaged,
+self-contained Windows App SDK payload. `desklink.exe` is a preview against
+simulated broker states in this PR: it performs no pairing, trust, networking,
+capture, or input-injection operation. Closing it leaves the broker running;
+**Exit** ends only the shell. The Alpha remains the normal installed entry
+point until the product cutover PR.
+
 Windows CI also creates an explicitly unsigned current-user development
-installer and validates install, fail-closed update rejection, forced rollback,
-coordinated upgrade, startup cleanup, state preservation, and uninstall.
+installer containing the Alpha and product-shell preview and validates install,
+shell single-instance/exit behavior, broker survival, fail-closed update
+rejection, forced rollback, coordinated upgrade, startup cleanup, state
+preservation, and uninstall.
 Unsigned installers are never production release artifacts. Production
 packaging fails closed unless the DeskLink executables, uninstaller, and Setup
 can be Authenticode-signed and timestamped with an explicit current-user

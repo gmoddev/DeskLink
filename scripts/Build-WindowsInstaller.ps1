@@ -28,6 +28,7 @@ $ExpectedMsQuicHash =
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $InstallerScript = Join-Path $RepositoryRoot 'installer\DeskLink.iss'
 $SigningScript = Join-Path $RepositoryRoot 'scripts\Invoke-AuthenticodeSign.ps1'
+. (Join-Path $RepositoryRoot 'scripts\WinUiPayload.ps1')
 
 function Assert-LastExitCode([string] $Operation) {
     if ($LASTEXITCODE -ne 0) {
@@ -163,6 +164,16 @@ foreach ($RelativePath in $RequiredFiles) {
     }
     Assert-NoReparsePoint $FullPath "Staged file $RelativePath"
 }
+$WinUiRoot = Join-Path $StagePath 'ui'
+$WinUiFiles = @(Assert-DeskLinkWinUiRuntimePayload $WinUiRoot)
+foreach ($File in $WinUiFiles) {
+    $WinUiRelativePath = [IO.Path]::GetRelativePath($WinUiRoot, $File.FullName)
+    [void] $ExpectedRelativeFiles.Add((Join-Path 'ui' $WinUiRelativePath))
+    if ($File.Extension -in '.dll', '.exe' -and
+        $File.Name -ine 'desklink.exe') {
+        Assert-AuthenticodeSignature $File.FullName ''
+    }
+}
 foreach ($File in Get-ChildItem -LiteralPath $StagePath -File -Recurse -Force) {
     $RelativePath = [IO.Path]::GetRelativePath($StagePath, $File.FullName)
     if (-not $ExpectedRelativeFiles.Contains($RelativePath)) {
@@ -194,7 +205,7 @@ $TemporaryStage = Join-Path $TemporaryRoot 'stage'
 $TemporaryOutput = Join-Path $TemporaryRoot 'output'
 try {
     New-Item -ItemType Directory -Path $TemporaryStage, $TemporaryOutput -Force | Out-Null
-    foreach ($RelativePath in $RequiredFiles) {
+    foreach ($RelativePath in ($ExpectedRelativeFiles | Sort-Object)) {
         $Destination = Join-Path $TemporaryStage $RelativePath
         $DestinationDirectory = Split-Path -Parent $Destination
         New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
@@ -257,7 +268,8 @@ try {
     } else {
         Assert-AuthenticodeSignature $BuiltInstaller $Certificate.Thumbprint -RequireTimestamp
         foreach ($Executable in 'desklink_alpha.exe', 'desklink_pair.exe',
-                'desklink_runtime.exe', 'desklink_update.exe') {
+                'desklink_runtime.exe', 'desklink_update.exe',
+                'ui\desklink.exe') {
             Assert-AuthenticodeSignature `
                 (Join-Path $TemporaryStage $Executable) $Certificate.Thumbprint -RequireTimestamp
         }

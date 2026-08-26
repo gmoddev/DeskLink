@@ -34,8 +34,10 @@ constexpr wchar_t kUpdateMutexName[] = L"Local\\DeskLink.Update.v1";
 constexpr wchar_t kRuntimeMutexName[] = L"Local\\DeskLink.Runtime.v1";
 constexpr wchar_t kBrokerMutexName[] = L"Local\\DeskLink.RuntimeBroker.v1";
 constexpr wchar_t kAlphaMutexName[] = L"Local\\DeskLink.Alpha.v1";
+constexpr wchar_t kShellMutexName[] = L"Local\\DeskLink.Shell.v1";
 constexpr wchar_t kInstallerMutexName[] = L"Local\\DeskLink.Install.v1";
 constexpr wchar_t kAlphaWindowClass[] = L"DeskLinkAlphaWindow.v1";
+constexpr wchar_t kShellWindowClass[] = L"DeskLinkShellLifecycleWindow.v1";
 constexpr wchar_t kUninstallKey[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
     L"{58944975-11A2-4DD6-B881-A0700574270F}_is1";
@@ -602,9 +604,10 @@ public:
             ? GetVerifiedSigner(std::filesystem::path(*SelfPath)) : std::nullopt;
         const auto CandidateSigner = GetVerifiedSigner(Command_.Candidate);
         const auto RollbackSigner = GetVerifiedSigner(Command_.Rollback);
-        if (!AlphaSigner || !SelfSigner || !CandidateSigner || !RollbackSigner ||
-            !AlphaSigner->Timestamped || !SelfSigner->Timestamped ||
-            !CandidateSigner->Timestamped || !RollbackSigner->Timestamped ||
+        if (!AlphaSigner || !SelfSigner || !CandidateSigner ||
+            !RollbackSigner || !AlphaSigner->Timestamped ||
+            !SelfSigner->Timestamped || !CandidateSigner->Timestamped ||
+            !RollbackSigner->Timestamped ||
             SelfSigner->CertificateHash != AlphaSigner->CertificateHash ||
             CandidateSigner->CertificateHash != AlphaSigner->CertificateHash ||
             RollbackSigner->CertificateHash != AlphaSigner->CertificateHash) {
@@ -648,19 +651,31 @@ public:
     }
 
     bool RequestUiShutdown() override {
-        if (!MutexExists(kAlphaMutexName)) return true;
-        const auto Window = FindWindowW(kAlphaWindowClass, nullptr);
-        if (!Window) return false;
-        DWORD_PTR Ignored{};
+        const bool AlphaActive = MutexExists(kAlphaMutexName);
+        const bool ShellActive = MutexExists(kShellMutexName);
+        if (!AlphaActive && !ShellActive) return true;
         const auto Message =
             RegisterWindowMessageW(L"DeskLink.PrepareUpdate.v1");
-        return Message != 0 && SendMessageTimeoutW(
-            Window, Message, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK,
-            5'000, &Ignored) != 0;
+        if (Message == 0) return false;
+        const auto RequestWindowShutdown = [Message](
+            const wchar_t* WindowClass, bool Active) {
+            if (!Active) return true;
+            auto Window = FindWindowExW(
+                HWND_MESSAGE, nullptr, WindowClass, nullptr);
+            if (!Window) Window = FindWindowW(WindowClass, nullptr);
+            if (!Window) return false;
+            DWORD_PTR Ignored{};
+            return SendMessageTimeoutW(
+                Window, Message, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                5'000, &Ignored) != 0;
+        };
+        return RequestWindowShutdown(kShellWindowClass, ShellActive) &&
+               RequestWindowShutdown(kAlphaWindowClass, AlphaActive);
     }
 
     bool WaitForUiShutdown() override {
-        return WaitForMutexAbsent(kAlphaMutexName, kShutdownTimeout);
+        return WaitForMutexAbsent(kShellMutexName, kShutdownTimeout) &&
+               WaitForMutexAbsent(kAlphaMutexName, kShutdownTimeout);
     }
 
     bool InstallCandidate() override {
@@ -812,6 +827,10 @@ private:
             std::cerr << "[Update:Validation] installed version did not match the package\n";
             return false;
         }
+        // Keep rollback compatible with valid pre-product-shell packages. The
+        // current package builder requires and validates desklink.exe, while
+        // the updater's post-install baseline remains the original signed
+        // executable set until the product-shell cutover is complete.
         for (const auto* Name : {L"desklink_alpha.exe", L"desklink_pair.exe",
                                  L"desklink_runtime.exe",
                                  L"desklink_update.exe"}) {

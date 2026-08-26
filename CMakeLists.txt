@@ -18,6 +18,8 @@ option(DESKLINK_BUILD_WINDOWS_BACKENDS "Build Win32 backend adapters" ON)
 option(DESKLINK_BUILD_MSQUIC "Build the native MsQuic transport adapter" OFF)
 option(DESKLINK_BUILD_PHYSICAL_VALIDATION
     "Build the non-production physical failure-injection control" OFF)
+option(DESKLINK_BUILD_PRODUCT_UI
+    "Build the pinned self-contained WinUI 3 product shell" OFF)
 set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.6.0 distribution")
 set(DESKLINK_MSQUIC_SCHANNEL_ROOT "${DESKLINK_MSQUIC_ROOT}" CACHE PATH
     "Path to the pinned MsQuic 2.6.0 Schannel distribution")
@@ -324,6 +326,24 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
             DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS=1)
         DeskLinkConfigureUpdateTarget(desklink_update_validation)
     endif()
+endif()
+
+if(WIN32 AND DESKLINK_BUILD_PRODUCT_UI)
+    find_program(DESKLINK_POWERSHELL_EXECUTABLE NAMES pwsh powershell REQUIRED)
+    set(DESKLINK_UI_OUTPUT_DIR
+        "${CMAKE_BINARY_DIR}/product-ui/$<CONFIG>")
+    set(DESKLINK_UI_INTERMEDIATE_DIR
+        "${CMAKE_BINARY_DIR}/product-ui-obj/$<CONFIG>")
+    add_custom_target(desklink_product_ui
+        COMMAND "${DESKLINK_POWERSHELL_EXECUTABLE}"
+            -NoProfile -NonInteractive -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Build-WinUiShell.ps1"
+            -Configuration "$<CONFIG>"
+            -OutputPath "${DESKLINK_UI_OUTPUT_DIR}"
+            -IntermediatePath "${DESKLINK_UI_INTERMEDIATE_DIR}"
+            -LockedMode
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        VERBATIM)
 endif()
 
 if(WIN32 AND DESKLINK_BUILD_MSQUIC)

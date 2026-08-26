@@ -749,6 +749,20 @@ Windows 11 and Server 2022 Desktop Experience smoke tests; DPI/contrast/Narrator
 baseline. Stop for approval if deployment cannot meet current updater and
 fail-local guarantees.
 
+Implementation checkpoint: the shell foundation uses the locked minimal
+component graph `Microsoft.WindowsAppSDK.Runtime` 2.4.0,
+`Microsoft.WindowsAppSDK.WinUI` 2.3.6, and `Microsoft.Windows.CppWinRT`
+3.0.260818.1. It is an unpackaged self-contained x64 application; the staging
+allowlist contains 243 files (about 58 MiB), including the pinned SDK license
+and notices, and rejects unexpected files,
+reparse points, or invalid Microsoft runtime signatures. Home, Advanced, and
+Diagnostics render six bounded simulated states without opening network,
+trust, capture, or input authority. The shell has its own lifecycle mutex,
+single-instance activation, close-to-tray behavior, explicit bounded exit, and
+coordinated-update window. Installer/update orchestration stops both visible
+clients when present while rollback remains compatible with pre-shell packages.
+Alpha intentionally remains the default installed entry point through PR 8.
+
 ### PR 6 — Guided onboarding, Nearby PCs, and Devices
 
 - Role selection and first-run state machine.

@@ -1,0 +1,236 @@
+<Window
+    x:Class="DeskLink.Product.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <NavigationView
+            x:Name="Navigation"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            PaneDisplayMode="LeftCompact"
+            SelectionChanged="OnNavigationChanged"
+            AutomationProperties.Name="DeskLink sections">
+            <NavigationView.MenuItems>
+                <NavigationViewItem
+                    x:Name="HomeNavigation"
+                    Content="Home"
+                    Icon="Home"
+                    Tag="Home"
+                    AccessKey="H"
+                    AutomationProperties.Name="Home" />
+                <NavigationViewItem
+                    Content="Advanced"
+                    Icon="Setting"
+                    Tag="Advanced"
+                    AccessKey="A"
+                    AutomationProperties.Name="Advanced settings" />
+                <NavigationViewItem
+                    Content="Diagnostics"
+                    Icon="View"
+                    Tag="Diagnostics"
+                    AccessKey="D"
+                    AutomationProperties.Name="Diagnostics" />
+            </NavigationView.MenuItems>
+
+            <Grid Padding="24" MaxWidth="1120" HorizontalAlignment="Stretch">
+                <ScrollViewer
+                    x:Name="HomePage"
+                    HorizontalScrollMode="Disabled"
+                    HorizontalScrollBarVisibility="Disabled"
+                    AutomationProperties.Name="DeskLink home">
+                    <StackPanel Spacing="20">
+                        <Grid ColumnSpacing="16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock
+                                    Text="DeskLink"
+                                    Style="{StaticResource TitleTextBlockStyle}" />
+                                <TextBlock
+                                    Text="Your keyboard and mouse, across your desk"
+                                    Style="{StaticResource BodyTextBlockStyle}" />
+                            </StackPanel>
+                            <Border
+                                Grid.Column="1"
+                                Padding="12,6"
+                                CornerRadius="16"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                <TextBlock
+                                    x:Name="StatusBadge"
+                                    Text="Connected"
+                                    FontWeight="SemiBold"
+                                    AutomationProperties.LiveSetting="Polite"
+                                    AutomationProperties.Name="Connection status" />
+                            </Border>
+                        </Grid>
+
+                        <Border
+                            Padding="20"
+                            CornerRadius="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1">
+                            <StackPanel Spacing="16">
+                                <TextBlock Text="Your desk" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Padding="16" CornerRadius="6"
+                                            Background="{ThemeResource ControlFillColorDefaultBrush}">
+                                        <StackPanel>
+                                            <TextBlock Text="THIS-PC" FontWeight="SemiBold" />
+                                            <TextBlock Text="Main PC" />
+                                        </StackPanel>
+                                    </Border>
+                                    <TextBlock Grid.Column="1" Text="↔" FontSize="24"
+                                               VerticalAlignment="Center"
+                                               AutomationProperties.Name="connected to" />
+                                    <Border Grid.Column="2" Padding="16" CornerRadius="6"
+                                            Background="{ThemeResource ControlFillColorDefaultBrush}">
+                                        <StackPanel>
+                                            <TextBlock Text="HOSTPC" FontWeight="SemiBold" />
+                                            <TextBlock Text="Companion PC" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border
+                            Padding="20"
+                            CornerRadius="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1">
+                            <Grid RowSpacing="12">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock x:Name="InputTitle" Text="Keyboard &amp; mouse"
+                                           Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <TextBlock x:Name="InputSummary" Grid.Row="1"
+                                           Text="Ready to move between both PCs"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.LiveSetting="Polite" />
+                                <Button x:Name="ReturnLocalButton" Grid.Row="2"
+                                        Content="Return to this PC"
+                                        HorizontalAlignment="Left"
+                                        Visibility="Collapsed"
+                                        Click="OnReturnLocal"
+                                        AccessKey="R"
+                                        AutomationProperties.HelpText="Returns DeskLink input focus to this PC" />
+                            </Grid>
+                        </Border>
+
+                        <InfoBar x:Name="ActionRequiredBar"
+                                 IsOpen="False"
+                                 IsClosable="False"
+                                 Severity="Error"
+                                 Title="Action required"
+                                 Message="Automatic retry stopped. Input remains Local until you review the connection." />
+
+                        <Grid ColumnSpacing="16" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Clipboard sharing" />
+                            <ToggleSwitch Grid.Column="1" IsOn="True"
+                                          AutomationProperties.Name="Clipboard sharing" />
+                            <TextBlock Grid.Row="1" Text="Audio from HOSTPC" />
+                            <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="On · 72%" VerticalAlignment="Center" />
+                                <Button Content="Mute" AutomationProperties.Name="Mute peer audio" />
+                            </StackPanel>
+                            <TextBlock Grid.Row="2" Text="Start with Windows" />
+                            <ToggleSwitch Grid.Row="2" Grid.Column="1" IsOn="True"
+                                          AutomationProperties.Name="Start DeskLink with Windows" />
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Content="Arrange displays" AccessKey="L" />
+                            <Button Content="Devices &amp; permissions" AccessKey="P" />
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer x:Name="AdvancedPage" Visibility="Collapsed"
+                              AutomationProperties.Name="Advanced settings">
+                    <StackPanel Spacing="18">
+                        <TextBlock Text="Advanced" Style="{StaticResource TitleTextBlockStyle}" />
+                        <TextBlock Text="Technical controls stay here so Home remains task-focused."
+                                   TextWrapping="Wrap" />
+                        <InfoBar IsOpen="True" IsClosable="False" Severity="Informational"
+                                 Title="Deployment preview"
+                                 Message="PR 5 uses simulated broker states. Network and trust operations are not connected from this shell yet." />
+                        <TextBlock Text="Preview runtime state"
+                                   Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <ComboBox x:Name="SimulationState"
+                                  Header="Simulated broker state"
+                                  SelectedIndex="2"
+                                  SelectionChanged="OnSimulationChanged"
+                                  MaxWidth="420"
+                                  HorizontalAlignment="Left"
+                                  AutomationProperties.HelpText="Changes presentation data only; it performs no network or input action">
+                            <ComboBoxItem Content="Offline" Tag="Offline" />
+                            <ComboBoxItem Content="Connecting" Tag="Connecting" />
+                            <ComboBoxItem Content="Connected · Local" Tag="ConnectedLocal" />
+                            <ComboBoxItem Content="Controlling HOSTPC" Tag="RemoteFocus" />
+                            <ComboBoxItem Content="Action required" Tag="ActionRequired" />
+                            <ComboBoxItem Content="Paused" Tag="Paused" />
+                        </ComboBox>
+                        <TextBlock Text="Pointer calibration" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <NumberBox Header="Pointer gain (%)" Value="100" Minimum="25" Maximum="400"
+                                   SpinButtonPlacementMode="Compact" MaxWidth="240" HorizontalAlignment="Left" />
+                        <NumberBox Header="Source mouse DPI (0 uses raw movement)" Value="0"
+                                   Minimum="0" Maximum="32000" SpinButtonPlacementMode="Compact"
+                                   MaxWidth="320" HorizontalAlignment="Left" />
+                        <TextBlock Text="Manual endpoint" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <TextBox Header="Host or IP address" PlaceholderText="192.168.0.108"
+                                 MaxWidth="420" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer x:Name="DiagnosticsPage" Visibility="Collapsed"
+                              AutomationProperties.Name="Diagnostics">
+                    <StackPanel Spacing="18">
+                        <TextBlock Text="Diagnostics" Style="{StaticResource TitleTextBlockStyle}" />
+                        <TextBlock Text="Bounded status for troubleshooting. Input, clipboard, and audio content are never included."
+                                   TextWrapping="Wrap" />
+                        <Border Padding="16" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Runtime phase" FontWeight="SemiBold" />
+                                <TextBlock x:Name="DiagnosticRuntimePhase" Text="Connected · Local" />
+                                <TextBlock Text="Transport" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock Text="MsQuic 2.6.0 · Schannel · PeerValidated" />
+                                <TextBlock Text="Identity" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock Text="Existing non-exportable CNG device identity" />
+                            </StackPanel>
+                        </Border>
+                        <ListView Header="Recent bounded events" SelectionMode="None"
+                                  AutomationProperties.Name="Recent diagnostic events">
+                            <x:String>[App:Lifecycle] product shell initialized</x:String>
+                            <x:String>[Runtime:Broker] simulated state source active</x:String>
+                            <x:String>[Input:Safety] focus remains Local</x:String>
+                        </ListView>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>
