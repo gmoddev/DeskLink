@@ -1,6 +1,8 @@
 # CMake build trees and generated files
 /build/
 /build-alpha/
+/build-update/
+/build-update-msquic/
 /out/
 /cmake-build-*/
 CMakeCache.txt

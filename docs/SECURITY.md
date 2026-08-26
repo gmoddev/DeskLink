@@ -541,6 +541,24 @@ store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
 
+The updater does not download or select releases. Before any focus mutation it
+copies an explicit candidate and current-version rollback installer into a
+unique current-user transaction, checks exact SHA-256, requires the candidate
+version to advance and rollback to equal the installed version, and requires
+valid timestamped Authenticode from the same leaf signer as installed DeskLink.
+The production binary has no unsigned switch; CI's unsigned/fault controls are
+compiled only into a separate non-installed validation target, and packaging
+scans the staged updater to prevent substitution.
+
+An update first requests `LockPc1` and reads back no remote focus/capture. The
+typed `PrepareForUpdate` control request repeats that fail-local transition and
+only then schedules normal runtime teardown. The update gate prevents new Alpha
+or runtime startup; Setup requires that gate only with an exact private
+coordinator parameter, while ordinary Setup/Uninstall is rejected during the
+transaction. Candidate failure invokes the already-verified rollback package.
+Rollback failure cannot fall through to the candidate, another provider, an
+unsigned package, or application restart.
+
 ---
 
 ## 13. Dependency policy

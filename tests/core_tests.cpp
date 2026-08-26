@@ -18,6 +18,7 @@
 #include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
+#include "desklink/update.hpp"
 #ifdef _WIN32
 #include "desklink/win32_audio.hpp"
 #include "desklink/win32_application_settings.hpp"
@@ -525,7 +526,7 @@ void PointerMotionRoundTripAndValidation() {
 void ControlProtocolRoundTripAndValidation() {
     using namespace desklink;
 
-    const std::array<ControlRequest, 6> Requests{
+    const std::array<ControlRequest, 7> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -533,6 +534,7 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{4, SetAudioGainControlRequest{7'500}},
         ControlRequest{5, ToggleAudioMuteControlRequest{}},
         ControlRequest{6, GetDisplayTopologiesControlRequest{}},
+        ControlRequest{7, PrepareForUpdateControlRequest{}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -618,6 +620,115 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(!DecodeControlRequest(Trailing).Decoded.has_value());
     CHECK(DecodeControlRequest(Trailing).Error ==
           ControlDecodeError::InvalidPayload);
+}
+
+class RecordingUpdateBackend final : public desklink::IUpdateBackend {
+public:
+    std::vector<std::string> Calls;
+    std::string FailAt;
+    std::string ThrowAt;
+
+    bool ValidatePackages() override { return Record("validate-packages"); }
+    bool RequestReturnLocal() override { return Record("return-local"); }
+    bool ConfirmLocal() override { return Record("confirm-local"); }
+    bool RequestRuntimeShutdown() override {
+        return Record("request-runtime-shutdown");
+    }
+    bool WaitForRuntimeShutdown() override {
+        return Record("wait-runtime-shutdown");
+    }
+    bool RequestUiShutdown() override {
+        return Record("request-ui-shutdown");
+    }
+    bool WaitForUiShutdown() override { return Record("wait-ui-shutdown"); }
+    bool InstallCandidate() override { return Record("install-candidate"); }
+    bool ValidateCandidate() override { return Record("validate-candidate"); }
+    bool InstallRollback() override { return Record("install-rollback"); }
+    bool ValidateRollback() override { return Record("validate-rollback"); }
+    bool RestartApplication() override { return Record("restart"); }
+
+private:
+    bool Record(std::string Name) {
+        Calls.push_back(Name);
+        if (ThrowAt == Name) throw std::runtime_error("update backend failure");
+        return FailAt != Name;
+    }
+};
+
+void UpdateCoordinatorIsOrderedAndFailsLocal() {
+    using namespace desklink;
+
+    RecordingUpdateBackend SuccessBackend;
+    UpdateCoordinator Success(SuccessBackend);
+    const auto SuccessResult = Success.Run(true);
+    CHECK(SuccessResult.State == UpdateState::Completed);
+    CHECK(SuccessResult.Failure == UpdateFailure::None);
+    CHECK(SuccessResult.CandidateInstalled);
+    CHECK(!SuccessResult.RollbackInstalled);
+    const std::vector<std::string> ExpectedSuccess{
+        "validate-packages", "return-local", "confirm-local",
+        "request-runtime-shutdown", "wait-runtime-shutdown",
+        "request-ui-shutdown", "wait-ui-shutdown", "install-candidate",
+        "validate-candidate", "restart"};
+    CHECK(SuccessBackend.Calls == ExpectedSuccess);
+
+    RecordingUpdateBackend InvalidPackage;
+    InvalidPackage.FailAt = "validate-packages";
+    const auto InvalidResult = UpdateCoordinator(InvalidPackage).Run(true);
+    CHECK(InvalidResult.State == UpdateState::Failed);
+    CHECK(InvalidResult.Failure == UpdateFailure::PackageValidationFailed);
+    CHECK(InvalidPackage.Calls.size() == 1);
+
+    RecordingUpdateBackend NotLocal;
+    NotLocal.FailAt = "confirm-local";
+    const auto NotLocalResult = UpdateCoordinator(NotLocal).Run(true);
+    CHECK(NotLocalResult.State == UpdateState::Failed);
+    CHECK(NotLocalResult.Failure == UpdateFailure::LocalConfirmationFailed);
+    CHECK(std::find(NotLocal.Calls.begin(), NotLocal.Calls.end(),
+                    "install-candidate") == NotLocal.Calls.end());
+
+    RecordingUpdateBackend FailedInstall;
+    FailedInstall.FailAt = "install-candidate";
+    const auto RollbackResult = UpdateCoordinator(FailedInstall).Run(true);
+    CHECK(RollbackResult.State == UpdateState::RolledBack);
+    CHECK(RollbackResult.Failure == UpdateFailure::CandidateInstallFailed);
+    CHECK(!RollbackResult.CandidateInstalled);
+    CHECK(RollbackResult.RollbackInstalled);
+    const std::vector<std::string> RollbackTail{
+        "install-candidate", "install-rollback", "validate-rollback",
+        "restart"};
+    CHECK(FailedInstall.Calls.size() >= RollbackTail.size());
+    CHECK(std::equal(RollbackTail.begin(), RollbackTail.end(),
+                     FailedInstall.Calls.end() -
+                         static_cast<std::ptrdiff_t>(RollbackTail.size())));
+
+    RecordingUpdateBackend ValidationException;
+    ValidationException.ThrowAt = "validate-candidate";
+    const auto ExceptionResult =
+        UpdateCoordinator(ValidationException).Run(false);
+    CHECK(ExceptionResult.State == UpdateState::RolledBack);
+    CHECK(ExceptionResult.Failure == UpdateFailure::CandidateValidationFailed);
+    CHECK(ExceptionResult.CandidateInstalled);
+    CHECK(ExceptionResult.RollbackInstalled);
+
+    RecordingUpdateBackend FailedRollback;
+    FailedRollback.FailAt = "install-candidate";
+    FailedRollback.ThrowAt = "install-rollback";
+    const auto FailedRollbackResult =
+        UpdateCoordinator(FailedRollback).Run(true);
+    CHECK(FailedRollbackResult.State == UpdateState::Failed);
+    CHECK(FailedRollbackResult.Failure == UpdateFailure::RollbackInstallFailed);
+    CHECK(!FailedRollbackResult.RollbackInstalled);
+    CHECK(std::find(FailedRollback.Calls.begin(), FailedRollback.Calls.end(),
+                    "restart") == FailedRollback.Calls.end());
+
+    RecordingUpdateBackend FailedRestart;
+    FailedRestart.FailAt = "restart";
+    const auto FailedRestartResult = UpdateCoordinator(FailedRestart).Run(true);
+    CHECK(FailedRestartResult.State == UpdateState::Failed);
+    CHECK(FailedRestartResult.Failure == UpdateFailure::RestartFailed);
+    CHECK(FailedRestartResult.CandidateInstalled);
+    CHECK(!FailedRestartResult.RollbackInstalled);
 }
 
 void MouseWheelRoundTripAndValidation() {
@@ -4695,6 +4806,7 @@ int main() {
     protocol_round_trip();
     PointerMotionRoundTripAndValidation();
     ControlProtocolRoundTripAndValidation();
+    UpdateCoordinatorIsOrderedAndFailsLocal();
     MouseWheelRoundTripAndValidation();
     DisplayTopologyMappingIsStableAndInvalidates();
     DisplayTopologyRejectsAmbiguousStableIds();

@@ -10,6 +10,9 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string] $ExpectedUpgradeVersion,
 
+    [Parameter(Mandatory = $true)]
+    [string] $UpdateValidationPath,
+
     [switch] $AllowCurrentUserMutation
 )
 
@@ -19,6 +22,7 @@ if (-not $AllowCurrentUserMutation) {
 }
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
 $UpgradeInstallerPath = (Resolve-Path -LiteralPath $UpgradeInstallerPath).Path
+$UpdateValidationPath = (Resolve-Path -LiteralPath $UpdateValidationPath).Path
 $InstallPath = Join-Path $env:LOCALAPPDATA 'Programs\DeskLink'
 $StatePath = Join-Path $env:LOCALAPPDATA 'DeskLink'
 $RunKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -52,6 +56,7 @@ function Assert-InstalledPayload() {
     $ExpectedFiles = @(
         'desklink_alpha.exe',
         'desklink_pair.exe',
+        'desklink_update.exe',
         'runtime\schannel\msquic.dll',
         'concrt140.dll',
         'msvcp140.dll',
@@ -72,6 +77,72 @@ function Assert-InstalledPayload() {
     }
 }
 
+function Invoke-CoordinatedUpdate(
+    [string] $Coordinator,
+    [switch] $AllowUnsigned,
+    [switch] $FailCandidateValidation,
+    [string] $ExpectedState,
+    [string] $ExpectedFailure) {
+    $TransactionsPath = Join-Path $StatePath 'UpdateTransactions'
+    $Before = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    if (Test-Path -LiteralPath $TransactionsPath -PathType Container) {
+        foreach ($Directory in Get-ChildItem -LiteralPath $TransactionsPath `
+                -Directory -Filter 'tx-*') {
+            [void] $Before.Add($Directory.Name)
+        }
+    }
+    $Arguments = @(
+        'apply', '--candidate', $UpgradeInstallerPath,
+        '--candidate-sha256',
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $UpgradeInstallerPath).Hash,
+        '--rollback', $InstallerPath,
+        '--rollback-sha256',
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerPath).Hash
+    )
+    if ($AllowUnsigned) { $Arguments += '--development-allow-unsigned' }
+    if ($FailCandidateValidation) {
+        $Arguments += '--development-fail-candidate-validation'
+    }
+    $Starter = Start-Process -FilePath $Coordinator -ArgumentList $Arguments `
+        -Wait -PassThru
+    if ($Starter.ExitCode -ne 0) {
+        throw "Update coordinator starter failed with exit code $($Starter.ExitCode)"
+    }
+
+    $Transaction = $null
+    $DiscoveryDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        if (Test-Path -LiteralPath $TransactionsPath -PathType Container) {
+            $Transaction = Get-ChildItem -LiteralPath $TransactionsPath `
+                -Directory -Filter 'tx-*' |
+                Where-Object { -not $Before.Contains($_.Name) } |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First 1
+        }
+        if (-not $Transaction) { Start-Sleep -Milliseconds 100 }
+    } while (-not $Transaction -and [DateTime]::UtcNow -lt $DiscoveryDeadline)
+    if (-not $Transaction) {
+        throw 'Update coordinator did not create a bounded transaction directory.'
+    }
+
+    $ResultPath = Join-Path $Transaction.FullName 'result.txt'
+    $ResultDeadline = [DateTime]::UtcNow.AddMinutes(2)
+    while (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf) -and
+           [DateTime]::UtcNow -lt $ResultDeadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf)) {
+        throw 'Update coordinator did not finish within two minutes.'
+    }
+    $Result = ConvertFrom-StringData (Get-Content -Raw -LiteralPath $ResultPath)
+    if ($Result.state -ne $ExpectedState -or
+        $Result.failure -ne $ExpectedFailure) {
+        throw "Unexpected update result state=$($Result.state) failure=$($Result.failure)"
+    }
+    return $Result
+}
+
 try {
     New-Item -ItemType Directory -Path $StatePath -Force | Out-Null
     Set-Content -LiteralPath $SentinelPath -Value 'preserve-on-uninstall' `
@@ -89,6 +160,14 @@ try {
         $GateMutex.Dispose()
     }
 
+    $Impersonated = Start-Process -FilePath $InstallerPath -ArgumentList @(
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+        '/DESKLINKCOORDINATED'
+    ) -Wait -PassThru
+    if ($Impersonated.ExitCode -eq 0) {
+        throw 'Setup impersonated a coordinated update without the update gate.'
+    }
+
     Invoke-Installer $InstallerPath 'Initial installation'
     Assert-InstalledPayload
     if (-not (Test-Path -LiteralPath $UninstallKeyPath)) {
@@ -97,6 +176,40 @@ try {
     if (Test-Path -LiteralPath $MachineUninstallKeyPath) {
         throw 'DeskLink unexpectedly registered a machine-wide uninstall entry.'
     }
+
+    $Alpha = Start-Process -FilePath (Join-Path $InstallPath 'desklink_alpha.exe') `
+        -ArgumentList '--background' -PassThru
+    Start-Sleep -Seconds 1
+    if ($Alpha.HasExited) {
+        throw 'Installed Alpha UI did not remain active for update coordination.'
+    }
+
+    $Rejected = Invoke-CoordinatedUpdate `
+        -Coordinator (Join-Path $InstallPath 'desklink_update.exe') `
+        -ExpectedState failed -ExpectedFailure package-validation
+    if ($Alpha.HasExited) {
+        throw 'Production package rejection disturbed the running Alpha UI.'
+    }
+    $RejectedVersion =
+        (Get-ItemProperty -LiteralPath $UninstallKeyPath).DisplayVersion
+    if ($RejectedVersion -ne '0.1.0') {
+        throw 'Rejected production update changed the installed version.'
+    }
+
+    $RolledBack = Invoke-CoordinatedUpdate `
+        -Coordinator $UpdateValidationPath -AllowUnsigned `
+        -FailCandidateValidation -ExpectedState rolled-back `
+        -ExpectedFailure candidate-validation
+    [void] $Alpha.WaitForExit(30000)
+    if (-not $Alpha.HasExited) {
+        throw 'Coordinated update did not stop the Alpha UI.'
+    }
+    $RollbackVersion =
+        (Get-ItemProperty -LiteralPath $UninstallKeyPath).DisplayVersion
+    if ($RollbackVersion -ne '0.1.0') {
+        throw "Rollback restored version $RollbackVersion instead of 0.1.0"
+    }
+    Assert-InstalledPayload
 
     $InstallGate = [Threading.Mutex]::new($false, 'Local\DeskLink.Install.v1')
     try {
@@ -108,14 +221,39 @@ try {
             -Wait -PassThru
         $GateError = Get-Content -Raw -LiteralPath $GateErrorPath
         if ($BlockedRuntime.ExitCode -eq 0 -or
-            $GateError -notmatch 'installer operation is active') {
+            $GateError -notmatch 'install or update operation is active') {
             throw 'DeskLink runtime did not fail closed while the installer mutex was active.'
         }
     } finally {
         $InstallGate.Dispose()
     }
 
-    Invoke-Installer $UpgradeInstallerPath 'In-place upgrade'
+    $UpdateGate = [Threading.Mutex]::new($false, 'Local\DeskLink.Update.v1')
+    try {
+        $BlockedSetup = Start-Process -FilePath $UpgradeInstallerPath `
+            -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') `
+            -Wait -PassThru
+        if ($BlockedSetup.ExitCode -eq 0) {
+            throw 'Ordinary Setup overlapped an active coordinated update.'
+        }
+        $BlockedRuntime = Start-Process `
+            -FilePath (Join-Path $InstallPath 'desklink_pair.exe') `
+            -ArgumentList 'identity' `
+            -RedirectStandardOutput $GateOutputPath `
+            -RedirectStandardError $GateErrorPath `
+            -Wait -PassThru
+        $GateError = Get-Content -Raw -LiteralPath $GateErrorPath
+        if ($BlockedRuntime.ExitCode -eq 0 -or
+            $GateError -notmatch 'install or update operation is active') {
+            throw 'DeskLink runtime did not fail closed while the update gate was active.'
+        }
+    } finally {
+        $UpdateGate.Dispose()
+    }
+
+    $Updated = Invoke-CoordinatedUpdate `
+        -Coordinator $UpdateValidationPath -AllowUnsigned `
+        -ExpectedState completed -ExpectedFailure none
     Assert-InstalledPayload
     $InstalledVersion = (Get-ItemProperty -LiteralPath $UninstallKeyPath).DisplayVersion
     if ($InstalledVersion -ne $ExpectedUpgradeVersion) {
@@ -149,7 +287,7 @@ try {
         (Get-Content -Raw -LiteralPath $SentinelPath) -ne 'preserve-on-uninstall') {
         throw 'Uninstall modified or deleted current-user DeskLink state.'
     }
-    Write-Host '[Packaging:Installer] current-user install, upgrade, startup cleanup, state preservation, and uninstall passed.'
+    Write-Host '[Packaging:Installer] current-user install, fail-closed update rejection, rollback, upgrade, startup cleanup, state preservation, and uninstall passed.'
 } finally {
     $CleanupUninstaller = Join-Path $InstallPath 'unins000.exe'
     if (Test-Path -LiteralPath $CleanupUninstaller -PathType Leaf) {

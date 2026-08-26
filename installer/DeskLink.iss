@@ -69,11 +69,13 @@ SignedUninstaller=no
 
 [Files]
 #ifdef SignedBuild
-Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
-Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
 #else
-Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion
+  Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion
+  Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion
+  Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 Source: "{#StagePath}\runtime\schannel\msquic.dll"; DestDir: "{app}\runtime\schannel"; Flags: ignoreversion
 Source: "{#StagePath}\concrt140.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -96,12 +98,41 @@ Filename: "{app}\desklink_alpha.exe"; Description: "Open DeskLink"; WorkingDir: 
 [Code]
 const
   InstallerMutexName = 'Local\DeskLink.Install.v1';
+  UpdateMutexName = 'Local\DeskLink.Update.v1';
   ApplicationMutexNames =
     'Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1';
 
-function AcquireInstallerGate(): Boolean;
+function HasExactCommandLineParameter(Value: String): Boolean;
+var
+  Index: Integer;
 begin
   Result := False;
+  for Index := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(Index), Value) = 0 then
+    begin
+      Result := True;
+      exit;
+    end;
+  end;
+end;
+
+function AcquireInstallerGate(): Boolean;
+var
+  CoordinatedUpdate: Boolean;
+  UpdateActive: Boolean;
+begin
+  Result := False;
+  CoordinatedUpdate :=
+    HasExactCommandLineParameter('/DESKLINKCOORDINATED');
+  UpdateActive := CheckForMutexes(UpdateMutexName);
+  if CoordinatedUpdate <> UpdateActive then
+  begin
+    SuppressibleMsgBox(
+      'DeskLink Setup cannot overlap or impersonate a coordinated update.',
+      mbError, MB_OK, IDOK);
+    exit;
+  end;
   if CheckForMutexes(InstallerMutexName) then
     exit;
   CreateMutex(InstallerMutexName);

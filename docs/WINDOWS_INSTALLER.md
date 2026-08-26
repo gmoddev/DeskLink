@@ -21,10 +21,11 @@ install a service, add Firewall rules, or modify the Windows network profile.
   records, application preferences, and roaming preferences are not installer
   payload and are not removed or migrated. The device private key remains
   non-exportable.
-- The installer does not implement the future update coordinator. A later
-  updater must still perform `Return Local -> release owned input -> stop
-  capture -> close sessions -> update/restart`, with rollback and no update
-  while Remote.
+- The packaged update coordinator performs `Return Local -> confirm no remote
+  focus/capture -> stop runtime/UI -> update/validate -> optional restart` and
+  invokes a prevalidated current-version installer on candidate failure. Setup
+  and Uninstall cannot overlap its update gate. See
+  [`WINDOWS_UPDATES.md`](WINDOWS_UPDATES.md).
 
 ## Build modes
 
@@ -34,7 +35,7 @@ be published as a production release.
 
 A production build has no unsigned fallback. It requires an Authenticode code
 signing certificate in the current user's Windows certificate store, selected
-by thumbprint, plus an RFC 3161 timestamp URL. The build signs the two DeskLink
+by thumbprint, plus an RFC 3161 timestamp URL. The build signs all three DeskLink
 executables, the generated uninstaller, and Setup; it then verifies the signer
 and timestamp before copying the artifact to its destination. The release
 signing key is separate from DeskLink's device CNG identity. The build accepts
@@ -68,9 +69,11 @@ account to verify:
 1. an active DeskLink lifecycle mutex blocks Setup;
 2. installation remains current-user and installs the complete allowlisted
    payload;
-3. a same-AppId in-place upgrade updates the registered version;
-4. uninstall removes binaries, registration, and the startup value; and
-5. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
+3. unsigned packages are rejected by the production updater before UI shutdown;
+4. injected candidate health failure rolls back to the current version;
+5. a coordinated update advances the registered version;
+6. uninstall removes binaries, registration, and the startup value; and
+7. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
 
 `Test-WindowsInstaller.ps1` refuses to run unless
 `-AllowCurrentUserMutation` is supplied. Use that switch only on an isolated
@@ -84,5 +87,5 @@ test account or disposable Windows worker.
   and Windows Server 2022 systems;
 - validate sign-in startup plus Private/Domain Firewall onboarding without
   automatic Firewall changes; and
-- implement the fail-local update coordinator and rollback path in a separate
-  reviewable change.
+- validate signed update/rollback plus process termination, power loss,
+  disk-full, and restart failure on clean supported systems.

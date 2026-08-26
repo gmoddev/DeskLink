@@ -426,6 +426,8 @@ Request command numbers are:
 | 3 | `FocusMachine` | one nonzero 16-byte machine ID | `Unsupported` until persistent host orchestration exists |
 | 4 | `SetAudioGain` | unsigned permyriad, `0..10000` | applies bounded gain to the active Host peer receiver; otherwise `NotReady` |
 | 5 | `ToggleAudioMute` | empty | toggles mute on the active Host peer receiver; otherwise `NotReady` |
+| 6 | `GetDisplayTopologies` | empty | returns the bounded read-only current topology view |
+| 7 | `PrepareForUpdate` | empty | repeats fail-local mode application and schedules orderly local runtime shutdown |
 
 Responses contain a bounded status and an optional typed state record. A state
 record includes local/focused machine IDs, role, desired mode, peer count,
