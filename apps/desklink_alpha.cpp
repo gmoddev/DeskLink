@@ -61,6 +61,8 @@ enum ControlId : int {
     GrantAudioSend,
     GrantAudioReceive,
     GrantTopology,
+    GrantClipboardRead,
+    GrantClipboardWrite,
     OpenPairing,
     PairPeer,
     CaptureInput,
@@ -72,6 +74,7 @@ enum ControlId : int {
     ToggleAudioMute,
     SendAudio,
     ReceiveAudio,
+    SyncClipboard,
     StartReceiver,
     StartController,
     FocusRemote,
@@ -393,12 +396,18 @@ private:
                       BS_AUTOCHECKBOX | WS_TABSTOP, 580, 277, 235, 24,
                       GrantAudioReceive);
         CreateControl(L"BUTTON", L"Exchange monitor layouts",
-                      BS_AUTOCHECKBOX | WS_TABSTOP, 32, 306, 240, 24,
+                      BS_AUTOCHECKBOX | WS_TABSTOP, 32, 306, 200, 24,
                       GrantTopology);
+        CreateControl(L"BUTTON", L"Peer may read text clipboard",
+                      BS_AUTOCHECKBOX | WS_TABSTOP, 245, 306, 195, 24,
+                      GrantClipboardRead);
+        CreateControl(L"BUTTON", L"Peer may write text clipboard",
+                      BS_AUTOCHECKBOX | WS_TABSTOP, 455, 306, 190, 24,
+                      GrantClipboardWrite);
         CreateControl(L"BUTTON", L"Open pairing window", BS_PUSHBUTTON,
-                      290, 310, 210, 32, OpenPairing);
+                      660, 302, 115, 32, OpenPairing);
         CreateControl(L"BUTTON", L"Pair with address", BS_PUSHBUTTON,
-                      520, 310, 210, 32, PairPeer);
+                      785, 302, 115, 32, PairPeer);
 
         CreateControl(L"BUTTON", L"Session", BS_GROUPBOX,
                       15, 371, 900, 178);
@@ -414,6 +423,9 @@ private:
         CreateControl(L"BUTTON", L"Render peer system audio",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 600, 397, 235, 24,
                       ReceiveAudio);
+        CreateControl(L"BUTTON", L"Sync text clipboard",
+                      BS_AUTOCHECKBOX | WS_TABSTOP, 600, 513, 235, 24,
+                      SyncClipboard);
         CreateControl(L"BUTTON", L"Start receiver", BS_PUSHBUTTON,
                       32, 433, 160, 32, StartReceiver);
         CreateControl(L"BUTTON", L"Start controller", BS_PUSHBUTTON,
@@ -449,9 +461,9 @@ private:
             745, 475, 90, 28, ToggleAudioMute);
         CreateControl(L"STATIC",
             L"Controller starts Local. Edge roaming requires a saved monitor link and remains fail-local.",
-            SS_LEFT, 285, 514, 590, 24);
+            SS_LEFT, 285, 514, 300, 24);
 
-        CreateControl(L"BUTTON", L"Diagnostics (memory only; input content is never logged)",
+        CreateControl(L"BUTTON", L"Diagnostics (memory only; input and clipboard content are never logged)",
                       BS_GROUPBOX, 15, 555, 900, 172);
         LogControl_ = CreateControl(
             L"EDIT", L"[Wrapper:Startup] Ready. No network action has been taken.\r\n",
@@ -767,6 +779,8 @@ private:
         Request->GrantAudioSend = IsChecked(GrantAudioSend);
         Request->GrantAudioReceive = IsChecked(GrantAudioReceive);
         Request->GrantTopology = IsChecked(GrantTopology);
+        Request->GrantClipboardRead = IsChecked(GrantClipboardRead);
+        Request->GrantClipboardWrite = IsChecked(GrantClipboardWrite);
         StartRequest(*Request);
     }
 
@@ -776,6 +790,7 @@ private:
         Request->Operation = Controller ? desklink::LauncherOperation::Focus
                                         : desklink::LauncherOperation::Serve;
         Request->CaptureInput = IsChecked(CaptureInput);
+        Request->SyncClipboard = IsChecked(SyncClipboard);
         if (Controller) {
             const auto Address = ReadAddress();
             if (!Address) {

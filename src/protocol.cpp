@@ -216,6 +216,16 @@ ByteBuffer encode_payload(const Message& message) {
                 w.u8(static_cast<std::uint8_t>(Display.PhysicalSize));
                 w.u8(static_cast<std::uint8_t>(Display.Orientation));
             }
+        } else if constexpr (std::is_same_v<T, ClipboardHelloMessage>) {
+            w.u16(value.Version);
+            w.u32(value.MaximumTextBytes);
+        } else if constexpr (std::is_same_v<T, ClipboardTextMessage>) {
+            w.raw(value.OriginMachine);
+            w.u64(value.UpdateId);
+            w.u32(static_cast<std::uint32_t>(value.Text.size()));
+            w.raw(ByteSpan{
+                reinterpret_cast<const std::uint8_t*>(value.Text.data()),
+                value.Text.size()});
         } else if constexpr (std::is_same_v<T, HeartbeatMessage>) {
         }
     }, message);
@@ -412,6 +422,34 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             }
             return Message;
         }
+        case MessageType::ClipboardHello: {
+            ClipboardHelloMessage Message;
+            if (!r.u16(Message.Version) ||
+                !r.u32(Message.MaximumTextBytes) || r.remaining() != 0 ||
+                !IsValidClipboardHelloMessage(Message)) {
+                return std::nullopt;
+            }
+            return Message;
+        }
+        case MessageType::ClipboardText: {
+            ClipboardTextMessage Message;
+            std::uint32_t TextSize{};
+            ByteBuffer Text;
+            if (!r.raw(Message.OriginMachine) || !r.u64(Message.UpdateId) ||
+                !r.u32(TextSize) || TextSize > kMaximumClipboardTextBytes ||
+                TextSize != r.remaining() ||
+                !r.raw_vector(TextSize, Text) || r.remaining() != 0) {
+                return std::nullopt;
+            }
+            if (!Text.empty()) {
+                Message.Text.assign(
+                    reinterpret_cast<const char*>(Text.data()), Text.size());
+            }
+            if (!IsValidClipboardTextMessage(Message)) {
+                return std::nullopt;
+            }
+            return Message;
+        }
         case MessageType::Heartbeat:
             if (r.remaining() != 0) return std::nullopt;
             return HeartbeatMessage{};
@@ -438,6 +476,8 @@ bool known_type(std::uint16_t raw) {
         case MessageType::SetAudioGain:
         case MessageType::AudioFrame:
         case MessageType::DisplayTopologySnapshot:
+        case MessageType::ClipboardHello:
+        case MessageType::ClipboardText:
         case MessageType::Heartbeat:
             return true;
         default:
@@ -467,6 +507,12 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, AudioFrameMessage>) return MessageType::AudioFrame;
         else if constexpr (std::is_same_v<T, DisplayTopologySnapshotMessage>) {
             return MessageType::DisplayTopologySnapshot;
+        }
+        else if constexpr (std::is_same_v<T, ClipboardHelloMessage>) {
+            return MessageType::ClipboardHello;
+        }
+        else if constexpr (std::is_same_v<T, ClipboardTextMessage>) {
+            return MessageType::ClipboardText;
         }
         else return MessageType::Heartbeat;
     }, message);

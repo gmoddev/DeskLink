@@ -35,6 +35,13 @@ struct SessionStats {
     std::uint64_t CapabilityGrantsSent{};
     std::uint64_t CapabilityGrantsReceived{};
     std::uint64_t CapabilityGrantsRejected{};
+    std::uint64_t ClipboardHellosSent{};
+    std::uint64_t ClipboardHellosReceived{};
+    std::uint64_t ClipboardSent{};
+    std::uint64_t ClipboardSendRejected{};
+    std::uint64_t ClipboardReceived{};
+    std::uint64_t ClipboardApplied{};
+    std::uint64_t ClipboardRejected{};
     std::uint64_t DirectionRejected{};
     std::uint64_t DirectionCollisions{};
     std::uint64_t IncomingFocusAccepted{};
@@ -44,6 +51,13 @@ struct SessionStats {
 struct DisplayTopologyExchangeOptions {
     bool Enabled{};
     const IClock* Clock{};
+};
+
+struct ClipboardSessionOptions {
+    bool Enabled{};
+    MachineId LocalMachine{};
+    const IClock* Clock{};
+    std::function<bool(ClipboardTextMessage)> ApplyText;
 };
 
 class AgentSession {
@@ -173,7 +187,8 @@ public:
                 std::uint64_t SessionNonce,
                 PeerSessionHandlers Handlers = {},
                 AudioReceiver* Receiver = nullptr,
-                DisplayTopologyExchangeOptions TopologyOptions = {}) noexcept;
+                DisplayTopologyExchangeOptions TopologyOptions = {},
+                ClipboardSessionOptions ClipboardOptions = {}) noexcept;
     ~PeerSession();
 
     [[nodiscard]] bool Start();
@@ -206,6 +221,9 @@ public:
     [[nodiscard]] bool CanSendAudio() const noexcept;
     [[nodiscard]] bool CanReceiveAudio() const noexcept;
     [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
+    [[nodiscard]] bool CanSendClipboard() const noexcept;
+    [[nodiscard]] bool CanReceiveClipboard() const noexcept;
+    [[nodiscard]] bool PublishClipboardText(std::string Text);
     [[nodiscard]] bool PublishDisplayTopology(
         const MachineId& LocalMachine,
         const DisplayTopologySnapshot& Topology);
@@ -222,6 +240,7 @@ private:
         const DecodedPacket& Packet) noexcept;
     void CountDecision(AgentDecision Decision) noexcept;
     [[nodiscard]] bool PublishCapabilityGrantLocked();
+    [[nodiscard]] bool PublishClipboardHelloLocked();
     void ReleaseIncomingDirectionLocked() noexcept;
     void FailLocalDirectionsLocked() noexcept;
 
@@ -237,6 +256,8 @@ private:
     std::optional<CapabilitySet> RemoteCapabilities_;
     DisplayTopologyExchangeOptions TopologyOptions_;
     DisplayTopologyExchangeTracker TopologyExchange_;
+    ClipboardSessionOptions ClipboardOptions_;
+    ClipboardExchange ClipboardExchange_;
     std::optional<MachineId> LocalTopologyMachine_;
     PeerDirectionArbiter DirectionArbiter_;
     std::optional<PeerDirectionToken> OutgoingToken_;

@@ -47,7 +47,7 @@ The current build proves the core invariants independently of Windows networking
 | Windows foreground monitor | Done | Out-of-context `EVENT_SYSTEM_FOREGROUND` hook on an owned message-loop thread; bounded image-name lookup; same-thread unhook; no polling or code loading |
 | Host input lifecycle safety boundary | Done | Disable capture, release focus, synchronously stop hooks, then enter GAME/LOCK_PC1; exit requires fresh FocusReady + initial snapshot before capture restart/enable |
 | Production Host profile runtime | Done | Bounded exact CLI rules and fallback mode; 64-event serialized WinEvent/control/FocusReady/renewal/failure queue; renewal only while Remote |
-| Native Windows alpha wrapper | Done | Schannel-only typed launcher; manual pairing/session controls; Local-first controller; bounded gain/DPI controls; host-with-port rejection; same-user status/mode IPC; bounded in-memory diagnostics; portable ZIP |
+| Native Windows alpha wrapper | Done | Schannel-only typed launcher; manual pairing/session/clipboard controls; Local-first controller; bounded gain/DPI controls; host-with-port rejection; same-user status/mode IPC; bounded in-memory diagnostics; portable ZIP |
 | PCM audio frame | Done | Bounded wire representation |
 | Exact audio block assembly | Done | 48 kHz/stereo/PCM16; exact 240-frame/5 ms blocks; bounded source packet acceptance; silence and discontinuity reset |
 | Audio jitter buffer | Done | Reorder + bounded silence concealment; adaptive 2-12 block target; immediate bounded increases, 200-sample downward hysteresis, explicit rebuffer accounting |
@@ -56,6 +56,7 @@ The current build proves the core invariants independently of Windows networking
 | Audio endpoint recovery | Done | Scoped endpoint notifications; restart-safe adapters; audio-only 250 ms to 5 s capped retry; buffered audio reset; client/send rejection is not retried |
 | Audio clock-drift correction | Done | 400-sample occupancy windows; 50 ppm slew steps; ±1000 ppm cap; four-block source bound; exact-block linear resampling; discontinuity reset |
 | Per-peer audio gain/mute | Done | Host-local 0-10000 permyriad attenuation; five-millisecond ramp; endpoint-recovery persistence; no system mixer changes |
+| Capability-scoped text clipboard | Experimental automated foundation | Default-off complementary read/write grants; canonical module hello; reliable nonce/origin/update gates; strict UTF-8/48 KiB/20 Hz bounds; eight-write Windows `CF_UNICODETEXT` queue; exact sequence/text loop suppression; physical qualification open |
 | Transport abstraction | Done | Authentication/encryption metadata contract |
 | Secure session binding | Done | Refuses insecure transport; binds session nonce |
 | Manual pairing core | Done | `/pair/2` role-bound commit-before-reveal, fresh per-connection nonce, certificate/machine binding, user-confirmed six-digit code, mutual durable completion; v1 downgrade refused |
@@ -73,7 +74,7 @@ The current build proves the core invariants independently of Windows networking
 | Connection rate limits | Done | Bounded per-address connection and pairing windows |
 | Native MsQuic loopback | Done | Pair, confirm, reconnect, mutual pins, reliable packet |
 | Trusted session nonce | Done | Fresh initiator nonce, pinned-TLS preface, reconnect rotation, no 0-RTT |
-| Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input/audio/topology grants; existing trust records are not migrated |
+| Windows pairing control | Done | Five-minute window, native two-PC code prompt, explicit input/audio/topology/clipboard grants; existing trust records are not migrated |
 | Manual focus control | Done | Trusted serve/focus commands, lease renewal, explicit release |
 | Windows 10 physical compatibility | R&D Stage 5 complete | Pairing, reconnect, nonce rotation, protocol-v2 relative pointer feel at 100%/raw DPI, physical forwarding, `SendInput`, snapshot recovery, emergency release, process termination, scoped network interruption, and live stale epoch/session rejection passed |
 | End-to-end focus session | Done | FocusRequest -> FocusReady -> input over transport abstraction |
@@ -161,6 +162,13 @@ The current test suite verifies:
 72. peer-reported grants cannot substitute for local audio/topology disclosure consent
 73. reciprocal sessions preserve explicitly granted bidirectional audio and topology exchange
 74. Alpha launcher accepts edge roaming for Focus or Serve only with capture and an absolute typed settings path
+75. clipboard codec strict UTF-8, NUL/size/truncation and wrong-lane rejection
+76. default-off complementary consent and canonical two-sided module negotiation
+77. wrong origin/nonce, replay, rate, one-sided grant, and stale-session rejection
+78. callback exception and adapter rejection remain clipboard-only while focus/input continue
+79. reconnect resets update IDs under a fresh session nonce and rejects the prior nonce
+80. Alpha launcher forwards explicit clipboard grants/sync while retaining Schannel pinning and scope validation
+81. Windows clipboard listener starts/stops with publication disabled and neither reads nor writes interactive content
 
 Build/test result in the creation environment:
 
@@ -181,13 +189,14 @@ Build/test result in the creation environment:
 
 - physical emergency-chord and high-poll-rate timing validation
 - physical reciprocal crossing/cooldown validation
+- physical text-clipboard privacy, contention, owner-exit, and reconnect validation
 
 ### P2 — final product surface
 
 - final onboarding and tray visual polish beyond the completed companion lifecycle
 - Stream Deck plugin
 - installer/update flow
-- diagnostics/telemetry that never logs input content
+- diagnostics/telemetry that never logs input or clipboard content
 
 ---
 
@@ -216,8 +225,12 @@ now implement the first complete input path. Physical-distance crossing polish
 and the model-based reliability/soak harness are complete. Because a second
 supported Windows 11/Server 2022+ machine is unavailable, the production
 physical matrix remains deferred; it is still required before roaming leaves
-experimental status. The next implementable roadmap slice is capability-scoped
-text clipboard. The deferred physical sequence remains:
+experimental status. Capability-scoped text clipboard now has its automated
+protocol/session/Windows foundation and remains experimental pending two-PC
+privacy, contention, clipboard-owner-exit, and reconnect qualification. The
+next implementable roadmap slice is installation and daily-use productization,
+without claiming either deferred physical matrix complete. The deferred input
+sequence remains:
 
 ```text
 1. manually pair
@@ -234,8 +247,8 @@ text clipboard. The deferred physical sequence remains:
 ```
 
 The complete Windows 11 physical matrix remains a production-release gate. It
-does not block capability-scoped text clipboard work or controlled experimental
-roaming.
+does not block daily-use productization or controlled experimental roaming and
+clipboard work.
 
 Snapshot reconciliation and stable multi-monitor mapping are complete. The real
 Windows 11 two-PC failure matrix is deferred until a second Windows 11 target is

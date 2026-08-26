@@ -47,6 +47,8 @@ MouseWheel
 SetAudioGain
 Heartbeat
 DisplayTopologySnapshot
+ClipboardHello
+ClipboardText
 ```
 
 ### QUIC DATAGRAM
@@ -87,8 +89,8 @@ not an offer and cannot modify either trust store. The first valid value is
 immutable for the connection. Exact replays are harmless, while unknown bits
 or a changed value invalidate remote-grant state and fail both input directions
 Local. A peer-reported value can gate this machine's outbound input attempt,
-but it never authorizes disclosure of this machine's audio or topology; those
-remain gated by this machine's persisted local grant. Recovery requires a new
+but it never authorizes disclosure of this machine's audio, topology, or
+clipboard; those remain gated by this machine's persisted local grant. Recovery requires a new
 authenticated connection and nonce.
 
 ### SetMode — type 10
@@ -303,6 +305,40 @@ snapshot refreshes them; the Windows runtime publishes at most every two
 seconds and immediately after a material topology generation change. Timeout,
 malformation, wrong identity/nonce, or rejection can never produce a
 route-ready state. Rejected state requires a fresh authenticated connection.
+
+### ClipboardHello — type 60
+
+```text
+clipboard_version                u16 (exactly 1)
+maximum_text_bytes               u32 (exactly 49152)
+```
+
+This canonical reliable-only handshake prevents protocol-v2 peers that do not
+implement this module from receiving clipboard text merely because the older
+capability bit exists. It is sent only after `PeerValidated`, nonce negotiation,
+immutable capability exchange, explicit session opt-in, and at least one
+complementary clipboard direction. Text remains blocked until both peers have
+sent and admitted this exact handshake.
+
+### ClipboardText — type 61
+
+```text
+origin_machine_id                16 bytes
+update_id                        u64
+text_byte_length                 u32
+text_utf8                        text_byte_length bytes
+```
+
+The message is reliable-only. `update_id` is nonzero and strictly increasing
+for one sender and session nonce; it resets only for a fresh authenticated
+session. Text is strict UTF-8 without embedded NUL and is bounded to 48 KiB.
+Admission requires the current envelope nonce, the authenticated peer's exact
+machine ID, the module handshake, explicit opt-in, and complementary grants:
+the sender's local `ClipboardRead` plus the receiver-reported
+`ClipboardWrite`. The receiver independently requires its local
+`ClipboardWrite` plus the sender-reported `ClipboardRead`. Stale, replayed,
+wrong-peer, wrong-session, malformed, and faster-than-20-per-second updates are
+rejected without changing focus or input state.
 
 ---
 

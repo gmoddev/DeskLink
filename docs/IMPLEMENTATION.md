@@ -177,6 +177,28 @@ active Host applies bounded per-peer attenuation/mute after drift correction,
 with one-block ramps and settings preserved through audio-only recovery. Audio
 failure and render policy have no input-mode authority.
 
+### `clipboard.hpp` / `clipboard.cpp`
+
+Implements the portable text-clipboard module handshake, complementary
+`ClipboardRead`/`ClipboardWrite` admission, strict UTF-8 and 48 KiB bounds,
+session-nonce and authenticated-origin binding, monotonic update IDs, and a
+20-per-second send/receive gate. `PeerSession` starts it only by explicit option
+after authenticated transport admission. It sends no text until both peers
+exchange the canonical module hello, which keeps older protocol-v2 peers
+fail-closed. Callback rejection or exception increments clipboard-only
+statistics and cannot alter direction arbitration, focus, leases, or input.
+
+### `win32_clipboard.hpp` / `win32_clipboard.cpp`
+
+Implements a current-user, message-only Windows clipboard listener for
+`CF_UNICODETEXT`. It converts with strict Windows UTF-8 flags, uses bounded
+clipboard-open attempts, caps pending remote writes at eight, owns all content
+only in process memory, and suppresses an applied remote update by exact
+clipboard sequence plus exact text. Publication remains disabled until the
+portable session reports complete mutual consent and negotiation. The CLI and
+wrapper expose explicit pairing grants and `--sync-clipboard`; no clipboard
+option is enabled by default, and failures remain confined to this adapter.
+
 ### `transport.hpp` / `in_memory_transport.cpp`
 
 Defines the transport contract and deterministic in-memory adapter.

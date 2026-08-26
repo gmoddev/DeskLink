@@ -7,6 +7,7 @@
 #include "desklink/session.hpp"
 #include "desklink/win32_audio.hpp"
 #include "desklink/win32_capture.hpp"
+#include "desklink/win32_clipboard.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_foreground.hpp"
 #include "desklink/win32_input.hpp"
@@ -77,9 +78,12 @@ struct CommandLine {
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
     bool GrantTopology{};
+    bool GrantClipboardRead{};
+    bool GrantClipboardWrite{};
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    bool SyncClipboard{};
     std::optional<std::filesystem::path> EdgeRoamingSettingsPath;
     desklink::Win32PointerCalibration PointerCalibration;
     bool ConsoleConfirm{};
@@ -216,10 +220,10 @@ void PrintUsage() {
         << L"Usage:\n"
         << L"  desklink_pair identity\n"
         << L"  desklink_pair discover [seconds: 1..30]\n"
-        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
-        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
-        << L"  desklink_pair serve [port] [--send-audio] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio] [--edge-roaming <absolute-settings-path>]\n"
+        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
+        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
+        << L"  desklink_pair serve [port] [--send-audio] [--sync-clipboard] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio] [--sync-clipboard] [--edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n"
         << L"  desklink_pair control gain 0..10000\n"
@@ -228,6 +232,9 @@ void PrintUsage() {
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
         << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
         << L"--grant-topology allows the authenticated peer to exchange bounded display topology snapshots.\n"
+        << L"--grant-clipboard-read allows the authenticated peer to read this PC's text clipboard.\n"
+        << L"--grant-clipboard-write allows the authenticated peer to replace this PC's text clipboard.\n"
+        << L"--sync-clipboard explicitly enables bounded text-only synchronization; both peers still need complementary grants.\n"
         << L"--send-audio explicitly starts loopback capture for authorized peers.\n"
         << L"--receive-audio explicitly starts shared-mode rendering for an authorized peer.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
@@ -359,6 +366,16 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.GrantTopology = true;
             continue;
         }
+        if (Argument == L"--grant-clipboard-read") {
+            if (Result.GrantClipboardRead) return std::nullopt;
+            Result.GrantClipboardRead = true;
+            continue;
+        }
+        if (Argument == L"--grant-clipboard-write") {
+            if (Result.GrantClipboardWrite) return std::nullopt;
+            Result.GrantClipboardWrite = true;
+            continue;
+        }
         if (Argument == L"--capture") {
             if (Result.CaptureInput) return std::nullopt;
             Result.CaptureInput = true;
@@ -396,6 +413,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--receive-audio") {
             if (Result.ReceiveAudio) return std::nullopt;
             Result.ReceiveAudio = true;
+            continue;
+        }
+        if (Argument == L"--sync-clipboard") {
+            if (Result.SyncClipboard) return std::nullopt;
+            Result.SyncClipboard = true;
             continue;
         }
         if (Argument == L"--edge-roaming") {
@@ -519,7 +541,8 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         PortSeen = true;
     }
     if ((Result.GrantInput || Result.GrantAudioSend ||
-         Result.GrantAudioReceive || Result.GrantTopology) &&
+         Result.GrantAudioReceive || Result.GrantTopology ||
+         Result.GrantClipboardRead || Result.GrantClipboardWrite) &&
         Result.Mode != Operation::PairListen &&
         Result.Mode != Operation::PairConnect) {
         return std::nullopt;
@@ -545,6 +568,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     }
     if (Result.SendAudio && Result.Mode != Operation::Serve) return std::nullopt;
     if (Result.ReceiveAudio && Result.Mode != Operation::Focus) return std::nullopt;
+    if (Result.SyncClipboard && !DirectionalSession) return std::nullopt;
     if (Result.ProfileConfigurationSeen && Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
@@ -662,6 +686,8 @@ desklink::DiscoveryAdvertisement GetDiscoveryAdvertisement(
         static_cast<std::uint64_t>(desklink::Capability::InputInject) |
         static_cast<std::uint64_t>(desklink::Capability::AudioSend) |
         static_cast<std::uint64_t>(desklink::Capability::AudioReceive) |
+        static_cast<std::uint64_t>(desklink::Capability::ClipboardRead) |
+        static_cast<std::uint64_t>(desklink::Capability::ClipboardWrite) |
         static_cast<std::uint64_t>(
             desklink::Capability::DisplayTopologyExchange);
     Result.PairingAvailable = PairingAvailable;
@@ -811,6 +837,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool GrantAudioSend,
                     bool GrantAudioReceive,
                     bool GrantTopology,
+                    bool GrantClipboardRead,
+                    bool GrantClipboardWrite,
                     bool ConsoleConfirm) {
     const auto& Candidate = Session.Candidate();
     const auto RemoteName = ToWide(Candidate.Identity.display_name);
@@ -840,6 +868,10 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     Text += GrantAudioReceive ? L"allowed" : L"not allowed";
     Text += L"\nDisplay topology exchange: ";
     Text += GrantTopology ? L"allowed" : L"not allowed";
+    Text += L"\nRemote may read this PC's text clipboard: ";
+    Text += GrantClipboardRead ? L"allowed" : L"not allowed";
+    Text += L"\nRemote may replace this PC's text clipboard: ";
+    Text += GrantClipboardWrite ? L"allowed" : L"not allowed";
     Text += L"\n\nSelect Yes only if the code matches on both PCs.";
 
     if (ConsoleConfirm) {
@@ -855,6 +887,10 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                    << (GrantAudioReceive ? L"yes" : L"no") << L'\n'
                    << L"[Pairing:Confirmation] grant_topology="
                    << (GrantTopology ? L"yes" : L"no") << L'\n'
+                   << L"[Pairing:Confirmation] grant_clipboard_read="
+                   << (GrantClipboardRead ? L"yes" : L"no") << L'\n'
+                   << L"[Pairing:Confirmation] grant_clipboard_write="
+                   << (GrantClipboardWrite ? L"yes" : L"no") << L'\n'
                    << L"[Pairing:Confirmation] type yes only after comparing both PCs: "
                    << std::flush;
         std::wstring Answer;
@@ -872,6 +908,8 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
                         bool GrantAudioSend,
                         bool GrantAudioReceive,
                         bool GrantTopology,
+                        bool GrantClipboardRead,
+                        bool GrantClipboardWrite,
                         bool ConsoleConfirm) {
     {
         std::scoped_lock Lock(Result->Mutex);
@@ -884,7 +922,7 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
 
     const bool UserConfirmed = ConfirmPairing(
         *Session, GrantInput, GrantAudioSend, GrantAudioReceive,
-        GrantTopology,
+        GrantTopology, GrantClipboardRead, GrantClipboardWrite,
         ConsoleConfirm);
     desklink::CapabilitySet Capabilities;
     if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
@@ -897,6 +935,12 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
     if (GrantTopology) {
         Capabilities.grant(
             desklink::Capability::DisplayTopologyExchange);
+    }
+    if (GrantClipboardRead) {
+        Capabilities.grant(desklink::Capability::ClipboardRead);
+    }
+    if (GrantClipboardWrite) {
+        Capabilities.grant(desklink::Capability::ClipboardWrite);
     }
     const bool ConfirmationSent = UserConfirmed &&
         Session->Confirm(Session->Candidate().VerificationCode, Capabilities);
@@ -1573,7 +1617,8 @@ struct PeerRuntime {
                 bool DropNextKeyRelease,
                 bool DropNextButtonRelease,
                 bool ObserveCleanup,
-                bool ObserveRejections)
+                bool ObserveRejections,
+                bool SyncClipboard)
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
           LocalTopology(LocalMachine),
@@ -1598,10 +1643,27 @@ struct PeerRuntime {
           Receiver([this](desklink::AudioFrameMessage Frame) {
               return Renderer.Submit(std::move(Frame));
           }),
+          Clipboard(desklink::Win32ClipboardHandlers{
+              [this](std::string Text) {
+                  return Session.PublishClipboardText(std::move(Text));
+              },
+              [](std::string Message) {
+                  std::cerr << "[Clipboard:Runtime] "
+                            << (Message.empty()
+                                    ? "clipboard operation failed"
+                                    : Message)
+                            << "; input session remains active\n";
+              }}),
           Session(std::move(Trusted.Endpoint), OutgoingCoordinator,
                   IncomingCoordinator, TrustStore, Trusted.SessionNonce,
                   std::move(Handlers), &Receiver,
-                  desklink::DisplayTopologyExchangeOptions{true, &Clock}) {
+                  desklink::DisplayTopologyExchangeOptions{true, &Clock},
+                  desklink::ClipboardSessionOptions{
+                      SyncClipboard, LocalMachine, &Clock,
+                      [this](desklink::ClipboardTextMessage Message) {
+                          return Clipboard.ApplyRemote(std::move(Message));
+                      }}),
+          ClipboardRequested(SyncClipboard) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
         (void)DropNextKeyRelease;
         (void)DropNextButtonRelease;
@@ -1611,13 +1673,53 @@ struct PeerRuntime {
     }
 
     ~PeerRuntime() {
+        StopClipboard();
         StopSendingAudio();
         StopReceivingAudio();
+    }
+
+    void StartClipboard() noexcept {
+        if (!ClipboardRequested || ClipboardStarted) return;
+        Clipboard.SetLocalPublishing(false);
+        try {
+            ClipboardStarted = Clipboard.Start();
+        } catch (...) {
+            ClipboardStarted = false;
+        }
+        if (ClipboardStarted) {
+            std::cout
+                << "[Clipboard:Runtime] text-only listener active; publication awaits mutual consent\n";
+        } else {
+            std::cerr
+                << "[Clipboard:Runtime] listener unavailable; input session remains active\n";
+        }
+    }
+
+    void StopClipboard() noexcept {
+        if (!ClipboardStarted) return;
+        Clipboard.SetLocalPublishing(false);
+        Clipboard.Stop();
+        ClipboardStarted = false;
+        const auto AdapterStats = Clipboard.Stats();
+        const auto SessionStats = Session.Stats();
+        std::cout << "[Clipboard:Runtime] stopped local_published="
+                  << AdapterStats.LocalPublished
+                  << " remote_applied=" << AdapterStats.RemoteApplied
+                  << " loops_suppressed=" << AdapterStats.LoopsSuppressed
+                  << " rejected="
+                  << (AdapterStats.LocalRejected +
+                      AdapterStats.RemoteRejected +
+                      SessionStats.ClipboardSendRejected +
+                      SessionStats.ClipboardRejected)
+                  << '\n';
     }
 
     void MaintainDisplayTopology() {
         Session.Tick();
         LocalTopology.Maintain(Session);
+        if (ClipboardStarted) {
+            Clipboard.SetLocalPublishing(Session.CanSendClipboard());
+        }
     }
 
     [[nodiscard]] bool SetAudioGainPermyriad(
@@ -1902,7 +2004,10 @@ struct PeerRuntime {
     desklink::HostCoordinator OutgoingCoordinator;
     desklink::Win32WasapiRenderer Renderer;
     desklink::AudioReceiver Receiver;
+    desklink::Win32ClipboardSynchronizer Clipboard;
     desklink::PeerSession Session;
+    bool ClipboardRequested{};
+    bool ClipboardStarted{};
 
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
     std::mutex CaptureLifecycleMutex;
@@ -3357,8 +3462,11 @@ int RunTrusted(const CommandLine& Command,
             Command.ValidationDropNextKeyRelease,
             Command.ValidationDropNextButtonRelease,
             Command.ValidationObserveCleanup,
-            Command.ValidationObserveRejections);
+            Command.ValidationObserveRejections,
+            Command.SyncClipboard);
+        Runtime->StartClipboard();
         if (!Runtime->Session.Start()) {
+            Runtime->StopClipboard();
             Runtime->Session.Stop();
             ReleaseReservation();
             if (Command.Mode == Operation::Focus) {
@@ -3390,6 +3498,7 @@ int RunTrusted(const CommandLine& Command,
             *RuntimeTarget = Input;
             if (!Input->Start()) {
                 Input->Stop();
+                Runtime->StopClipboard();
                 Runtime->StopSendingAudio();
                 Runtime->StopReceivingAudio();
                 Runtime->Session.Stop();
@@ -3433,6 +3542,7 @@ int RunTrusted(const CommandLine& Command,
         }
         if (!Inserted) {
             if (Input) Input->Stop();
+            Runtime->StopClipboard();
             Runtime->StopSendingAudio();
             Runtime->StopReceivingAudio();
             Runtime->Session.Stop();
@@ -3511,6 +3621,7 @@ int RunTrusted(const CommandLine& Command,
         }
         if (StoppingInput) StoppingInput->Stop();
         for (const auto& Runtime : StoppingPeers) {
+            Runtime->StopClipboard();
             Runtime->StopSendingAudio();
             Runtime->StopReceivingAudio();
             Runtime->Session.Stop();
@@ -3572,6 +3683,7 @@ int RunTrusted(const CommandLine& Command,
                           << '\n';
                 Lock.unlock();
                 ActiveInput->Stop();
+                ActiveHost->StopClipboard();
                 ActiveHost->StopSendingAudio();
                 ActiveHost->StopReceivingAudio();
                 ActiveHost->Session.Stop();
@@ -3712,6 +3824,7 @@ int RunTrusted(const CommandLine& Command,
             }
         }
         ActiveInput->Stop();
+        ActiveHost->StopClipboard();
         ActiveHost->StopSendingAudio();
         ActiveHost->StopReceivingAudio();
         ActiveHost->Session.Stop();
@@ -3783,11 +3896,14 @@ int Run(const CommandLine& Command) {
                                GrantAudioSend = Command.GrantAudioSend,
                                GrantAudioReceive = Command.GrantAudioReceive,
                                GrantTopology = Command.GrantTopology,
+                               GrantClipboardRead = Command.GrantClipboardRead,
+                               GrantClipboardWrite = Command.GrantClipboardWrite,
                                ConsoleConfirm = Command.ConsoleConfirm](
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         HandlePairingOffer(
             Result, std::move(Session), GrantInput, GrantAudioSend,
-            GrantAudioReceive, GrantTopology, ConsoleConfirm);
+            GrantAudioReceive, GrantTopology, GrantClipboardRead,
+            GrantClipboardWrite, ConsoleConfirm);
     };
     Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         Session.Endpoint->close();

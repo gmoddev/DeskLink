@@ -29,9 +29,12 @@ struct LauncherRequest {
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
     bool GrantTopology{};
+    bool GrantClipboardRead{};
+    bool GrantClipboardWrite{};
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    bool SyncClipboard{};
     std::filesystem::path EdgeRoamingSettingsPath;
     Win32PointerCalibration PointerCalibration;
 };

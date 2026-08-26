@@ -219,18 +219,28 @@ model-based harness.
 
 ### 4. Capability-scoped text clipboard
 
-- implement text only first using the existing independent `ClipboardRead` and
+**Automated foundation complete; experimental pending physical qualification.**
+The portable/session and Windows runtime now implement:
+
+- the text-only implementation uses the existing independent `ClipboardRead` and
   `ClipboardWrite` grants; pairing alone grants neither, existing trust records
   are never upgraded silently, and per-peer synchronization defaults off;
-- use the authenticated reliable lane with `PeerValidated`, current session
+- the authenticated reliable lane uses `PeerValidated`, current session
   nonce, strict framing, bounded text size/rate/queue depth, update identifiers,
   and loop suppression before touching the Windows clipboard;
-- reject malformed, oversized, stale, replayed, unsupported-format, or
-  wrong-direction updates without retrying through another capability or input
-  injection; and
-- keep image clipboard and file transfer out of this slice until text clipboard
+- malformed, oversized, stale, replayed, unsupported-format, or
+  wrong-direction updates are rejected without retrying through another
+  capability or input injection; and
+- image clipboard and file transfer remain out of this slice until text clipboard
   passes privacy, reconnect, contention, clipboard-owner exit, and fuzz/fault
   validation. Clipboard failure must never change focus or input routing.
+
+Strict framing/UTF-8 bounds, complementary and default-off consent, module
+negotiation, nonce/origin/update replay gates, reconnect reset, callback-failure
+isolation, typed launcher arguments, and the Windows text-only bounded adapter
+are automated. Physical two-PC privacy, rapid-contention/coalescing behavior,
+clipboard-owner exit, and real reconnect tests remain required before this item
+is production-qualified. Image clipboard and file transfer remain excluded.
 
 ### 5. Installation and daily-use productization
 

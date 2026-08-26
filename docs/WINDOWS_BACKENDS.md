@@ -386,6 +386,25 @@ runtime behavior.
 
 Capabilities should degrade independently.
 
+## Text clipboard adapter
+
+`Win32ClipboardSynchronizer` owns one message-only window and registers
+`AddClipboardFormatListener` on its worker thread. It handles only
+`CF_UNICODETEXT`; image, rich-text, HTML, file-drop, and delayed-render formats
+are not read or transmitted. Unicode conversion uses strict invalid-character
+flags and the portable module applies the 48 KiB UTF-8 bound before send or
+write.
+
+The listener may start for an explicitly requested session, but local reads
+remain disabled until `PeerSession::CanSendClipboard()` confirms authenticated
+mutual capability and module negotiation. Remote writes enter an eight-item
+queue. `OpenClipboard` uses five five-millisecond attempts, and failure rejects
+only that update. An applied update records the resulting Windows clipboard
+sequence plus exact in-memory text; matching notifications are suppressed until
+the sequence changes, preventing feedback without hiding a later local copy of
+the same text. Stop joins the window thread and clears queued and suppression
+content. Diagnostics expose counts and failure classes only, never text.
+
 ---
 
 ## 10. Local named pipe

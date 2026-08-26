@@ -29,7 +29,8 @@ bool IsValidHost(std::wstring_view Host) noexcept {
 
 bool HasPairingGrants(const LauncherRequest& Request) noexcept {
     return Request.GrantInput || Request.GrantAudioSend ||
-           Request.GrantAudioReceive || Request.GrantTopology;
+           Request.GrantAudioReceive || Request.GrantTopology ||
+           Request.GrantClipboardRead || Request.GrantClipboardWrite;
 }
 
 void AppendPort(std::vector<std::wstring>& Arguments, std::uint16_t Port) {
@@ -47,6 +48,12 @@ void AppendPairingGrants(std::vector<std::wstring>& Arguments,
     }
     if (Request.GrantTopology) {
         Arguments.emplace_back(L"--grant-topology");
+    }
+    if (Request.GrantClipboardRead) {
+        Arguments.emplace_back(L"--grant-clipboard-read");
+    }
+    if (Request.GrantClipboardWrite) {
+        Arguments.emplace_back(L"--grant-clipboard-write");
     }
 }
 
@@ -91,6 +98,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
         case LauncherOperation::Identity:
             if (HasPairingGrants(Request) || Request.CaptureInput ||
                 Request.SendAudio || Request.ReceiveAudio ||
+                Request.SyncClipboard ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
                 return std::nullopt;
@@ -100,6 +108,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
         case LauncherOperation::Discover:
             if (HasPairingGrants(Request) || Request.CaptureInput ||
                 Request.SendAudio || Request.ReceiveAudio ||
+                Request.SyncClipboard ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
                 return std::nullopt;
@@ -109,7 +118,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             break;
         case LauncherOperation::PairListen:
             if (Request.CaptureInput || Request.SendAudio ||
-                Request.ReceiveAudio ||
+                Request.ReceiveAudio || Request.SyncClipboard ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
                 return std::nullopt;
@@ -121,7 +130,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             break;
         case LauncherOperation::PairConnect:
             if (Request.CaptureInput || Request.SendAudio ||
-                Request.ReceiveAudio ||
+                Request.ReceiveAudio || Request.SyncClipboard ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
                 return std::nullopt;
@@ -143,6 +152,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             Arguments.emplace_back(L"serve");
             AppendPort(Arguments, Request.Port);
             if (Request.SendAudio) Arguments.emplace_back(L"--send-audio");
+            if (Request.SyncClipboard) {
+                Arguments.emplace_back(L"--sync-clipboard");
+            }
             if (Request.CaptureInput) Arguments.emplace_back(L"--capture");
             if (Request.CaptureInput &&
                 Request.PointerCalibration.GainPercent != 100) {
@@ -190,6 +202,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             }
             if (Request.ReceiveAudio) {
                 Arguments.emplace_back(L"--receive-audio");
+            }
+            if (Request.SyncClipboard) {
+                Arguments.emplace_back(L"--sync-clipboard");
             }
             if (HasEdgeRoaming) {
                 Arguments.emplace_back(L"--edge-roaming");

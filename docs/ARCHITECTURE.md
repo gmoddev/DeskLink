@@ -379,8 +379,8 @@ marks the gate `Remote`. Focus stalls expire after 1.5 seconds.
 (incoming) for one validated transport. After admission, both endpoints report
 the exact capability mask from their local persisted trust record. The masks
 remain directional and immutable for that nonce; they do not alter trust.
-Peer-reported grants may preflight an outbound input attempt, but local audio
-and topology disclosure remain gated by this PC's persisted grant.
+Peer-reported grants may preflight an outbound input attempt, but local audio,
+topology, and clipboard disclosure remain gated by this PC's persisted grant.
 `PeerDirectionArbiter` binds each token to the authenticated peer machine,
 session nonce, generation, and direction. It admits only one pending/active
 direction, rejects a new outgoing request while incoming control is active,
@@ -388,6 +388,19 @@ and resolves simultaneous opposite requests by releasing/rejecting both to
 Local. Duplicate authenticated sessions for the same peer and competing
 capture-owner startups are converged before runtime publication. Reconnect
 starts unbound/Local with a fresh nonce and never restores focus.
+
+Clipboard is an optional module on that same validated reciprocal session, not
+a focus feature. Each side reports only its immutable persisted grant, while
+the local runtime also requires explicit process-start opt-in. Sending local
+text requires local `ClipboardRead` and remote `ClipboardWrite`; applying peer
+text requires local `ClipboardWrite` and remote `ClipboardRead`. A canonical
+clipboard hello on both sides gates text so capability bits alone cannot make an
+older peer compatible. Reliable messages bind origin machine, nonce, and
+monotonic per-session update ID before the bounded Windows `CF_UNICODETEXT`
+adapter runs. The adapter's queue, rate, strict conversion, and exact
+sequence/text loop suppression are independent from direction arbitration.
+Therefore clipboard contention, malformed/replayed content, or adapter exit can
+drop clipboard work but cannot admit, revoke, or redirect input.
 
 ---
 
