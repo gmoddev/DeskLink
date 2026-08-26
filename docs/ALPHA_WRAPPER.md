@@ -13,6 +13,8 @@ surface, not the final DeskLink UI or installer.
 - optional physical input capture, audio startup, and text-clipboard sync
 - presentation-only monitor arrangement and explicit saved edge configuration
 - single-instance notification-area lifecycle and optional sign-in startup
+- one long-lived `desklink_runtime.exe` broker for UI-facing control,
+  preferences, identity, and trust operations
 
 The wrapper always passes `--tls-provider schannel`. It does not expose the
 experimental Windows 10 OpenSSL/CNG path, does not read or rewrite the trust
@@ -82,7 +84,8 @@ content is never included in the diagnostic view.
 
 ## Process and failure behavior
 
-The wrapper launches `desklink_pair.exe` by absolute path with
+The wrapper starts `desklink_runtime.exe` independently, then launches
+`desklink_pair.exe` by absolute path for the current migration transport with
 `CreateProcessW`; it does not invoke `cmd.exe`, PowerShell, or another shell.
 Arguments are built from typed, bounded fields and quoted with Windows argument
 rules. Production network operations are pinned to Schannel. Pointer
@@ -99,7 +102,11 @@ same-SID, local-only authenticated control pipe. Returning local changes the
 desired mode to `LockPc1`, which disables capture, releases remote focus, and
 releases DeskLink-owned input state. If the control endpoint is unavailable,
 the wrapper closes the owned process input as a fail-local fallback. Normal
-stop and wrapper shutdown use the CLI's graceful stdin shutdown path.
+stop and wrapper shutdown use the CLI's graceful stdin shutdown path. The
+transport child is assigned suspended to a kill-on-close job before it can run,
+so an actual Alpha process death terminates an in-progress pairing prompt or
+session rather than orphaning it. The broker remains independently available
+and Local.
 
 The wrapper is single-instance. By default the X button hides it to the
 notification area without stopping an active or reconnecting operation. The
@@ -146,6 +153,8 @@ The ZIP contains:
 
 - `desklink_alpha.exe`
 - `desklink_pair.exe`
+- `desklink_runtime.exe`
+- `desklink_update.exe`
 - `runtime/schannel/msquic.dll`
 - the MSVC runtime support DLLs required by these Release binaries
 - this alpha guide

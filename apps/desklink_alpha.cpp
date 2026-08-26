@@ -142,7 +142,8 @@ bool ValidateInstalledPayloadForUpdate() {
     const auto Root = std::filesystem::path(*Executable).parent_path();
     for (const auto* Relative : {
              L"desklink_alpha.exe", L"desklink_pair.exe",
-             L"desklink_update.exe", L"runtime\\schannel\\msquic.dll",
+             L"desklink_runtime.exe", L"desklink_update.exe",
+             L"runtime\\schannel\\msquic.dll",
              L"LICENSE", L"ALPHA_WRAPPER.md"}) {
         const auto Attributes = GetFileAttributesW((Root / Relative).c_str());
         if (Attributes == INVALID_FILE_ATTRIBUTES ||
@@ -244,6 +245,16 @@ public:
         if (!ApplicationSettingsStore_->Load()) return false;
         ApplicationSettings_ = ApplicationSettingsStore_->Current().value_or(
             desklink::ProductPreferences{});
+        BrokerAvailable_ = EnsureRuntimeBroker();
+        if (BrokerAvailable_) {
+            const auto Response = SendControl(
+                desklink::GetProductPreferencesControlRequest{},
+                std::chrono::milliseconds{500});
+            if (Response && Response->Status == desklink::ControlStatus::Ok &&
+                Response->Preferences) {
+                ApplicationSettings_ = *Response->Preferences;
+            }
+        }
 
         WNDCLASSEXW Class{};
         Class.cbSize = sizeof(Class);
@@ -276,12 +287,55 @@ public:
                 L"Welcome to DeskLink.\n\n1. Pair this PC with a nearby PC.\n2. Start a receiver or controller session.\n3. Open Arrange monitors to identify displays and create explicit edge connections.\n\nDeskLink always starts with input Local.",
                 L"DeskLink first run", MB_OK | MB_ICONINFORMATION);
             ApplicationSettings_.FirstRunComplete = true;
-            (void)ApplicationSettingsStore_->Save(ApplicationSettings_);
+            (void)PersistApplicationSettings(ApplicationSettings_);
         }
         return true;
     }
 
 private:
+    bool EnsureRuntimeBroker() {
+        const auto Probe = [] {
+            return desklink::Win32ControlPipeClient::Send(
+                desklink::ControlRequest{
+                    1, desklink::GetStateControlRequest{}},
+                L"broker", std::chrono::milliseconds{100});
+        };
+        if (Probe()) return true;
+
+        const auto Executable = GetExecutablePath();
+        if (!Executable) return false;
+        const auto BrokerPath =
+            std::filesystem::path(*Executable).parent_path() /
+            L"desklink_runtime.exe";
+        if (!std::filesystem::is_regular_file(BrokerPath)) return false;
+        const auto CommandLine = desklink::BuildWindowsCommandLine(
+            BrokerPath.native(), {});
+        if (!CommandLine) return false;
+        auto MutableCommandLine = *CommandLine;
+        STARTUPINFOW Startup{sizeof(Startup)};
+        PROCESS_INFORMATION Process{};
+        const auto WorkingDirectory = BrokerPath.parent_path().native();
+        if (!CreateProcessW(
+                BrokerPath.c_str(), MutableCommandLine.data(), nullptr,
+                nullptr, FALSE,
+                CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                nullptr, WorkingDirectory.c_str(), &Startup, &Process)) {
+            return false;
+        }
+        CloseHandle(Process.hThread);
+        const auto ProcessHandle = TakeHandle(Process.hProcess);
+        const auto Deadline = GetTickCount64() + 2'000u;
+        while (GetTickCount64() < Deadline) {
+            if (Probe()) return true;
+            if (WaitForSingleObject(ProcessHandle.get(), 25) ==
+                WAIT_OBJECT_0) {
+                return false;
+            }
+            Sleep(25);
+        }
+        return false;
+    }
+
     static LRESULT CALLBACK WindowProcedure(HWND Window, UINT Message,
                                              WPARAM WParam, LPARAM LParam) {
         AlphaWindow* Self = reinterpret_cast<AlphaWindow*>(
@@ -712,7 +766,7 @@ private:
         const auto Executable = GetExecutablePath();
         if (!Executable || !desklink::SetWin32RunAtLogin(
                 Candidate.RunAtLogin, *Executable) ||
-            !ApplicationSettingsStore_->Save(Candidate)) {
+            !PersistApplicationSettings(Candidate)) {
             if (Executable) {
                 (void)desklink::SetWin32RunAtLogin(
                     Previous.RunAtLogin, *Executable);
@@ -730,6 +784,21 @@ private:
         }
         ApplicationSettings_ = Candidate;
         AppendLog(L"[App:Settings] application preferences saved\r\n");
+    }
+
+    bool PersistApplicationSettings(
+        const desklink::ProductPreferences& Preferences) {
+        if (BrokerAvailable_) {
+            const auto Response = SendControl(
+                desklink::SetProductPreferencesControlRequest{Preferences},
+                std::chrono::milliseconds{500});
+            if (Response && Response->Status == desklink::ControlStatus::Ok) {
+                return true;
+            }
+            if (BrokerAvailable_) return false;
+        }
+        return ApplicationSettingsStore_ &&
+               ApplicationSettingsStore_->Save(Preferences);
     }
 
     bool AddTrayIcon() {
@@ -981,16 +1050,35 @@ private:
         PROCESS_INFORMATION Process{};
         std::wstring MutableCommandLine = CommandLine;
         const auto WorkingDirectory = Application.parent_path().native();
+        auto Job = TakeHandle(CreateJobObjectW(nullptr, nullptr));
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION JobLimits{};
+        JobLimits.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!Job || !SetInformationJobObject(
+                Job.get(), JobObjectExtendedLimitInformation, &JobLimits,
+                sizeof(JobLimits))) {
+            return false;
+        }
         if (!CreateProcessW(
                 Application.c_str(), MutableCommandLine.data(), nullptr, nullptr,
-                TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr,
+                TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+                    CREATE_SUSPENDED,
+                nullptr,
                 WorkingDirectory.c_str(), &Startup, &Process)) {
+            return false;
+        }
+        if (!AssignProcessToJobObject(Job.get(), Process.hProcess) ||
+            ResumeThread(Process.hThread) == static_cast<DWORD>(-1)) {
+            (void)TerminateProcess(Process.hProcess, ERROR_PROCESS_ABORTED);
+            CloseHandle(Process.hThread);
+            CloseHandle(Process.hProcess);
             return false;
         }
         CloseHandle(Process.hThread);
         OutputWrite.reset();
         InputRead.reset();
         ActiveProcess_ = TakeHandle(Process.hProcess);
+        ActiveJob_ = std::move(Job);
         ProcessInput_ = std::move(InputWrite);
         ProcessOutput_ = std::move(OutputRead);
 
@@ -1079,6 +1167,7 @@ private:
         ProcessInput_.reset();
         ProcessOutput_.reset();
         ActiveProcess_.reset();
+        ActiveJob_.reset();
         ActiveOperation_.reset();
         AppendLog(L"[Wrapper:Process] operation exited with code " +
                   std::to_wstring(ExitCode) + L"\r\n");
@@ -1116,6 +1205,7 @@ private:
         ProcessInput_.reset();
         ProcessOutput_.reset();
         ActiveProcess_.reset();
+        ActiveJob_.reset();
         ActiveOperation_.reset();
     }
 
@@ -1124,8 +1214,14 @@ private:
         std::chrono::milliseconds Timeout) {
         auto RequestId = ++RequestId_;
         if (RequestId == 0) RequestId = ++RequestId_;
-        return desklink::Win32ControlPipeClient::Send(
-            desklink::ControlRequest{RequestId, std::move(Payload)}, {}, Timeout);
+        desklink::ControlRequest Request{RequestId, std::move(Payload)};
+        if (BrokerAvailable_) {
+            const auto Response = desklink::Win32ControlPipeClient::Send(
+                Request, L"broker", Timeout);
+            if (Response) return Response;
+            BrokerAvailable_ = false;
+        }
+        return desklink::Win32ControlPipeClient::Send(Request, {}, Timeout);
     }
 
     bool SendMode(desklink::DeskMode Mode, bool Report) {
@@ -1271,6 +1367,7 @@ private:
     HFONT Font_{};
     HFONT TitleFont_{};
     UniqueHandle ActiveProcess_;
+    UniqueHandle ActiveJob_;
     UniqueHandle ProcessInput_;
     UniqueHandle ProcessOutput_;
     std::jthread ProcessThread_;
@@ -1281,6 +1378,7 @@ private:
         ApplicationSettingsStore_;
     desklink::ProductPreferences ApplicationSettings_;
     NOTIFYICONDATAW TrayIcon_{};
+    bool BrokerAvailable_{};
     bool RuntimeAvailable_{};
     bool TrayActive_{};
     bool ExitRequested_{};

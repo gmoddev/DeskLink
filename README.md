@@ -153,11 +153,20 @@ probes; the normal `desklink_pair.exe` rejects those options.
 
 ### Native alpha wrapper
 
-Windows MsQuic builds produce `desklink_alpha.exe`, a minimal launcher around
-the existing `desklink_pair.exe` runtime. It exposes bounded address, port,
-pairing-grant, input-capture, and audio-startup controls; reads runtime status
-through the existing same-user control pipe; and keeps diagnostics in memory.
-It does not duplicate pairing, TLS, trust, or session logic.
+Windows MsQuic builds produce `desklink_alpha.exe` and the long-lived
+current-user `desklink_runtime.exe` broker. The Alpha remains a migration
+launcher around the existing `desklink_pair.exe` transport runtime, but normal
+UI status, topology, product-preference, and trust-management traffic goes
+through the broker's bounded same-user endpoint. The broker owns UI-facing
+identity, trust, and preference access; it never exposes raw certificates, input events,
+clipboard text, audio frames, arbitrary execution, or module loading.
+
+Generic broker clients may enumerate bounded trust metadata, reduce grants, or
+forget a device only after fail-local session cleanup. They cannot persist a
+permission increase: additions require a new broker-owned local
+reauthorization flow. The current Alpha's transport child is assigned to a
+kill-on-close job, so an actual UI process death also terminates pairing and
+fails active input Local during migration.
 
 Controller sessions always start in `lock-pc1` and require an explicit
 **Focus remote** action. **RETURN LOCAL** applies `LockPc1` through the
@@ -189,6 +198,9 @@ desklink_pair.exe control mode lock
 desklink_pair.exe control mode game
 desklink_pair.exe control gain 7500
 desklink_pair.exe control mute
+desklink_pair.exe control preferences
+desklink_pair.exe control devices
+desklink_pair.exe control return-local
 ```
 
 The named pipe uses an explicit one-SID DACL, rejects remote clients, verifies

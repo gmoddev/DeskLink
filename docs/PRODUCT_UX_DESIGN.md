@@ -250,6 +250,15 @@ and expert diagnostics. During migration it may either invoke existing direct
 operations when the broker is absent or use explicit diagnostic broker calls;
 it must never silently take ownership from a running broker.
 
+Implementation checkpoint: PR 3 introduces `desklink_runtime.exe` as the
+single UI-facing endpoint and owner of product preferences and broker-mediated
+trust mutations. Existing transport operations remain in the separately
+single-owned diagnostic runtime during migration and are proxied through the
+broker. Alpha-owned child operations use a kill-on-close job, so an actual UI
+process death rejects an in-progress pairing prompt and fails active input
+Local. Role-driven listener/connect ownership moves into the broker in PR 4;
+the production pairing shell consumes the broker pairing lease in PR 6.
+
 ### 7.2 WinUI 3 shell
 
 Introduce a separate UI executable, provisionally `desklink.exe`, using WinUI
@@ -688,6 +697,9 @@ Gate: preference corruption is fail-safe; role changes produce no trust-store
 write; current Alpha remains operational.
 
 ### PR 3 — Single per-user runtime broker and control contract
+
+Implementation status: broker/control/authority foundation implemented; full
+CI and packaging validation required before merge.
 
 - Introduce the broker and single-owner lifecycle.
 - Move structured discovery, pairing orchestration, runtime status, and

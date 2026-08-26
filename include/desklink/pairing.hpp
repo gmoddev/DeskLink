@@ -51,6 +51,7 @@ public:
 class ITrustStore {
 public:
     virtual ~ITrustStore() = default;
+    [[nodiscard]] virtual std::optional<std::vector<TrustedPeer>> ListPeers() const = 0;
     [[nodiscard]] virtual std::optional<TrustedPeer> GetPeer(const MachineId& Machine) const = 0;
     [[nodiscard]] virtual std::optional<TrustedPeer> FindPeerByFingerprint(
         std::string_view Fingerprint) const = 0;
@@ -60,6 +61,7 @@ public:
 
 class InMemoryTrustStore final : public ITrustStore {
 public:
+    [[nodiscard]] std::optional<std::vector<TrustedPeer>> ListPeers() const override;
     [[nodiscard]] std::optional<TrustedPeer> GetPeer(const MachineId& Machine) const override;
     [[nodiscard]] std::optional<TrustedPeer> FindPeerByFingerprint(
         std::string_view Fingerprint) const override;

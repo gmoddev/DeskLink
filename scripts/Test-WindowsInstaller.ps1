@@ -56,6 +56,7 @@ function Assert-InstalledPayload() {
     $ExpectedFiles = @(
         'desklink_alpha.exe',
         'desklink_pair.exe',
+        'desklink_runtime.exe',
         'desklink_update.exe',
         'runtime\schannel\msquic.dll',
         'concrt140.dll',
@@ -75,6 +76,27 @@ function Assert-InstalledPayload() {
             throw "Installed payload is missing: $RelativePath"
         }
     }
+}
+
+function Wait-ForBrokerReady() {
+    $Deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $Probe = Start-Process `
+            -FilePath (Join-Path $InstallPath 'desklink_pair.exe') `
+            -ArgumentList @('control', 'state') `
+            -RedirectStandardOutput $GateOutputPath `
+            -RedirectStandardError $GateErrorPath `
+            -Wait -PassThru
+        if ($Probe.ExitCode -eq 0) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $Deadline)
+
+    $Failure = if (Test-Path -LiteralPath $GateErrorPath) {
+        (Get-Content -Raw -LiteralPath $GateErrorPath).Trim()
+    } else {
+        'no control-client diagnostics were produced'
+    }
+    throw "Installed runtime broker did not become ready: $Failure"
 }
 
 function Invoke-CoordinatedUpdate(
@@ -183,6 +205,7 @@ try {
     if ($Alpha.HasExited) {
         throw 'Installed Alpha UI did not remain active for update coordination.'
     }
+    Wait-ForBrokerReady
 
     $Rejected = Invoke-CoordinatedUpdate `
         -Coordinator (Join-Path $InstallPath 'desklink_update.exe') `
