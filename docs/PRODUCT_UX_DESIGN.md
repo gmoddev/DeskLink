@@ -715,8 +715,7 @@ inside explicit local reauthorization.
 
 ### PR 4 — Persistent role-driven startup and reconnect
 
-Implementation status: **implemented and locally validated; pull-request CI
-and merge remain**.
+Implementation status: **merged and validated**.
 
 - Companion auto-listen/advertise.
 - Main preferred-peer auto-connect with bounded retry policy.
@@ -773,6 +772,26 @@ Alpha intentionally remains the default installed entry point through PR 8.
 Gate: ambiguous/spoofed discovery grants nothing; codes and local consequences
 appear on both PCs; timeout/UI exit rejects; permission additions require local
 approval; revocation is immediate and fail-local.
+
+Implementation checkpoint: the version-3 local control protocol now carries
+bounded discovery, pairing-start, candidate-decision, and Nearby result types.
+The broker owns the five-minute discovery/pairing lifecycle and launches only
+its fixed sibling pairing executable after stopping the normal runtime Local.
+Each child receives a fresh random 128-bit token and nonzero operation ID;
+candidate presentation and decision polling must match both. The broker exposes
+only machine/name/code/grants/source to the shell, keeps fingerprint/transcript
+material inside the child-to-broker boundary, and leases the candidate for 90
+seconds. Missing shell mutex, UI exit, timeout, mismatch, Cancel, process exit,
+or update shutdown rejects. A zero-grant candidate remains valid, so the UI
+does not manufacture authority merely to complete pairing.
+
+Nearby records are capped at 64 and cached by the broker after native mDNS
+browse/resolve. Ambiguous, closed, zero-endpoint, or protocol-incompatible
+records cannot start pairing; selecting a valid card supplies only its cached
+address to the same cryptographic pairing lane as manual entry. Devices reads
+only stored authenticated trust. Permission reductions and Forget preserve the
+existing Local/owned-input cleanup ordering; attempted additions receive
+`ReauthorizationRequired` and the shell directs the user to pair again.
 
 ### PR 7 — Simplified monitor authoring
 

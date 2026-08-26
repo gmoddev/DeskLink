@@ -106,6 +106,8 @@ struct CommandLine {
     bool ReceiveAudio{};
     bool SyncClipboard{};
     bool BrokerManaged{};
+    std::optional<std::uint64_t> BrokerPairingOperationId;
+    std::optional<desklink::ControlPairingToken> BrokerPairingToken;
     std::optional<std::filesystem::path> EdgeRoamingSettingsPath;
     desklink::Win32PointerCalibration PointerCalibration;
     bool ConsoleConfirm{};
@@ -208,6 +210,50 @@ std::optional<std::uint16_t> ParseBoundedUnsigned(
     }
     if (Parsed < Minimum) return std::nullopt;
     return static_cast<std::uint16_t>(Parsed);
+}
+
+std::optional<std::uint64_t> ParseNonzeroU64(std::wstring_view Value) {
+    if (Value.empty() || Value.size() > 20) return std::nullopt;
+    std::uint64_t Result = 0;
+    for (const auto Character : Value) {
+        if (Character < L'0' || Character > L'9') return std::nullopt;
+        const auto Digit = static_cast<std::uint64_t>(Character - L'0');
+        if (Result >
+            (std::numeric_limits<std::uint64_t>::max() - Digit) / 10u) {
+            return std::nullopt;
+        }
+        Result = Result * 10u + Digit;
+    }
+    return Result == 0
+        ? std::nullopt
+        : std::optional<std::uint64_t>(Result);
+}
+
+std::optional<desklink::ControlPairingToken> ParsePairingToken(
+    std::wstring_view Value) {
+    if (Value.size() != desklink::kControlPairingTokenSize * 2u) {
+        return std::nullopt;
+    }
+    auto Nibble = [](wchar_t Character) -> std::optional<std::uint8_t> {
+        if (Character >= L'0' && Character <= L'9') {
+            return static_cast<std::uint8_t>(Character - L'0');
+        }
+        if (Character >= L'a' && Character <= L'f') {
+            return static_cast<std::uint8_t>(Character - L'a' + 10);
+        }
+        return std::nullopt;
+    };
+    desklink::ControlPairingToken Result{};
+    for (std::size_t Index = 0; Index < Result.size(); ++Index) {
+        const auto High = Nibble(Value[Index * 2u]);
+        const auto Low = Nibble(Value[Index * 2u + 1u]);
+        if (!High || !Low) return std::nullopt;
+        Result[Index] = static_cast<std::uint8_t>((*High << 4u) | *Low);
+    }
+    return std::all_of(Result.begin(), Result.end(),
+                       [](std::uint8_t Byte) { return Byte == 0; })
+        ? std::nullopt
+        : std::optional<desklink::ControlPairingToken>(Result);
 }
 
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
@@ -400,6 +446,7 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     bool PointerGainSeen = false;
     bool PointerDpiSeen = false;
     bool ExpectedPeerSeen = false;
+    bool BrokerPairingSeen = false;
     for (; Index < ArgumentCount; ++Index) {
         const std::wstring_view Argument(Arguments[Index]);
         if (Argument == L"--grant-input") {
@@ -479,6 +526,20 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--broker-managed") {
             if (Result.BrokerManaged) return std::nullopt;
             Result.BrokerManaged = true;
+            continue;
+        }
+        if (Argument == L"--broker-pairing") {
+            if (BrokerPairingSeen || Index + 2 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            BrokerPairingSeen = true;
+            Result.BrokerPairingOperationId =
+                ParseNonzeroU64(Arguments[++Index]);
+            Result.BrokerPairingToken = ParsePairingToken(Arguments[++Index]);
+            if (!Result.BrokerPairingOperationId ||
+                !Result.BrokerPairingToken) {
+                return std::nullopt;
+            }
             continue;
         }
         if (Argument == L"--expected-peer") {
@@ -643,6 +704,12 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     if (Result.ReceiveAudio && Result.Mode != Operation::Focus) return std::nullopt;
     if (Result.SyncClipboard && !DirectionalSession) return std::nullopt;
     if (Result.BrokerManaged && !DirectionalSession) return std::nullopt;
+    if (BrokerPairingSeen &&
+        Result.Mode != Operation::PairListen &&
+        Result.Mode != Operation::PairConnect) {
+        return std::nullopt;
+    }
+    if (BrokerPairingSeen && Result.ConsoleConfirm) return std::nullopt;
     if (Result.ExpectedPeerMachine && Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
@@ -943,6 +1010,87 @@ desklink::MachineId GetMachineId(const desklink::Sha256Digest& CertificatePin) {
     return desklink::DeriveMachineId(CertificatePin);
 }
 
+desklink::CapabilitySet GetPairingCapabilities(
+    bool GrantInput,
+    bool GrantAudioSend,
+    bool GrantAudioReceive,
+    bool GrantTopology,
+    bool GrantClipboardRead,
+    bool GrantClipboardWrite) noexcept {
+    desklink::CapabilitySet Capabilities;
+    if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
+    if (GrantAudioSend) Capabilities.grant(desklink::Capability::AudioSend);
+    if (GrantAudioReceive) {
+        Capabilities.grant(desklink::Capability::AudioReceive);
+    }
+    if (GrantTopology) {
+        Capabilities.grant(desklink::Capability::DisplayTopologyExchange);
+    }
+    if (GrantClipboardRead) {
+        Capabilities.grant(desklink::Capability::ClipboardRead);
+    }
+    if (GrantClipboardWrite) {
+        Capabilities.grant(desklink::Capability::ClipboardWrite);
+    }
+    return Capabilities;
+}
+
+bool ConfirmPairingWithBroker(
+    const desklink::MsQuicPairingSession& Session,
+    desklink::CapabilitySet Capabilities,
+    std::uint64_t OperationId,
+    const desklink::ControlPairingToken& Token) {
+    const auto& Candidate = Session.Candidate();
+    if (Candidate.Status != desklink::PairingStatus::Ready) return false;
+    static std::atomic_uint64_t NextRequestId{0xD000'0000u};
+    const auto Presented = desklink::Win32ControlPipeClient::Send(
+        desklink::ControlRequest{
+            NextRequestId.fetch_add(1),
+            desklink::PresentManagedPairingCandidateControlRequest{
+                Token,
+                OperationId,
+                Candidate.Identity.machine_id,
+                Candidate.Identity.display_name,
+                Candidate.VerificationCode,
+                Candidate.Identity.public_key_fingerprint,
+                Candidate.TranscriptDigest,
+                Capabilities}},
+        L"broker");
+    if (!Presented || Presented->Status != desklink::ControlStatus::Ok) {
+        std::cerr
+            << "[Pairing:Broker] candidate presentation was rejected\n";
+        return false;
+    }
+
+    const auto Deadline = GetTickCount64() + 90'000u;
+    while (GetTickCount64() < Deadline) {
+        const auto Response = desklink::Win32ControlPipeClient::Send(
+            desklink::ControlRequest{
+                NextRequestId.fetch_add(1),
+                desklink::GetManagedPairingDecisionControlRequest{
+                    Token, OperationId}},
+            L"broker",
+            std::chrono::milliseconds{500});
+        if (!Response || Response->Status != desklink::ControlStatus::Ok ||
+            !Response->PairingDecision) {
+            std::cerr
+                << "[Pairing:Broker] decision channel failed closed\n";
+            return false;
+        }
+        if (*Response->PairingDecision ==
+            desklink::ControlManagedPairingDecision::Approved) {
+            return true;
+        }
+        if (*Response->PairingDecision ==
+            desklink::ControlManagedPairingDecision::Rejected) {
+            return false;
+        }
+        Sleep(100);
+    }
+    std::cerr << "[Pairing:Broker] local confirmation timed out\n";
+    return false;
+}
+
 bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool GrantInput,
                     bool GrantAudioSend,
@@ -950,7 +1098,10 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool GrantTopology,
                     bool GrantClipboardRead,
                     bool GrantClipboardWrite,
-                    bool ConsoleConfirm) {
+                    bool ConsoleConfirm,
+                    std::optional<std::uint64_t> BrokerOperationId,
+                    const std::optional<desklink::ControlPairingToken>&
+                        BrokerToken) {
     const auto& Candidate = Session.Candidate();
     const auto RemoteName = ToWide(Candidate.Identity.display_name);
     const auto RemoteFingerprint = ToWide(
@@ -958,6 +1109,16 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     if (!RemoteName || !RemoteFingerprint ||
         Candidate.Status != desklink::PairingStatus::Ready) {
         return false;
+    }
+
+    if (BrokerOperationId && BrokerToken) {
+        return ConfirmPairingWithBroker(
+            Session,
+            GetPairingCapabilities(
+                GrantInput, GrantAudioSend, GrantAudioReceive,
+                GrantTopology, GrantClipboardRead, GrantClipboardWrite),
+            *BrokerOperationId,
+            *BrokerToken);
     }
 
     std::wstring Text =
@@ -1021,7 +1182,10 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
                         bool GrantTopology,
                         bool GrantClipboardRead,
                         bool GrantClipboardWrite,
-                        bool ConsoleConfirm) {
+                        bool ConsoleConfirm,
+                        std::optional<std::uint64_t> BrokerOperationId,
+                        std::optional<desklink::ControlPairingToken>
+                            BrokerToken) {
     {
         std::scoped_lock Lock(Result->Mutex);
         if (Result->PromptActive || Result->Completed) {
@@ -1034,25 +1198,10 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
     const bool UserConfirmed = ConfirmPairing(
         *Session, GrantInput, GrantAudioSend, GrantAudioReceive,
         GrantTopology, GrantClipboardRead, GrantClipboardWrite,
-        ConsoleConfirm);
-    desklink::CapabilitySet Capabilities;
-    if (GrantInput) Capabilities.grant(desklink::Capability::InputInject);
-    if (GrantAudioSend) {
-        Capabilities.grant(desklink::Capability::AudioSend);
-    }
-    if (GrantAudioReceive) {
-        Capabilities.grant(desklink::Capability::AudioReceive);
-    }
-    if (GrantTopology) {
-        Capabilities.grant(
-            desklink::Capability::DisplayTopologyExchange);
-    }
-    if (GrantClipboardRead) {
-        Capabilities.grant(desklink::Capability::ClipboardRead);
-    }
-    if (GrantClipboardWrite) {
-        Capabilities.grant(desklink::Capability::ClipboardWrite);
-    }
+        ConsoleConfirm, BrokerOperationId, BrokerToken);
+    const auto Capabilities = GetPairingCapabilities(
+        GrantInput, GrantAudioSend, GrantAudioReceive, GrantTopology,
+        GrantClipboardRead, GrantClipboardWrite);
     const bool ConfirmationSent = UserConfirmed &&
         Session->Confirm(Session->Candidate().VerificationCode, Capabilities);
     if (!UserConfirmed) Session->Reject();
@@ -4153,12 +4302,16 @@ int Run(const CommandLine& Command) {
                                GrantTopology = Command.GrantTopology,
                                GrantClipboardRead = Command.GrantClipboardRead,
                                GrantClipboardWrite = Command.GrantClipboardWrite,
-                               ConsoleConfirm = Command.ConsoleConfirm](
+                               ConsoleConfirm = Command.ConsoleConfirm,
+                               BrokerOperationId =
+                                   Command.BrokerPairingOperationId,
+                               BrokerToken = Command.BrokerPairingToken](
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         HandlePairingOffer(
             Result, std::move(Session), GrantInput, GrantAudioSend,
             GrantAudioReceive, GrantTopology, GrantClipboardRead,
-            GrantClipboardWrite, ConsoleConfirm);
+            GrantClipboardWrite, ConsoleConfirm, BrokerOperationId,
+            BrokerToken);
     };
     Handlers.Connected = [](desklink::MsQuicBootstrapHandlers::TrustedSession Session) {
         Session.Endpoint->close();

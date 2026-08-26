@@ -3,6 +3,7 @@
 #include "desklink/discovery.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <limits>
 
 namespace desklink {
@@ -69,6 +70,27 @@ void AppendBrokerManagement(std::vector<std::wstring>& Arguments,
     if (Request.BrokerManaged) Arguments.emplace_back(L"--broker-managed");
 }
 
+std::wstring FormatPairingToken(const ControlPairingToken& Token) {
+    constexpr wchar_t Hex[] = L"0123456789abcdef";
+    std::wstring Result;
+    Result.reserve(Token.size() * 2u);
+    for (const auto Byte : Token) {
+        Result.push_back(Hex[Byte >> 4u]);
+        Result.push_back(Hex[Byte & 0x0fu]);
+    }
+    return Result;
+}
+
+void AppendBrokerPairing(std::vector<std::wstring>& Arguments,
+                         const LauncherRequest& Request) {
+    if (!Request.BrokerPairingOperationId || !Request.BrokerPairingToken) {
+        return;
+    }
+    Arguments.emplace_back(L"--broker-pairing");
+    Arguments.push_back(std::to_wstring(*Request.BrokerPairingOperationId));
+    Arguments.push_back(FormatPairingToken(*Request.BrokerPairingToken));
+}
+
 void AppendExpectedPeer(std::vector<std::wstring>& Arguments,
                         const LauncherRequest& Request) {
     if (!Request.ExpectedPeerMachine) return;
@@ -114,7 +136,17 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
                       [](std::uint8_t Byte) { return Byte == 0; }))) ||
         (Request.BrokerManaged &&
          Request.Operation != LauncherOperation::Serve &&
-         Request.Operation != LauncherOperation::Focus)) {
+         Request.Operation != LauncherOperation::Focus) ||
+        (Request.BrokerPairingOperationId.has_value() !=
+         Request.BrokerPairingToken.has_value()) ||
+        (Request.BrokerPairingOperationId &&
+         (*Request.BrokerPairingOperationId == 0 ||
+          std::all_of(
+              Request.BrokerPairingToken->begin(),
+              Request.BrokerPairingToken->end(),
+              [](std::uint8_t Byte) { return Byte == 0; }) ||
+          (Request.Operation != LauncherOperation::PairListen &&
+           Request.Operation != LauncherOperation::PairConnect)))) {
         return std::nullopt;
     }
 
@@ -151,6 +183,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             Arguments.emplace_back(L"listen");
             AppendPort(Arguments, Request.Port);
             AppendPairingGrants(Arguments, Request);
+            AppendBrokerPairing(Arguments, Request);
             AppendProductionProvider(Arguments);
             break;
         case LauncherOperation::PairConnect:
@@ -164,6 +197,7 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             Arguments.push_back(Request.Host);
             AppendPort(Arguments, Request.Port);
             AppendPairingGrants(Arguments, Request);
+            AppendBrokerPairing(Arguments, Request);
             AppendProductionProvider(Arguments);
             break;
         case LauncherOperation::Serve:

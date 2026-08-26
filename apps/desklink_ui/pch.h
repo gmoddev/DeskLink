@@ -15,8 +15,12 @@
 #endif
 
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <microsoft.ui.xaml.window.h>
 
@@ -25,7 +29,12 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Interop.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.UI.Text.h>
 
+#include "desklink/control.hpp"
 #include "desklink/product_shell.hpp"
+#include "desklink/win32_control.hpp"

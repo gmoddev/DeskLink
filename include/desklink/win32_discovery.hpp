@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <stop_token>
 #include <vector>
 
 namespace desklink {
@@ -38,7 +39,8 @@ private:
 class Win32MdnsBrowser final {
 public:
     [[nodiscard]] static Win32DiscoveryBrowseResult Browse(
-        std::chrono::milliseconds Duration);
+        std::chrono::milliseconds Duration,
+        std::stop_token StopToken = {});
 };
 
 } // namespace desklink

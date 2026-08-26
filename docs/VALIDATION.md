@@ -96,7 +96,7 @@ second supported Windows 11/Server 2022+ system is available.
 
 ---
 
-## Product UX PR 5 automated validation
+## Product UX PR 5-6 automated validation
 
 The WinUI deployment foundation is built with locked NuGet resolution and an
 unpackaged self-contained x64 payload. Local validation proves:
@@ -112,8 +112,34 @@ unpackaged self-contained x64 payload. Local validation proves:
 - all 34 interactive UI Automation controls have accessible names; and
 - real Inno Setup 7.1.0 compilation of the unsigned development installer.
 
-The shell is intentionally driven by simulated broker states in this PR, so
-these checks cannot change trust, pairing, networking, capture, or injection.
+PR 5 intentionally drove the shell from simulated broker states. PR 6 replaces
+those simulations with the version-3 current-user control protocol. The shell
+now reads broker-owned state, preferences, trust records, discovery results,
+and pairing candidates without opening transport, identity, capture, or input
+authority itself. Automated PR 6 validation additionally proves:
+
+- all 25 control requests and their bounded typed responses round-trip, while
+  invalid discovery durations, manual hosts, candidate bindings, tokens,
+  fingerprints, phases, and cross-field combinations fail closed;
+- broker-launched pairing children require the matching nonzero 128-bit token
+  and operation ID, while direct command-line pairing retains its existing
+  explicit local-confirmation path;
+- a managed pairing candidate is bound to its operation, peer identity,
+  fingerprint, transcript, requested grants, and 90-second lease;
+- Nearby results remain untrusted and bounded to 64 entries, and only a unique,
+  compatible, pairing-open cached record can enter pairing;
+- a pre-canceled native browse performs no network work, while an active browse
+  checks cooperative cancellation at 50-millisecond intervals so stop, update,
+  and broker teardown do not inherit the requested 30-second scan lifetime;
+- permission reductions and forgetting first force Local cleanup, while grant
+  additions return `ReauthorizationRequired`; and
+- successful external pairing reloads the protected trust store before the
+  role-driven runtime can resume.
+
+The pairing child and broker also reject a managed operation when the product
+shell is absent, exits, rejects, times out, supplies a stale operation ID, or
+cannot complete the local pipe exchange. No such path admits a session or
+mutates trust.
 Disposable-account CI additionally exercises installed shell activation,
 broker survival after shell exit, update shutdown, rollback, and uninstall.
 Production signing plus clean Windows 11 and Server 2022 Desktop Experience

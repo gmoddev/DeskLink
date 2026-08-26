@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desklink/win32_capture.hpp"
+#include "desklink/control.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -53,6 +54,8 @@ struct LauncherRequest {
     bool ReceiveAudio{};
     bool SyncClipboard{};
     bool BrokerManaged{};
+    std::optional<std::uint64_t> BrokerPairingOperationId;
+    std::optional<ControlPairingToken> BrokerPairingToken;
     std::filesystem::path EdgeRoamingSettingsPath;
     Win32PointerCalibration PointerCalibration;
 };
