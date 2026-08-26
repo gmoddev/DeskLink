@@ -112,7 +112,10 @@ jobs:
         shell: pwsh
         run: |
           $Installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.0-x64.exe'
-          $ToolRoot = Join-Path $env:RUNNER_TEMP 'Inno Setup 7'
+          # Inno Setup's /DIR switch is parsed by the child installer. Keep this
+          # temporary path free of spaces so Start-Process cannot split it while
+          # reconstructing the native command line.
+          $ToolRoot = Join-Path $env:RUNNER_TEMP 'inno-7.1.0'
           Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe' -OutFile $Installer
           $Expected = '0362A383ED217D4C4239B5933866DD96D3EB2102737DA92F80F6057A4B40DF2F'
           if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash -ne $Expected) {
@@ -135,7 +138,11 @@ jobs:
           if ($Process.ExitCode -ne 0) {
             throw "Inno Setup compiler installation failed with exit code $($Process.ExitCode)."
           }
-          "DESKLINK_ISCC=$ToolRoot\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $Compiler = Join-Path $ToolRoot 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) {
+            throw "Inno Setup reported success but did not install the compiler at $Compiler."
+          }
+          "DESKLINK_ISCC=$Compiler" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Prove the production signing gate fails closed
         shell: pwsh
