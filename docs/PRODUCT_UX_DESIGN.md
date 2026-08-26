@@ -675,6 +675,9 @@ existing trust migration.
 
 ### PR 2 — Product model, preferences, and planner
 
+Implementation status: **automated foundation complete; integration remains in
+later PRs**.
+
 - Add `DeskRole`, versioned product preferences, migration, and strict bounds.
 - Add typed `DesiredDeskConfiguration` and deterministic runtime planner.
 - Unit-test every role, missing-grant state, malformed preference, and

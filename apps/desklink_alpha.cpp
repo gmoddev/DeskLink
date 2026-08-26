@@ -239,11 +239,11 @@ public:
         if (!DataDirectory) return false;
         RoamingSettingsPath_ = *DataDirectory / L"roaming.settings";
         ApplicationSettingsStore_ =
-            std::make_unique<desklink::Win32ApplicationSettingsStore>(
+            std::make_unique<desklink::Win32ProductPreferencesStore>(
                 *DataDirectory / L"application.settings");
         if (!ApplicationSettingsStore_->Load()) return false;
         ApplicationSettings_ = ApplicationSettingsStore_->Current().value_or(
-            desklink::Win32ApplicationSettings{});
+            desklink::ProductPreferences{});
 
         WNDCLASSEXW Class{};
         Class.cbSize = sizeof(Class);
@@ -1277,9 +1277,9 @@ private:
     std::optional<desklink::LauncherOperation> ActiveOperation_;
     std::atomic_uint64_t RequestId_{1};
     std::filesystem::path RoamingSettingsPath_;
-    std::unique_ptr<desklink::Win32ApplicationSettingsStore>
+    std::unique_ptr<desklink::Win32ProductPreferencesStore>
         ApplicationSettingsStore_;
-    desklink::Win32ApplicationSettings ApplicationSettings_;
+    desklink::ProductPreferences ApplicationSettings_;
     NOTIFYICONDATAW TrayIcon_{};
     bool RuntimeAvailable_{};
     bool TrayActive_{};

@@ -2,37 +2,30 @@
 
 #ifdef _WIN32
 
+#include "desklink/product.hpp"
+
 #include <filesystem>
 #include <mutex>
 #include <optional>
 
 namespace desklink {
 
-struct Win32ApplicationSettings {
-    bool CloseToTray{true};
-    bool RunAtLogin{};
-    bool FirstRunComplete{};
-
-    [[nodiscard]] bool operator==(
-        const Win32ApplicationSettings&) const noexcept = default;
-};
-
-class Win32ApplicationSettingsStore final {
+class Win32ProductPreferencesStore final {
 public:
-    explicit Win32ApplicationSettingsStore(std::filesystem::path Path);
+    explicit Win32ProductPreferencesStore(std::filesystem::path Path);
 
     [[nodiscard]] bool Load();
     [[nodiscard]] bool IsLoaded() const noexcept;
-    [[nodiscard]] std::optional<Win32ApplicationSettings> Current() const;
-    [[nodiscard]] bool Save(Win32ApplicationSettings Settings);
+    [[nodiscard]] std::optional<ProductPreferences> Current() const;
+    [[nodiscard]] bool Save(ProductPreferences Preferences);
 
 private:
     [[nodiscard]] bool SaveLocked(
-        const Win32ApplicationSettings& Settings) const;
+        const ProductPreferences& Preferences) const;
 
     std::filesystem::path Path_;
     mutable std::mutex Mutex_;
-    Win32ApplicationSettings Current_;
+    ProductPreferences Current_;
     bool Loaded_{};
 };
 
