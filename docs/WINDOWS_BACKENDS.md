@@ -241,6 +241,16 @@ and does not interact with capture. The companion refreshes authenticated peer
 topology asynchronously through bounded same-SID IPC so the UI thread does not
 wait for network synchronization.
 
+Phase 4 adds an explicit experimental outbound mode. `Win32InputCapture` may
+remain installed while Local to report only screen position plus raw motion;
+the keyboard and mouse hooks still pass physical events locally and button,
+wheel, key, and remote-motion handlers remain inactive. The serialized Host
+coalesces observations, evaluates the portable crossing state, and reuses the
+same capture instance after fresh focus. It cannot set `RemoteRouting` until
+the route/session is revalidated, landing and initial snapshot sends succeed,
+and the direction arbiter and portable state both admit Remote. Any failure
+clears routing first and returns to the existing lifecycle's Local state.
+
 The Host UI should store edge adjacency, for example:
 
 ```text

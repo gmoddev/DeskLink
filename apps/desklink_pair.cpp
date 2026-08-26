@@ -3,6 +3,7 @@
 #include "desklink/discovery.hpp"
 #include "desklink/host_input_lifecycle.hpp"
 #include "desklink/profile.hpp"
+#include "desklink/roaming_runtime.hpp"
 #include "desklink/session.hpp"
 #include "desklink/win32_audio.hpp"
 #include "desklink/win32_capture.hpp"
@@ -10,6 +11,7 @@
 #include "desklink/win32_foreground.hpp"
 #include "desklink/win32_input.hpp"
 #include "desklink/win32_pairing.hpp"
+#include "desklink/win32_roaming_settings.hpp"
 #include "desklink/win32_discovery.hpp"
 #include "desklink/win32_display_topology.hpp"
 
@@ -78,6 +80,7 @@ struct CommandLine {
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    std::optional<std::filesystem::path> EdgeRoamingSettingsPath;
     desklink::Win32PointerCalibration PointerCalibration;
     bool ConsoleConfirm{};
     bool ProfileConfigurationSeen{};
@@ -216,7 +219,7 @@ void PrintUsage() {
         << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
         << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology]\n"
         << L"  desklink_pair serve [port] [--send-audio]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio]\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio] [--edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n"
         << L"  desklink_pair control gain 0..10000\n"
@@ -230,6 +233,7 @@ void PrintUsage() {
         << L"--capture forwards physical input and suppresses it locally until release.\n"
         << L"--pointer-gain scales relative motion; 100 preserves raw counts.\n"
         << L"--pointer-dpi normalizes a known source DPI to an 800-DPI reference.\n"
+        << L"--edge-roaming explicitly enables experimental, fail-closed edge switching from a saved monitor graph.\n"
         << L"focus --default-mode roam|lock-pc1|lock-pc2|game sets the fallback policy.\n"
         << L"focus --profile <exe>=<mode> adds an exact executable-name rule.\n"
         << L"focus --profile-fullscreen <exe>=<mode> requires a fullscreen match.\n"
@@ -394,6 +398,20 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.ReceiveAudio = true;
             continue;
         }
+        if (Argument == L"--edge-roaming") {
+            if (Result.EdgeRoamingSettingsPath ||
+                Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            const std::wstring_view PathText(Arguments[++Index]);
+            if (PathText.empty() || PathText.size() >= 32'767) {
+                return std::nullopt;
+            }
+            const std::filesystem::path Path(PathText);
+            if (!Path.is_absolute()) return std::nullopt;
+            Result.EdgeRoamingSettingsPath = Path;
+            continue;
+        }
         if (Argument == L"--console-confirm") {
             if (Result.ConsoleConfirm) return std::nullopt;
             Result.ConsoleConfirm = true;
@@ -507,6 +525,10 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         return std::nullopt;
     }
     if (Result.CaptureInput && Result.Mode != Operation::Focus) return std::nullopt;
+    if (Result.EdgeRoamingSettingsPath &&
+        (Result.Mode != Operation::Focus || !Result.CaptureInput)) {
+        return std::nullopt;
+    }
     if ((PointerGainSeen || PointerDpiSeen) &&
         (Result.Mode != Operation::Focus || !Result.CaptureInput)) {
         return std::nullopt;
@@ -1545,14 +1567,25 @@ class HostInputRuntime final
 public:
     HostInputRuntime(std::shared_ptr<HostRuntime> Host,
                      std::shared_ptr<TrustedResult> Result,
+                     const desklink::IClock& Clock,
+                     desklink::MachineId LocalMachine,
                      desklink::DeskMode DefaultMode,
                      std::vector<desklink::ForegroundProfileRule> Rules,
                      bool CaptureRequested,
-                     desklink::Win32PointerCalibration PointerCalibration)
+                     desklink::Win32PointerCalibration PointerCalibration,
+                     std::optional<std::filesystem::path>
+                         EdgeRoamingSettingsPath)
         : Host_(std::move(Host)),
           Result_(std::move(Result)),
+          Clock_(Clock),
+          LocalMachine_(LocalMachine),
           Profiles_(DefaultMode),
           Lifecycle_(*this, CaptureRequested),
+          Roaming_(Clock),
+          RoamingSettings_(EdgeRoamingSettingsPath
+              ? std::make_unique<desklink::Win32RoamingSettingsStore>(
+                    std::move(*EdgeRoamingSettingsPath))
+              : nullptr),
           PointerCalibration_(PointerCalibration),
           ConfigurationValid_(Profiles_.SetRules(std::move(Rules))) {}
 
@@ -1598,7 +1631,40 @@ public:
     void NotifyFocusReady() noexcept {
         if (!Post([this] {
             LastBackendFailure_ = BackendFailure::None;
+            const bool RoamingTransition =
+                PendingRoamingRequest_.has_value();
+            if (RoamingTransition) {
+                if (Roaming_.ExpireFocusPending()) {
+                    FailRoamingLocal(
+                        "late FocusReady exceeded the roaming timeout");
+                    return;
+                }
+                const auto ContextUpdate = RefreshRoamingContext(true);
+                if (ContextUpdate.MustFailLocal ||
+                    !PendingRoamingRequest_ ||
+                    !RoamingDirectionToken_ ||
+                    !Roaming_.AdmitFocusReady(
+                        *PendingRoamingRequest_) ||
+                    !DirectionArbiter_.AdmitOutgoing(
+                        *RoamingDirectionToken_)) {
+                    FailRoamingLocal(
+                        "FocusReady failed the roaming security gate");
+                    return;
+                }
+            }
             if (Lifecycle_.FocusReady()) {
+                if (RoamingTransition &&
+                    (Roaming_.State() !=
+                         desklink::RoamingRuntimeState::Remote ||
+                     !CaptureActive_.load())) {
+                    LastBackendFailure_ =
+                        BackendFailure::RoamingAdmission;
+                    ResetRoamingState();
+                    Lifecycle_.FailLocal();
+                    PublishLifecycleStatus();
+                    ReportTerminalFailure(BackendFailureMessage());
+                    return;
+                }
                 PublishLifecycleStatus();
                 {
                     std::scoped_lock Lock(Result_->Mutex);
@@ -1610,6 +1676,7 @@ public:
                 return;
             }
             const auto Status = Lifecycle_.Status();
+            if (RoamingTransition) ResetRoamingState();
             PublishLifecycleStatus();
             if (Status.State == desklink::HostInputLifecycleState::Local &&
                 LastBackendFailure_ != BackendFailure::None) {
@@ -1697,6 +1764,11 @@ public:
                 Capture_->Stop();
                 Capture_.reset();
             }
+            {
+                std::scoped_lock Lock(RoamingObservationMutex_);
+                PendingRoamingObservation_.reset();
+                RoamingObservationTaskQueued_ = false;
+            }
         } catch (...) {
         }
     }
@@ -1730,6 +1802,13 @@ public:
 
     [[nodiscard]] bool SendInputStateSnapshot() noexcept override {
         try {
+            if (PendingLanding_) {
+                if (!Host_->Session.send_pointer(*PendingLanding_)) {
+                    LastBackendFailure_ = BackendFailure::Landing;
+                    return false;
+                }
+                PendingLanding_.reset();
+            }
             if (Host_->Session.SendInputStateSnapshot()) return true;
         } catch (...) {
         }
@@ -1738,7 +1817,85 @@ public:
     }
 
     [[nodiscard]] bool StartCapture() noexcept override {
+        return EnsureCaptureInstalled();
+    }
+
+    void EnableCapture() noexcept override {
         try {
+            std::scoped_lock Lock(CaptureLifetimeMutex_);
+            if (!ActiveCapture_ || FailLocalRequested_.load()) {
+                CaptureActive_.store(false);
+                if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+                return;
+            }
+            if (PendingRoamingRequest_) {
+                if (PendingLanding_ ||
+                    DirectionArbiter_.State() !=
+                        desklink::PeerDirectionState::OutgoingActive ||
+                    !Roaming_.AdmitRemoteInput(
+                        *PendingRoamingRequest_)) {
+                    LastBackendFailure_ =
+                        BackendFailure::RoamingAdmission;
+                    CaptureActive_.store(false);
+                    ActiveCapture_->SetRemoteRouting(false);
+                    return;
+                }
+                PendingRoamingRequest_.reset();
+            }
+            ActiveCapture_->SetRemoteRouting(true);
+            CaptureActive_.store(true);
+            std::cout
+                << "[Input:Capture] physical input is routed remotely\n"
+                << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n"
+                << "[Input:Pointer] relative gain="
+                << PointerCalibration_.GainPercent << "% source_dpi="
+                << (PointerCalibration_.SourceDpi == 0
+                        ? std::string("raw")
+                        : std::to_string(PointerCalibration_.SourceDpi))
+                << '\n';
+        } catch (...) {
+            CaptureActive_.store(false);
+        }
+    }
+
+private:
+    enum class BackendFailure {
+        None,
+        SetMode,
+        RequestFocus,
+        Snapshot,
+        Landing,
+        StartCapture,
+        RoamingAdmission,
+    };
+
+    [[nodiscard]] const char* BackendFailureMessage() const noexcept {
+        switch (LastBackendFailure_) {
+            case BackendFailure::SetMode:
+                return "desired-mode update failed";
+            case BackendFailure::RequestFocus:
+                return "remote focus request failed";
+            case BackendFailure::Snapshot:
+                return "input state reconciliation failed";
+            case BackendFailure::Landing:
+                return "roaming landing delivery failed";
+            case BackendFailure::StartCapture:
+                return "Raw Input capture installation failed";
+            case BackendFailure::RoamingAdmission:
+                return "roaming admission gate rejected the transition";
+            case BackendFailure::None:
+                return "Host input lifecycle failed";
+        }
+        return "Host input lifecycle failed";
+    }
+
+    [[nodiscard]] bool EnsureCaptureInstalled() noexcept {
+        try {
+            if (Capture_) {
+                std::scoped_lock Lock(CaptureLifetimeMutex_);
+                ActiveCapture_ = Capture_.get();
+                return true;
+            }
             desklink::Win32CaptureHandlers Handlers;
             const auto Weak = weak_from_this();
             Handlers.Key = [Weak](desklink::KeyEventMessage Event) {
@@ -1756,6 +1913,14 @@ public:
                     Runtime->ForwardPointerMotion(Message);
                 }
             };
+            if (RoamingSettings_) {
+                Handlers.LocalPointerMotion = [Weak](
+                    desklink::Win32LocalPointerObservation Observation) {
+                    if (const auto Runtime = Weak.lock()) {
+                        Runtime->ObserveLocalPointer(Observation);
+                    }
+                };
+            }
             Handlers.Wheel = [Weak](desklink::MouseWheelMessage Message) {
                 if (const auto Runtime = Weak.lock()) Runtime->ForwardWheel(Message);
             };
@@ -1787,53 +1952,228 @@ public:
         }
     }
 
-    void EnableCapture() noexcept override {
+    [[nodiscard]] desklink::RoamingContextUpdate RefreshRoamingContext(
+        bool ForceSettingsLoad = false) {
+        if (!RoamingSettings_) return {};
+        const auto Now = Clock_.now();
+        if (ForceSettingsLoad ||
+            LastRoamingSettingsLoad_ == desklink::IClock::time_point{} ||
+            Now - LastRoamingSettingsLoad_ >=
+                std::chrono::milliseconds(250)) {
+            LastRoamingSettingsLoad_ = Now;
+            const auto Loaded = RoamingSettings_->Load();
+            const auto Configuration = Loaded
+                ? RoamingSettings_->Current() : std::nullopt;
+            if (Configuration) {
+                RoamingConfiguration_ = *Configuration;
+                RoamingSettingsHealthy_ = true;
+                if (RoamingSettingsFailureReported_) {
+                    std::cout
+                        << "[Roaming:Settings] saved monitor graph recovered\n";
+                }
+                RoamingSettingsFailureReported_ = false;
+            } else {
+                RoamingConfiguration_ = {};
+                RoamingSettingsHealthy_ = false;
+                if (!RoamingSettingsFailureReported_) {
+                    std::cerr
+                        << "[Roaming:Settings] monitor graph unavailable or malformed; routes disabled\n";
+                    RoamingSettingsFailureReported_ = true;
+                }
+            }
+        }
+
+        std::optional<desklink::DisplayTopologySnapshot> LocalTopology;
+        if (RoamingLocalTopology_.RefreshIfDue(
+                std::chrono::milliseconds(250))) {
+            LocalTopology = RoamingLocalTopology_.Current();
+        }
+        auto PeerTopology = Host_->Session.RemoteDisplayTopology();
+        const auto TopologyStatus = Host_->Session.DisplayTopologyStatus();
+        desklink::RoamingRuntimeContext Context;
+        Context.LocalMachine = LocalMachine_;
+        Context.PeerMachine = Host_->PeerMachine;
+        Context.Configuration = RoamingConfiguration_;
+        Context.LocalTopology = std::move(LocalTopology);
+        Context.PeerTopology = std::move(PeerTopology);
+        Context.PeerStatus = desklink::PeerConnectionStatus::Connected;
+        Context.TopologyStatus = TopologyStatus;
+        Context.SessionNonce = Host_->SessionNonce;
+        Context.PeerValidated = true;
+        Context.InputCapabilityGranted =
+            Host_->Session.PeerHasCapability(
+                desklink::Capability::InputInject);
+        Context.DirectionSupported = true;
+        return Roaming_.UpdateContext(std::move(Context));
+    }
+
+    void ResetRoamingState() noexcept {
+        if (Roaming_.State() !=
+            desklink::RoamingRuntimeState::LocalCooldown) {
+            Roaming_.FailLocal();
+        }
+        DirectionArbiter_.FailLocal();
+        PendingRoamingRequest_.reset();
+        RoamingDirectionToken_.reset();
+        PendingLanding_.reset();
+    }
+
+    void FailRoamingLocal(std::string_view Message) noexcept {
+        ResetRoamingState();
+        Lifecycle_.FailLocal();
+        PublishLifecycleStatus();
+        {
+            std::scoped_lock Lock(Result_->Mutex);
+            Result_->Ready = false;
+        }
+        Result_->Changed.notify_all();
+        std::cerr << "[Roaming:Runtime] " << Message
+                  << "; input returned Local\n";
+    }
+
+    void MaintainRoaming() noexcept {
+        if (!RoamingSettings_) return;
         try {
-            std::scoped_lock Lock(CaptureLifetimeMutex_);
-            if (!ActiveCapture_ || FailLocalRequested_.load()) {
-                CaptureActive_.store(false);
-                if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            const auto Update = RefreshRoamingContext();
+            if (!LastReadyRouteCount_ ||
+                *LastReadyRouteCount_ != Update.ReadyRouteCount) {
+                std::cout << "[Roaming:Runtime] ready_routes="
+                          << Update.ReadyRouteCount
+                          << " settings="
+                          << (RoamingSettingsHealthy_ ? "valid" : "invalid")
+                          << '\n';
+                LastReadyRouteCount_ = Update.ReadyRouteCount;
+            }
+            if (Update.MustFailLocal) {
+                FailRoamingLocal(
+                    "session, topology, or route changed during roaming");
                 return;
             }
-            ActiveCapture_->SetRemoteRouting(true);
-            CaptureActive_.store(true);
-            std::cout
-                << "[Input:Capture] physical input is routed remotely\n"
-                << "[Input:Capture] Ctrl+Alt+Pause immediately fails local\n"
-                << "[Input:Pointer] relative gain="
-                << PointerCalibration_.GainPercent << "% source_dpi="
-                << (PointerCalibration_.SourceDpi == 0
-                        ? std::string("raw")
-                        : std::to_string(PointerCalibration_.SourceDpi))
-                << '\n';
+            if (Roaming_.ExpireFocusPending()) {
+                FailRoamingLocal("focus request timed out");
+                return;
+            }
+            const auto Status = Lifecycle_.Status();
+            if (Profiles_.Decision().Mode != desklink::DeskMode::Roam ||
+                Status.State !=
+                    desklink::HostInputLifecycleState::Local) {
+                return;
+            }
+            if (Update.ReadyRouteCount == 0) {
+                if (Capture_ && !CaptureActive_.load()) StopCapture();
+                return;
+            }
+            if (!EnsureCaptureInstalled()) {
+                ReportTerminalFailure(
+                    "Raw Input observer installation failed");
+                return;
+            }
+            std::scoped_lock Lock(CaptureLifetimeMutex_);
+            if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
         } catch (...) {
-            CaptureActive_.store(false);
+            FailRoamingLocal("roaming context refresh failed");
         }
     }
 
-private:
-    enum class BackendFailure {
-        None,
-        SetMode,
-        RequestFocus,
-        Snapshot,
-        StartCapture,
-    };
-
-    [[nodiscard]] const char* BackendFailureMessage() const noexcept {
-        switch (LastBackendFailure_) {
-            case BackendFailure::SetMode:
-                return "desired-mode update failed";
-            case BackendFailure::RequestFocus:
-                return "remote focus request failed";
-            case BackendFailure::Snapshot:
-                return "input state reconciliation failed";
-            case BackendFailure::StartCapture:
-                return "Raw Input capture installation failed";
-            case BackendFailure::None:
-                return "Host input lifecycle failed";
+    void ObserveLocalPointer(
+        desklink::Win32LocalPointerObservation Observation) noexcept {
+        bool Schedule = false;
+        try {
+            {
+                std::scoped_lock Lock(RoamingObservationMutex_);
+                if (PendingRoamingObservation_) {
+                    const auto DeltaX = std::clamp<std::int64_t>(
+                        static_cast<std::int64_t>(
+                            PendingRoamingObservation_->DeltaX) +
+                            Observation.DeltaX,
+                        std::numeric_limits<std::int32_t>::min(),
+                        std::numeric_limits<std::int32_t>::max());
+                    const auto DeltaY = std::clamp<std::int64_t>(
+                        static_cast<std::int64_t>(
+                            PendingRoamingObservation_->DeltaY) +
+                            Observation.DeltaY,
+                        std::numeric_limits<std::int32_t>::min(),
+                        std::numeric_limits<std::int32_t>::max());
+                    PendingRoamingObservation_ = {
+                        Observation.ScreenX,
+                        Observation.ScreenY,
+                        static_cast<std::int32_t>(DeltaX),
+                        static_cast<std::int32_t>(DeltaY)};
+                } else {
+                    PendingRoamingObservation_ = Observation;
+                }
+                if (!RoamingObservationTaskQueued_) {
+                    RoamingObservationTaskQueued_ = true;
+                    Schedule = true;
+                }
+            }
+            if (Schedule && !Post([this] { DrainRoamingObservation(); })) {
+                {
+                    std::scoped_lock Lock(RoamingObservationMutex_);
+                    PendingRoamingObservation_.reset();
+                    RoamingObservationTaskQueued_ = false;
+                }
+                RequestAsynchronousFailLocal(
+                    "roaming observation queue admission failed");
+            }
+        } catch (...) {
+            RequestAsynchronousFailLocal(
+                "roaming observation coalescing failed");
         }
-        return "Host input lifecycle failed";
+    }
+
+    void DrainRoamingObservation() {
+        std::optional<desklink::Win32LocalPointerObservation> Observation;
+        {
+            std::scoped_lock Lock(RoamingObservationMutex_);
+            Observation = PendingRoamingObservation_;
+            PendingRoamingObservation_.reset();
+            RoamingObservationTaskQueued_ = false;
+        }
+        if (!Observation || !RoamingSettings_ ||
+            Profiles_.Decision().Mode != desklink::DeskMode::Roam ||
+            Lifecycle_.Status().State !=
+                desklink::HostInputLifecycleState::Local) {
+            return;
+        }
+        const auto Update = RefreshRoamingContext();
+        if (Update.MustFailLocal) {
+            FailRoamingLocal(
+                "roaming context changed while crossing an edge");
+            return;
+        }
+        const auto Request = Roaming_.Observe({
+            Observation->ScreenX,
+            Observation->ScreenY,
+            Observation->DeltaX,
+            Observation->DeltaY});
+        if (!Request) return;
+
+        const auto Direction = DirectionArbiter_.BeginOutgoing();
+        if (Direction.Outcome !=
+                desklink::PeerDirectionOutcome::Admitted ||
+            !Direction.Token) {
+            FailRoamingLocal("peer direction arbitration rejected crossing");
+            return;
+        }
+        PendingRoamingRequest_ = *Request;
+        PendingLanding_ = Request->Landing;
+        RoamingDirectionToken_ = *Direction.Token;
+        LastBackendFailure_ = BackendFailure::None;
+        if (!Lifecycle_.ApplyMode(desklink::DeskMode::Roam)) {
+            ResetRoamingState();
+            PublishLifecycleStatus();
+            ReportTerminalFailure(BackendFailureMessage());
+            return;
+        }
+        PublishLifecycleStatus();
+        {
+            std::scoped_lock Lock(Result_->Mutex);
+            Result_->Ready = false;
+        }
+        Result_->Changed.notify_all();
+        std::cout
+            << "[Roaming:Runtime] edge crossing admitted; awaiting fresh FocusReady\n";
     }
 
     [[nodiscard]] bool Initialize() {
@@ -1842,7 +2182,10 @@ private:
         }
         LastBackendFailure_ = BackendFailure::None;
         const auto Decision = Profiles_.Decision();
-        if (!Lifecycle_.Start(Decision.Mode)) {
+        const auto InitialMode = RoamingSettings_ &&
+                Decision.Mode == desklink::DeskMode::Roam
+            ? desklink::DeskMode::LockPc1 : Decision.Mode;
+        if (!Lifecycle_.Start(InitialMode)) {
             PublishLifecycleStatus();
             ReportTerminalFailure(BackendFailureMessage());
             return false;
@@ -1850,6 +2193,12 @@ private:
         LastDecision_ = Decision;
         PublishLifecycleStatus();
         LogDecision(Decision);
+        if (RoamingSettings_) {
+            std::cout
+                << "[Roaming:Runtime] experimental edge roaming requested; "
+                   "outbound direction only and fail-local gates active\n";
+            MaintainRoaming();
+        }
 
         if (Profiles_.Rules().empty()) return true;
         const auto Weak = weak_from_this();
@@ -1889,6 +2238,7 @@ private:
         }
         Promise.set_value(Initialized);
         if (!Initialized) {
+            ResetRoamingState();
             Lifecycle_.FailLocal();
             PublishLifecycleStatus();
             if (ForegroundMonitor_) ForegroundMonitor_->Stop();
@@ -1933,6 +2283,7 @@ private:
             }
         }
 
+        ResetRoamingState();
         Lifecycle_.FailLocal();
         PublishLifecycleStatus();
         if (ForegroundMonitor_) ForegroundMonitor_->Stop();
@@ -1979,7 +2330,28 @@ private:
     [[nodiscard]] bool ApplyDecision() {
         const auto Decision = Profiles_.Decision();
         LastBackendFailure_ = BackendFailure::None;
-        const bool Applied = Lifecycle_.ApplyMode(Decision.Mode);
+        bool Applied = true;
+        const auto Before = Lifecycle_.Status();
+        if (RoamingSettings_ &&
+            Decision.Mode == desklink::DeskMode::Roam &&
+            Before.State == desklink::HostInputLifecycleState::Local) {
+            MaintainRoaming();
+            Applied = LastBackendFailure_ == BackendFailure::None;
+        } else {
+            if (RoamingSettings_ &&
+                Decision.Mode != desklink::DeskMode::Roam) {
+                Roaming_.BeginReturn();
+            }
+            Applied = Lifecycle_.ApplyMode(Decision.Mode);
+            if (RoamingSettings_ &&
+                Decision.Mode != desklink::DeskMode::Roam) {
+                Roaming_.ReturnLocal();
+                DirectionArbiter_.FailLocal();
+                PendingRoamingRequest_.reset();
+                RoamingDirectionToken_.reset();
+                PendingLanding_.reset();
+            }
+        }
         PublishLifecycleStatus();
         if (!Applied) {
             ReportTerminalFailure(BackendFailureMessage());
@@ -1999,6 +2371,7 @@ private:
     }
 
     void RenewAndReconcile() noexcept {
+        MaintainRoaming();
         if (Lifecycle_.Status().State !=
             desklink::HostInputLifecycleState::Remote) {
             return;
@@ -2037,6 +2410,7 @@ private:
     }
 
     void ReportTerminalFailure(std::string_view Message) noexcept {
+        ResetRoamingState();
         Profiles_.EmergencyFailLocal();
         Lifecycle_.FailLocal();
         PublishLifecycleStatus();
@@ -2170,6 +2544,7 @@ private:
         DisableCaptureImmediately();
         EmergencyTriggered_.store(true, std::memory_order_relaxed);
         if (!Post([this] {
+            ResetRoamingState();
             Profiles_.EmergencyFailLocal();
             Lifecycle_.FailLocal();
             PublishLifecycleStatus();
@@ -2217,8 +2592,22 @@ private:
 
     std::shared_ptr<HostRuntime> Host_;
     std::shared_ptr<TrustedResult> Result_;
+    const desklink::IClock& Clock_;
+    desklink::MachineId LocalMachine_{};
     desklink::ForegroundProfileEngine Profiles_;
     desklink::HostInputLifecycle Lifecycle_;
+    desklink::RoamingRuntime Roaming_;
+    desklink::PeerDirectionArbiter DirectionArbiter_;
+    std::unique_ptr<desklink::Win32RoamingSettingsStore> RoamingSettings_;
+    desklink::RoamingConfiguration RoamingConfiguration_;
+    desklink::Win32DisplayTopology RoamingLocalTopology_;
+    std::optional<desklink::RoamingFocusRequest> PendingRoamingRequest_;
+    std::optional<desklink::PeerDirectionToken> RoamingDirectionToken_;
+    std::optional<desklink::PointerPositionMessage> PendingLanding_;
+    std::chrono::steady_clock::time_point LastRoamingSettingsLoad_{};
+    std::optional<std::size_t> LastReadyRouteCount_;
+    bool RoamingSettingsHealthy_{};
+    bool RoamingSettingsFailureReported_{};
     desklink::Win32PointerCalibration PointerCalibration_;
     bool ConfigurationValid_{};
     std::optional<desklink::ProfileModeDecision> LastDecision_;
@@ -2238,6 +2627,11 @@ private:
     bool StopRequested_{};
     std::atomic_bool Stopping_{};
     std::atomic_bool FailLocalRequested_{};
+
+    std::mutex RoamingObservationMutex_;
+    std::optional<desklink::Win32LocalPointerObservation>
+        PendingRoamingObservation_;
+    bool RoamingObservationTaskQueued_{};
 
     std::atomic<desklink::DeskMode> DesiredMode_{desklink::DeskMode::LockPc1};
     std::atomic<desklink::HostInputLifecycleState> LifecycleState_{
@@ -2559,9 +2953,11 @@ int RunTrusted(const CommandLine& Command,
                              "input session remains active\n";
             }
             auto Input = std::make_shared<HostInputRuntime>(
-                Runtime, Result, Command.ProfileDefaultMode,
+                Runtime, Result, Clock, LocalIdentity.machine_id,
+                Command.ProfileDefaultMode,
                 Command.ProfileRules, Command.CaptureInput,
-                Command.PointerCalibration);
+                Command.PointerCalibration,
+                Command.EdgeRoamingSettingsPath);
             *FocusTarget = Input;
             {
                 std::scoped_lock Lock(RuntimesMutex);
@@ -2685,7 +3081,8 @@ int RunTrusted(const CommandLine& Command,
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return 1;
         }
-        bool RequireRemote = Command.ProfileRules.empty() &&
+        bool RequireRemote = !Command.EdgeRoamingSettingsPath &&
+            Command.ProfileRules.empty() &&
             Command.ProfileDefaultMode != desklink::DeskMode::LockPc1 &&
             Command.ProfileDefaultMode != desklink::DeskMode::Game;
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS

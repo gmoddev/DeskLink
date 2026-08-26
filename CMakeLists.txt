@@ -45,6 +45,7 @@ add_library(desklink_core
     src/monitor_configurator.cpp
     src/profile.cpp
     src/roaming.cpp
+    src/roaming_runtime.cpp
     src/topology_exchange.cpp
     src/protocol.cpp
     src/input.cpp

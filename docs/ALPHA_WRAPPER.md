@@ -9,7 +9,7 @@ surface, not the final DeskLink UI or installer.
 - Windows 11 or Windows Server 2022 and newer
 - packaged, hash-pinned MsQuic 2.6.0 with Schannel
 - one wrapper-owned DeskLink operation at a time
-- manual pairing and manual focus switching
+- manual pairing/focus plus explicitly enabled outbound edge roaming
 - optional physical input capture and optional audio startup
 - presentation-only monitor arrangement and explicit saved edge configuration
 - single-instance notification-area lifecycle and optional sign-in startup
@@ -39,7 +39,10 @@ store, and does not implement a second connection or pairing stack.
    **Peer audio %** applies 0-100% attenuation to audio rendered from this peer;
    **Mute** toggles that receiver without changing the Windows system volume.
 8. The controller connects in **Local** mode. Confirm that status reports an
-   authenticated connected peer, then select **Focus remote**.
+   authenticated connected peer, then select **Focus remote**. When
+   **Experimental edge roaming** is checked, this action arms saved Ready links
+   while remaining Local; move outward through the configured edge to request
+   focus. Physical capture must also be checked.
 9. Select **RETURN LOCAL** before stopping a session. The physical emergency
    chord remains **Ctrl+Alt+Pause/Break**.
 10. Select **Arrange monitors** to refresh current local/authenticated peer
@@ -98,6 +101,15 @@ runtime is Local, then atomically replaces
 `%LOCALAPPDATA%\DeskLink\roaming.settings`. Canvas geometry never enables input.
 Identify overlays are click-through and expire after five seconds.
 
+Edge roaming passes the saved settings file only through an absolute typed
+argument. Local observation does not suppress input. Suppression remains owned
+by the existing Host lifecycle and begins only after the current trusted
+session, capability, nonce, topology generation, fresh focus response, landing
+queue, initial snapshot, and direction token are all admitted. A 1.5-second
+focus stall, settings/topology mutation, capture or send failure, manual
+return, emergency chord, or session failure returns Local. This Alpha slice
+supports outbound controller-to-receiver roaming only.
+
 ## Portable package
 
 Configure a Windows MsQuic build and create the ZIP with CPack:
@@ -124,7 +136,7 @@ verification remain fail closed.
 
 ## Deliberately deferred
 
-- edge-triggered roaming (Phase 4)
+- reciprocal/bidirectional session ownership and physical edge qualification
 - Windows 10 production support
 - two-Windows-11 physical failure-matrix signoff
 - persisted profiles or automatic startup

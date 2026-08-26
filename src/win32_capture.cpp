@@ -34,7 +34,7 @@ constexpr wchar_t kCaptureWindowClass[] = L"DeskLink.RawInputCapture.v1";
 
 using CapturedEvent = std::variant<
     KeyEventMessage, MouseButtonMessage, PointerPositionMessage,
-    PointerMotionMessage,
+    PointerMotionMessage, Win32LocalPointerObservation,
     MouseWheelMessage>;
 
 std::atomic<Win32InputCapture::State*> ActiveState{};
@@ -145,6 +145,31 @@ struct Win32InputCapture::State {
                 }
             }
         }
+        if (std::holds_alternative<Win32LocalPointerObservation>(Event) &&
+            !Queue.empty() &&
+            std::holds_alternative<Win32LocalPointerObservation>(
+                Queue.back())) {
+            const auto& Incoming =
+                std::get<Win32LocalPointerObservation>(Event);
+            const auto& Existing =
+                std::get<Win32LocalPointerObservation>(Queue.back());
+            const auto DeltaX = static_cast<std::int64_t>(Existing.DeltaX) +
+                                Incoming.DeltaX;
+            const auto DeltaY = static_cast<std::int64_t>(Existing.DeltaY) +
+                                Incoming.DeltaY;
+            if (DeltaX >= std::numeric_limits<std::int32_t>::min() &&
+                DeltaX <= std::numeric_limits<std::int32_t>::max() &&
+                DeltaY >= std::numeric_limits<std::int32_t>::min() &&
+                DeltaY <= std::numeric_limits<std::int32_t>::max()) {
+                Queue.back() = Win32LocalPointerObservation{
+                    Incoming.ScreenX,
+                    Incoming.ScreenY,
+                    static_cast<std::int32_t>(DeltaX),
+                    static_cast<std::int32_t>(DeltaY)};
+                QueueChanged.notify_one();
+                return true;
+            }
+        }
         if (Queue.size() >= kMaximumQueuedEvents) return false;
         Queue.push_back(std::move(Event));
         QueueChanged.notify_one();
@@ -172,26 +197,39 @@ struct Win32InputCapture::State {
             Fail("could not read bounded Raw Input data");
             return;
         }
-        if (!Gate.RemoteRouting()) return;
         const auto* Input = reinterpret_cast<const RAWINPUT*>(Storage.data());
         if (Input->header.dwType != RIM_TYPEMOUSE || Read < sizeof(RAWINPUT)) return;
         const auto& Mouse = Input->data.mouse;
-        const std::array Buttons{
-            GetButton(Mouse, RI_MOUSE_LEFT_BUTTON_DOWN, MouseButtonId::Left, true),
-            GetButton(Mouse, RI_MOUSE_LEFT_BUTTON_UP, MouseButtonId::Left, false),
-            GetButton(Mouse, RI_MOUSE_RIGHT_BUTTON_DOWN, MouseButtonId::Right, true),
-            GetButton(Mouse, RI_MOUSE_RIGHT_BUTTON_UP, MouseButtonId::Right, false),
-            GetButton(Mouse, RI_MOUSE_MIDDLE_BUTTON_DOWN, MouseButtonId::Middle, true),
-            GetButton(Mouse, RI_MOUSE_MIDDLE_BUTTON_UP, MouseButtonId::Middle, false),
-            GetButton(Mouse, RI_MOUSE_BUTTON_4_DOWN, MouseButtonId::X1, true),
-            GetButton(Mouse, RI_MOUSE_BUTTON_4_UP, MouseButtonId::X1, false),
-            GetButton(Mouse, RI_MOUSE_BUTTON_5_DOWN, MouseButtonId::X2, true),
-            GetButton(Mouse, RI_MOUSE_BUTTON_5_UP, MouseButtonId::X2, false)};
-        for (const auto& Button : Buttons) {
-            if (Button && !Enqueue(*Button)) {
-                Gate.SetRemoteRouting(false);
-                PostThreadMessageW(CaptureThreadId, kQueueOverflowMessage, 0, 0);
-                return;
+        const auto RemoteRouting = Gate.RemoteRouting();
+        if (RemoteRouting) {
+            const std::array Buttons{
+                GetButton(Mouse, RI_MOUSE_LEFT_BUTTON_DOWN,
+                          MouseButtonId::Left, true),
+                GetButton(Mouse, RI_MOUSE_LEFT_BUTTON_UP,
+                          MouseButtonId::Left, false),
+                GetButton(Mouse, RI_MOUSE_RIGHT_BUTTON_DOWN,
+                          MouseButtonId::Right, true),
+                GetButton(Mouse, RI_MOUSE_RIGHT_BUTTON_UP,
+                          MouseButtonId::Right, false),
+                GetButton(Mouse, RI_MOUSE_MIDDLE_BUTTON_DOWN,
+                          MouseButtonId::Middle, true),
+                GetButton(Mouse, RI_MOUSE_MIDDLE_BUTTON_UP,
+                          MouseButtonId::Middle, false),
+                GetButton(Mouse, RI_MOUSE_BUTTON_4_DOWN,
+                          MouseButtonId::X1, true),
+                GetButton(Mouse, RI_MOUSE_BUTTON_4_UP,
+                          MouseButtonId::X1, false),
+                GetButton(Mouse, RI_MOUSE_BUTTON_5_DOWN,
+                          MouseButtonId::X2, true),
+                GetButton(Mouse, RI_MOUSE_BUTTON_5_UP,
+                          MouseButtonId::X2, false)};
+            for (const auto& Button : Buttons) {
+                if (Button && !Enqueue(*Button)) {
+                    Gate.SetRemoteRouting(false);
+                    PostThreadMessageW(
+                        CaptureThreadId, kQueueOverflowMessage, 0, 0);
+                    return;
+                }
             }
         }
 
@@ -220,6 +258,21 @@ struct Win32InputCapture::State {
             RawX = Mouse.lLastX;
             RawY = Mouse.lLastY;
         } else {
+            return;
+        }
+        if (!RemoteRouting) {
+            if (!Handlers.LocalPointerMotion) return;
+            POINT Cursor{};
+            if (!GetCursorPos(&Cursor)) {
+                Fail("could not observe the local pointer position");
+                return;
+            }
+            if (!Enqueue(Win32LocalPointerObservation{
+                    Cursor.x, Cursor.y, RawX, RawY})) {
+                Gate.SetRemoteRouting(false);
+                PostThreadMessageW(
+                    CaptureThreadId, kQueueOverflowMessage, 0, 0);
+            }
             return;
         }
         std::optional<PointerMotionMessage> Motion;
@@ -463,6 +516,12 @@ bool Win32InputCapture::Start() {
                     } else if constexpr (std::is_same_v<ValueType, PointerMotionMessage>) {
                         if (State->Handlers.PointerMotion) {
                             State->Handlers.PointerMotion(Value);
+                        }
+                    } else if constexpr (std::is_same_v<
+                                             ValueType,
+                                             Win32LocalPointerObservation>) {
+                        if (State->Handlers.LocalPointerMotion) {
+                            State->Handlers.LocalPointerMotion(Value);
                         }
                     } else if constexpr (std::is_same_v<ValueType, MouseWheelMessage>) {
                         if (State->Handlers.Wheel) State->Handlers.Wheel(Value);

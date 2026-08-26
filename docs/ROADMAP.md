@@ -50,7 +50,7 @@ Work proceeds in this order:
    five-second local Identify overlays. Bounded read-only topology IPC remains
    same-SID and does not expose focus or trust mutation. Single-instance,
    first-run, tray, close-to-background, ordered exit, and user-scoped sign-in
-   startup behavior are also implemented. **Next:** Phase 4 controlled roaming.
+   startup behavior are also implemented.
 7. **Complete:** bounded LAN DNS-SD/mDNS discovery. `listen` and `serve`
    advertise `_desklink._udp.local`; `discover [1..30 seconds]` reports strict,
    expiring, deterministic candidates without connecting, pairing, granting a
@@ -103,8 +103,15 @@ Work proceeds in this order:
     bounded attenuation after drift correction, ramps changes over one block,
     preserves policy across audio-only recovery, and exposes typed CLI/wrapper
     controls without changing the system mixer.
-18. **Implementation staged:** roaming Phases 1-3 are complete. Controlled
-    experimental switching follows in Phase 4.
+18. **Phase 4 controlled outbound slice complete:** the portable state machine
+    implements all three crossing policies, proportional corner-safe landing,
+    re-entry cooldown, bounded focus timeout, active-route invalidation, and
+    stale direction-token rejection. The Windows Host observes local Raw Input
+    without suppression and can enter Remote only after current trusted
+    session/capability/nonce/topology checks, fresh `FocusReady`, landing,
+    initial reconciliation, and direction admission. The Alpha switch and CLI
+    path are explicit experimental opt-ins. Reciprocal peer-session ownership
+    and physical two-PC qualification remain open.
 
 The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
@@ -112,7 +119,9 @@ work does not wait for unavailable hardware.
 
 ## Later milestones
 
-- crossing hysteresis, landing, and roaming policy
+- symmetric reciprocal peer-session ownership and collision integration
+- physical high-poll-rate edge, landing, cooldown, disconnect, and emergency
+  validation on two supported Windows 11/Server 2022+ systems
 - final product polish, Stream Deck integration, installer, and update flow
 
 ## Experimental Windows 10 compatibility project
