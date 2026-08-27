@@ -316,7 +316,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     DeskLinkConfigureUpdateTarget(desklink_update)
     add_executable(desklink_runtime apps/desklink_runtime.cpp)
     target_link_libraries(
-        desklink_runtime PRIVATE desklink_windows shell32 iphlpapi)
+        desklink_runtime PRIVATE desklink_windows shell32 iphlpapi powrprof)
     target_compile_definitions(desklink_runtime PRIVATE UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(desklink_runtime PRIVATE /W4 /permissive-)

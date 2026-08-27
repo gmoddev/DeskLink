@@ -366,6 +366,21 @@ try {
     }
 
     Initialize-PreservedStateFixtures
+    $RepairIdentity = Get-IdentitySnapshot
+    $RepairStateHashes = Get-PreservedStateHashes
+    Invoke-Installer $InstallerPath 'Same-version repair'
+    Assert-InstalledPayload
+    Assert-IdentitySnapshot $RepairIdentity 'Repair'
+    Assert-PreservedStateHashes $RepairStateHashes
+    if ((Get-ItemProperty -LiteralPath $UninstallKeyPath).DisplayVersion -ne
+        '0.1.0') {
+        throw 'Same-version repair changed the registered version.'
+    }
+    if (Get-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
+            -ErrorAction SilentlyContinue) {
+        throw 'Same-version repair created a sign-in startup registration without consent.'
+    }
+
     $LegacyStartup = '"' +
         (Join-Path $InstallPath 'desklink_alpha.exe') + '" --background'
     $ProductStartup = '"' +
@@ -541,7 +556,7 @@ try {
         (Get-Content -Raw -LiteralPath $SentinelPath) -ne 'preserve-on-uninstall') {
         throw 'Uninstall modified or deleted current-user DeskLink state.'
     }
-    Write-Host '[Packaging:Installer] current-user install, fail-closed update rejection, rollback, upgrade, startup cleanup, state preservation, and uninstall passed.'
+    Write-Host '[Packaging:Installer] current-user install, repair, fail-closed update rejection, rollback, upgrade, startup cleanup, state preservation, and uninstall passed.'
 } finally {
     $CleanupUninstaller = Join-Path $InstallPath 'unins000.exe'
     if (Test-Path -LiteralPath $CleanupUninstaller -PathType Leaf) {

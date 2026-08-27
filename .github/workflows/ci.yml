@@ -66,6 +66,12 @@ jobs:
       - name: Checkout DeskLink
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Validate product and release-signing contracts
+        shell: pwsh
+        run: |
+          ./scripts/Test-WindowsProductContracts.ps1
+          ./scripts/Test-WindowsSigningPolicy.ps1
+
       - name: Install pinned MsQuic package
         run: >-
           nuget install Microsoft.Native.Quic.MsQuic.Schannel
@@ -213,14 +219,21 @@ jobs:
           path: |
             DeskLink-Alpha-0.1.0-windows-x64.zip
             DeskLink-0.1.0-windows-x64-unsigned.exe
+            DeskLink-0.1.1-windows-x64-unsigned.exe
+            build-msquic/Release/desklink_update_validation.exe
 
   ProductUiServer2022:
-    name: Product UI Server 2022 smoke
+    name: Product and installer Server 2022 qualification
     runs-on: windows-2022
+    needs: MsQuicAdapter
 
     steps:
       - name: Checkout DeskLink
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate product contracts
+        shell: pwsh
+        run: ./scripts/Test-WindowsProductContracts.ps1
 
       - name: Build locked self-contained product shell
         shell: pwsh
@@ -245,6 +258,22 @@ jobs:
           if ($Shell.ExitCode -ne 0) {
             throw "Windows Server 2022 product-shell smoke test failed with $($Shell.ExitCode)."
           }
+
+      - name: Download installer qualification payload
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: DeskLink-0.1.0-windows-x64
+          path: installer-qualification
+
+      - name: Validate install, repair, rollback, upgrade, and uninstall
+        shell: pwsh
+        run: |
+          ./scripts/Test-WindowsInstaller.ps1 `
+            -InstallerPath installer-qualification/DeskLink-0.1.0-windows-x64-unsigned.exe `
+            -UpgradeInstallerPath installer-qualification/DeskLink-0.1.1-windows-x64-unsigned.exe `
+            -ExpectedUpgradeVersion 0.1.1 `
+            -UpdateValidationPath installer-qualification/build-msquic/Release/desklink_update_validation.exe `
+            -AllowCurrentUserMutation
 
   Windows10Prototype:
     name: Windows 10 opaque CNG prototype

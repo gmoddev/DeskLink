@@ -29,6 +29,7 @@ $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $InstallerScript = Join-Path $RepositoryRoot 'installer\DeskLink.iss'
 $SigningScript = Join-Path $RepositoryRoot 'scripts\Invoke-AuthenticodeSign.ps1'
 . (Join-Path $RepositoryRoot 'scripts\WinUiPayload.ps1')
+. (Join-Path $RepositoryRoot 'scripts\WindowsSigningPolicy.ps1')
 
 function Assert-LastExitCode([string] $Operation) {
     if ($LASTEXITCODE -ne 0) {
@@ -43,39 +44,6 @@ function Assert-NoReparsePoint([string] $Path, [string] $Description) {
     }
 }
 
-function Get-NormalizedThumbprint([string] $Thumbprint) {
-    return ($Thumbprint -replace '\s', '').ToUpperInvariant()
-}
-
-function Get-CodeSigningCertificate([string] $Thumbprint) {
-    $Normalized = Get-NormalizedThumbprint $Thumbprint
-    $CertificatePath = "Cert:\CurrentUser\My\$Normalized"
-    if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) {
-        throw 'The release certificate was not found in the current-user My store.'
-    }
-    $Certificate = Get-Item -LiteralPath $CertificatePath
-    $Now = Get-Date
-    if (-not $Certificate.HasPrivateKey -or
-        $Certificate.NotBefore -gt $Now -or $Certificate.NotAfter -le $Now) {
-        throw 'The release certificate must have a usable private key and be currently valid.'
-    }
-    $CodeSigningOid = '1.3.6.1.5.5.7.3.3'
-    $HasCodeSigningEku = $false
-    foreach ($Extension in $Certificate.Extensions) {
-        if ($Extension -is [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
-            foreach ($Usage in $Extension.EnhancedKeyUsages) {
-                if ($Usage.Value -eq $CodeSigningOid) {
-                    $HasCodeSigningEku = $true
-                }
-            }
-        }
-    }
-    if (-not $HasCodeSigningEku) {
-        throw 'The release certificate must include the Code Signing enhanced key usage.'
-    }
-    return $Certificate
-}
-
 function Assert-AuthenticodeSignature(
     [string] $Path,
     [string] $ExpectedThumbprint,
@@ -86,8 +54,8 @@ function Assert-AuthenticodeSignature(
         throw "Authenticode validation failed for ${Path}: $($Signature.StatusMessage)"
     }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedThumbprint) -and
-        (Get-NormalizedThumbprint $Signature.SignerCertificate.Thumbprint) -ne
-        (Get-NormalizedThumbprint $ExpectedThumbprint)) {
+        (Get-DeskLinkNormalizedThumbprint $Signature.SignerCertificate.Thumbprint) -ne
+        (Get-DeskLinkNormalizedThumbprint $ExpectedThumbprint)) {
         throw "Unexpected Authenticode signer for $Path"
     }
     if ($RequireTimestamp -and -not $Signature.TimeStamperCertificate) {
@@ -102,6 +70,8 @@ if ($DevelopmentUnsigned) {
 } elseif ([string]::IsNullOrWhiteSpace($CertificateThumbprint) -or
           -not $TimestampUrl) {
     throw 'Production installer builds require a current-user certificate thumbprint and timestamp URL.'
+} else {
+    [void] (Assert-DeskLinkTimestampUrl $TimestampUrl)
 }
 
 $StagePath = (Resolve-Path -LiteralPath $StagePath).Path
@@ -196,7 +166,7 @@ if ($UpdaterUtf16.Contains('development-allow-unsigned') -or
 
 $Certificate = $null
 if (-not $DevelopmentUnsigned) {
-    $Certificate = Get-CodeSigningCertificate $CertificateThumbprint
+    $Certificate = Get-DeskLinkCodeSigningCertificate $CertificateThumbprint
 }
 
 $TemporaryRoot = Join-Path ([IO.Path]::GetTempPath()) `
@@ -223,7 +193,7 @@ try {
         "/DOutputName=$OutputName"
     )
     if (-not $DevelopmentUnsigned) {
-        $NormalizedThumbprint = Get-NormalizedThumbprint $CertificateThumbprint
+        $NormalizedThumbprint = Get-DeskLinkNormalizedThumbprint $CertificateThumbprint
         $SignToolPath = Join-Path (Split-Path -Parent $IsccPath) 'signtool.exe'
         if (-not (Test-Path -LiteralPath $SignToolPath -PathType Leaf)) {
             $WindowsSdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'

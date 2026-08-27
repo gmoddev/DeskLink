@@ -22,9 +22,9 @@
                                     Content="Arrange displays"
                                     Icon="Map" Tag="Displays" AccessKey="D" />
                 <NavigationViewItem Content="Advanced" Icon="Setting"
-                                    Tag="Advanced" />
+                                    Tag="Advanced" AccessKey="V" />
                 <NavigationViewItem Content="Diagnostics" Icon="View"
-                                    Tag="Diagnostics" />
+                                    Tag="Diagnostics" AccessKey="G" />
             </NavigationView.MenuItems>
 
             <Grid Padding="24" MaxWidth="1120" HorizontalAlignment="Stretch">
@@ -41,21 +41,24 @@
                                        TextWrapping="Wrap" />
                         </StackPanel>
                         <StackPanel x:Name="RoleSelectionPanel" Spacing="12">
-                            <Button Click="OnChooseMain" HorizontalContentAlignment="Stretch">
+                            <Button Click="OnChooseMain" HorizontalContentAlignment="Stretch"
+                                    AutomationProperties.Name="Choose Main PC">
                                 <StackPanel Padding="8" Spacing="4">
                                     <TextBlock Text="Main PC" FontWeight="SemiBold" />
                                     <TextBlock Text="The keyboard and mouse are physically connected here."
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                             </Button>
-                            <Button Click="OnChooseCompanion" HorizontalContentAlignment="Stretch">
+                            <Button Click="OnChooseCompanion" HorizontalContentAlignment="Stretch"
+                                    AutomationProperties.Name="Choose Companion PC">
                                 <StackPanel Padding="8" Spacing="4">
                                     <TextBlock Text="Companion PC" FontWeight="SemiBold" />
                                     <TextBlock Text="This PC can receive input after you explicitly allow it."
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                             </Button>
-                            <Button Click="OnChooseFlexible" HorizontalContentAlignment="Stretch">
+                            <Button Click="OnChooseFlexible" HorizontalContentAlignment="Stretch"
+                                    AutomationProperties.Name="Choose flexible PC role">
                                 <StackPanel Padding="8" Spacing="4">
                                     <TextBlock Text="Use either way" FontWeight="SemiBold" />
                                     <TextBlock Text="Choose the direction later. Sensitive permissions still default off."
@@ -88,10 +91,12 @@
                         </Grid>
                         <InfoBar x:Name="BrokerUnavailableBar" IsOpen="False"
                                  IsClosable="False" Severity="Warning"
+                                 AutomationProperties.LiveSetting="Assertive"
                                  Title="DeskLink runtime is unavailable"
                                  Message="Input remains on this PC. Start or repair the DeskLink runtime, then try again." />
                         <InfoBar x:Name="ActionRequiredBar" IsOpen="False"
                                  IsClosable="False" Severity="Error"
+                                 AutomationProperties.LiveSetting="Assertive"
                                  Title="Action required"
                                  Message="Automatic retry stopped. Input remains Local until you review the connection." />
                         <Border Padding="20" CornerRadius="8"
@@ -341,6 +346,7 @@
                         </Expander>
                         <InfoBar x:Name="PairingStatusBar" IsOpen="False"
                                  IsClosable="True" Severity="Informational"
+                                 AutomationProperties.LiveSetting="Polite"
                                  Title="Pairing" />
                     </StackPanel>
                 </ScrollViewer>
@@ -362,7 +368,8 @@
                                     Click="OnRefreshDevices" />
                         </Grid>
                         <InfoBar x:Name="DeviceStatusBar" IsOpen="False"
-                                 IsClosable="True" Severity="Informational" />
+                                 IsClosable="True" Severity="Informational"
+                                 AutomationProperties.LiveSetting="Polite" />
                         <TextBlock x:Name="NoDevicesText" Text="No paired PCs yet." />
                         <StackPanel x:Name="DeviceCards" Spacing="12" />
                     </StackPanel>
@@ -390,7 +397,8 @@
                                     Click="OnIdentifyDisplays" />
                         </Grid>
                         <InfoBar x:Name="MonitorStatusBar" IsOpen="False"
-                                 IsClosable="True" Severity="Informational" />
+                                 IsClosable="True" Severity="Informational"
+                                 AutomationProperties.LiveSetting="Polite" />
                         <Grid Visibility="Collapsed" IsHitTestVisible="False">
                             <Border x:Name="MonitorLocalPalette"
                                     Background="{ThemeResource ControlFillColorDefaultBrush}" />

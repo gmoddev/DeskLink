@@ -49,6 +49,7 @@ struct BrokerRuntimeSnapshot {
     std::uint16_t RetryAttempt{};
     IClock::time_point RetryAt{};
     bool Paused{};
+    bool SystemSuspended{};
 };
 
 [[nodiscard]] constexpr bool IsRetryableBrokerRuntimeFailure(
@@ -81,6 +82,8 @@ public:
     void ResetForConfiguration(IClock::time_point Now) noexcept;
     void Pause(IClock::time_point Now) noexcept;
     void Resume(IClock::time_point Now) noexcept;
+    void SystemSuspend(IClock::time_point Now) noexcept;
+    void SystemResume(IClock::time_point Now) noexcept;
     [[nodiscard]] bool Begin(BrokerRuntimePhase Phase) noexcept;
     void ConnectedLocal() noexcept;
     void ProcessStopped(BrokerRuntimeFailure Failure,
@@ -92,6 +95,7 @@ public:
 private:
     std::uint64_t JitterSeed_{};
     BrokerRuntimeSnapshot State_;
+    std::optional<BrokerRuntimeSnapshot> StateBeforeSystemSuspend_;
 };
 
 enum class TrustMutationStatus : std::uint8_t {

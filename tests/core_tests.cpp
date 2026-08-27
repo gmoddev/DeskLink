@@ -864,6 +864,47 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(Reconnect.Snapshot().Phase == BrokerRuntimePhase::Stopped);
     CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
 
+    Reconnect.SystemSuspend(ReconnectClock.now());
+    CHECK(Reconnect.Snapshot().SystemSuspended);
+    CHECK(Reconnect.Snapshot().Paused);
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+    Reconnect.NetworkChanged(ReconnectClock.now());
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+    Reconnect.SystemResume(ReconnectClock.now());
+    CHECK(!Reconnect.Snapshot().SystemSuspended);
+    CHECK(!Reconnect.Snapshot().Paused);
+    CHECK(Reconnect.Snapshot().Phase == BrokerRuntimePhase::Stopped);
+    CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
+
+    Reconnect.Pause(ReconnectClock.now());
+    Reconnect.SystemSuspend(ReconnectClock.now());
+    Reconnect.SystemResume(ReconnectClock.now());
+    CHECK(!Reconnect.Snapshot().SystemSuspended);
+    CHECK(Reconnect.Snapshot().Paused);
+    CHECK(Reconnect.Snapshot().Phase == BrokerRuntimePhase::Paused);
+    Reconnect.Resume(ReconnectClock.now());
+
+    Reconnect.ProcessStopped(
+        BrokerRuntimeFailure::Authentication,
+        ReconnectClock.now());
+    Reconnect.SystemSuspend(ReconnectClock.now());
+    Reconnect.SystemResume(ReconnectClock.now());
+    CHECK(!Reconnect.Snapshot().SystemSuspended);
+    CHECK(Reconnect.Snapshot().Phase ==
+          BrokerRuntimePhase::ActionRequired);
+    CHECK(Reconnect.Snapshot().Failure ==
+          BrokerRuntimeFailure::Authentication);
+    CHECK(!Reconnect.AttemptDue(ReconnectClock.now()));
+
+    Reconnect.SystemSuspend(ReconnectClock.now());
+    Reconnect.Resume(ReconnectClock.now());
+    CHECK(Reconnect.Snapshot().SystemSuspended);
+    CHECK(Reconnect.Snapshot().Paused);
+    Reconnect.SystemResume(ReconnectClock.now());
+    CHECK(!Reconnect.Snapshot().SystemSuspended);
+    CHECK(!Reconnect.Snapshot().Paused);
+    CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
+
     CHECK(IsRetryableBrokerRuntimeFailure(
         BrokerRuntimeFailure::OrdinaryUnavailable));
     for (const auto Failure : {

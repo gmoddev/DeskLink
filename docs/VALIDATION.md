@@ -173,12 +173,22 @@ the user has explicitly deferred that hardware matrix.
 Disposable-account CI additionally exercises installed shell activation,
 product-shell-only broker startup, broker survival after shell exit, update
 shutdown, shell/broker health probes, exact startup rollback/migration, and
-uninstall. It seeds a valid DPAPI trust record, schema-3 preferences, and saved
+uninstall. It now repeats the complete artifact-identical flow on a dependent
+Windows Server 2022 worker and includes same-version repair. It seeds a valid
+DPAPI trust record, schema-3 preferences, and saved
 roaming layout, then compares their hashes plus the complete non-exportable CNG
 identity snapshot after forced rollback and successful upgrade.
-Production signing plus clean Windows 11 and Server 2022 Desktop Experience
-DPI, keyboard, Narrator, light/dark, and contrast qualification remain release
-gates.
+
+Static product-contract validation rejects lost PerMonitorV2/as-invoker
+metadata, inaccessible interactive controls, missing navigation access keys or
+live status announcements, hard-coded theme colors, malformed UTF-8/mojibake,
+an unsupported OS floor, and installer elevation/Firewall behavior. Broker
+controller tests prove suspend/resume preserves user pause and security
+`ActionRequired`, while ordinary wake schedules only a fresh Local session;
+the production broker uses the corresponding native Windows notification.
+Production signing plus clean Windows 11 hands-on DPI, keyboard, Narrator,
+light/dark, contrast, physical sleep, and network-loss qualification remain
+release gates.
 
 ---
 
