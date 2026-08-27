@@ -236,6 +236,34 @@ function Assert-IdentitySnapshot(
     }
 }
 
+function Initialize-InstalledIdentity() {
+    Write-Host '[Packaging:Installer] initializing the installed CNG identity without starting a network session'
+    $Runtime = Start-Process `
+        -FilePath (Join-Path $InstallPath 'desklink_runtime.exe') `
+        -PassThru
+    try {
+        $Deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            if ($Runtime.HasExited) {
+                throw "Installed runtime exited before creating the device identity with code $($Runtime.ExitCode)."
+            }
+            try {
+                return Get-IdentitySnapshot
+            } catch {
+                Start-Sleep -Milliseconds 100
+            }
+        } while ([DateTime]::UtcNow -lt $Deadline)
+        throw 'Installed runtime did not create the device identity within 15 seconds.'
+    } finally {
+        if (-not $Runtime.HasExited) {
+            Stop-Process -Id $Runtime.Id -Force -ErrorAction Stop
+            if (-not $Runtime.WaitForExit(5000)) {
+                throw 'Identity-fixture runtime did not stop within five seconds.'
+            }
+        }
+    }
+}
+
 function Get-StartupCommand() {
     return (Get-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
         -ErrorAction Stop).DeskLink
@@ -365,8 +393,8 @@ try {
         throw 'DeskLink unexpectedly registered a machine-wide uninstall entry.'
     }
 
+    $RepairIdentity = Initialize-InstalledIdentity
     Initialize-PreservedStateFixtures
-    $RepairIdentity = Get-IdentitySnapshot
     $RepairStateHashes = Get-PreservedStateHashes
     Invoke-Installer $InstallerPath 'Same-version repair'
     Assert-InstalledPayload
