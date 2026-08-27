@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <iphlpapi.h>
+#include <powrprof.h>
 #include <shlobj.h>
 
 #include "desklink/control.hpp"
@@ -70,6 +71,51 @@ public:
 private:
     HANDLE Value_{};
 };
+
+class UniquePowerNotification final {
+public:
+    explicit UniquePowerNotification(HPOWERNOTIFY Value = nullptr) noexcept
+        : Value_(Value) {}
+    ~UniquePowerNotification() { Reset(); }
+    UniquePowerNotification(const UniquePowerNotification&) = delete;
+    UniquePowerNotification& operator=(const UniquePowerNotification&) = delete;
+    void Reset(HPOWERNOTIFY Value = nullptr) noexcept {
+        if (Value_) (void)UnregisterSuspendResumeNotification(Value_);
+        Value_ = Value;
+    }
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return Value_ != nullptr;
+    }
+
+private:
+    HPOWERNOTIFY Value_{};
+};
+
+constexpr ULONG kPowerSuspendPending = 1u << 0u;
+constexpr ULONG kPowerResumePending = 1u << 1u;
+
+struct PowerNotificationContext {
+    HANDLE Event{};
+    std::atomic_ulong Pending{};
+};
+
+ULONG CALLBACK OnPowerNotification(
+    PVOID RawContext, ULONG Type, PVOID) noexcept {
+    auto* Context = static_cast<PowerNotificationContext*>(RawContext);
+    if (!Context || !Context->Event) return ERROR_INVALID_PARAMETER;
+    ULONG Pending{};
+    if (Type == PBT_APMSUSPEND) {
+        Pending = kPowerSuspendPending;
+    } else if (Type == PBT_APMRESUMEAUTOMATIC ||
+               Type == PBT_APMRESUMESUSPEND ||
+               Type == PBT_APMRESUMECRITICAL) {
+        Pending = kPowerResumePending;
+    } else {
+        return ERROR_SUCCESS;
+    }
+    Context->Pending.fetch_or(Pending, std::memory_order_release);
+    return SetEvent(Context->Event) ? ERROR_SUCCESS : GetLastError();
+}
 
 std::optional<std::filesystem::path> GetDataDirectory() {
     PWSTR RawPath{};
@@ -300,6 +346,73 @@ public:
             if (Stopped) {
                 Blocked_ = false;
                 Reconnect_.Resume(Clock_.now());
+            } else {
+                IntentionalStop_ = false;
+                Blocked_ = true;
+                Reconnect_.ProcessStopped(
+                    desklink::BrokerRuntimeFailure::Unknown, Clock_.now());
+            }
+        }
+        Changed_.notify_all();
+        return Stopped;
+    }
+
+    [[nodiscard]] bool SystemSuspend() noexcept {
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (Reconnect_.Snapshot().SystemSuspended) return true;
+            if (Stopping_ || Transitioning_ || Blocked_) return false;
+            Transitioning_ = true;
+            IntentionalStop_ = true;
+        }
+        Changed_.notify_all();
+        const bool Stopped = StopManagedRuntime();
+        {
+            std::scoped_lock Lock(Mutex_);
+            Transitioning_ = false;
+            if (Stopped) {
+                Blocked_ = false;
+                Reconnect_.SystemSuspend(Clock_.now());
+            } else {
+                IntentionalStop_ = false;
+                Blocked_ = true;
+                Reconnect_.ProcessStopped(
+                    desklink::BrokerRuntimeFailure::Unknown, Clock_.now());
+            }
+        }
+        Changed_.notify_all();
+        return Stopped;
+    }
+
+    [[nodiscard]] bool SystemResume() noexcept {
+        bool WasSuspended{};
+        bool WasActionRequired{};
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (Stopping_ || Transitioning_ || Blocked_) return false;
+            const auto Runtime = Reconnect_.Snapshot();
+            WasSuspended = Runtime.SystemSuspended;
+            WasActionRequired =
+                Runtime.Phase == desklink::BrokerRuntimePhase::ActionRequired;
+            Transitioning_ = true;
+            IntentionalStop_ = true;
+        }
+        Changed_.notify_all();
+        // A resume notification can arrive after Windows suspended this
+        // process before it consumed the suspend event. Stop again before any
+        // reconnect so the next transport always starts Local with a fresh
+        // TLS connection and session nonce.
+        const bool Stopped = StopManagedRuntime();
+        {
+            std::scoped_lock Lock(Mutex_);
+            Transitioning_ = false;
+            if (Stopped) {
+                Blocked_ = false;
+                if (WasSuspended) {
+                    Reconnect_.SystemResume(Clock_.now());
+                } else if (!WasActionRequired) {
+                    Reconnect_.ResetForConfiguration(Clock_.now());
+                }
             } else {
                 IntentionalStop_ = false;
                 Blocked_ = true;
@@ -1424,7 +1537,8 @@ int wmain(int Count, wchar_t** Values) {
         PairPath, Supervisor, TrustAuthority, PairingCandidates, Clock);
     UniqueHandle StopEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     UniqueHandle NetworkEvent(CreateEventW(nullptr, FALSE, FALSE, nullptr));
-    if (!StopEvent || !NetworkEvent) return 1;
+    UniqueHandle PowerEvent(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    if (!StopEvent || !NetworkEvent || !PowerEvent) return 1;
     HANDLE NetworkNotification{};
     OVERLAPPED NetworkOverlapped{};
     bool NetworkNotificationArmed = ArmNetworkChangeNotification(
@@ -1433,6 +1547,22 @@ int wmain(int Count, wchar_t** Values) {
         std::cerr
             << "[Broker:Network] address-change notification unavailable; error="
             << GetLastError() << '\n';
+    }
+    PowerNotificationContext PowerContext{PowerEvent.Get()};
+    DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS PowerParameters{
+        OnPowerNotification, &PowerContext};
+    UniquePowerNotification PowerNotification(
+        RegisterSuspendResumeNotification(
+            &PowerParameters, DEVICE_NOTIFY_CALLBACK));
+    if (!PowerNotification) {
+        const auto PowerError = GetLastError();
+        if (NetworkNotificationArmed) {
+            (void)CancelIPChangeNotify(&NetworkOverlapped);
+        }
+        std::cerr
+            << "[Broker:Power] suspend/resume notification unavailable; input remains Local; error="
+            << PowerError << '\n';
+        return 1;
     }
 
     desklink::Win32ControlPipeServer Server(
@@ -1702,7 +1832,8 @@ int wmain(int Count, wchar_t** Values) {
 
     std::cout << "[Broker:Lifecycle] per-user runtime broker ready; input is Local\n";
     for (;;) {
-        const HANDLE Events[] = {StopEvent.Get(), NetworkEvent.Get()};
+        const HANDLE Events[] = {
+            StopEvent.Get(), NetworkEvent.Get(), PowerEvent.Get()};
         const auto Wait = WaitForMultipleObjects(
             static_cast<DWORD>(std::size(Events)), Events, FALSE, 250);
         if (Wait == WAIT_OBJECT_0) break;
@@ -1715,6 +1846,30 @@ int wmain(int Count, wchar_t** Values) {
                 std::cerr
                     << "[Broker:Network] address-change notification recovery failed; error="
                     << GetLastError() << '\n';
+            }
+            continue;
+        }
+        if (Wait == WAIT_OBJECT_0 + 2) {
+            const auto Pending = PowerContext.Pending.exchange(
+                0, std::memory_order_acquire);
+            bool Reconciled = true;
+            if ((Pending & kPowerSuspendPending) != 0) {
+                Reconciled = Supervisor.SystemSuspend();
+                if (Reconciled) {
+                    std::cout
+                        << "[Broker:Power] system suspend reconciled Local\n";
+                }
+            }
+            if (Reconciled && (Pending & kPowerResumePending) != 0) {
+                Reconciled = Supervisor.SystemResume();
+                if (Reconciled) {
+                    std::cout
+                        << "[Broker:Power] system resume scheduled a fresh Local session\n";
+                }
+            }
+            if (!Reconciled) {
+                std::cerr
+                    << "[Broker:Power] power transition cleanup failed; automatic reconnect remains blocked\n";
             }
             continue;
         }

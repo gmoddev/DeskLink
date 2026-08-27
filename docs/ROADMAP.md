@@ -294,19 +294,30 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   owns `%LOCALAPPDATA%\DeskLink` or the CNG identity. Disposable-account tests
   compare the complete identity snapshot plus byte hashes for a real DPAPI
   trust record, schema-3 preferences, and saved roaming graph across rollback
-  and upgrade. PR 9B production qualification remains open;
+  and upgrade;
+- **Product UX PR 9B automated qualification implemented:** invalid release
+  certificate/timestamp policy, product DPI/accessibility/theme/UTF-8 metadata,
+  elevation/Firewall drift, and same-version repair are CI failures. The exact
+  MsQuic-job artifacts repeat install/repair/rollback/upgrade/uninstall on a
+  disposable Server 2022 worker. Native suspend/resume handling stops the
+  transport Local and permits only a fresh session after wake while preserving
+  user pause and security `ActionRequired`. Real production signing, manual
+  supported-system accessibility/power/network testing, clean Windows 11, and
+  the deferred two-Windows-11 physical failure matrix remain open;
 - **Installer foundation complete:** current-user fixed-path Setup/Uninstall,
   active-runtime mutex gates, exact payload and pinned Schannel runtime checks,
-  in-place upgrade, startup-value cleanup, state preservation, a fail-closed
-  production signing gate, and disposable-account CI validation. Production
-  signing and clean-system qualification remain open;
+  same-version repair, in-place upgrade, startup-value cleanup, state
+  preservation, a fail-closed production signing gate, and artifact-identical
+  Windows-latest/Server-2022 disposable-account CI validation. Production
+  signing and clean Windows 11 qualification remain open;
 - **Automated update foundation complete:** explicit same-signer candidate and
   current-version rollback packages are hash/version validated before an ordered
   `Return Local -> confirm local -> stop runtime/UI -> install/validate` flow.
   Candidate install/health failure rolls back before any optional restart.
   Production-signed and destructive-fault qualification remain open; and
-- validate current-user startup, Private/Domain firewall setup, repair,
-  upgrades, sleep/resume, endpoint changes, and uninstall on clean systems.
+- validate current-user startup plus Private/Domain firewall onboarding,
+  production-signed repair/upgrades, physical sleep/resume and endpoint
+  changes, and uninstall on clean supported systems.
 
 ### 6. MCP observation plane
 

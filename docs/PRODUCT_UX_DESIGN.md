@@ -877,11 +877,25 @@ Alpha health baseline. Disposable-account validation compares the full
 non-exportable CNG identity snapshot and byte-identical DPAPI trust, schema-3
 preferences, and saved roaming graph across rollback and upgrade.
 
-**PR 9B remains open:** production signing, clean Windows 11 and Server 2022
-install/update/rollback qualification, DPI/keyboard/Narrator/contrast/
-localization checks, sleep/resume and network-loss validation, and the deferred
-two-supported-Windows-11-PC physical failure matrix. DeskLink therefore remains
-experimental despite the installed-shell cutover.
+**PR 9B automated qualification foundation is complete.** CI now treats the
+product UI and installer as contracts: PerMonitorV2/as-invoker metadata,
+keyboard navigation and a keyboard-equivalent monitor editor, accessible names
+and live status announcements, theme/high-contrast resources, strict UTF-8 and
+fallback-language settings, supported OS floor, and the absence of automatic
+Firewall/elevation behavior all fail closed. Release-signing policy has pure
+tests for missing/private-key/EKU/validity and RFC 3161 endpoint failures.
+Disposable Windows Server 2022 now repeats install, same-version repair,
+rollback, upgrade, identity/state preservation, and uninstall qualification
+using the exact artifact already tested by the MsQuic job.
+
+The broker consumes native suspend/resume notifications, stops the transport
+Local, and starts a fresh session after wake without clearing user-pause or
+security/action-required state. Existing deterministic tests cover network
+change, availability-only reconnect, nonce rotation, and the power-state
+policy. Real production-signed packages, hands-on Narrator/scaling/contrast,
+physical sleep/network interruption, a clean Windows 11 target, and the
+explicitly deferred two-supported-Windows-11-PC failure matrix remain release
+gates. DeskLink therefore remains experimental.
 
 ## 17. Product acceptance criteria
 

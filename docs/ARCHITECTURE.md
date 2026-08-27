@@ -597,6 +597,16 @@ authentication, capability, protocol, and unknown failures require action.
 Pause, configuration/trust mutation, update, and exit first confirm fail-local
 cleanup and child exit; uncertain cleanup blocks a replacement owner.
 
+The broker also registers a native suspend/resume callback. The callback only
+records a bounded event; the broker main loop then stops the managed transport
+through the normal Local/owned-input cleanup boundary. Resume repeats cleanup
+in case Windows suspended the process before it consumed the suspend event,
+then permits only a new Local transport with a fresh TLS connection and session
+nonce. An explicit user pause remains paused across sleep, and an existing
+authentication/security `ActionRequired` state is restored rather than being
+turned into an availability retry. Missing power-notification support prevents
+the broker from starting on the supported production baseline.
+
 Do not introduce a SYSTEM service until a concrete requirement needs one.
 
 If privileged functions later become necessary, add a small broker service with an allowlisted API. The broker should not own networking, hooks, UI, or arbitrary command execution.

@@ -89,6 +89,9 @@ This repository is a **reference foundation implementation**, not a finished pro
 - Persistent current-user runtime broker with role-driven companion listening,
   exact preferred-peer auto-connect, pause/resume, typed fail-closed reconnect
   classification, and network/process reconciliation that always starts Local
+- Native broker suspend/resume notifications that stop the managed transport
+  Local and require a fresh TLS connection and session nonce after wake, while
+  preserving an explicit user pause and any action-required security failure
 - Bounded native Windows DNS-SD/mDNS discovery with late-callback-safe untrusted candidate output
 - Bounded foreground-profile policy engine and native Windows WinEvent monitor
 - Fail-local Host input lifecycle planner with restart-safe Win32 capture
@@ -117,8 +120,9 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
-- Production signing/clean-system installer and update qualification, final
-  product polish, and Stream Deck plugin
+- Production-signed Windows 11 installer/update qualification, physical
+  supported-system accessibility/power/network validation, final product
+  polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
 Current release-specific defects and workarounds are tracked in

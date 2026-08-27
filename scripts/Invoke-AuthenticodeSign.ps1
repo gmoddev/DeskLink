@@ -18,11 +18,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'WindowsSigningPolicy.ps1')
+$CertificateThumbprint =
+    Get-DeskLinkNormalizedThumbprint $CertificateThumbprint
+[void] (Get-DeskLinkCodeSigningCertificate $CertificateThumbprint)
+[void] (Assert-DeskLinkTimestampUrl $TimestampUrl)
 $SignToolPath = (Resolve-Path -LiteralPath $SignToolPath).Path
 $Path = (Resolve-Path -LiteralPath $Path).Path
-if ($TimestampUrl.Scheme -notin 'http', 'https') {
-    throw 'TimestampUrl must use HTTP or HTTPS for an RFC 3161 service.'
-}
 $OutputPath = Join-Path ([IO.Path]::GetTempPath()) `
     ('DeskLinkSign-' + [guid]::NewGuid().ToString('N') + '.out')
 $ErrorPath = $OutputPath + '.err'
@@ -53,7 +55,9 @@ try {
     $Signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($Signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
         -not $Signature.SignerCertificate -or
-        $Signature.SignerCertificate.Thumbprint -ne $CertificateThumbprint -or
+        (Get-DeskLinkNormalizedThumbprint `
+            $Signature.SignerCertificate.Thumbprint) -ne
+        $CertificateThumbprint -or
         -not $Signature.TimeStamperCertificate) {
         throw 'The signed artifact did not verify with the expected signer and timestamp.'
     }

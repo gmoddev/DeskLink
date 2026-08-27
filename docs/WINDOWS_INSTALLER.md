@@ -86,7 +86,7 @@ packaging without signing authority is rejected, and uses an isolated CI
 account to verify:
 
 1. an active DeskLink lifecycle mutex blocks Setup;
-2. installation remains current-user and installs the complete allowlisted
+2. installation and same-version repair remain current-user, install the complete allowlisted
    runtime, diagnostic Alpha, and self-contained WinUI payload;
 3. launching only the installed product shell starts the fixed sibling broker,
    secondary activation and bounded exit work, and shell exit leaves the broker
@@ -101,6 +101,14 @@ account to verify:
 8. uninstall removes binaries, registration, and the startup value; and
 9. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
 
+The same exact installer artifacts and validation executable are downloaded by
+a dependent disposable Windows Server 2022 job, which repeats the complete
+install/repair/rollback/upgrade/uninstall sequence rather than merely launching
+the shell. Separate contract checks reject invalid release certificate states,
+unsafe timestamp endpoints, lost PerMonitorV2/accessibility/theme/UTF-8
+metadata, elevation, or automatic Firewall changes. These tests do not make an
+unsigned development artifact a release package.
+
 `Test-WindowsInstaller.ps1` refuses to run unless
 `-AllowCurrentUserMutation` is supplied. Use that switch only on an isolated
 test account or disposable Windows worker.
@@ -110,7 +118,8 @@ test account or disposable Windows worker.
 - obtain and protect the production code-signing identity and approve its
   timestamp service;
 - validate signed install, repair, upgrade, and uninstall on clean Windows 11
-  and Windows Server 2022 systems;
+  and Windows Server 2022 systems (the unsigned disposable Server 2022 path is
+  automated, but cannot substitute for the production signer);
 - validate sign-in startup plus Private/Domain Firewall onboarding without
   automatic Firewall changes; and
 - validate signed update/rollback plus process termination, power loss,

@@ -78,6 +78,21 @@ BrokerReconnectController::BrokerReconnectController(
 
 void BrokerReconnectController::ResetForConfiguration(
     IClock::time_point Now) noexcept {
+    if (State_.SystemSuspended) {
+        StateBeforeSystemSuspend_ = BrokerRuntimeSnapshot{
+            BrokerRuntimePhase::Stopped,
+            BrokerRuntimeFailure::None,
+            0,
+            Now,
+            false,
+            false};
+        State_.Failure = BrokerRuntimeFailure::None;
+        State_.RetryAttempt = 0;
+        State_.RetryAt = Now;
+        State_.Phase = BrokerRuntimePhase::Paused;
+        State_.Paused = true;
+        return;
+    }
     State_.Failure = BrokerRuntimeFailure::None;
     State_.RetryAttempt = 0;
     State_.RetryAt = Now;
@@ -87,6 +102,15 @@ void BrokerReconnectController::ResetForConfiguration(
 }
 
 void BrokerReconnectController::Pause(IClock::time_point Now) noexcept {
+    if (State_.SystemSuspended) {
+        StateBeforeSystemSuspend_ = BrokerRuntimeSnapshot{
+            BrokerRuntimePhase::Paused,
+            BrokerRuntimeFailure::None,
+            0,
+            Now,
+            true,
+            false};
+    }
     State_.Paused = true;
     State_.Phase = BrokerRuntimePhase::Paused;
     State_.Failure = BrokerRuntimeFailure::None;
@@ -95,8 +119,56 @@ void BrokerReconnectController::Pause(IClock::time_point Now) noexcept {
 }
 
 void BrokerReconnectController::Resume(IClock::time_point Now) noexcept {
+    if (State_.SystemSuspended) {
+        StateBeforeSystemSuspend_ = BrokerRuntimeSnapshot{
+            BrokerRuntimePhase::Stopped,
+            BrokerRuntimeFailure::None,
+            0,
+            Now,
+            false,
+            false};
+        return;
+    }
     State_.Paused = false;
     ResetForConfiguration(Now);
+}
+
+void BrokerReconnectController::SystemSuspend(
+    IClock::time_point Now) noexcept {
+    if (State_.SystemSuspended) return;
+    StateBeforeSystemSuspend_ = State_;
+    State_.SystemSuspended = true;
+    State_.Paused = true;
+    State_.Phase = BrokerRuntimePhase::Paused;
+    State_.Failure = BrokerRuntimeFailure::None;
+    State_.RetryAttempt = 0;
+    State_.RetryAt = Now;
+}
+
+void BrokerReconnectController::SystemResume(
+    IClock::time_point Now) noexcept {
+    if (!State_.SystemSuspended || !StateBeforeSystemSuspend_) return;
+    const auto Previous = *StateBeforeSystemSuspend_;
+    StateBeforeSystemSuspend_.reset();
+    State_.SystemSuspended = false;
+    if (Previous.Paused) {
+        State_ = Previous;
+        State_.SystemSuspended = false;
+        State_.Phase = BrokerRuntimePhase::Paused;
+        return;
+    }
+    if (Previous.Phase == BrokerRuntimePhase::ActionRequired) {
+        State_ = Previous;
+        State_.SystemSuspended = false;
+        return;
+    }
+    State_ = BrokerRuntimeSnapshot{
+        BrokerRuntimePhase::Stopped,
+        BrokerRuntimeFailure::None,
+        0,
+        Now,
+        false,
+        false};
 }
 
 bool BrokerReconnectController::Begin(BrokerRuntimePhase Phase) noexcept {
