@@ -22,6 +22,12 @@ enum class LauncherOperation {
     Focus,
 };
 
+enum class LauncherTlsProvider {
+    Auto,
+    Schannel,
+    OpenSsl,
+};
+
 struct LauncherPairingGrants {
     bool GrantInput{};
     bool GrantAudioSend{};
@@ -40,6 +46,9 @@ DefaultManualPairingGrants() noexcept {
 
 struct LauncherRequest {
     LauncherOperation Operation{LauncherOperation::Identity};
+    // Alpha and direct wrapper callers remain production-pinned unless they
+    // explicitly opt into the broker's fail-closed OS provider policy.
+    LauncherTlsProvider TlsProvider{LauncherTlsProvider::Schannel};
     std::wstring Host;
     std::optional<MachineId> ExpectedPeerMachine;
     std::uint16_t Port{43'821};
@@ -64,11 +73,16 @@ struct LauncherRequest {
     bool KeepLocalWhenFullscreen{};
 };
 
-// Produces arguments for desklink_pair.exe. Network operations are deliberately
-// pinned to Schannel because the alpha wrapper supports the production Windows
-// 11 / Server 2022+ path only.
+// Produces arguments for desklink_pair.exe. The request must explicitly carry
+// the provider policy owned by its caller; no launch-time failure may select a
+// different provider.
 [[nodiscard]] std::optional<std::vector<std::wstring>>
 BuildLauncherArguments(const LauncherRequest& Request);
+
+// Product-broker operations always use the fail-closed OS provider policy.
+// The ordinary builder deliberately retains its Schannel default for Alpha.
+[[nodiscard]] std::optional<std::vector<std::wstring>>
+BuildProductLauncherArguments(LauncherRequest Request);
 
 // Implements the quoting rules used by CommandLineToArgvW and the Microsoft C
 // runtime. CreateProcessW still receives the executable through lpApplicationName.

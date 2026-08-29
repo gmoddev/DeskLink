@@ -585,7 +585,7 @@ admitted level.
 
 ### Installer boundary
 
-The Windows installer is current-user only and installs under
+The production Windows installer is current-user only and installs under
 `%LOCALAPPDATA%\Programs\DeskLink`. It does not elevate, install a service,
 alter Firewall/network policy, or package the Windows 10 research provider.
 Setup and Uninstall refuse to proceed while the product shell, Alpha diagnostics
@@ -604,6 +604,15 @@ separate code-signing identity selected from the current-user certificate
 store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
+
+The separately named Windows 10 Development Alpha is an unsigned prerelease,
+not that production installer. Its build mode cannot be combined with release
+signing, requires the exact reviewed OpenSSL MsQuic/libcrypto/libssl hashes,
+and lowers only the product-shell/Setup OS floor to Windows 10 22H2. It carries
+both provider graphs so the broker's explicit `auto` policy resolves once to
+Schannel on Windows 11/Server 2022+ or OpenSSL/CNG on Windows 10. A missing or
+invalid graph, credential, signature, certificate, authentication result, or
+handshake fails closed without selecting the other provider.
 
 The updater does not download or select releases. Before any focus mutation it
 copies an explicit candidate and current-version rollback installer into a

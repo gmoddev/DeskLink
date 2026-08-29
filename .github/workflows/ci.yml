@@ -330,4 +330,4 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
           where nmake
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Windows10Compat.ps1 -MsQuicSource external\msquic -OpenSslRoot external\openssl-install -SchannelRoot external\Microsoft.Native.Quic.MsQuic.Schannel
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Windows10Compat.ps1 -MsQuicSource external\msquic -OpenSslRoot external\openssl-install -SchannelRoot external\Microsoft.Native.Quic.MsQuic.Schannel -BuildProductUi

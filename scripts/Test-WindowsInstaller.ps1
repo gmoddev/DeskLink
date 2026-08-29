@@ -13,7 +13,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $UpdateValidationPath,
 
-    [switch] $AllowCurrentUserMutation
+    [switch] $AllowCurrentUserMutation,
+
+    [switch] $ExperimentalWindows10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +81,14 @@ function Assert-InstalledPayload() {
         'LICENSE',
         'ALPHA_WRAPPER.md'
     )
+    if ($ExperimentalWindows10) {
+        $ExpectedFiles += @(
+            'runtime\openssl\msquic.dll',
+            'runtime\openssl\libcrypto-3-x64.dll',
+            'runtime\openssl\libssl-3-x64.dll',
+            'WINDOWS10_DEVELOPMENT_ALPHA.md'
+        )
+    }
     foreach ($RelativePath in $ExpectedFiles) {
         if (-not (Test-Path -LiteralPath (Join-Path $InstallPath $RelativePath) `
                 -PathType Leaf)) {

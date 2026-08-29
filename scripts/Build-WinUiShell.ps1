@@ -7,7 +7,9 @@ param(
 
     [string] $IntermediatePath = '',
 
-    [switch] $LockedMode
+    [switch] $LockedMode,
+
+    [switch] $ExperimentalWindows10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,6 +58,10 @@ $Arguments = @(
 if ($LockedMode) {
     $Arguments += '/p:RestoreLockedMode=true'
 }
+if ($ExperimentalWindows10) {
+    $Arguments += '/p:DeskLinkExperimentalWindows10=true'
+    $Arguments += '/p:DeskLinkWindowsTargetPlatformMinVersion=10.0.19041.0'
+}
 
 & $MsBuild @Arguments
 if ($LASTEXITCODE -ne 0) {
@@ -101,3 +107,5 @@ if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "WinUI shell build did not produce $Executable"
 }
 Write-Host "[ProductUI:Build] created $Executable"
+Write-Host ('[ProductUI:Build] mode=' + $(
+    if ($ExperimentalWindows10) { 'windows10-experimental' } else { 'production' }))
