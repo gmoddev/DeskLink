@@ -62,6 +62,14 @@ bool ValidateInstalledProductShell(
              L"Microsoft.ui.xaml.dll", L"WindowsAppSDK-LICENSE.txt"}) {
         if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
     }
+#ifdef DESKLINK_EXPERIMENTAL_WINDOWS10
+    for (const auto* Relative : {
+             L"runtime\\openssl\\msquic.dll",
+             L"runtime\\openssl\\libcrypto-3-x64.dll",
+             L"runtime\\openssl\\libssl-3-x64.dll"}) {
+        if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
+    }
+#endif
     return true;
 }
 

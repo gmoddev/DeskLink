@@ -10,6 +10,12 @@ PR 9A makes `desklink.exe` the normal Start menu, post-install, sign-in, and
 updater-restart entry point. `desklink_alpha.exe` remains for one migration
 release as the explicitly labeled **DeskLink diagnostics (Alpha)** fallback.
 
+A separate `-ExperimentalWindows10 -DevelopmentUnsigned` build mode creates a
+Development Alpha installer for Windows 10 22H2 build 19045. It includes both
+provider graphs and the Windows 10-targeted product shell. It cannot be signed
+through the production packaging path, does not alter Firewall policy, and is
+not a supported or production artifact.
+
 ## Security and lifecycle contract
 
 - The installer accepts only the exact allowlisted Alpha payload plus the
@@ -46,6 +52,12 @@ CI creates an explicitly named `*-unsigned.exe` development installer. It is
 for automated install/repair/upgrade/uninstall validation only and must never
 be published as a production release.
 
+The Windows 10 Development Alpha is the only unsigned package intended for a
+GitHub prerelease. Its name, release title, Setup information page, and bundled
+notice must all say Development Alpha/unsigned. Packaging requires the exact
+reviewed OpenSSL MsQuic, libcrypto, and libssl hashes in addition to Schannel.
+The broker chooses by OS before loading and never falls back.
+
 A production build has no unsigned fallback. It requires an Authenticode code
 signing certificate in the current user's Windows certificate store, selected
 by thumbprint, plus an RFC 3161 timestamp URL. The build signs every DeskLink
@@ -71,6 +83,23 @@ cmake --install build-msquic --config Release `
   -AppVersion 0.1.0 `
   -CertificateThumbprint '<current-user code-signing certificate SHA-1>' `
   -TimestampUrl 'https://<approved-rfc3161-service>'
+```
+
+The experimental package uses the dedicated staging helper and explicit
+switches:
+
+```powershell
+.\scripts\Build-WinUiShell.ps1 -Configuration Release -LockedMode `
+  -ExperimentalWindows10
+.\scripts\Stage-Windows10DevelopmentAlpha.ps1 `
+  -CMakeBuildPath out\windows10-compat\desklink `
+  -WinUiBuildPath out\windows10-compat\desklink\product-ui\Release `
+  -StagePath windows10-alpha-stage
+.\scripts\Build-WindowsInstaller.ps1 `
+  -StagePath windows10-alpha-stage `
+  -OutputPath DeskLink-0.1.0-alpha.1-windows-x64-unsigned.exe `
+  -IsccPath '<verified Inno Setup 7.1.0>\ISCC.exe' `
+  -AppVersion 0.1.0 -DevelopmentUnsigned -ExperimentalWindows10
 ```
 
 The compiler is pinned to Inno Setup 7.1.0. CI downloads the immutable release,

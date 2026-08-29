@@ -8,7 +8,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $SchannelRoot,
 
-    [string] $BuildRoot = ''
+    [string] $BuildRoot = '',
+
+    [switch] $BuildProductUi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +97,7 @@ foreach ($ForbiddenApi in $ForbiddenPrivateKeyApis) {
 
 $MsQuicBuild = Join-Path $BuildRoot 'msquic'
 $DeskLinkBuild = Join-Path $BuildRoot 'desklink'
+$ProductUiValue = if ($BuildProductUi) { 'ON' } else { 'OFF' }
 & cmake -S $MsQuicSource -B $MsQuicBuild -A x64 `
     -DQUIC_TLS_LIB=openssl `
     "-DQUIC_OPENSSL_ROOT_DIR=$OpenSslRoot" `
@@ -112,6 +115,7 @@ Assert-LastExitCode 'Building patched MsQuic'
     -UDESKLINK_MSQUIC_INCLUDE_DIR `
     -DDESKLINK_BUILD_MSQUIC=ON `
     -DDESKLINK_BUILD_PHYSICAL_VALIDATION=ON `
+    "-DDESKLINK_BUILD_PRODUCT_UI=$ProductUiValue" `
     "-DDESKLINK_MSQUIC_SCHANNEL_ROOT=$SchannelRoot" `
     "-DDESKLINK_MSQUIC_OPENSSL_ROOT=$MsQuicBuild" `
     "-DDESKLINK_OPENSSL_ROOT=$OpenSslRoot" `
@@ -121,5 +125,10 @@ Assert-LastExitCode 'Configuring DeskLink compatibility tests'
 Assert-LastExitCode 'Building DeskLink compatibility tests'
 & ctest --test-dir $DeskLinkBuild -C Release --output-on-failure
 Assert-LastExitCode 'Running DeskLink compatibility tests'
+if ($BuildProductUi) {
+    & cmake --build $DeskLinkBuild --config Release `
+        --target desklink_product_ui --parallel 2
+    Assert-LastExitCode 'Building the Windows 10 experimental product shell'
+}
 
 Write-Host '[Transport:Windows10Compat] Stage 2 build and local security gates passed.'

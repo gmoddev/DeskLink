@@ -21,7 +21,9 @@
     <ApplicationType>Windows Store</ApplicationType>
     <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <WindowsTargetPlatformMinVersion>10.0.20348.0</WindowsTargetPlatformMinVersion>
+    <DeskLinkWindowsTargetPlatformMinVersion Condition="'$(DeskLinkWindowsTargetPlatformMinVersion)'==''">10.0.20348.0</DeskLinkWindowsTargetPlatformMinVersion>
+    <DeskLinkExperimentalWindows10 Condition="'$(DeskLinkExperimentalWindows10)'==''">false</DeskLinkExperimentalWindows10>
+    <WindowsTargetPlatformMinVersion>$(DeskLinkWindowsTargetPlatformMinVersion)</WindowsTargetPlatformMinVersion>
     <TargetFrameworkIdentifier>native</TargetFrameworkIdentifier>
     <TargetFrameworkVersion>v0.0</TargetFrameworkVersion>
     <TargetFramework>native,Version=v0.0</TargetFramework>
@@ -76,6 +78,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions Condition="'$(DeskLinkExperimentalWindows10)'=='true'">DESKLINK_EXPERIMENTAL_WINDOWS10=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <AdditionalDependencies>advapi32.lib;comctl32.lib;gdi32.lib;setupapi.lib;shcore.lib;shell32.lib;ole32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>

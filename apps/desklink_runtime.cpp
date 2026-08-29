@@ -589,7 +589,11 @@ private:
             RecordFailure(desklink::BrokerRuntimeFailure::Unknown);
             return false;
         }
-        const auto Arguments = desklink::BuildLauncherArguments(Request);
+        // Product operations use the reviewed OS policy: Schannel on Windows
+        // 11 / Server 2022+, OpenSSL/CNG on Windows 10. MsQuic runtime loading
+        // is fail-closed and never retries with the other provider.
+        const auto Arguments =
+            desklink::BuildProductLauncherArguments(Request);
         const auto CommandLine = Arguments
             ? desklink::BuildWindowsCommandLine(
                   PairExecutable_.native(), *Arguments)
@@ -1309,7 +1313,8 @@ private:
         }
         Request.BrokerPairingOperationId = Operation->OperationId;
         Request.BrokerPairingToken = Operation->Token;
-        const auto Arguments = desklink::BuildLauncherArguments(Request);
+        const auto Arguments =
+            desklink::BuildProductLauncherArguments(std::move(Request));
         const auto CommandLine = Arguments
             ? desklink::BuildWindowsCommandLine(
                   PairExecutable_.native(), *Arguments)
@@ -1454,6 +1459,14 @@ bool ValidateInstalledBrokerForUpdate() {
              L"runtime\\schannel\\msquic.dll"}) {
         if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
     }
+#ifdef DESKLINK_EXPERIMENTAL_WINDOWS10
+    for (const auto* Relative : {
+             L"runtime\\openssl\\msquic.dll",
+             L"runtime\\openssl\\libcrypto-3-x64.dll",
+             L"runtime\\openssl\\libssl-3-x64.dll"}) {
+        if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
+    }
+#endif
 
     desklink::BCryptPairingCrypto Crypto;
     auto Certificate = desklink::Win32DeviceCertificate::Load(

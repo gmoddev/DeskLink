@@ -398,6 +398,11 @@ independent gates:
    with held key/button state also passes lease cleanup. A scoped four-second
    network interruption fails local on focus-lease renewal; a fresh reconnect
    rotates the nonce and rejects live prior-session and stale-epoch packets.
+6. **Development Alpha implemented:** the current product shell and broker are
+   packaged for Windows 10 22H2 with both reviewed runtime graphs. Broker-owned
+   operations use the fail-closed OS `auto` policy; Alpha/direct requests stay
+   Schannel-pinned. The unsigned prerelease is a distribution/qualification
+   vehicle, not production admission.
 
 Completion of the R&D gates does not by itself make the prototype a production
 artifact. Windows 10 stays experimental/unsupported until a separately reviewed

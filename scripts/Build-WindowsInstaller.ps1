@@ -14,6 +14,8 @@ param(
 
     [switch] $DevelopmentUnsigned,
 
+    [switch] $ExperimentalWindows10,
+
     [ValidatePattern('^[0-9A-Fa-f ]{40,59}$')]
     [string] $CertificateThumbprint = '',
 
@@ -25,6 +27,12 @@ $ExpectedInnoVersion = '7.1.0'
 $ExpectedInnoPublisher = 'Pyrsys B.V.'
 $ExpectedMsQuicHash =
     'C981E61CD207F42D46B54EF7DBF1049F1F836424C3BA981F4469AC2B2BEA9610'
+$ExpectedOpenSslMsQuicHash =
+    '392743C217AFB9F7E6A34F7C62E5FADB89D1908334A43D10EB74F6AB8040F238'
+$ExpectedOpenSslCryptoHash =
+    '2E9FE207B6FC33B8A9CFBB261FCDD03253DF9666E2D73D83D57E2A5D4F97E48D'
+$ExpectedOpenSslSslHash =
+    '2B10D4D3641A07A85EDBDC446E8F5830EE531D5B91026DAEC4D80860EA868C4C'
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $InstallerScript = Join-Path $RepositoryRoot 'installer\DeskLink.iss'
 $SigningScript = Join-Path $RepositoryRoot 'scripts\Invoke-AuthenticodeSign.ps1'
@@ -72,6 +80,9 @@ if ($DevelopmentUnsigned) {
     throw 'Production installer builds require a current-user certificate thumbprint and timestamp URL.'
 } else {
     [void] (Assert-DeskLinkTimestampUrl $TimestampUrl)
+}
+if ($ExperimentalWindows10 -and -not $DevelopmentUnsigned) {
+    throw 'ExperimentalWindows10 packages must remain explicitly unsigned development builds.'
 }
 
 $StagePath = (Resolve-Path -LiteralPath $StagePath).Path
@@ -124,6 +135,14 @@ $RequiredFiles = @(
     'LICENSE',
     'ALPHA_WRAPPER.md'
 )
+if ($ExperimentalWindows10) {
+    $RequiredFiles += @(
+        'runtime\openssl\msquic.dll',
+        'runtime\openssl\libcrypto-3-x64.dll',
+        'runtime\openssl\libssl-3-x64.dll',
+        'WINDOWS10_DEVELOPMENT_ALPHA.md'
+    )
+}
 $ExpectedRelativeFiles = [Collections.Generic.HashSet[string]]::new(
     [StringComparer]::OrdinalIgnoreCase)
 foreach ($RelativePath in $RequiredFiles) {
@@ -154,6 +173,20 @@ $MsQuicPath = Join-Path $StagePath 'runtime\schannel\msquic.dll'
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $MsQuicPath).Hash -ne
     $ExpectedMsQuicHash) {
     throw 'The staged Schannel MsQuic runtime does not match the reviewed 2.6.0 artifact.'
+}
+if ($ExperimentalWindows10) {
+    $OpenSslHashes = [ordered]@{
+        'runtime\openssl\msquic.dll' = $ExpectedOpenSslMsQuicHash
+        'runtime\openssl\libcrypto-3-x64.dll' = $ExpectedOpenSslCryptoHash
+        'runtime\openssl\libssl-3-x64.dll' = $ExpectedOpenSslSslHash
+    }
+    foreach ($Runtime in $OpenSslHashes.GetEnumerator()) {
+        $RuntimePath = Join-Path $StagePath $Runtime.Key
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $RuntimePath).Hash -ne
+            $Runtime.Value) {
+            throw "The staged Windows 10 runtime did not match the reviewed artifact: $($Runtime.Key)"
+        }
+    }
 }
 $UpdaterBytes = [IO.File]::ReadAllBytes(
     (Join-Path $StagePath 'desklink_update.exe'))
@@ -221,6 +254,9 @@ try {
             $SigningScript, $SignToolPath, $NormalizedThumbprint, $Timestamp
         $Arguments += "/SDeskLinkReleaseSign=$SignCommand"
         $Arguments += '/DSignedBuild=1'
+    }
+    if ($ExperimentalWindows10) {
+        $Arguments += '/DExperimentalWindows10=1'
     }
     $Arguments += $InstallerScript
     & $IsccPath @Arguments

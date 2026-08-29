@@ -318,6 +318,10 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     target_link_libraries(
         desklink_runtime PRIVATE desklink_windows shell32 iphlpapi powrprof)
     target_compile_definitions(desklink_runtime PRIVATE UNICODE _UNICODE)
+    if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+        target_compile_definitions(desklink_runtime PRIVATE
+            DESKLINK_EXPERIMENTAL_WINDOWS10=1)
+    endif()
     if(MSVC)
         target_compile_options(desklink_runtime PRIVATE /W4 /permissive-)
     else()
@@ -338,6 +342,11 @@ endif()
 
 if(WIN32 AND DESKLINK_BUILD_PRODUCT_UI)
     find_program(DESKLINK_POWERSHELL_EXECUTABLE NAMES pwsh powershell REQUIRED)
+    set(DESKLINK_PRODUCT_UI_EXTRA_ARGUMENTS)
+    if(DESKLINK_MSQUIC_OPENSSL_ROOT)
+        list(APPEND DESKLINK_PRODUCT_UI_EXTRA_ARGUMENTS
+            -ExperimentalWindows10)
+    endif()
     set(DESKLINK_UI_OUTPUT_DIR
         "${CMAKE_BINARY_DIR}/product-ui/$<CONFIG>")
     set(DESKLINK_UI_INTERMEDIATE_DIR
@@ -350,6 +359,7 @@ if(WIN32 AND DESKLINK_BUILD_PRODUCT_UI)
             -OutputPath "${DESKLINK_UI_OUTPUT_DIR}"
             -IntermediatePath "${DESKLINK_UI_INTERMEDIATE_DIR}"
             -LockedMode
+            ${DESKLINK_PRODUCT_UI_EXTRA_ARGUMENTS}
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM)
 endif()

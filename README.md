@@ -4,6 +4,17 @@ DeskLink is a local distributed desk-control platform intended to provide secure
 
 This repository is a **reference foundation implementation**, not a finished production release. It deliberately implements and tests protocol/state/security invariants before and alongside privileged or timing-sensitive Windows adapters.
 
+## Development Alpha packages
+
+GitHub prereleases may contain an explicitly unsigned **Development Alpha**
+installer. The cross-version package uses the current `desklink.exe` product
+shell, selects stock Schannel on Windows 11/Server 2022+, and selects the
+hash-pinned OpenSSL/CNG compatibility runtime on Windows 10 22H2. Provider
+selection is fail-closed and never retries after credential, signing,
+certificate, authentication, or transport failure. Windows 10 and every
+unsigned package remain experimental/unsupported; see
+[`docs/WINDOWS10_DEVELOPMENT_ALPHA.md`](docs/WINDOWS10_DEVELOPMENT_ALPHA.md).
+
 ## Implemented
 
 - C++20 portable core

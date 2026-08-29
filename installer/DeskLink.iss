@@ -16,14 +16,23 @@
 
 [Setup]
 AppId={{58944975-11A2-4DD6-B881-A0700574270F}
+#ifdef ExperimentalWindows10
+AppName=DeskLink Development Alpha
+AppVerName=DeskLink {#AppVersion} Development Alpha
+#else
 AppName=DeskLink
-AppVersion={#AppVersion}
 AppVerName=DeskLink {#AppVersion}
+#endif
+AppVersion={#AppVersion}
 AppPublisher=DeskLink
 AppPublisherURL=https://github.com/gmoddev/DeskLink
 AppSupportURL=https://github.com/gmoddev/DeskLink/issues
 AppUpdatesURL=https://github.com/gmoddev/DeskLink/releases
+#ifdef ExperimentalWindows10
+AppComments=Unsigned experimental Windows 10 OpenSSL/CNG compatibility build.
+#else
 AppComments=Secure local keyboard, mouse, audio, and clipboard roaming.
+#endif
 AppMutex=Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1
 SetupMutex=Local\DeskLink.Setup.v1
 DefaultDirName={localappdata}\Programs\DeskLink
@@ -36,7 +45,12 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupArchitecture=x64
+#ifdef ExperimentalWindows10
+MinVersion=10.0.19045
+InfoBeforeFile={#StagePath}\WINDOWS10_DEVELOPMENT_ALPHA.md
+#else
 MinVersion=10.0.20348
+#endif
 AllowNetworkDrive=no
 AllowRootDirectory=no
 AllowUNCPath=no
@@ -84,6 +98,11 @@ SignedUninstaller=no
 #endif
 Source: "{#StagePath}\ui\*"; Excludes: "desklink.exe"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagePath}\runtime\schannel\msquic.dll"; DestDir: "{app}\runtime\schannel"; Flags: ignoreversion
+#ifdef ExperimentalWindows10
+Source: "{#StagePath}\runtime\openssl\msquic.dll"; DestDir: "{app}\runtime\openssl"; Flags: ignoreversion
+Source: "{#StagePath}\runtime\openssl\libcrypto-3-x64.dll"; DestDir: "{app}\runtime\openssl"; Flags: ignoreversion
+Source: "{#StagePath}\runtime\openssl\libssl-3-x64.dll"; DestDir: "{app}\runtime\openssl"; Flags: ignoreversion
+#endif
 Source: "{#StagePath}\concrt140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\msvcp140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\msvcp140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -94,6 +113,9 @@ Source: "{#StagePath}\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef ExperimentalWindows10
+Source: "{#StagePath}\WINDOWS10_DEVELOPMENT_ALPHA.md"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\DeskLink"; Filename: "{app}\desklink.exe"; WorkingDir: "{app}"; Comment: "Open DeskLink"

@@ -8,6 +8,7 @@ $AppXamlPath = Join-Path $RepositoryRoot 'apps\desklink_ui\App.xaml'
 $ManifestPath = Join-Path $RepositoryRoot 'apps\desklink_ui\app.manifest'
 $ProjectPath = Join-Path $RepositoryRoot 'apps\desklink_ui\DeskLink.vcxproj'
 $InstallerPath = Join-Path $RepositoryRoot 'installer\DeskLink.iss'
+$BrokerPath = Join-Path $RepositoryRoot 'apps\desklink_runtime.cpp'
 
 function Get-StrictUtf8([string] $Path) {
     $Encoding = [Text.UTF8Encoding]::new($false, $true)
@@ -24,6 +25,7 @@ $XamlText = Get-StrictUtf8 $XamlPath
 $ManifestText = Get-StrictUtf8 $ManifestPath
 $ProjectText = Get-StrictUtf8 $ProjectPath
 $InstallerText = Get-StrictUtf8 $InstallerPath
+$BrokerText = Get-StrictUtf8 $BrokerPath
 
 [xml] $Xaml = $XamlText
 [xml] $Manifest = $ManifestText
@@ -104,12 +106,25 @@ if (-not $RequestedExecution -or
     throw 'The product shell must remain asInvoker, uiAccess=false, and PerMonitorV2 DPI aware.'
 }
 if ($ProjectText -notmatch '<DefaultLanguage>en-US</DefaultLanguage>' -or
-    $ProjectText -notmatch '<WindowsTargetPlatformMinVersion>10\.0\.20348\.0</WindowsTargetPlatformMinVersion>' -or
+    $ProjectText -notmatch '<DeskLinkWindowsTargetPlatformMinVersion[^>]*>10\.0\.20348\.0</DeskLinkWindowsTargetPlatformMinVersion>' -or
+    $ProjectText -notmatch '<WindowsTargetPlatformMinVersion>\$\(DeskLinkWindowsTargetPlatformMinVersion\)</WindowsTargetPlatformMinVersion>' -or
     $ProjectText -notmatch '/utf-8') {
     throw 'The product project lost its supported baseline, fallback language, or strict UTF-8 compiler contract.'
 }
+$WinUiBuildScript = Get-StrictUtf8 (
+    Join-Path $RepositoryRoot 'scripts\Build-WinUiShell.ps1')
+if ($WinUiBuildScript -notmatch '\[switch\] \$ExperimentalWindows10' -or
+    $WinUiBuildScript -notmatch '10\.0\.19041\.0') {
+    throw 'The product build lost its explicit Windows 10 experimental target.'
+}
+if (($BrokerText | Select-String -Pattern 'BuildProductLauncherArguments' -AllMatches).Matches.Count -ne 2 -or
+    $BrokerText -match 'BuildLauncherArguments\(') {
+    throw 'Every product-broker transport launch must use the fail-closed product provider policy.'
+}
 if ($InstallerText -notmatch '(?m)^PrivilegesRequired=lowest\r?$' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.20348\r?$' -or
+    $InstallerText -notmatch '(?m)^MinVersion=10\.0\.19045\r?$' -or
+    $InstallerText -notmatch '(?m)^#ifdef ExperimentalWindows10\r?$' -or
     $InstallerText -match '(?i)netsh|New-NetFirewallRule|FirewallException|WindowsFirewall|EnableRule') {
     throw 'The installer must remain current-user, supported-baseline only, and free of automatic Firewall changes.'
 }

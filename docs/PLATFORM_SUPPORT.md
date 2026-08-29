@@ -22,12 +22,16 @@ exporting/replacing the device identity, disabling peer authentication,
 weakening certificate validation, or falling back after a credential,
 certificate, authentication, or general transport failure.
 
-The current-user installer enforces `10.0.20348` as its minimum Windows build,
-matching the Windows Server 2022 / Windows 11 production floor. It packages
-only the stock Schannel runtime. The guarded Windows 10 OpenSSL/CNG prototype
-is never included in that artifact. Development installers are explicitly
-unsigned; production packaging requires verified Authenticode signatures and
-a timestamp. See [`WINDOWS_INSTALLER.md`](WINDOWS_INSTALLER.md).
+The production current-user installer enforces `10.0.20348` as its minimum
+Windows build and packages only stock Schannel. A separately labeled unsigned
+Development Alpha installer may target Windows 10 22H2 build `19045`; it must
+include the current product shell plus both reviewed provider graphs. Its
+broker passes `auto`, which resolves once from the OS version to Schannel on
+the production baseline or OpenSSL/CNG on Windows 10. Runtime, credential,
+certificate, signing, authentication, or handshake failure never selects the
+other provider. This prerelease artifact is not production admission. See
+[`WINDOWS10_DEVELOPMENT_ALPHA.md`](WINDOWS10_DEVELOPMENT_ALPHA.md) and
+[`WINDOWS_INSTALLER.md`](WINDOWS_INSTALLER.md).
 
 ## Runtime-selection foundation
 
@@ -109,6 +113,12 @@ emergency release, held-input process termination, scoped network interruption,
 and stale epoch/session rejection passed with unchanged identities. Completion
 of this R&D matrix does not itself turn the prototype into a supported release
 artifact; production admission and release integration require separate review.
+
+The release-integration Development Alpha now exercises the normal product
+shell and broker without changing this support statement. Alpha/direct wrapper
+requests remain Schannel-pinned; only broker-owned operations use the reviewed
+`auto` policy. The Windows 10 package validator additionally requires the exact
+OpenSSL MsQuic, libcrypto, and libssl graph before update health admission.
 
 ## Mandatory future acceptance criteria
 

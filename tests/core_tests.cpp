@@ -4882,6 +4882,20 @@ void WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned() {
         L"--tls-provider", L"schannel"};
     CHECK(*FocusArguments == ExpectedFocus);
 
+    Focus.TlsProvider = LauncherTlsProvider::Auto;
+    const auto AutoFocusArguments = BuildLauncherArguments(Focus);
+    CHECK(AutoFocusArguments.has_value());
+    CHECK(AutoFocusArguments->back() == L"auto");
+    Focus.TlsProvider = LauncherTlsProvider::OpenSsl;
+    const auto OpenSslFocusArguments = BuildLauncherArguments(Focus);
+    CHECK(OpenSslFocusArguments.has_value());
+    CHECK(OpenSslFocusArguments->back() == L"openssl");
+    Focus.TlsProvider = LauncherTlsProvider::Schannel;
+    const auto ProductFocusArguments =
+        BuildProductLauncherArguments(Focus);
+    CHECK(ProductFocusArguments.has_value());
+    CHECK(ProductFocusArguments->back() == L"auto");
+
     Focus.ExpectedPeerMachine = MakeMachineId(8);
     Focus.BrokerManaged = true;
     const auto ManagedFocusArguments = BuildLauncherArguments(Focus);

@@ -65,9 +65,22 @@ void AppendPairingGrants(std::vector<std::wstring>& Arguments,
     }
 }
 
-void AppendProductionProvider(std::vector<std::wstring>& Arguments) {
+std::wstring_view ProviderArgument(LauncherTlsProvider Provider) noexcept {
+    switch (Provider) {
+        case LauncherTlsProvider::Auto: return L"auto";
+        case LauncherTlsProvider::Schannel: return L"schannel";
+        case LauncherTlsProvider::OpenSsl: return L"openssl";
+    }
+    return {};
+}
+
+bool AppendTlsProvider(std::vector<std::wstring>& Arguments,
+                       LauncherTlsProvider Provider) {
+    const auto Value = ProviderArgument(Provider);
+    if (Value.empty()) return false;
     Arguments.emplace_back(L"--tls-provider");
-    Arguments.emplace_back(L"schannel");
+    Arguments.emplace_back(Value);
+    return true;
 }
 
 void AppendBrokerManagement(std::vector<std::wstring>& Arguments,
@@ -252,7 +265,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             AppendPort(Arguments, Request.Port);
             AppendPairingGrants(Arguments, Request);
             AppendBrokerPairing(Arguments, Request);
-            AppendProductionProvider(Arguments);
+            if (!AppendTlsProvider(Arguments, Request.TlsProvider)) {
+                return std::nullopt;
+            }
             break;
         case LauncherOperation::PairConnect:
             if (Request.CaptureInput || Request.SendAudio ||
@@ -266,7 +281,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             AppendPort(Arguments, Request.Port);
             AppendPairingGrants(Arguments, Request);
             AppendBrokerPairing(Arguments, Request);
-            AppendProductionProvider(Arguments);
+            if (!AppendTlsProvider(Arguments, Request.TlsProvider)) {
+                return std::nullopt;
+            }
             break;
         case LauncherOperation::Serve:
             if (HasPairingGrants(Request) || Request.ReceiveAudio ||
@@ -301,7 +318,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
                     Request.EdgeRoamingSettingsPath.native());
             }
             AppendBrokerManagement(Arguments, Request);
-            AppendProductionProvider(Arguments);
+            if (!AppendTlsProvider(Arguments, Request.TlsProvider)) {
+                return std::nullopt;
+            }
             break;
         case LauncherOperation::Focus:
             if (HasPairingGrants(Request) || Request.SendAudio) {
@@ -347,10 +366,18 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             if (!AppendProfileConfiguration(Arguments, Request)) {
                 return std::nullopt;
             }
-            AppendProductionProvider(Arguments);
+            if (!AppendTlsProvider(Arguments, Request.TlsProvider)) {
+                return std::nullopt;
+            }
             break;
     }
     return Arguments;
+}
+
+std::optional<std::vector<std::wstring>> BuildProductLauncherArguments(
+    LauncherRequest Request) {
+    Request.TlsProvider = LauncherTlsProvider::Auto;
+    return BuildLauncherArguments(Request);
 }
 
 std::wstring QuoteWindowsCommandArgument(std::wstring_view Argument) {
