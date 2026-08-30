@@ -237,8 +237,10 @@ link without dragging; partial percentages and one-way routes remain under
 Advanced.
 
 The shell can reduce grants or forget a peer only through fail-local broker
-mutations. It cannot add authority through the generic pipe; additions require
-a new two-PC pairing/reauthorization flow. Closing it leaves the broker running,
+mutations. It cannot add authority through the generic pipe; additions create a
+short-lived broker-owned, reject-default local authorization prompt bound to the
+existing machine ID, certificate pin, and capability snapshot. This does not
+pair the PCs again or replace trust. Closing the shell leaves the broker running,
 but exiting/crashing during a pairing prompt makes the managed child reject the
 candidate. **Exit** ends only the shell. Alpha remains available from the Start
 menu only as **DeskLink diagnostics (Alpha)** during the migration release.

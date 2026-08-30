@@ -378,8 +378,13 @@ ambiguous, closed, zero-endpoint, or protocol-incompatible result cannot start
 pairing. A selected result supplies only a cached untrusted endpoint to the
 normal certificate-bound pairing protocol. The generic control pipe can reduce
 or remove existing grants after fail-local cleanup, but any increase returns
-`ReauthorizationRequired`; only a new mutual pairing approval may create the
-broader record.
+an expiring broker-owned local authorization candidate. Approval is reject-default
+and bound to the exact stored machine ID, certificate pin, and capability
+snapshot. Resolution rechecks all three, returns Local, stops the active peer,
+and preserves the existing identity while updating only the reviewed grant.
+Timeout, shell exit, rejection, cleanup failure, or intervening trust/grant
+change adds no authority. A permission update never substitutes for first-pair
+verification and never replaces the trust record's identity.
 
 Configurator drag geometry is untrusted presentation state. It can create only
 a visible suggestion; the user must confirm an explicit link. Before atomic
@@ -559,7 +564,8 @@ ToggleAudioMute      implemented as local bounded render policy
 GetProductPreferences implemented as validated current-user policy
 SetProductPreferences implemented with fail-local runtime reconciliation
 ListTrustedDevices   implemented as bounded metadata/grants only
-RequestLocalPermissionChange reductions only; additions require re-pairing
+RequestLocalPermissionChange reductions immediately; additions require an
+                             expiring broker-owned local authorization prompt
 ForgetTrustedDevice  implemented after fail-local cleanup
 Start/Get/StopDiscovery bounded untrusted Nearby observation only
 OpenPairingWindow    fixed-child, five-minute managed listener

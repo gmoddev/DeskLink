@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 4;
+inline constexpr std::uint16_t kControlProtocolVersion = 5;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -61,6 +61,8 @@ enum class ControlCommand : std::uint16_t {
     ResolvePairingCandidate = 23,
     PresentManagedPairingCandidate = 24,
     GetManagedPairingDecision = 25,
+    GetPermissionCandidate = 26,
+    ResolvePermissionCandidate = 27,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -178,6 +180,13 @@ struct GetManagedPairingDecisionControlRequest {
     std::uint64_t OperationId{};
 };
 
+struct GetPermissionCandidateControlRequest {};
+
+struct ResolvePermissionCandidateControlRequest {
+    std::uint64_t OperationId{};
+    bool Approved{};
+};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
@@ -203,7 +212,9 @@ using ControlRequestPayload = std::variant<
     PairManualAddressControlRequest,
     ResolvePairingCandidateControlRequest,
     PresentManagedPairingCandidateControlRequest,
-    GetManagedPairingDecisionControlRequest>;
+    GetManagedPairingDecisionControlRequest,
+    GetPermissionCandidateControlRequest,
+    ResolvePermissionCandidateControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
@@ -248,6 +259,7 @@ struct ControlTrustedDevice {
     MachineId Machine{};
     std::string DisplayName;
     CapabilitySet Capabilities;
+    bool Connected{};
 
     [[nodiscard]] bool operator==(
         const ControlTrustedDevice&) const noexcept = default;
@@ -302,6 +314,17 @@ struct ControlNearbyPeerList {
         const ControlNearbyPeerList&) const noexcept = default;
 };
 
+struct ControlPermissionCandidate {
+    std::uint64_t OperationId{};
+    MachineId Machine{};
+    std::string DisplayName;
+    CapabilitySet CurrentCapabilities;
+    CapabilitySet DesiredCapabilities;
+
+    [[nodiscard]] bool operator==(
+        const ControlPermissionCandidate&) const noexcept = default;
+};
+
 enum class ControlManagedPairingDecision : std::uint8_t {
     Pending = 0,
     Approved = 1,
@@ -318,6 +341,7 @@ struct ControlResponse {
     std::optional<ControlPairingCandidate> PairingCandidate;
     std::optional<ControlNearbyPeerList> NearbyPeers;
     std::optional<ControlManagedPairingDecision> PairingDecision;
+    std::optional<ControlPermissionCandidate> PermissionCandidate;
 };
 
 enum class ControlDecodeError {
@@ -344,6 +368,8 @@ struct ControlDecodeResult {
     const ControlPairingCandidate& Candidate) noexcept;
 [[nodiscard]] bool IsValidControlNearbyPeerList(
     const ControlNearbyPeerList& Peers) noexcept;
+[[nodiscard]] bool IsValidControlPermissionCandidate(
+    const ControlPermissionCandidate& Candidate) noexcept;
 [[nodiscard]] bool IsValidControlResponse(const ControlResponse& Response);
 [[nodiscard]] std::optional<ByteBuffer> EncodeControlRequest(
     const ControlRequest& Request);

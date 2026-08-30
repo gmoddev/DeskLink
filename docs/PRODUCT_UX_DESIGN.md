@@ -773,7 +773,7 @@ Gate: ambiguous/spoofed discovery grants nothing; codes and local consequences
 appear on both PCs; timeout/UI exit rejects; permission additions require local
 approval; revocation is immediate and fail-local.
 
-Implementation checkpoint: the version-3 local control protocol now carries
+Implementation checkpoint: the version-5 local control protocol now carries
 bounded discovery, pairing-start, candidate-decision, and Nearby result types.
 The broker owns the five-minute discovery/pairing lifecycle and launches only
 its fixed sibling pairing executable after stopping the normal runtime Local.
@@ -790,8 +790,13 @@ browse/resolve. Ambiguous, closed, zero-endpoint, or protocol-incompatible
 records cannot start pairing; selecting a valid card supplies only its cached
 address to the same cryptographic pairing lane as manual entry. Devices reads
 only stored authenticated trust. Permission reductions and Forget preserve the
-existing Local/owned-input cleanup ordering; attempted additions receive
-`ReauthorizationRequired` and the shell directs the user to pair again.
+existing Local/owned-input cleanup ordering. Additions now use the designed
+broker-owned local reauthorization candidate, bound to the stored machine ID,
+certificate pin, and exact grant snapshot; rejection, expiry, stale state, or
+cleanup failure adds nothing and the PCs are not paired again. Nearby results
+with a stored machine ID are labeled **Already paired** and route to trusted
+connection/device actions instead of the new-pairing lane. Pairing copy remains
+in a waiting state until both sides have an actual comparison-code candidate.
 
 ### PR 7 — Simplified monitor authoring
 

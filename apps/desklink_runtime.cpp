@@ -46,6 +46,7 @@ constexpr wchar_t kBrokerPipeInstance[] = L"broker";
 constexpr wchar_t kProductShellMutexName[] = L"Local\\DeskLink.Shell.v1";
 constexpr std::uint16_t kProductionPort = 43'821;
 constexpr auto kPairingCandidateLifetime = std::chrono::seconds(90);
+constexpr auto kPermissionCandidateLifetime = std::chrono::seconds(90);
 
 class UniqueHandle final {
 public:
@@ -233,6 +234,26 @@ std::uint64_t RuntimeJitterSeed(
         Result *= 0x100000001b3ull;
     }
     return Result;
+}
+
+std::optional<std::uint64_t> NewPermissionRequestId() noexcept {
+    std::uint64_t Result{};
+    if (BCryptGenRandom(
+            nullptr, reinterpret_cast<PUCHAR>(&Result), sizeof(Result),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0 || Result == 0) {
+        return std::nullopt;
+    }
+    return Result;
+}
+
+desklink::ControlPermissionCandidate ToControlPermissionCandidate(
+    const desklink::BrokerPermissionCandidate& Candidate) {
+    return {
+        Candidate.RequestId,
+        Candidate.Identity.machine_id,
+        Candidate.Identity.display_name,
+        Candidate.CurrentCapabilities,
+        Candidate.DesiredCapabilities};
 }
 
 class BrokerRuntimeSupervisor final {
@@ -521,6 +542,24 @@ public:
                     : desklink::ControlRole::Agent;
             }
         }
+    }
+
+    [[nodiscard]] std::vector<desklink::MachineId>
+    ConnectedMachines() noexcept {
+        const auto Response = ForwardToActiveRuntime(
+            desklink::ControlRequest{
+                NextRequestId_.fetch_add(1),
+                desklink::GetDisplayTopologiesControlRequest{}},
+            std::chrono::milliseconds{250});
+        std::vector<desklink::MachineId> Result;
+        if (!Response || Response->Status != desklink::ControlStatus::Ok ||
+            !Response->Topologies) {
+            return Result;
+        }
+        for (const auto& Machine : Response->Topologies->Machines) {
+            if (!Machine.Local) Result.push_back(Machine.Machine);
+        }
+        return Result;
     }
 
 private:
@@ -1541,6 +1580,7 @@ int wmain(int Count, wchar_t** Values) {
             return TrustStore.Load();
         });
     desklink::BrokerPairingCandidateLease PairingCandidates;
+    desklink::BrokerPermissionCandidateLease PermissionCandidates;
     desklink::SteadyClock Clock;
     BrokerRuntimeSupervisor Supervisor(
         PairPath, *DataDirectory, LocalMachine, TrustStore, PreferencesStore,
@@ -1624,13 +1664,17 @@ int wmain(int Count, wchar_t** Values) {
                     Peers ? desklink::ControlStatus::Ok
                           : desklink::ControlStatus::Failed};
                 if (Peers) {
+                    const auto Connected = Supervisor.ConnectedMachines();
                     desklink::ControlTrustedDeviceList Devices;
                     Devices.Devices.reserve(Peers->size());
                     for (const auto& Peer : *Peers) {
                         Devices.Devices.push_back({
                             Peer.Identity.machine_id,
                             Peer.Identity.display_name,
-                            Peer.Capabilities});
+                            Peer.Capabilities,
+                            std::find(Connected.begin(), Connected.end(),
+                                      Peer.Identity.machine_id) !=
+                                Connected.end()});
                     }
                     Response.TrustedDevices = std::move(Devices);
                 }
@@ -1639,18 +1683,92 @@ int wmain(int Count, wchar_t** Values) {
             if (const auto* Change = std::get_if<
                     desklink::RequestLocalPermissionChangeControlRequest>(
                     &Request.Payload)) {
-                const auto Status = TrustAuthority.RequestPermissionChange(
-                    Change->Machine, Change->DesiredCapabilities);
-                if ((Status == desklink::TrustMutationStatus::Applied ||
-                     Status == desklink::TrustMutationStatus::NoChange) &&
-                    !Supervisor.ConfigurationChanged()) {
+                const auto Peers = TrustAuthority.ListTrustedPeers();
+                const auto Existing = Peers ? std::find_if(
+                    Peers->begin(), Peers->end(), [&](const auto& Peer) {
+                        return Peer.Identity.machine_id == Change->Machine;
+                    }) : std::vector<desklink::TrustedPeer>::const_iterator{};
+                if (!Peers || Existing == Peers->end()) {
                     return desklink::ControlResponse{
                         Request.RequestId,
-                        desklink::ControlStatus::CleanupFailed};
+                        Peers ? desklink::ControlStatus::NotReady
+                              : desklink::ControlStatus::Failed};
                 }
-                return desklink::ControlResponse{
-                    Request.RequestId,
-                    MapMutationStatus(Status)};
+                const bool AddsAuthority =
+                    (Change->DesiredCapabilities.bits() &
+                     ~Existing->Capabilities.bits()) != 0;
+                if (!AddsAuthority) {
+                    const auto Status = TrustAuthority.RequestPermissionChange(
+                        Change->Machine, Change->DesiredCapabilities);
+                    if ((Status == desklink::TrustMutationStatus::Applied ||
+                         Status == desklink::TrustMutationStatus::NoChange) &&
+                        !Supervisor.ConfigurationChanged()) {
+                        return desklink::ControlResponse{
+                            Request.RequestId,
+                            desklink::ControlStatus::CleanupFailed};
+                    }
+                    return desklink::ControlResponse{
+                        Request.RequestId, MapMutationStatus(Status)};
+                }
+
+                if (!ProductShellPresent() ||
+                    PermissionCandidates.Current(Clock.now())) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                const auto OperationId = NewPermissionRequestId();
+                if (!OperationId) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::Failed};
+                }
+
+                const desklink::CapabilitySet Reduced{
+                    Existing->Capabilities.bits() &
+                    Change->DesiredCapabilities.bits()};
+                if (Reduced.bits() != Existing->Capabilities.bits()) {
+                    const auto Reduction =
+                        TrustAuthority.RequestPermissionChange(
+                            Change->Machine, Reduced);
+                    if (Reduction != desklink::TrustMutationStatus::Applied &&
+                        Reduction != desklink::TrustMutationStatus::NoChange) {
+                        return desklink::ControlResponse{
+                            Request.RequestId, MapMutationStatus(Reduction)};
+                    }
+                    if (!Supervisor.ConfigurationChanged()) {
+                        return desklink::ControlResponse{
+                            Request.RequestId,
+                            desklink::ControlStatus::CleanupFailed};
+                    }
+                }
+
+                const auto CurrentPeers = TrustAuthority.ListTrustedPeers();
+                const auto Current = CurrentPeers ? std::find_if(
+                    CurrentPeers->begin(), CurrentPeers->end(),
+                    [&](const auto& Peer) {
+                        return Peer.Identity.machine_id == Change->Machine;
+                    }) : std::vector<desklink::TrustedPeer>::const_iterator{};
+                if (!CurrentPeers || Current == CurrentPeers->end() ||
+                    !(Current->Identity == Existing->Identity) ||
+                    Current->Capabilities.bits() != Reduced.bits()) {
+                    return desklink::ControlResponse{
+                        Request.RequestId,
+                        desklink::ControlStatus::ReauthorizationRequired};
+                }
+                desklink::BrokerPermissionCandidate Candidate{
+                    *OperationId,
+                    Current->Identity,
+                    Current->Capabilities,
+                    Change->DesiredCapabilities,
+                    Clock.now() + kPermissionCandidateLifetime};
+                if (!PermissionCandidates.Present(Candidate, Clock.now())) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                desklink::ControlResponse Response{
+                    Request.RequestId, desklink::ControlStatus::Ok};
+                Response.PermissionCandidate =
+                    ToControlPermissionCandidate(Candidate);
+                return Response;
             }
             if (const auto* Forget = std::get_if<
                     desklink::ForgetTrustedDeviceControlRequest>(
@@ -1686,6 +1804,65 @@ int wmain(int Count, wchar_t** Values) {
                         Pairing.Source(Candidate->RequestId)};
                 }
                 return Response;
+            }
+            if (std::holds_alternative<
+                    desklink::GetPermissionCandidateControlRequest>(
+                    Request.Payload)) {
+                if (!ProductShellPresent()) {
+                    PermissionCandidates.RejectAll();
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                const auto Candidate =
+                    PermissionCandidates.Current(Clock.now());
+                desklink::ControlResponse Response{
+                    Request.RequestId,
+                    Candidate ? desklink::ControlStatus::Ok
+                              : desklink::ControlStatus::NotReady};
+                if (Candidate) {
+                    Response.PermissionCandidate =
+                        ToControlPermissionCandidate(*Candidate);
+                }
+                return Response;
+            }
+            if (const auto* Resolve = std::get_if<
+                    desklink::ResolvePermissionCandidateControlRequest>(
+                    &Request.Payload)) {
+                if (!ProductShellPresent()) {
+                    PermissionCandidates.Reject(Resolve->OperationId);
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                const auto Current =
+                    PermissionCandidates.Current(Clock.now());
+                if (!Current || Current->RequestId != Resolve->OperationId) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                const auto Approved = PermissionCandidates.ResolveLocally(
+                    Resolve->OperationId, Resolve->Approved, Clock.now());
+                if (!Resolve->Approved) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::Ok};
+                }
+                if (!Approved) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                const auto Status =
+                    TrustAuthority.ApplyReauthorizedPermissionChange(
+                        Approved->Identity,
+                        Approved->CurrentCapabilities,
+                        Approved->DesiredCapabilities);
+                if ((Status == desklink::TrustMutationStatus::Applied ||
+                     Status == desklink::TrustMutationStatus::NoChange) &&
+                    !Supervisor.ConfigurationChanged()) {
+                    return desklink::ControlResponse{
+                        Request.RequestId,
+                        desklink::ControlStatus::CleanupFailed};
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId, MapMutationStatus(Status)};
             }
             if (const auto* Start = std::get_if<
                     desklink::StartDiscoveryControlRequest>(
@@ -1801,6 +1978,7 @@ int wmain(int Count, wchar_t** Values) {
             if (std::holds_alternative<
                     desklink::PrepareForUpdateControlRequest>(
                     Request.Payload)) {
+                PermissionCandidates.RejectAll();
                 Pairing.Stop();
                 const bool Stopped = Supervisor.Stop();
                 if (Stopped) SetEvent(StopEvent.Get());
@@ -1896,6 +2074,7 @@ int wmain(int Count, wchar_t** Values) {
             }
             return 1;
         }
+        if (!ProductShellPresent()) PermissionCandidates.RejectAll();
         if (Server.Running()) continue;
         Server.Stop();
         if (!Server.Start()) {
@@ -1913,6 +2092,7 @@ int wmain(int Count, wchar_t** Values) {
         (void)CancelIPChangeNotify(&NetworkOverlapped);
     }
     Pairing.Stop();
+    PermissionCandidates.RejectAll();
     (void)Supervisor.Stop();
     Server.Stop();
     std::cout << "[Broker:Lifecycle] broker stopped after fail-local cleanup\n";

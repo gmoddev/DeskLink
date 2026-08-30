@@ -581,7 +581,7 @@ void ControlProtocolRoundTripAndValidation() {
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
     ControlPairingToken PairingToken{};
     PairingToken[0] = 0x41;
-    const std::array<ControlRequest, 25> Requests{
+    const std::array<ControlRequest, 27> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -621,6 +621,9 @@ void ControlProtocolRoundTripAndValidation() {
             RequestedCapabilities}},
         ControlRequest{25, GetManagedPairingDecisionControlRequest{
             PairingToken, 44}},
+        ControlRequest{26, GetPermissionCandidateControlRequest{}},
+        ControlRequest{27, ResolvePermissionCandidateControlRequest{
+            45, true}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -702,7 +705,7 @@ void ControlProtocolRoundTripAndValidation() {
 
     ControlTrustedDeviceList Devices;
     Devices.Devices.push_back(ControlTrustedDevice{
-        MakeMachineId(8), "Companion PC", RequestedCapabilities});
+        MakeMachineId(8), "Companion PC", RequestedCapabilities, true});
     ControlResponse DevicesResponse{16, ControlStatus::Ok};
     DevicesResponse.TrustedDevices = Devices;
     const auto DevicesFrame = EncodeControlResponse(DevicesResponse);
@@ -710,6 +713,7 @@ void ControlProtocolRoundTripAndValidation() {
     const auto DecodedDevices = DecodeControlResponse(*DevicesFrame);
     CHECK(DecodedDevices.Decoded.has_value());
     CHECK(DecodedDevices.Decoded->TrustedDevices == Devices);
+    CHECK(DecodedDevices.Decoded->TrustedDevices->Devices.front().Connected);
 
     ControlPairingCandidate PairingCandidate{
         44, MakeMachineId(9), "Nearby PC", "654321",
@@ -750,6 +754,22 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(DecodedDecision.Decoded->PairingDecision ==
           ControlManagedPairingDecision::Rejected);
 
+    CapabilitySet DesiredPermissions = RequestedCapabilities;
+    DesiredPermissions.grant(Capability::ClipboardRead);
+    ControlPermissionCandidate PermissionCandidate{
+        45, MakeMachineId(8), "Companion PC", RequestedCapabilities,
+        DesiredPermissions};
+    ControlResponse PermissionResponse{20, ControlStatus::Ok};
+    PermissionResponse.PermissionCandidate = PermissionCandidate;
+    const auto PermissionFrame = EncodeControlResponse(PermissionResponse);
+    CHECK(PermissionFrame.has_value());
+    const auto DecodedPermission = DecodeControlResponse(*PermissionFrame);
+    CHECK(DecodedPermission.Decoded.has_value());
+    CHECK(DecodedPermission.Decoded->PermissionCandidate ==
+          PermissionCandidate);
+    PermissionCandidate.CurrentCapabilities = DesiredPermissions;
+    CHECK(!IsValidControlPermissionCandidate(PermissionCandidate));
+
     auto DuplicateDevices = Devices;
     DuplicateDevices.Devices.push_back(Devices.Devices.front());
     CHECK(!IsValidControlTrustedDeviceList(DuplicateDevices));
@@ -774,6 +794,8 @@ void ControlProtocolRoundTripAndValidation() {
             "host with spaces", 43'821, {}}}).has_value());
     CHECK(!EncodeControlRequest(ControlRequest{
         13, GetManagedPairingDecisionControlRequest{}}).has_value());
+    CHECK(!EncodeControlRequest(ControlRequest{
+        14, ResolvePermissionCandidateControlRequest{}}).has_value());
     CHECK(!EncodeControlResponse(ControlResponse{
         10, ControlStatus::Failed, State}).has_value());
     auto InvalidRuntimeState = State;
@@ -964,6 +986,41 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
           Initial.bits());
 
+    RecordingRuntimeSafetyController ReauthorizationSafety;
+    RuntimeTrustAuthority ReauthorizationAuthority(
+        Store, ReauthorizationSafety);
+    const auto AlphaBefore = Store.GetPeer(Alpha.machine_id);
+    CHECK(AlphaBefore.has_value());
+    CapabilitySet AlphaDesired;
+    AlphaDesired.grant(Capability::ClipboardRead);
+    CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
+              AlphaBefore->Identity, AlphaBefore->Capabilities,
+              AlphaDesired) == TrustMutationStatus::Applied);
+    CHECK(ReauthorizationSafety.Calls.size() == 1);
+    const auto AlphaAfter = Store.GetPeer(Alpha.machine_id);
+    CHECK(AlphaAfter.has_value());
+    CHECK(AlphaAfter->Identity == AlphaBefore->Identity);
+    CHECK(AlphaAfter->Capabilities == AlphaDesired);
+    CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
+              AlphaBefore->Identity, AlphaBefore->Capabilities,
+              AlphaDesired) ==
+          TrustMutationStatus::ReauthorizationRequired);
+    CHECK(ReauthorizationSafety.Calls.size() == 1);
+    auto WrongAlphaIdentity = AlphaAfter->Identity;
+    WrongAlphaIdentity.public_key_fingerprint =
+        FormatFingerprint(MakeDigest(99));
+    CapabilitySet AlphaBroader = AlphaDesired;
+    AlphaBroader.grant(Capability::ClipboardWrite);
+    CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
+              WrongAlphaIdentity, AlphaDesired, AlphaBroader) ==
+          TrustMutationStatus::InvalidRequest);
+    CHECK(ReauthorizationSafety.Calls.size() == 1);
+    ReauthorizationSafety.Succeeds = false;
+    CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
+              AlphaAfter->Identity, AlphaDesired, AlphaBroader) ==
+          TrustMutationStatus::CleanupFailed);
+    CHECK(Store.GetPeer(Alpha.machine_id)->Capabilities == AlphaDesired);
+
     CapabilitySet Reduced;
     Reduced.grant(Capability::InputInject);
     CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Reduced) ==
@@ -1035,6 +1092,46 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(Approved.has_value());
     CHECK(Approved->Candidate.VerificationCode == "123456");
     CHECK(!Lease.Current(Clock.now()).has_value());
+
+    BrokerPermissionCandidateLease PermissionLease;
+    const auto PermissionIdentity = MakeIdentity(74, "Permission PC");
+    CapabilitySet PermissionCurrent;
+    PermissionCurrent.grant(Capability::InputInject);
+    CapabilitySet PermissionDesired = PermissionCurrent;
+    PermissionDesired.grant(Capability::ClipboardRead);
+    BrokerPermissionCandidate PermissionCandidate{
+        80, PermissionIdentity, PermissionCurrent, PermissionDesired,
+        Clock.now() + std::chrono::seconds(30)};
+    CHECK(PermissionLease.Present(PermissionCandidate, Clock.now()));
+    CHECK(!PermissionLease.Present(PermissionCandidate, Clock.now()));
+    CHECK(PermissionLease.Current(Clock.now()).has_value());
+    CHECK(!PermissionLease.ResolveLocally(80, false, Clock.now()).has_value());
+    CHECK(!PermissionLease.Current(Clock.now()).has_value());
+
+    PermissionCandidate.RequestId = 81;
+    PermissionCandidate.ExpiresAt =
+        Clock.now() + std::chrono::seconds(1);
+    CHECK(PermissionLease.Present(PermissionCandidate, Clock.now()));
+    Clock.advance(std::chrono::seconds(1));
+    CHECK(!PermissionLease.Current(Clock.now()).has_value());
+    CHECK(!PermissionLease.ResolveLocally(81, true, Clock.now()).has_value());
+
+    PermissionCandidate.RequestId = 82;
+    PermissionCandidate.ExpiresAt =
+        Clock.now() + std::chrono::seconds(30);
+    CHECK(PermissionLease.Present(PermissionCandidate, Clock.now()));
+    const auto PermissionApproved =
+        PermissionLease.ResolveLocally(82, true, Clock.now());
+    CHECK(PermissionApproved.has_value());
+    CHECK(PermissionApproved->Identity == PermissionIdentity);
+    CHECK(PermissionApproved->CurrentCapabilities == PermissionCurrent);
+    CHECK(PermissionApproved->DesiredCapabilities == PermissionDesired);
+    CHECK(!PermissionLease.Current(Clock.now()).has_value());
+
+    PermissionCandidate.RequestId = 83;
+    CHECK(PermissionLease.Present(PermissionCandidate, Clock.now()));
+    PermissionLease.RejectAll();
+    CHECK(!PermissionLease.Current(Clock.now()).has_value());
 }
 
 class RecordingUpdateBackend final : public desklink::IUpdateBackend {

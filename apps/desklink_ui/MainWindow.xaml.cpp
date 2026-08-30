@@ -419,6 +419,9 @@ void MainWindow::PollBroker() {
         RuntimeState_.AudioGainPermyriad !=
             Response->State->AudioGainPermyriad ||
         RuntimeState_.AudioMuted != Response->State->AudioMuted;
+    const bool ConnectionStateChanged = !RuntimeStateLoaded_ ||
+        RuntimeState_.ConnectedPeerCount !=
+            Response->State->ConnectedPeerCount;
     RuntimeState_ = *Response->State;
     RuntimeStateLoaded_ = true;
     LocalMachine_ = Response->State->LocalMachine;
@@ -426,10 +429,15 @@ void MainWindow::PollBroker() {
         desklink::BrokerRuntimePhase::Paused;
     ApplyState(StateFromControl(*Response->State));
     if (FeatureStateChanged) UpdateFeatureControls();
+    if (ConnectionStateChanged && DevicesLoaded_) {
+        RenderDevices();
+        RenderNearby();
+    }
     PollPreferences();
     PollDevices();
     PollNearby();
     PollPairingCandidate();
+    PollPermissionCandidate();
 }
 
 void MainWindow::PollPreferences() {
@@ -463,6 +471,10 @@ void MainWindow::PollPreferences() {
         }
         UpdateFeatureControls();
         RenderProfiles();
+        if (DevicesLoaded_) {
+            RenderDevices();
+            RenderNearby();
+        }
     }
 }
 
@@ -507,6 +519,7 @@ void MainWindow::PollDevices() {
             });
         TrustedDevices_ = Response->TrustedDevices->Devices;
         RenderDevices();
+        RenderNearby();
         UpdateHome();
         UpdateFeatureControls();
         if (AddedDevice && !Preferences_.FirstRunComplete) {
@@ -535,6 +548,19 @@ void MainWindow::PollPairingCandidate() {
     if (PairingDialogActive_ && PairingDialog_) {
         PairingDialog_.Hide();
     }
+}
+
+void MainWindow::PollPermissionCandidate() {
+    const auto Response = Send(desklink::GetPermissionCandidateControlRequest{});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok ||
+        !Response->PermissionCandidate || ModalDialogActive_ ||
+        DisplayedPermissionOperation_ ==
+            Response->PermissionCandidate->OperationId) {
+        return;
+    }
+    DisplayedPermissionOperation_ =
+        Response->PermissionCandidate->OperationId;
+    (void)ShowPermissionCandidate(*Response->PermissionCandidate);
 }
 
 void MainWindow::OnNavigationChanged(
@@ -673,7 +699,7 @@ void MainWindow::OnOpenPairingWindow(
         43'821, SelectedPairingCapabilities()});
     ShowPairingStatus(
         Response && Response->Status == desklink::ControlStatus::Ok
-            ? L"Pairing window is open for five minutes. Keep this screen open and compare the code on both PCs."
+            ? L"Waiting for a new PC for up to five minutes. A comparison code appears only after the secure handshake reaches both PCs."
             : L"The pairing window could not open. Another runtime operation may be active.",
         Response && Response->Status == desklink::ControlStatus::Ok
             ? Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success
@@ -699,7 +725,7 @@ void MainWindow::OnPairManual(
         SelectedPairingCapabilities()});
     ShowPairingStatus(
         Response && Response->Status == desklink::ControlStatus::Ok
-            ? L"Pairing started. Compare the code shown on both PCs before allowing."
+            ? L"Waiting for the other PC to complete the secure handshake. The comparison code will appear here when both PCs are ready."
             : L"Pairing could not start. Verify the address and open a pairing window on the other PC.",
         Response && Response->Status == desklink::ControlStatus::Ok
             ? Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational
@@ -716,11 +742,63 @@ void MainWindow::OnNearbyConnect(
         *Machine, SelectedPairingCapabilities()});
     ShowPairingStatus(
         Response && Response->Status == desklink::ControlStatus::Ok
-            ? L"Pairing started from an unverified nearby address. Compare the code on both PCs."
+            ? L"Secure pairing started from an unverified nearby address. Wait for the comparison code to appear on both PCs."
             : L"That nearby record is no longer safe to use. Refresh the list or enter the address manually.",
         Response && Response->Status == desklink::ControlStatus::Ok
             ? Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational
             : Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+}
+
+void MainWindow::OnTrustedConnect(
+    Windows::Foundation::IInspectable const& Sender,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    const auto Button = Sender.try_as<Microsoft::UI::Xaml::Controls::Button>();
+    const auto Machine = Button ? MachineFromTag(Button.Tag()) : std::nullopt;
+    if (!Machine || !PreferencesLoaded_) return;
+
+    if (Preferences_.Role == desklink::DeskRole::Companion) {
+        Navigation().SelectedItem(DevicesNavigation());
+        NavigateTo(L"Devices");
+        DeviceStatusBar().Title(L"Already paired");
+        DeviceStatusBar().Message(
+            L"This Companion PC listens for its trusted Main PC automatically. Pairing is not required again.");
+        DeviceStatusBar().Severity(
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational);
+        DeviceStatusBar().IsOpen(true);
+        return;
+    }
+
+    auto Updated = Preferences_;
+    Updated.PreferredPeerMachine = *Machine;
+    Updated.AutoStartRuntime = true;
+    Updated.AutoConnect = true;
+    const auto Response = Send(
+        desklink::SetProductPreferencesControlRequest{Updated},
+        std::chrono::milliseconds{2'500});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        DeviceStatusBar().Title(L"Connection not started");
+        DeviceStatusBar().Message(
+            L"DeskLink could not safely start the trusted connection. Pairing and permissions were left unchanged.");
+        DeviceStatusBar().Severity(
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        DeviceStatusBar().IsOpen(true);
+        ShowPairingStatus(
+            L"DeskLink could not safely start the trusted connection. Pairing and permissions were left unchanged.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
+    }
+    Preferences_ = Updated;
+    DeviceStatusBar().Title(L"Connecting");
+    DeviceStatusBar().Message(
+        L"DeskLink is connecting with the stored authenticated identity. No pairing code is needed.");
+    DeviceStatusBar().Severity(
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational);
+    DeviceStatusBar().IsOpen(true);
+    ShowPairingStatus(
+        L"Connecting with the stored authenticated identity. No pairing code is needed.",
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational);
+    RenderNearby();
+    RenderDevices();
 }
 
 void MainWindow::OnFinishOnboarding(
@@ -773,7 +851,7 @@ void MainWindow::RenderNearby() {
         return;
     }
     NearbyStatus().Text(
-        L"Nearby results are unverified. Connect is disabled for ambiguous, incompatible, or closed records.");
+        L"New PCs are unverified. PCs with a matching stored machine identity are labeled Already paired and never enter pairing again.");
     for (const auto& Peer : NearbyPeers_) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
@@ -794,7 +872,20 @@ void MainWindow::RenderNearby() {
         Name.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         Text.Children().Append(Name);
         TextBlock Status;
-        if (Peer.Ambiguous) {
+        const auto Trusted = std::find_if(
+            TrustedDevices_.begin(), TrustedDevices_.end(),
+            [&](const auto& Device) {
+                return Device.Machine == Peer.Machine;
+            });
+        const bool AlreadyPaired = Trusted != TrustedDevices_.end();
+        const bool Connected = AlreadyPaired && Trusted->Connected;
+        if (AlreadyPaired && Connected) {
+            Status.Text(L"Nearby · Already paired · Connected now");
+        } else if (AlreadyPaired && Peer.Ambiguous) {
+            Status.Text(L"Nearby · Already paired · Conflicting endpoints");
+        } else if (AlreadyPaired) {
+            Status.Text(L"Nearby · Already paired · Not connected");
+        } else if (Peer.Ambiguous) {
             Status.Text(L"Nearby · Unverified · Conflicting endpoints");
         } else if (!Peer.PairingOpen) {
             Status.Text(L"Nearby · Unverified · Pairing window closed");
@@ -806,12 +897,27 @@ void MainWindow::RenderNearby() {
         Text.Children().Append(Status);
         Layout.Children().Append(Text);
         Button Connect;
-        Connect.Content(winrt::box_value(L"Connect"));
+        Connect.Content(winrt::box_value(
+            AlreadyPaired
+                ? Connected
+                    ? L"Connected"
+                    : Preferences_.Role == desklink::DeskRole::Companion
+                        ? L"View"
+                        : L"Connect"
+                : L"Pair"));
         Connect.Tag(winrt::box_value(MachineTag(Peer.Machine)));
-        Connect.IsEnabled(!Peer.Ambiguous && Peer.PairingOpen &&
-                          Peer.EndpointCount != 0 &&
-                          Peer.ProtocolVersion == desklink::kProtocolVersion);
-        Connect.Click({this, &MainWindow::OnNearbyConnect});
+        Connect.IsEnabled(AlreadyPaired
+            ? !Connected &&
+                (Preferences_.Role == desklink::DeskRole::Companion ||
+                 !Peer.Ambiguous)
+            : !Peer.Ambiguous && Peer.PairingOpen &&
+                Peer.EndpointCount != 0 &&
+                Peer.ProtocolVersion == desklink::kProtocolVersion);
+        if (AlreadyPaired) {
+            Connect.Click({this, &MainWindow::OnTrustedConnect});
+        } else {
+            Connect.Click({this, &MainWindow::OnNearbyConnect});
+        }
         Grid::SetColumn(Connect, 1);
         Layout.Children().Append(Connect);
         Card.Child(Layout);
@@ -838,7 +944,12 @@ void MainWindow::RenderDevices() {
         Name.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         Contents.Children().Append(Name);
         TextBlock Trust;
-        Trust.Text(L"Paired · Authenticated stored identity");
+        const bool Connected = Device.Connected;
+        Trust.Text(Connected
+            ? L"Paired · Connected now"
+            : Preferences_.Role == desklink::DeskRole::Companion
+                ? L"Paired · Waiting for trusted Main PC"
+                : L"Paired · Not connected");
         Contents.Children().Append(Trust);
         TextBlock Permissions;
         Permissions.Text(CapabilitySummary(Device.Capabilities));
@@ -847,6 +958,16 @@ void MainWindow::RenderDevices() {
         StackPanel Actions;
         Actions.Orientation(Orientation::Horizontal);
         Actions.Spacing(10);
+        if (Preferences_.Role == desklink::DeskRole::Main ||
+            Preferences_.Role == desklink::DeskRole::Flexible) {
+            Button Connect;
+            Connect.Content(winrt::box_value(
+                Connected ? L"Connected" : L"Connect"));
+            Connect.IsEnabled(!Connected);
+            Connect.Tag(winrt::box_value(MachineTag(Device.Machine)));
+            Connect.Click({this, &MainWindow::OnTrustedConnect});
+            Actions.Children().Append(Connect);
+        }
         Button Change;
         Change.Content(winrt::box_value(L"Change permissions"));
         Change.Tag(winrt::box_value(MachineTag(Device.Machine)));
@@ -2170,6 +2291,9 @@ Windows::Foundation::IAsyncAction MainWindow::ShowPairingCandidate(
     Dialog.PrimaryButtonText(L"Allow");
     Dialog.CloseButtonText(L"Cancel");
     Dialog.DefaultButton(ContentDialogButton::Close);
+    ShowPairingStatus(
+        L"Secure handshake ready. Compare the code shown by both PCs before allowing either side.",
+        InfoBarSeverity::Informational);
     StackPanel Details;
     Details.Spacing(10);
     TextBlock Code;
@@ -2279,7 +2403,7 @@ Windows::Foundation::IAsyncAction MainWindow::ShowPermissionEditor(
                   desklink::Capability::AudioReceive);
     TextBlock Note;
     Note.Text(
-        L"Removing a permission returns input Local and stops the active peer before saving. Adding authority requires a new two-PC pairing approval.");
+        L"Removing permission takes effect immediately after returning input Local. Adding permission opens a separate local confirmation for this already-trusted identity; it does not pair the PCs again.");
     Note.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
     Controls.Children().Append(Note);
     Dialog.Content(Controls);
@@ -2296,22 +2420,98 @@ Windows::Foundation::IAsyncAction MainWindow::ShowPermissionEditor(
     const auto Response = Send(
         desklink::RequestLocalPermissionChangeControlRequest{
             Device.Machine, Desired});
+    if (Response && Response->Status == desklink::ControlStatus::Ok &&
+        Response->PermissionCandidate) {
+        DisplayedPermissionOperation_ =
+            Response->PermissionCandidate->OperationId;
+        co_await ShowPermissionCandidate(*Response->PermissionCandidate);
+        co_return;
+    }
     if (Response && Response->Status == desklink::ControlStatus::Ok) {
         DeviceStatusBar().Title(L"Permissions updated");
         DeviceStatusBar().Message(
-            L"The reduction was applied after fail-local cleanup.");
+            L"The change was applied after fail-local cleanup. Pairing and the stored identity were unchanged.");
         DeviceStatusBar().Severity(InfoBarSeverity::Success);
     } else if (Response && Response->Status ==
         desklink::ControlStatus::ReauthorizationRequired) {
-        DeviceStatusBar().Title(L"Pair again to add permission");
+        DeviceStatusBar().Title(L"Permission review expired");
         DeviceStatusBar().Message(
-            L"DeskLink did not add authority. Open Add a PC and approve the new local consequences on both PCs.");
+            L"DeskLink did not add authority because the trusted identity or existing permissions changed during review. Pairing was not modified.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Warning);
+    } else if (Response && Response->Status ==
+        desklink::ControlStatus::NotReady) {
+        DeviceStatusBar().Title(L"Finish the current permission review");
+        DeviceStatusBar().Message(
+            L"Only one protected permission review can be active. Any permission removals already completed remain in effect.");
         DeviceStatusBar().Severity(InfoBarSeverity::Warning);
     } else {
         DeviceStatusBar().Title(L"Permissions unchanged");
         DeviceStatusBar().Message(
             L"Fail-local cleanup or the protected trust update did not complete.");
         DeviceStatusBar().Severity(InfoBarSeverity::Error);
+    }
+    DeviceStatusBar().IsOpen(true);
+    PollDevices();
+}
+
+Windows::Foundation::IAsyncAction MainWindow::ShowPermissionCandidate(
+    desklink::ControlPermissionCandidate Candidate) {
+    auto Lifetime = get_strong();
+    ModalDialogActive_ = true;
+    using namespace Microsoft::UI::Xaml::Controls;
+    ContentDialog Dialog;
+    Dialog.XamlRoot(Content().XamlRoot());
+    Dialog.Title(winrt::box_value(JoinText(
+        L"Allow more access for ", ToHString(Candidate.DisplayName))));
+    Dialog.PrimaryButtonText(L"Allow new permissions");
+    Dialog.CloseButtonText(L"Keep current permissions");
+    Dialog.DefaultButton(ContentDialogButton::Close);
+
+    const desklink::CapabilitySet Added{
+        Candidate.DesiredCapabilities.bits() &
+        ~Candidate.CurrentCapabilities.bits()};
+    StackPanel Details;
+    Details.Spacing(10);
+    TextBlock Identity;
+    Identity.Text(
+        L"This changes permissions for the existing authenticated device. DeskLink will not replace its stored certificate pin or run pairing again.");
+    Identity.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
+    Details.Children().Append(Identity);
+    TextBlock Consequences;
+    Consequences.Text(JoinText(
+        L"This PC would additionally allow:\n", CapabilitySummary(Added)));
+    Consequences.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
+    Details.Children().Append(Consequences);
+    TextBlock Safety;
+    Safety.Text(
+        L"Allowing returns input Local, stops the active peer, stores the reviewed grant, and reconnects with a fresh session. Closing this dialog grants nothing. Any earlier removals remain revoked.");
+    Safety.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
+    Details.Children().Append(Safety);
+    Dialog.Content(Details);
+
+    const auto Result = co_await Dialog.ShowAsync();
+    ModalDialogActive_ = false;
+    const bool Approved = Result == ContentDialogResult::Primary;
+    const auto Response = Send(
+        desklink::ResolvePermissionCandidateControlRequest{
+            Candidate.OperationId, Approved},
+        std::chrono::milliseconds{2'500});
+    DisplayedPermissionOperation_ = 0;
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        DeviceStatusBar().Title(L"New permissions were not added");
+        DeviceStatusBar().Message(
+            L"The protected review expired, trust changed, or fail-local cleanup could not complete. The stored identity was not replaced and any earlier removals remain revoked.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Warning);
+    } else if (Approved) {
+        DeviceStatusBar().Title(L"Permissions updated");
+        DeviceStatusBar().Message(
+            L"The reviewed permission was added for the same stored identity. DeskLink did not re-pair the PCs.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Success);
+    } else {
+        DeviceStatusBar().Title(L"Current permissions kept");
+        DeviceStatusBar().Message(
+            L"No new authority was granted. Any permissions removed before this review remain revoked.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Informational);
     }
     DeviceStatusBar().IsOpen(true);
     PollDevices();
