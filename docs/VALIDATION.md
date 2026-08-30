@@ -132,7 +132,9 @@ authority itself. Automated PR 6 validation additionally proves:
   checks cooperative cancellation at 50-millisecond intervals so stop, update,
   and broker teardown do not inherit the requested 30-second scan lifetime;
 - permission reductions and forgetting first force Local cleanup, while grant
-  additions return `ReauthorizationRequired`; and
+  additions require a bounded reject-default local candidate tied to the exact
+  existing identity pin and grant snapshot; stale/replayed/expired candidates,
+  identity changes, and cleanup failures add no authority; and
 - successful external pairing reloads the protected trust store before the
   role-driven runtime can resume.
 
@@ -161,7 +163,8 @@ round trips, exact version-1/version-2 migration, malformed/reserved/trailing
 data rejection, allowlisted and conflicting hotkeys, duplicate profile
 rejection, global fullscreen fail-local precedence, all three product crossing
 presets, and exact launcher propagation into the managed Host child. The
-version-4 local control codec round-trips the new bounded preferences.
+version-5 local control codec round-trips the bounded preferences, exact trusted
+connection state, and permission-authorization candidate payloads.
 
 The standard Release tree, MsQuic-enabled Release tree, and locked WinUI
 Release payload must all compile. CTest must pass the portable/core, reliability

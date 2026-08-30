@@ -134,6 +134,14 @@ public:
     [[nodiscard]] std::optional<std::vector<TrustedPeer>> ListTrustedPeers() const;
     [[nodiscard]] TrustMutationStatus RequestPermissionChange(
         const MachineId& Machine, CapabilitySet DesiredCapabilities);
+    // This is intentionally separate from the generic reduction API. Callers
+    // must first complete a broker-owned, reject-default local authorization
+    // ceremony and provide the exact identity/capability snapshot that was
+    // reviewed. The stored identity is never replaced by this operation.
+    [[nodiscard]] TrustMutationStatus ApplyReauthorizedPermissionChange(
+        const PeerIdentity& ExpectedIdentity,
+        CapabilitySet ExpectedCapabilities,
+        CapabilitySet DesiredCapabilities);
     [[nodiscard]] TrustMutationStatus ForgetPeer(const MachineId& Machine);
     [[nodiscard]] bool ReloadAfterExternalPairing();
 
@@ -172,6 +180,38 @@ private:
 
     std::mutex Mutex_;
     std::optional<BrokerPairingCandidate> Candidate_;
+};
+
+using BrokerPermissionRequestId = std::uint64_t;
+
+struct BrokerPermissionCandidate {
+    BrokerPermissionRequestId RequestId{};
+    PeerIdentity Identity;
+    CapabilitySet CurrentCapabilities;
+    CapabilitySet DesiredCapabilities;
+    IClock::time_point ExpiresAt{};
+};
+
+// One short-lived permission candidate may be reviewed at a time. The lease
+// carries the immutable peer identity snapshot so approval cannot be replayed
+// after trust replacement or another permission mutation.
+class BrokerPermissionCandidateLease final {
+public:
+    [[nodiscard]] bool Present(BrokerPermissionCandidate Candidate,
+                               IClock::time_point Now);
+    [[nodiscard]] std::optional<BrokerPermissionCandidate> Current(
+        IClock::time_point Now);
+    [[nodiscard]] std::optional<BrokerPermissionCandidate> ResolveLocally(
+        BrokerPermissionRequestId RequestId, bool Approved,
+        IClock::time_point Now);
+    void Reject(BrokerPermissionRequestId RequestId) noexcept;
+    void RejectAll() noexcept;
+
+private:
+    void ExpireLocked(IClock::time_point Now) noexcept;
+
+    std::mutex Mutex_;
+    std::optional<BrokerPermissionCandidate> Candidate_;
 };
 
 } // namespace desklink

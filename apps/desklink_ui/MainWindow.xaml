@@ -295,12 +295,12 @@
                         <StackPanel>
                             <TextBlock Text="Add a PC"
                                        Style="{StaticResource TitleTextBlockStyle}" />
-                            <TextBlock Text="Nearby names and addresses are unverified until both PCs compare the same code."
+                            <TextBlock Text="Pair a new PC once. Already-paired PCs reconnect with their stored authenticated identity and do not show another code."
                                        TextWrapping="Wrap" />
                         </StackPanel>
                         <InfoBar IsOpen="True" IsClosable="False"
-                                 Severity="Informational" Title="Before connecting"
-                                 Message="Open a five-minute pairing window on the receiving PC. Select only the permissions this PC should grant to the other PC." />
+                                  Severity="Informational" Title="Adding a new PC"
+                                  Message="On the new PC, open its five-minute pairing window. Select only the permissions this PC should grant. A code appears after both PCs complete the secure handshake." />
                         <Expander Header="Permissions this PC will grant" IsExpanded="True">
                             <StackPanel Spacing="8" Padding="0,12,0,4">
                                 <CheckBox x:Name="GrantInputCheck"

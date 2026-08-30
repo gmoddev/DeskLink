@@ -288,6 +288,41 @@ TrustMutationStatus RuntimeTrustAuthority::RequestPermissionChange(
         : TrustMutationStatus::StoreFailed;
 }
 
+TrustMutationStatus RuntimeTrustAuthority::ApplyReauthorizedPermissionChange(
+    const PeerIdentity& ExpectedIdentity,
+    CapabilitySet ExpectedCapabilities,
+    CapabilitySet DesiredCapabilities) {
+    const auto ExpectedFingerprint = ParseFingerprint(
+        ExpectedIdentity.public_key_fingerprint);
+    if (!IsNonzeroMachine(ExpectedIdentity.machine_id) ||
+        !ExpectedFingerprint ||
+        ExpectedIdentity.machine_id !=
+            DeriveMachineId(*ExpectedFingerprint) ||
+        !HasOnlyKnownCapabilities(ExpectedCapabilities) ||
+        !HasOnlyKnownCapabilities(DesiredCapabilities) ||
+        DesiredCapabilities.bits() == ExpectedCapabilities.bits() ||
+        !IsSubset(ExpectedCapabilities, DesiredCapabilities)) {
+        return TrustMutationStatus::InvalidRequest;
+    }
+
+    std::scoped_lock Lock(Mutex_);
+    const auto Existing = TrustStore_.GetPeer(ExpectedIdentity.machine_id);
+    if (!Existing) return TrustMutationStatus::PeerNotFound;
+    if (!(Existing->Identity == ExpectedIdentity) ||
+        Existing->Capabilities.bits() != ExpectedCapabilities.bits()) {
+        return TrustMutationStatus::ReauthorizationRequired;
+    }
+    if (!SafetyController_.ReturnLocalAndStopPeer(
+            ExpectedIdentity.machine_id)) {
+        return TrustMutationStatus::CleanupFailed;
+    }
+    auto Updated = *Existing;
+    Updated.Capabilities = DesiredCapabilities;
+    return TrustStore_.SavePeer(std::move(Updated))
+        ? TrustMutationStatus::Applied
+        : TrustMutationStatus::StoreFailed;
+}
+
 TrustMutationStatus RuntimeTrustAuthority::ForgetPeer(
     const MachineId& Machine) {
     if (!IsNonzeroMachine(Machine)) {
@@ -359,6 +394,69 @@ void BrokerPairingCandidateLease::ClientDisconnected(
 }
 
 void BrokerPairingCandidateLease::ExpireLocked(
+    IClock::time_point Now) noexcept {
+    if (Candidate_ && Candidate_->ExpiresAt <= Now) Candidate_.reset();
+}
+
+bool BrokerPermissionCandidateLease::Present(
+    BrokerPermissionCandidate Candidate, IClock::time_point Now) {
+    const auto Fingerprint = ParseFingerprint(
+        Candidate.Identity.public_key_fingerprint);
+    if (Candidate.RequestId == 0 ||
+        !IsNonzeroMachine(Candidate.Identity.machine_id) ||
+        Candidate.Identity.display_name.empty() ||
+        Candidate.Identity.display_name.size() > kMaxPairingDisplayName ||
+        !Fingerprint || Candidate.Identity.machine_id !=
+            DeriveMachineId(*Fingerprint) ||
+        Candidate.ExpiresAt <= Now ||
+        !HasOnlyKnownCapabilities(Candidate.CurrentCapabilities) ||
+        !HasOnlyKnownCapabilities(Candidate.DesiredCapabilities) ||
+        Candidate.CurrentCapabilities.bits() ==
+            Candidate.DesiredCapabilities.bits() ||
+        !IsSubset(Candidate.CurrentCapabilities,
+                  Candidate.DesiredCapabilities)) {
+        return false;
+    }
+    std::scoped_lock Lock(Mutex_);
+    ExpireLocked(Now);
+    if (Candidate_) return false;
+    Candidate_ = std::move(Candidate);
+    return true;
+}
+
+std::optional<BrokerPermissionCandidate>
+BrokerPermissionCandidateLease::Current(IClock::time_point Now) {
+    std::scoped_lock Lock(Mutex_);
+    ExpireLocked(Now);
+    return Candidate_;
+}
+
+std::optional<BrokerPermissionCandidate>
+BrokerPermissionCandidateLease::ResolveLocally(
+    BrokerPermissionRequestId RequestId, bool Approved,
+    IClock::time_point Now) {
+    std::scoped_lock Lock(Mutex_);
+    ExpireLocked(Now);
+    if (!Candidate_ || Candidate_->RequestId != RequestId) {
+        return std::nullopt;
+    }
+    auto Result = std::move(Candidate_);
+    Candidate_.reset();
+    return Approved ? Result : std::nullopt;
+}
+
+void BrokerPermissionCandidateLease::Reject(
+    BrokerPermissionRequestId RequestId) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (Candidate_ && Candidate_->RequestId == RequestId) Candidate_.reset();
+}
+
+void BrokerPermissionCandidateLease::RejectAll() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    Candidate_.reset();
+}
+
+void BrokerPermissionCandidateLease::ExpireLocked(
     IClock::time_point Now) noexcept {
     if (Candidate_ && Candidate_->ExpiresAt <= Now) Candidate_.reset();
 }

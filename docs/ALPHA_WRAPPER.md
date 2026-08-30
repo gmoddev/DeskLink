@@ -66,9 +66,10 @@ The audio permission names describe what the peer may do:
 - **Render peer system audio** is a controller-session startup option.
 
 **Exchange monitor layouts** grants `DisplayTopologyExchange` to that peer.
-It is checked explicitly during pairing and defaults off with every other
-permission. Existing paired peers do not acquire it; re-pair both directions to
-enable topology exchange. The grant shares no input or focus authority and
+It is checked explicitly during first pairing and defaults off with every other
+permission. Existing paired peers do not acquire it automatically; use
+**Devices > Change permissions** on each granting PC and approve the local
+consequence prompt. The grant shares no input or focus authority and
 cannot modify the saved roaming graph.
 
 The clipboard permission names also describe what the peer may do:
@@ -79,7 +80,8 @@ The clipboard permission names also describe what the peer may do:
 
 All three controls default off. Bidirectional synchronization requires both
 grants on both PCs plus session opt-in on both PCs. Existing paired peers are
-not upgraded automatically. Only bounded Unicode text is supported; clipboard
+not upgraded automatically; each PC can add its local grant through the
+protected permission prompt without re-pairing. Only bounded Unicode text is supported; clipboard
 content is never included in the diagnostic view.
 
 ## Process and failure behavior

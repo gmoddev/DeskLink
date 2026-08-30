@@ -44,6 +44,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnNearbyConnect(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnTrustedConnect(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
     void OnFinishOnboarding(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -146,6 +149,7 @@ private:
     void PollNearby();
     void PollDevices();
     void PollPairingCandidate();
+    void PollPermissionCandidate();
     void ChooseRole(desklink::DeskRole Role);
     void NavigateTo(winrt::hstring const& Tag);
     void RenderNearby();
@@ -198,6 +202,8 @@ private:
         desklink::ControlPairingCandidate Candidate);
     [[nodiscard]] Windows::Foundation::IAsyncAction ShowPermissionEditor(
         desklink::ControlTrustedDevice Device);
+    [[nodiscard]] Windows::Foundation::IAsyncAction ShowPermissionCandidate(
+        desklink::ControlPermissionCandidate Candidate);
     [[nodiscard]] Windows::Foundation::IAsyncAction ConfirmForget(
         desklink::ControlTrustedDevice Device);
 
@@ -226,6 +232,7 @@ private:
     desklink::MachineId LocalMachine_{};
     std::atomic_uint64_t NextRequestId_{1};
     std::uint64_t DisplayedPairingOperation_{};
+    std::uint64_t DisplayedPermissionOperation_{};
     bool TrayActive_{};
     bool ExplicitExit_{};
     bool ContentReady_{};
