@@ -5760,6 +5760,17 @@ void DiscoveryCacheExpiresAndFlagsConflicts() {
 void ProductShellPresentationIsFailLocalAndBounded() {
     using namespace desklink;
 
+    CHECK(kProductPermissionResolutionTimeout >=
+          std::chrono::seconds(6));
+    CHECK(kProductPermissionResolutionTimeout <=
+          std::chrono::seconds(10));
+    CHECK(kProductBrokerFailureThreshold >= 2);
+    CHECK(kProductBrokerFailureThreshold <= 5);
+    CHECK(kProductBrokerStateTimeout >
+          std::chrono::milliseconds(500));
+    CHECK(kProductBrokerStateTimeout <=
+          std::chrono::seconds(1));
+
     constexpr std::array States{
         ProductShellState::Offline,
         ProductShellState::Connecting,

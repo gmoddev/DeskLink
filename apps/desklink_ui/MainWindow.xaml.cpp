@@ -402,17 +402,29 @@ void MainWindow::PollBroker() {
     if (!ContentReady_ || ExplicitExit_) return;
     const auto Response = Send(
         desklink::GetStateControlRequest{},
-        std::chrono::milliseconds{200});
-    BrokerAvailable_ = Response &&
+        desklink::kProductBrokerStateTimeout);
+    const bool Available = Response &&
         Response->Status == desklink::ControlStatus::Ok && Response->State;
-    BrokerUnavailableBar().IsOpen(!BrokerAvailable_);
-    if (!BrokerAvailable_) {
+    if (!Available) {
+        if (ConsecutiveBrokerFailures_ <
+            desklink::kProductBrokerFailureThreshold) {
+            ++ConsecutiveBrokerFailures_;
+        }
+        if (ConsecutiveBrokerFailures_ <
+            desklink::kProductBrokerFailureThreshold) {
+            return;
+        }
+        BrokerAvailable_ = false;
+        BrokerUnavailableBar().IsOpen(true);
         RuntimeStateLoaded_ = false;
         ApplyState(desklink::ProductShellState::Offline);
         UpdateFeatureControls();
         if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
         return;
     }
+    ConsecutiveBrokerFailures_ = 0;
+    BrokerAvailable_ = true;
+    BrokerUnavailableBar().IsOpen(false);
     const bool FeatureStateChanged = !RuntimeStateLoaded_ ||
         RuntimeState_.ConnectedPeerCount !=
             Response->State->ConnectedPeerCount ||
@@ -845,14 +857,35 @@ std::optional<desklink::MachineId> MainWindow::MachineFromTag(
 
 void MainWindow::RenderNearby() {
     NearbyCards().Children().Clear();
-    if (NearbyPeers_.empty()) {
+    if (NearbyPeers_.empty() && TrustedDevices_.empty()) {
         NearbyStatus().Text(
             L"No DeskLink PCs were found. Open a pairing window on the other PC or use the manual address.");
         return;
     }
-    NearbyStatus().Text(
-        L"New PCs are unverified. PCs with a matching stored machine identity are labeled Already paired and never enter pairing again.");
-    for (const auto& Peer : NearbyPeers_) {
+    NearbyStatus().Text(NearbyPeers_.empty()
+        ? L"Your already-paired PCs are shown below and do not need another pairing code. Select Find nearby PCs to look for a new one."
+        : L"New PCs are unverified. PCs with a matching stored machine identity are labeled Already paired and never enter pairing again.");
+
+    auto VisiblePeers = NearbyPeers_;
+    for (const auto& Device : TrustedDevices_) {
+        const bool AlreadyVisible = std::any_of(
+            VisiblePeers.begin(), VisiblePeers.end(),
+            [&](const auto& Peer) { return Peer.Machine == Device.Machine; });
+        if (!AlreadyVisible) {
+            VisiblePeers.push_back({
+                Device.Machine,
+                Device.DisplayName,
+                {},
+                Device.Capabilities,
+                0,
+                desklink::kProtocolVersion,
+                0,
+                false,
+                false});
+        }
+    }
+
+    for (const auto& Peer : VisiblePeers) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         Border Card;
@@ -877,14 +910,23 @@ void MainWindow::RenderNearby() {
             [&](const auto& Device) {
                 return Device.Machine == Peer.Machine;
             });
+        const bool ObservedNearby = std::any_of(
+            NearbyPeers_.begin(), NearbyPeers_.end(),
+            [&](const auto& Nearby) {
+                return Nearby.Machine == Peer.Machine;
+            });
         const bool AlreadyPaired = Trusted != TrustedDevices_.end();
         const bool Connected = AlreadyPaired && Trusted->Connected;
         if (AlreadyPaired && Connected) {
-            Status.Text(L"Nearby · Already paired · Connected now");
+            Status.Text(ObservedNearby
+                ? L"Nearby · Already paired · Connected now"
+                : L"Already paired · Connected now");
         } else if (AlreadyPaired && Peer.Ambiguous) {
             Status.Text(L"Nearby · Already paired · Conflicting endpoints");
         } else if (AlreadyPaired) {
-            Status.Text(L"Nearby · Already paired · Not connected");
+            Status.Text(ObservedNearby
+                ? L"Nearby · Already paired · Not connected"
+                : L"Already paired · Not connected");
         } else if (Peer.Ambiguous) {
             Status.Text(L"Nearby · Unverified · Conflicting endpoints");
         } else if (!Peer.PairingOpen) {
@@ -2495,9 +2537,43 @@ Windows::Foundation::IAsyncAction MainWindow::ShowPermissionCandidate(
     const auto Response = Send(
         desklink::ResolvePermissionCandidateControlRequest{
             Candidate.OperationId, Approved},
-        std::chrono::milliseconds{2'500});
+        desklink::kProductPermissionResolutionTimeout);
     DisplayedPermissionOperation_ = 0;
-    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+
+    bool DesiredPermissionsStored = false;
+    if (Approved &&
+        (!Response || Response->Status != desklink::ControlStatus::Ok)) {
+        const auto Devices = Send(
+            desklink::ListTrustedDevicesControlRequest{},
+            std::chrono::milliseconds{2'000});
+        if (Devices && Devices->Status == desklink::ControlStatus::Ok &&
+            Devices->TrustedDevices) {
+            const auto Stored = std::find_if(
+                Devices->TrustedDevices->Devices.begin(),
+                Devices->TrustedDevices->Devices.end(),
+                [&](const auto& Device) {
+                    return Device.Machine == Candidate.Machine;
+                });
+            DesiredPermissionsStored =
+                Stored != Devices->TrustedDevices->Devices.end() &&
+                Stored->Capabilities == Candidate.DesiredCapabilities;
+        }
+    }
+
+    if (Approved && Response &&
+        Response->Status == desklink::ControlStatus::CleanupFailed &&
+        DesiredPermissionsStored) {
+        DeviceStatusBar().Title(
+            L"Permissions saved; connection needs attention");
+        DeviceStatusBar().Message(
+            L"The reviewed permissions are stored for the same identity, but DeskLink could not confirm the final runtime restart. Input remains Local and automatic reconnect is blocked until the runtime is repaired or restarted.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Warning);
+    } else if (Approved && DesiredPermissionsStored) {
+        DeviceStatusBar().Title(L"Permissions updated");
+        DeviceStatusBar().Message(
+            L"The reviewed permissions were verified in the protected trust record after the runtime handoff. DeskLink did not re-pair or replace the stored identity.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Success);
+    } else if (!Response || Response->Status != desklink::ControlStatus::Ok) {
         DeviceStatusBar().Title(L"New permissions were not added");
         DeviceStatusBar().Message(
             L"The protected review expired, trust changed, or fail-local cleanup could not complete. The stored identity was not replaced and any earlier removals remain revoked.");

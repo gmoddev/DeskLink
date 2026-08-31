@@ -1988,7 +1988,9 @@ int wmain(int Count, wchar_t** Values) {
                             : desklink::ControlStatus::CleanupFailed};
             }
 
-            const auto Forwarded = ForwardToActiveRuntime(Request);
+            const auto Forwarded = RuntimeProcessMayExist()
+                ? ForwardToActiveRuntime(Request)
+                : std::nullopt;
             if (Forwarded) {
                 auto Response = *Forwarded;
                 if (Response.State) Supervisor.ApplyState(*Response.State);

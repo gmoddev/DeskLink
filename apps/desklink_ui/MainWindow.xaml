@@ -82,10 +82,11 @@
                                            Style="{StaticResource TitleTextBlockStyle}" />
                                 <TextBlock Text="Your keyboard and mouse, across your desk" />
                             </StackPanel>
-                            <Border Grid.Column="1" Padding="12,6" CornerRadius="16"
+                            <Border Grid.Column="1" Padding="8,3" CornerRadius="12"
+                                    VerticalAlignment="Center"
                                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                                 <TextBlock x:Name="StatusBadge" Text="Starting"
-                                           FontWeight="SemiBold"
+                                           FontSize="12" FontWeight="SemiBold"
                                            AutomationProperties.LiveSetting="Polite" />
                             </Border>
                         </Grid>
