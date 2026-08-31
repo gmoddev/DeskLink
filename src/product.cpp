@@ -68,6 +68,10 @@ bool IsValidProductPreferences(
         Preferences.ProfileRules.size() > kMaximumForegroundProfileRules ||
         (Preferences.PreferredPeerMachine &&
          IsZeroMachine(*Preferences.PreferredPeerMachine)) ||
+        (Preferences.PreferredPeerEndpoint &&
+         (!Preferences.PreferredPeerMachine ||
+          !IsValidProductPeerEndpoint(
+              *Preferences.PreferredPeerEndpoint))) ||
         (Preferences.FocusPeerHotkey != ProductHotkey::Off &&
          Preferences.FocusPeerHotkey == Preferences.ReturnLocalHotkey)) {
         return false;
@@ -87,6 +91,33 @@ bool IsValidProductPreferences(
         }
     }
     return true;
+}
+
+bool IsValidProductPeerEndpoint(
+    const ProductPeerEndpoint& Endpoint) noexcept {
+    if (Endpoint.Host.empty() ||
+        Endpoint.Host.size() > kMaximumPreferredPeerHostBytes ||
+        Endpoint.Port == 0) {
+        return false;
+    }
+    if (!std::all_of(
+        Endpoint.Host.begin(), Endpoint.Host.end(),
+        [](unsigned char Character) {
+            return Character > 0x20u && Character != 0x7fu &&
+                   Character != static_cast<unsigned char>('"');
+        })) {
+        return false;
+    }
+    if (Endpoint.Host.front() == '[') {
+        return Endpoint.Host.back() == ']' && Endpoint.Host.size() > 3 &&
+            Endpoint.Host.substr(1, Endpoint.Host.size() - 2).find(':') !=
+                std::string::npos;
+    }
+    if (Endpoint.Host.find_first_of("[]") != std::string::npos) return false;
+    // The port is stored separately. Reject a likely host:port typo while
+    // retaining unbracketed IPv6 literals with multiple colons.
+    return std::count(
+        Endpoint.Host.begin(), Endpoint.Host.end(), ':') != 1;
 }
 
 bool IsValidProductHotkey(ProductHotkey Hotkey) noexcept {

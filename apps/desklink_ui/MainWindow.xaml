@@ -373,6 +373,29 @@
                                  AutomationProperties.LiveSetting="Polite" />
                         <TextBlock x:Name="NoDevicesText" Text="No paired PCs yet." />
                         <StackPanel x:Name="DeviceCards" Spacing="12" />
+                        <Expander x:Name="TrustedAddressPanel"
+                                  Header="Can't find your paired PC?"
+                                  Visibility="Collapsed">
+                            <StackPanel Spacing="10" Padding="0,12,0,4">
+                                <TextBlock Text="Save an explicit address only when local discovery is blocked. DeskLink still requires this PC's stored authenticated identity and certificate pin; the address grants no trust."
+                                           TextWrapping="Wrap" Opacity="0.72" />
+                                <TextBox x:Name="TrustedAddressHost"
+                                         Header="Paired PC host or IP address"
+                                         PlaceholderText="192.168.0.108"
+                                         MaxLength="253" />
+                                <NumberBox x:Name="TrustedAddressPort"
+                                           Header="Advanced: UDP port"
+                                           Value="43821" Minimum="1"
+                                           Maximum="65535"
+                                           SpinButtonPlacementMode="Compact" />
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <Button Content="Save address and connect"
+                                            Click="OnSaveTrustedAddress" />
+                                    <Button Content="Use discovery only"
+                                            Click="OnClearTrustedAddress" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Expander>
                     </StackPanel>
                 </ScrollViewer>
 

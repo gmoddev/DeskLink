@@ -126,7 +126,7 @@ account to verify:
 6. a coordinated update advances the registered version and migrates that
    exact legacy command to `desklink.exe --background`;
 7. the complete CNG identity snapshot and hashes of a real DPAPI trust record,
-   schema-3 preferences, and saved roaming graph remain unchanged;
+   schema-4 preferences, and saved roaming graph remain unchanged;
 8. uninstall removes binaries, registration, and the startup value; and
 9. a sentinel in `%LOCALAPPDATA%\DeskLink` survives unchanged.
 

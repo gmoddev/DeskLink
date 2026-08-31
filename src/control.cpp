@@ -627,12 +627,22 @@ void EncodePreferences(Writer& Output,
     if (Preferences.ClipboardDesired) Flags |= 0x0040u;
     if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
     if (Preferences.FirstRunComplete) Flags |= 0x0100u;
+    if (Preferences.PreferredPeerEndpoint) Flags |= 0x0200u;
     Output.U16(Flags);
     Output.U16(Preferences.AudioGainPermyriad);
     Output.U8(static_cast<std::uint8_t>(Preferences.FocusPeerHotkey));
     Output.U8(static_cast<std::uint8_t>(Preferences.ReturnLocalHotkey));
     if (Preferences.PreferredPeerMachine) {
         Output.Raw(*Preferences.PreferredPeerMachine);
+    }
+    if (Preferences.PreferredPeerEndpoint) {
+        Output.U16(static_cast<std::uint16_t>(
+            Preferences.PreferredPeerEndpoint->Host.size()));
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Preferences.PreferredPeerEndpoint->Host.data()),
+            Preferences.PreferredPeerEndpoint->Host.size()});
+        Output.U16(Preferences.PreferredPeerEndpoint->Port);
     }
     Output.U8(static_cast<std::uint8_t>(Preferences.ProfileRules.size()));
     for (const auto& Rule : Preferences.ProfileRules) {
@@ -658,7 +668,7 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         !Input.U8(RawGaming) || !Input.U16(Flags) ||
         !Input.U16(Preferences.AudioGainPermyriad) ||
         !Input.U8(RawFocusHotkey) || !Input.U8(RawReturnHotkey) ||
-        (Flags & 0xfe00u) != 0) {
+        (Flags & 0xfc00u) != 0) {
         return std::nullopt;
     }
     Preferences.Role = static_cast<DeskRole>(RawRole);
@@ -681,6 +691,21 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         MachineId Machine{};
         if (!Input.Raw(Machine)) return std::nullopt;
         Preferences.PreferredPeerMachine = Machine;
+    }
+    if ((Flags & 0x0200u) != 0) {
+        std::uint16_t HostSize{};
+        if (!Input.U16(HostSize) || HostSize == 0 ||
+            HostSize > kMaximumPreferredPeerHostBytes ||
+            Input.Remaining() < static_cast<std::size_t>(HostSize) + 2u) {
+            return std::nullopt;
+        }
+        ByteBuffer Host(HostSize);
+        std::uint16_t Port{};
+        if (!Input.Raw(Host) || !Input.U16(Port)) return std::nullopt;
+        Preferences.PreferredPeerEndpoint = ProductPeerEndpoint{
+            std::string(
+                reinterpret_cast<const char*>(Host.data()), Host.size()),
+            Port};
     }
     std::uint8_t RuleCount{};
     if (!Input.U8(RuleCount) || RuleCount > kMaximumForegroundProfileRules) {

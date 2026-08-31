@@ -773,7 +773,7 @@ Gate: ambiguous/spoofed discovery grants nothing; codes and local consequences
 appear on both PCs; timeout/UI exit rejects; permission additions require local
 approval; revocation is immediate and fail-local.
 
-Implementation checkpoint: the version-5 local control protocol now carries
+Implementation checkpoint: the version-6 local control protocol now carries
 bounded discovery, pairing-start, candidate-decision, and Nearby result types.
 The broker owns the five-minute discovery/pairing lifecycle and launches only
 its fixed sibling pairing executable after stopping the normal runtime Local.
@@ -849,13 +849,17 @@ allowlist; `Ctrl+Alt+Pause/Break` is reserved. A named focus request reaches the
 existing authenticated input lifecycle only when that exact peer and the Host
 input owner are active, so a shortcut cannot bypass normal admission.
 
-Application preferences schema 3 persists at most 32 exact executable rules,
+Application preferences schema 4 persists at most 32 exact executable rules,
 optional fullscreen matching, the two bounded shortcuts, and the simple global
 fullscreen keep-local choice. The broker passes these only to the explicit
 input-roaming child. A Roam fallback arms edge observation without installing a
 manual override, preserving emergency, manual, exact-rule, global-fullscreen,
 then default precedence. Any required foreground observation that cannot be
-inspected remains Local. Alpha remains the default installed entry point until
+inspected remains Local. Schema 4 also permits one explicit endpoint for the
+preferred already-trusted machine. The Devices page presents it only as a
+recovery for blocked discovery; saving it starts a trusted connection but never
+grants trust or permissions. Discovery remains preferred and ambiguous or
+incompatible records remain fail-closed. Alpha remains the default installed entry point until
 PR 9.
 
 ### PR 9 — Cutover and product qualification
@@ -879,7 +883,7 @@ for one migration release. Setup migrates only the exact legacy Alpha Run
 command; the updater snapshots and restores the exact prior command on
 rollback. Product-shell deployment and broker/state health probes replace the
 Alpha health baseline. Disposable-account validation compares the full
-non-exportable CNG identity snapshot and byte-identical DPAPI trust, schema-3
+non-exportable CNG identity snapshot and byte-identical DPAPI trust, schema-4
 preferences, and saved roaming graph across rollback and upgrade.
 
 **PR 9B automated qualification foundation is complete.** CI now treats the

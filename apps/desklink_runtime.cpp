@@ -716,35 +716,47 @@ private:
                 return Peer.Endpoint.Advertisement.Machine ==
                     *Preferences.PreferredPeerMachine;
             });
+        std::optional<std::wstring> Host;
+        std::uint16_t Port{};
         if (Match == Browse.Peers.end()) {
-            RecordFailure(
-                desklink::BrokerRuntimeFailure::OrdinaryUnavailable);
-            return false;
-        }
-        if (Match->Ambiguous || Match->EndpointCount == 0) {
+            if (!Preferences.PreferredPeerEndpoint) {
+                RecordFailure(
+                    desklink::BrokerRuntimeFailure::OrdinaryUnavailable);
+                return false;
+            }
+            Host = Utf8ToWide(Preferences.PreferredPeerEndpoint->Host);
+            Port = Preferences.PreferredPeerEndpoint->Port;
+            if (!Host || Port == 0) {
+                RecordFailure(desklink::BrokerRuntimeFailure::Protocol);
+                return false;
+            }
+            std::cout
+                << "[Broker:Network] discovery missed preferred peer; using explicit saved address for pinned identity\n";
+        } else if (Match->Ambiguous || Match->EndpointCount == 0) {
             std::cerr
                 << "[Broker:Security] preferred discovery identity is ambiguous\n";
             RecordFailure(desklink::BrokerRuntimeFailure::Identity);
             return false;
-        }
-        if (Match->Endpoint.Advertisement.ProtocolVersion !=
-            desklink::kProtocolVersion) {
+        } else if (Match->Endpoint.Advertisement.ProtocolVersion !=
+                   desklink::kProtocolVersion) {
             std::cerr
                 << "[Broker:Protocol] preferred peer protocol is incompatible\n";
             RecordFailure(desklink::BrokerRuntimeFailure::Protocol);
             return false;
-        }
-        const auto Host = Utf8ToWide(Match->Endpoint.HostName);
-        if (!Host || Match->Endpoint.Advertisement.Port == 0) {
-            RecordFailure(desklink::BrokerRuntimeFailure::Protocol);
-            return false;
+        } else {
+            Host = Utf8ToWide(Match->Endpoint.HostName);
+            Port = Match->Endpoint.Advertisement.Port;
+            if (!Host || Port == 0) {
+                RecordFailure(desklink::BrokerRuntimeFailure::Protocol);
+                return false;
+            }
         }
         if (!Begin(desklink::BrokerRuntimePhase::Connecting)) return false;
 
         desklink::LauncherRequest Request;
         Request.Operation = desklink::LauncherOperation::Focus;
         Request.Host = *Host;
-        Request.Port = Match->Endpoint.Advertisement.Port;
+        Request.Port = Port;
         Request.ExpectedPeerMachine = *Preferences.PreferredPeerMachine;
         Request.BrokerManaged = true;
         Request.SyncClipboard = Preferences.ClipboardDesired;

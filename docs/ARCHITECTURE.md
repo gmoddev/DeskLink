@@ -526,8 +526,14 @@ authenticated peer and an input lifecycle owner exists. The resulting Roam
 request still traverses normal capability, route, nonce, epoch, lease,
 topology, `PeerValidated`, `FocusReady`, and initial-snapshot admission.
 
-Application preferences schema 3 stores only two allowlisted local hotkey
-choices and bounded exact foreground rules. The broker registers no hotkeys;
+Application preferences schema 4 stores only two allowlisted local hotkey
+choices, bounded exact foreground rules, and an optional explicit endpoint for
+the preferred trusted machine. The broker tries authenticated mDNS resolution
+first and consults that endpoint only when no matching machine record exists.
+The endpoint is a routing hint, not an identity: every launch still supplies
+the stored expected machine ID and transport certificate pin. Ambiguous or
+protocol-incompatible discovery records never fall through to the hint.
+The broker registers no hotkeys;
 the product shell owns them for its lifetime. The broker passes policy only on
 an explicit input-roaming launch. Its Roam fallback arms edge observation
 without applying a manual mode override, so live foreground rules and the

@@ -53,6 +53,12 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnRefreshDevices(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnSaveTrustedAddress(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnClearTrustedAddress(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
     void OnDevicePermissions(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);

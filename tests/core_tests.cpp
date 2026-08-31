@@ -566,6 +566,8 @@ void ControlProtocolRoundTripAndValidation() {
     ProductPreferences Preferences;
     Preferences.Role = DeskRole::Main;
     Preferences.PreferredPeerMachine = MakeMachineId(8);
+    Preferences.PreferredPeerEndpoint =
+        ProductPeerEndpoint{"192.168.0.108", 43'821};
     Preferences.AutoStartRuntime = true;
     Preferences.AutoConnect = true;
     Preferences.InputRoamingDesired = true;
@@ -4621,6 +4623,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     ProductPreferences Preferences;
     Preferences.Role = DeskRole::Main;
     Preferences.PreferredPeerMachine = Peer;
+    Preferences.PreferredPeerEndpoint =
+        ProductPeerEndpoint{"192.168.0.108", 43'821};
     Preferences.AutoStartRuntime = true;
     Preferences.AutoConnect = true;
     Preferences.InputRoamingDesired = true;
@@ -4706,6 +4710,7 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
 
     Preferences.AutoStartRuntime = true;
     Preferences.PreferredPeerMachine.reset();
+    Preferences.PreferredPeerEndpoint.reset();
     const auto MissingPeer = PlanDesiredDeskConfiguration(Preferences, Ready);
     CHECK(MissingPeer.StartRuntime);
     CHECK(!MissingPeer.ConnectPreferredPeer);
@@ -4714,6 +4719,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
         MissingPeer, RuntimePlanBlocker::PreferredPeerMissing));
 
     Preferences.PreferredPeerMachine = Peer;
+    Preferences.PreferredPeerEndpoint =
+        ProductPeerEndpoint{"192.168.0.108", 43'821};
     auto UntrustedContext = Ready;
     UntrustedContext.PreferredPeerTrusted = false;
     const auto Untrusted =
@@ -4766,6 +4773,25 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
 
     Malformed = Preferences;
     Malformed.PreferredPeerMachine = MachineId{};
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.PreferredPeerMachine.reset();
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.PreferredPeerEndpoint->Port = 0;
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.PreferredPeerEndpoint->Host = "host with spaces";
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.PreferredPeerEndpoint->Host = "192.168.0.108:43821";
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.PreferredPeerEndpoint->Host = "[2001:db8::1]";
+    CHECK(IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.PreferredPeerEndpoint->Host.assign(
+        kMaximumPreferredPeerHostBytes + 1, 'a');
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.AudioGainPermyriad = 10'001;
@@ -5524,6 +5550,8 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     ProductPreferences Settings;
     Settings.Role = DeskRole::Main;
     Settings.PreferredPeerMachine = MachineId{1};
+    Settings.PreferredPeerEndpoint =
+        ProductPeerEndpoint{"192.168.0.108", 43'821};
     Settings.CloseToTray = false;
     Settings.RunAtLogin = true;
     Settings.FirstRunComplete = true;
@@ -5569,7 +5597,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
         std::fstream Output(
             ReservedPath, std::ios::binary | std::ios::in | std::ios::out);
         CHECK(Output.good());
-        Output.seekp(33);
+        Output.seekp(34);
         Output.put('\1');
     }
     Win32ProductPreferencesStore Reserved(ReservedPath);
@@ -5630,6 +5658,39 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedVersion2.Current()->Role == DeskRole::Main);
     CHECK(MigratedVersion2.Current()->AudioGainPermyriad == 10'000);
     CHECK(std::filesystem::file_size(Version2Path) == 36);
+
+    const auto Version3Path = Directory / "version-3.bin";
+    std::array<std::uint8_t, 36> Version3{};
+    Version3[0] = 'D';
+    Version3[1] = 'L';
+    Version3[2] = 'P';
+    Version3[3] = 'P';
+    Version3[5] = 3;
+    Version3[6] = static_cast<std::uint8_t>(DeskRole::Main);
+    Version3[7] = static_cast<std::uint8_t>(AudioRoutePreference::Off);
+    Version3[8] = static_cast<std::uint8_t>(GamingBehavior::KeepLocal);
+    Version3[11] = 1;
+    Version3[12] = 0x27;
+    Version3[13] = 0x10;
+    {
+        std::ofstream Output(Version3Path, std::ios::binary);
+        CHECK(Output.good());
+        Output.write(
+            reinterpret_cast<const char*>(Version3.data()), Version3.size());
+    }
+    Win32ProductPreferencesStore MigratedVersion3(Version3Path);
+    CHECK(MigratedVersion3.Load());
+    CHECK(MigratedVersion3.Current()->Role == DeskRole::Main);
+    CHECK(!MigratedVersion3.Current()->PreferredPeerEndpoint);
+    CHECK(std::filesystem::file_size(Version3Path) == 36);
+    {
+        std::ifstream Input(Version3Path, std::ios::binary);
+        std::array<std::uint8_t, 6> Header{};
+        Input.read(reinterpret_cast<char*>(Header.data()), Header.size());
+        CHECK(Input.good());
+        CHECK(Header[4] == 0);
+        CHECK(Header[5] == kProductPreferencesSchemaVersion);
+    }
 
     auto Invalid = Settings;
     Invalid.AudioGainPermyriad = 10'001;

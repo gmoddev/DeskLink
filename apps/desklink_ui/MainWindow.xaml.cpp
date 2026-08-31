@@ -843,6 +843,89 @@ void MainWindow::OnRefreshDevices(
     PollDevices();
 }
 
+void MainWindow::OnSaveTrustedAddress(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Device = PreferredDevice();
+    const auto Host = ToUtf8(TrustedAddressHost().Text());
+    const auto PortValue = TrustedAddressPort().Value();
+    if (!PreferencesLoaded_ || !Device || !Host ||
+        !std::isfinite(PortValue) || PortValue < 1 ||
+        PortValue > 65'535 || std::floor(PortValue) != PortValue) {
+        DeviceStatusBar().Title(L"Address not saved");
+        DeviceStatusBar().Message(
+            L"Select a paired PC and enter a valid host or IP address and UDP port.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Error);
+        DeviceStatusBar().IsOpen(true);
+        return;
+    }
+
+    desklink::ProductPeerEndpoint Endpoint{
+        *Host, static_cast<std::uint16_t>(PortValue)};
+    if (!desklink::IsValidProductPeerEndpoint(Endpoint)) {
+        DeviceStatusBar().Title(L"Address not saved");
+        DeviceStatusBar().Message(
+            L"The address contains unsupported characters or is too long.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Error);
+        DeviceStatusBar().IsOpen(true);
+        return;
+    }
+
+    auto Updated = Preferences_;
+    Updated.PreferredPeerMachine = Device->Machine;
+    Updated.PreferredPeerEndpoint = std::move(Endpoint);
+    Updated.AutoStartRuntime = true;
+    Updated.AutoConnect = true;
+    const auto Response = Send(
+        desklink::SetProductPreferencesControlRequest{Updated},
+        std::chrono::milliseconds{2'500});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        DeviceStatusBar().Title(L"Address not saved");
+        DeviceStatusBar().Message(
+            L"DeskLink could not safely reconcile the runtime. Pairing and trust were not changed.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Error);
+        DeviceStatusBar().IsOpen(true);
+        return;
+    }
+    Preferences_ = std::move(Updated);
+    DeviceStatusBar().Title(L"Connecting by saved address");
+    DeviceStatusBar().Message(
+        L"Discovery remains preferred. If it misses, DeskLink will use this address only for the stored authenticated PC.");
+    DeviceStatusBar().Severity(InfoBarSeverity::Success);
+    DeviceStatusBar().IsOpen(true);
+    RenderDevices();
+}
+
+void MainWindow::OnClearTrustedAddress(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    if (!PreferencesLoaded_) return;
+    auto Updated = Preferences_;
+    Updated.PreferredPeerEndpoint.reset();
+    const auto Response = Send(
+        desklink::SetProductPreferencesControlRequest{Updated},
+        std::chrono::milliseconds{2'500});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        DeviceStatusBar().Title(L"Address not cleared");
+        DeviceStatusBar().Message(
+            L"DeskLink could not safely reconcile the runtime. The saved setting is unchanged.");
+        DeviceStatusBar().Severity(InfoBarSeverity::Error);
+        DeviceStatusBar().IsOpen(true);
+        return;
+    }
+    Preferences_ = std::move(Updated);
+    TrustedAddressHost().Text(L"");
+    TrustedAddressPort().Value(43'821);
+    DeviceStatusBar().Title(L"Discovery only");
+    DeviceStatusBar().Message(
+        L"The explicit address was removed. The authenticated peer identity and permissions are unchanged.");
+    DeviceStatusBar().Severity(InfoBarSeverity::Success);
+    DeviceStatusBar().IsOpen(true);
+    RenderDevices();
+}
+
 std::optional<desklink::MachineId> MainWindow::MachineFromTag(
     Windows::Foundation::IInspectable const& Tag) const {
     const auto Text = winrt::unbox_value_or<winrt::hstring>(Tag, {});
@@ -966,6 +1049,18 @@ void MainWindow::RenderDevices() {
     NoDevicesText().Visibility(TrustedDevices_.empty()
         ? Microsoft::UI::Xaml::Visibility::Visible
         : Microsoft::UI::Xaml::Visibility::Collapsed);
+    const bool AddressAvailable = !TrustedDevices_.empty() &&
+        (Preferences_.Role == desklink::DeskRole::Main ||
+         Preferences_.Role == desklink::DeskRole::Flexible);
+    TrustedAddressPanel().Visibility(AddressAvailable
+        ? Microsoft::UI::Xaml::Visibility::Visible
+        : Microsoft::UI::Xaml::Visibility::Collapsed);
+    if (Preferences_.PreferredPeerEndpoint) {
+        TrustedAddressHost().Text(ToHString(
+            Preferences_.PreferredPeerEndpoint->Host));
+        TrustedAddressPort().Value(
+            Preferences_.PreferredPeerEndpoint->Port);
+    }
     for (const auto& Device : TrustedDevices_) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;

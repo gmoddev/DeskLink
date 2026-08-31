@@ -20,9 +20,10 @@ constexpr std::array<std::uint8_t, 4> kLegacyMagic{'D', 'L', 'A', 'S'};
 constexpr std::array<std::uint8_t, 4> kPreferencesMagic{'D', 'L', 'P', 'P'};
 constexpr std::uint16_t kLegacyVersion = 1;
 constexpr std::uint16_t kPreferencesV2Version = 2;
+constexpr std::uint16_t kPreferencesV3Version = 3;
 constexpr std::size_t kLegacySize = 12;
 constexpr std::size_t kPreferencesV2Size = 64;
-constexpr std::size_t kPreferencesV3HeaderSize = 36;
+constexpr std::size_t kPreferencesHeaderSize = 36;
 constexpr std::size_t kMaximumPreferencesSize = 16u * 1024u;
 constexpr std::uint16_t kKnownPreferenceFlags = 0x00ffu;
 constexpr wchar_t kRunKey[] =
@@ -45,7 +46,7 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
 [[nodiscard]] std::optional<ByteBuffer> Encode(
     const ProductPreferences& Preferences) {
     if (!IsValidProductPreferences(Preferences)) return std::nullopt;
-    ByteBuffer Result(kPreferencesV3HeaderSize);
+    ByteBuffer Result(kPreferencesHeaderSize);
     std::copy(
         kPreferencesMagic.begin(), kPreferencesMagic.end(), Result.begin());
     WriteU16(Result, 4, kProductPreferencesSchemaVersion);
@@ -71,6 +72,7 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
             Preferences.PreferredPeerMachine->end(), Result.begin() + 16);
     }
     Result[32] = static_cast<std::uint8_t>(Preferences.ProfileRules.size());
+    Result[33] = Preferences.PreferredPeerEndpoint ? 1u : 0u;
     for (const auto& Rule : Preferences.ProfileRules) {
         Result.push_back(static_cast<std::uint8_t>(Rule.Mode));
         Result.push_back(Rule.FullscreenOnly ? 1u : 0u);
@@ -78,6 +80,15 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         Result.push_back(static_cast<std::uint8_t>(Rule.ExecutableName.size()));
         Result.insert(
             Result.end(), Rule.ExecutableName.begin(), Rule.ExecutableName.end());
+    }
+    if (Preferences.PreferredPeerEndpoint) {
+        const auto& Endpoint = *Preferences.PreferredPeerEndpoint;
+        Result.push_back(static_cast<std::uint8_t>(
+            Endpoint.Host.size() >> 8u));
+        Result.push_back(static_cast<std::uint8_t>(Endpoint.Host.size()));
+        Result.insert(Result.end(), Endpoint.Host.begin(), Endpoint.Host.end());
+        Result.push_back(static_cast<std::uint8_t>(Endpoint.Port >> 8u));
+        Result.push_back(static_cast<std::uint8_t>(Endpoint.Port));
     }
     if (Result.size() > kMaximumPreferencesSize) return std::nullopt;
     return Result;
@@ -123,15 +134,19 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         : std::nullopt;
 }
 
-[[nodiscard]] std::optional<ProductPreferences> DecodePreferencesV3(
-    std::span<const std::uint8_t> Bytes) {
-    if (Bytes.size() < kPreferencesV3HeaderSize ||
+[[nodiscard]] std::optional<ProductPreferences> DecodePreferencesV3OrV4(
+    std::span<const std::uint8_t> Bytes,
+    std::uint16_t ExpectedVersion) {
+    const bool Version4 = ExpectedVersion == kProductPreferencesSchemaVersion;
+    if ((!Version4 && ExpectedVersion != kPreferencesV3Version) ||
+        Bytes.size() < kPreferencesHeaderSize ||
         Bytes.size() > kMaximumPreferencesSize ||
         !std::equal(
             kPreferencesMagic.begin(), kPreferencesMagic.end(),
             Bytes.begin()) ||
-        ReadU16(Bytes, 4) != kProductPreferencesSchemaVersion ||
-        Bytes[9] != 0 || Bytes[33] != 0 || Bytes[34] != 0 ||
+        ReadU16(Bytes, 4) != ExpectedVersion || Bytes[9] != 0 ||
+        (!Version4 && Bytes[33] != 0) || (Version4 && Bytes[33] > 1) ||
+        Bytes[34] != 0 ||
         Bytes[35] != 0) {
         return std::nullopt;
     }
@@ -164,7 +179,7 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         Result.PreferredPeerMachine = Preferred;
     }
 
-    std::size_t Offset = kPreferencesV3HeaderSize;
+    std::size_t Offset = kPreferencesHeaderSize;
     Result.ProfileRules.reserve(Bytes[32]);
     for (std::uint8_t Index = 0; Index < Bytes[32]; ++Index) {
         if (Offset + 4u > Bytes.size()) return std::nullopt;
@@ -183,6 +198,22 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
             reinterpret_cast<const char*>(Bytes.data() + Offset), NameSize);
         Offset += NameSize;
         Result.ProfileRules.push_back(std::move(Rule));
+    }
+    if (Version4 && Bytes[33] != 0) {
+        if (Offset + 4u > Bytes.size()) return std::nullopt;
+        const auto HostSize = ReadU16(Bytes, Offset);
+        Offset += 2u;
+        if (HostSize == 0 || HostSize > kMaximumPreferredPeerHostBytes ||
+            Offset + HostSize + 2u > Bytes.size()) {
+            return std::nullopt;
+        }
+        ProductPeerEndpoint Endpoint;
+        Endpoint.Host.assign(
+            reinterpret_cast<const char*>(Bytes.data() + Offset), HostSize);
+        Offset += HostSize;
+        Endpoint.Port = ReadU16(Bytes, Offset);
+        Offset += 2u;
+        Result.PreferredPeerEndpoint = std::move(Endpoint);
     }
     if (Offset != Bytes.size() || !IsValidProductPreferences(Result)) {
         return std::nullopt;
@@ -281,12 +312,20 @@ bool Win32ProductPreferencesStore::Load() {
         std::equal(
             kPreferencesMagic.begin(), kPreferencesMagic.end(), Bytes.begin()) &&
         ReadU16(View, 4) == kPreferencesV2Version;
+    const bool Version3 = ByteCount >= kPreferencesHeaderSize &&
+        std::equal(
+            kPreferencesMagic.begin(), kPreferencesMagic.end(), Bytes.begin()) &&
+        ReadU16(View, 4) == kPreferencesV3Version;
     const auto Parsed = Legacy
         ? DecodeLegacy(View)
-        : Version2 ? DecodePreferencesV2(View) : DecodePreferencesV3(View);
-    const auto Migrated = Parsed && (Legacy || Version2) ? Encode(*Parsed)
-                                                        : std::nullopt;
-    if (!Parsed || ((Legacy || Version2) &&
+        : Version2 ? DecodePreferencesV2(View)
+        : Version3 ? DecodePreferencesV3OrV4(View, kPreferencesV3Version)
+                   : DecodePreferencesV3OrV4(
+                         View, kProductPreferencesSchemaVersion);
+    const auto Migrated = Parsed && (Legacy || Version2 || Version3)
+        ? Encode(*Parsed)
+        : std::nullopt;
+    if (!Parsed || ((Legacy || Version2 || Version3) &&
                     (!Migrated || !WriteAtomic(Path_, *Migrated)))) {
         return false;
     }

@@ -578,6 +578,13 @@ ResumeDeskLink       implemented as Local-first supervised start
 ReturnLocal          implemented
 ```
 
+The product's saved connection address is separately bounded and may be set
+only for an existing preferred trusted machine. It is consulted only after
+mDNS returns no record for that machine and is passed to the transport with the
+exact stored `ExpectedPeerMachine`. It grants no trust, cannot replace the CNG
+identity or certificate pin, and is not used after ambiguous, incompatible,
+certificate, authentication, signing, or general transport failures.
+
 It must not expose a generic transport passthrough or arbitrary input-injection primitive.
 
 Local restrictive `Game`/`LockPc1` policy takes precedence over a remote
