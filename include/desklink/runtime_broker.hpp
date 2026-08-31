@@ -30,6 +30,15 @@ enum class BrokerRuntimePhase : std::uint8_t {
     ActionRequired = 7,
 };
 
+// The child owns live peer/focus/input state only after the supervisor has
+// observed an admitted connection. During discovery, launch, and retry the
+// runtime mutex can exist before the child's control pipe is ready; querying
+// it then must not block the broker's always-available state endpoint.
+[[nodiscard]] constexpr bool ShouldQueryManagedRuntimeState(
+    BrokerRuntimePhase Phase) noexcept {
+    return Phase == BrokerRuntimePhase::ConnectedLocal;
+}
+
 enum class BrokerRuntimeFailure : std::uint8_t {
     None = 0,
     OrdinaryUnavailable = 1,

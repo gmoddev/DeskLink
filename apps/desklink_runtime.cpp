@@ -546,12 +546,16 @@ public:
 
     [[nodiscard]] std::vector<desklink::MachineId>
     ConnectedMachines() noexcept {
+        std::vector<desklink::MachineId> Result;
+        if (!desklink::ShouldQueryManagedRuntimeState(Snapshot().Phase) ||
+            !RuntimeProcessMayExist()) {
+            return Result;
+        }
         const auto Response = ForwardToActiveRuntime(
             desklink::ControlRequest{
                 NextRequestId_.fetch_add(1),
                 desklink::GetDisplayTopologiesControlRequest{}},
             std::chrono::milliseconds{250});
-        std::vector<desklink::MachineId> Result;
         if (!Response || Response->Status != desklink::ControlStatus::Ok ||
             !Response->Topologies) {
             return Result;
@@ -1988,6 +1992,31 @@ int wmain(int Count, wchar_t** Values) {
                             : desklink::ControlStatus::CleanupFailed};
             }
 
+            if (std::holds_alternative<desklink::GetStateControlRequest>(
+                    Request.Payload)) {
+                if (desklink::ShouldQueryManagedRuntimeState(
+                        Supervisor.Snapshot().Phase) &&
+                    RuntimeProcessMayExist()) {
+                    const auto Forwarded = ForwardToActiveRuntime(
+                        Request, std::chrono::milliseconds{250});
+                    if (Forwarded &&
+                        Forwarded->Status == desklink::ControlStatus::Ok &&
+                        Forwarded->State) {
+                        auto Response = *Forwarded;
+                        Supervisor.ApplyState(*Response.State);
+                        return Response;
+                    }
+                }
+                // A child can exit between the supervisor snapshot and this
+                // request. Never let its missing/failed state make the
+                // broker's own healthy endpoint appear unavailable; the
+                // broker-owned fallback is Local and carries no peer session.
+                auto State = LocalState(LocalMachine);
+                Supervisor.ApplyState(State);
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Ok,
+                    State};
+            }
             const auto Forwarded = RuntimeProcessMayExist()
                 ? ForwardToActiveRuntime(Request)
                 : std::nullopt;
@@ -1995,14 +2024,6 @@ int wmain(int Count, wchar_t** Values) {
                 auto Response = *Forwarded;
                 if (Response.State) Supervisor.ApplyState(*Response.State);
                 return Response;
-            }
-            if (std::holds_alternative<desklink::GetStateControlRequest>(
-                    Request.Payload)) {
-                auto State = LocalState(LocalMachine);
-                Supervisor.ApplyState(State);
-                return desklink::ControlResponse{
-                    Request.RequestId, desklink::ControlStatus::Ok,
-                    State};
             }
             return desklink::ControlResponse{
                 Request.RequestId, desklink::ControlStatus::NotReady};

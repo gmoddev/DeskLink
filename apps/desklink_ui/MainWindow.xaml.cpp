@@ -400,20 +400,14 @@ std::optional<desklink::ControlResponse> MainWindow::Send(
 
 void MainWindow::PollBroker() {
     if (!ContentReady_ || ExplicitExit_) return;
+    const auto Now = std::chrono::steady_clock::now();
     const auto Response = Send(
         desklink::GetStateControlRequest{},
         desklink::kProductBrokerStateTimeout);
     const bool Available = Response &&
         Response->Status == desklink::ControlStatus::Ok && Response->State;
     if (!Available) {
-        if (ConsecutiveBrokerFailures_ <
-            desklink::kProductBrokerFailureThreshold) {
-            ++ConsecutiveBrokerFailures_;
-        }
-        if (ConsecutiveBrokerFailures_ <
-            desklink::kProductBrokerFailureThreshold) {
-            return;
-        }
+        if (!BrokerAvailability_.ObserveUnavailable(Now)) return;
         BrokerAvailable_ = false;
         BrokerUnavailableBar().IsOpen(true);
         RuntimeStateLoaded_ = false;
@@ -422,7 +416,7 @@ void MainWindow::PollBroker() {
         if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
         return;
     }
-    ConsecutiveBrokerFailures_ = 0;
+    BrokerAvailability_.ObserveAvailable(Now);
     BrokerAvailable_ = true;
     BrokerUnavailableBar().IsOpen(false);
     const bool FeatureStateChanged = !RuntimeStateLoaded_ ||

@@ -233,7 +233,7 @@ private:
     std::atomic_uint64_t NextRequestId_{1};
     std::uint64_t DisplayedPairingOperation_{};
     std::uint64_t DisplayedPermissionOperation_{};
-    unsigned ConsecutiveBrokerFailures_{};
+    desklink::ProductBrokerAvailability BrokerAvailability_;
     bool TrayActive_{};
     bool ExplicitExit_{};
     bool ContentReady_{};

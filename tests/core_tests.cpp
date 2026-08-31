@@ -844,6 +844,19 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(RuntimeOwnerMayBeActive(true, false));
     CHECK(RuntimeOwnerMayBeActive(true, true));
 
+    for (const auto Phase : {
+             BrokerRuntimePhase::Stopped,
+             BrokerRuntimePhase::Paused,
+             BrokerRuntimePhase::Listening,
+             BrokerRuntimePhase::Discovering,
+             BrokerRuntimePhase::Connecting,
+             BrokerRuntimePhase::RetryWaiting,
+             BrokerRuntimePhase::ActionRequired}) {
+        CHECK(!ShouldQueryManagedRuntimeState(Phase));
+    }
+    CHECK(ShouldQueryManagedRuntimeState(
+        BrokerRuntimePhase::ConnectedLocal));
+
     ManualClock ReconnectClock;
     BrokerReconnectController Reconnect(0x1234u);
     CHECK(Reconnect.AttemptDue(ReconnectClock.now()));
@@ -5764,12 +5777,25 @@ void ProductShellPresentationIsFailLocalAndBounded() {
           std::chrono::seconds(6));
     CHECK(kProductPermissionResolutionTimeout <=
           std::chrono::seconds(10));
-    CHECK(kProductBrokerFailureThreshold >= 2);
-    CHECK(kProductBrokerFailureThreshold <= 5);
+    CHECK(kProductBrokerUnavailableGrace >= std::chrono::seconds(6));
+    CHECK(kProductBrokerUnavailableGrace <= std::chrono::seconds(10));
     CHECK(kProductBrokerStateTimeout >
           std::chrono::milliseconds(500));
     CHECK(kProductBrokerStateTimeout <=
           std::chrono::seconds(1));
+
+    ProductBrokerAvailability BrokerAvailability;
+    const auto BrokerStart = std::chrono::steady_clock::time_point{};
+    CHECK(!BrokerAvailability.ObserveUnavailable(BrokerStart));
+    CHECK(!BrokerAvailability.ObserveUnavailable(
+        BrokerStart + kProductBrokerUnavailableGrace -
+        std::chrono::milliseconds{1}));
+    CHECK(BrokerAvailability.ObserveUnavailable(
+        BrokerStart + kProductBrokerUnavailableGrace));
+    BrokerAvailability.ObserveAvailable(
+        BrokerStart + kProductBrokerUnavailableGrace);
+    CHECK(!BrokerAvailability.ObserveUnavailable(
+        BrokerStart + kProductBrokerUnavailableGrace));
 
     constexpr std::array States{
         ProductShellState::Offline,
