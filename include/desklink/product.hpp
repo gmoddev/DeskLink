@@ -5,13 +5,16 @@
 #include "desklink/protocol.hpp"
 #include "desklink/types.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace desklink {
 
-inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 3;
+inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 4;
+inline constexpr std::size_t kMaximumPreferredPeerHostBytes = 253;
 
 enum class DeskRole : std::uint8_t {
     Unconfigured = 0,
@@ -44,9 +47,21 @@ enum class ProductHotkey : std::uint8_t {
     CtrlShiftF12 = 4,
 };
 
+// This is only a routing hint for an already-trusted peer. Transport setup
+// must still bind the connection to PreferredPeerMachine and its stored
+// certificate pin before any application traffic is admitted.
+struct ProductPeerEndpoint {
+    std::string Host;
+    std::uint16_t Port{};
+
+    [[nodiscard]] bool operator==(
+        const ProductPeerEndpoint&) const noexcept = default;
+};
+
 struct ProductPreferences {
     DeskRole Role{DeskRole::Unconfigured};
     std::optional<MachineId> PreferredPeerMachine;
+    std::optional<ProductPeerEndpoint> PreferredPeerEndpoint;
     bool RunAtLogin{};
     bool CloseToTray{true};
     bool AutoStartRuntime{};
@@ -68,6 +83,8 @@ struct ProductPreferences {
 
 [[nodiscard]] bool IsValidProductPreferences(
     const ProductPreferences& Preferences) noexcept;
+[[nodiscard]] bool IsValidProductPeerEndpoint(
+    const ProductPeerEndpoint& Endpoint) noexcept;
 [[nodiscard]] bool IsValidProductHotkey(ProductHotkey Hotkey) noexcept;
 [[nodiscard]] bool CanEnableClipboardIntent(
     CapabilitySet LocalGrantsToPeer) noexcept;

@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 5;
+inline constexpr std::uint16_t kControlProtocolVersion = 6;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;

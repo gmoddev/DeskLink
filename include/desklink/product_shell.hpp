@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <functional>
+#include <optional>
 #include <string_view>
 
 namespace desklink {
@@ -14,10 +15,29 @@ namespace desklink {
 inline constexpr std::chrono::milliseconds
     kProductPermissionResolutionTimeout{7'000};
 
-// A single missed broker poll can occur while the broker completes a bounded
-// fail-local transition for another request. Preserve the last authenticated
-// presentation until several consecutive probes fail.
-inline constexpr unsigned kProductBrokerFailureThreshold = 3;
+// The broker serializes security-sensitive mutations and managed-runtime
+// transitions. Preserve the last authenticated presentation through those
+// bounded operations, but report a continuous outage after a finite grace.
+inline constexpr std::chrono::milliseconds
+    kProductBrokerUnavailableGrace{8'000};
+
+class ProductBrokerAvailability final {
+public:
+    using TimePoint = std::chrono::steady_clock::time_point;
+
+    void ObserveAvailable(TimePoint) noexcept { FailureSince_.reset(); }
+
+    [[nodiscard]] bool ObserveUnavailable(TimePoint Now) noexcept {
+        if (!FailureSince_) {
+            FailureSince_ = Now;
+            return false;
+        }
+        return Now - *FailureSince_ >= kProductBrokerUnavailableGrace;
+    }
+
+private:
+    std::optional<TimePoint> FailureSince_;
+};
 
 // A broker state request may include one bounded hop to an active transport
 // owner. Keep this longer than that 500 ms hop without allowing an

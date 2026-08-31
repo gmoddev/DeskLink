@@ -290,6 +290,11 @@ desklink_pair.exe discover
 desklink_pair.exe discover 10
 ```
 
+If Windows mDNS is unavailable, the product shell's **Devices & permissions**
+page can save a host/IP address for the selected already-paired PC. DeskLink
+still validates the existing machine identity and certificate pin before
+admitting the session; the saved address is never a trust or TLS fallback.
+
 Advertisements contain only a protocol version, machine ID, display name,
 capability hints, and whether the manual pairing window is open; host and port
 come from DNS-SD SRV resolution. They are untrusted address hints. Discovery

@@ -282,7 +282,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   Advanced persists at most 32 exact executable/fullscreen rules. Missing
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, crossing changes reuse Local-before-atomic-save, and required
-  but uninspectable foreground state remains Local. Preferences schema 3
+  but uninspectable foreground state remains Local. Preferences schema 4
   migrates both previous formats;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu,
   post-install, sign-in, and updater-restart entry point and starts only its
@@ -293,7 +293,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   probes, restores the exact pre-update Run value after rollback, and never
   owns `%LOCALAPPDATA%\DeskLink` or the CNG identity. Disposable-account tests
   compare the complete identity snapshot plus byte hashes for a real DPAPI
-  trust record, schema-3 preferences, and saved roaming graph across rollback
+  trust record, schema-4 preferences, and saved roaming graph across rollback
   and upgrade;
 - **Product UX PR 9B automated qualification implemented:** invalid release
   certificate/timestamp policy, product DPI/accessibility/theme/UTF-8 metadata,

@@ -89,7 +89,7 @@ package mutation before local confirmation. Windows disposable-account CI proves
 - an injected post-install health failure restores the prior version and exact
   startup command;
 - product-shell and broker/state health modes run only inside the update gate;
-- the complete non-exportable identity snapshot plus DPAPI trust, schema-3
+- the complete non-exportable identity snapshot plus DPAPI trust, schema-4
   preferences, and roaming graph remain unchanged; and
 - a valid development transaction advances the version, migrates an exact
   legacy Alpha startup command, and then uninstalls normally.

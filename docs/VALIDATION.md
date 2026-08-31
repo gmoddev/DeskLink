@@ -158,12 +158,12 @@ Clean-system keyboard, Narrator, DPI, high-contrast, and visual qualification
 of the PR 7 surface remains a release gate. The real two-supported-Windows-11-PC
 roaming/fault qualification also remains deferred until that hardware exists.
 
-PR 8 extends the portable and Windows suites with product-preference schema-3
-round trips, exact version-1/version-2 migration, malformed/reserved/trailing
-data rejection, allowlisted and conflicting hotkeys, duplicate profile
+PR 8 extends the portable and Windows suites with product-preference schema-4
+round trips, exact version-1/version-2/version-3 migration, malformed/reserved/trailing
+data rejection, bounded explicit-endpoint rejection, allowlisted and conflicting hotkeys, duplicate profile
 rejection, global fullscreen fail-local precedence, all three product crossing
 presets, and exact launcher propagation into the managed Host child. The
-version-5 local control codec round-trips the bounded preferences, exact trusted
+version-6 local control codec round-trips the bounded preferences, exact trusted
 connection state, and permission-authorization candidate payloads.
 
 The standard Release tree, MsQuic-enabled Release tree, and locked WinUI
@@ -178,7 +178,7 @@ product-shell-only broker startup, broker survival after shell exit, update
 shutdown, shell/broker health probes, exact startup rollback/migration, and
 uninstall. It now repeats the complete artifact-identical flow on a dependent
 Windows Server 2022 worker and includes same-version repair. It seeds a valid
-DPAPI trust record, schema-3 preferences, and saved
+DPAPI trust record, schema-4 preferences, and saved
 roaming layout, then compares their hashes plus the complete non-exportable CNG
 identity snapshot after forced rollback and successful upgrade.
 
