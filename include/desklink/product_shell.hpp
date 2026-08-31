@@ -2,10 +2,27 @@
 
 #include "desklink/roaming.hpp"
 
+#include <chrono>
 #include <functional>
 #include <string_view>
 
 namespace desklink {
+
+// The broker's fail-local managed-runtime stop is bounded at five seconds.
+// Permission approval must wait beyond that boundary so the shell does not
+// report failure while the broker safely completes the reviewed mutation.
+inline constexpr std::chrono::milliseconds
+    kProductPermissionResolutionTimeout{7'000};
+
+// A single missed broker poll can occur while the broker completes a bounded
+// fail-local transition for another request. Preserve the last authenticated
+// presentation until several consecutive probes fail.
+inline constexpr unsigned kProductBrokerFailureThreshold = 3;
+
+// A broker state request may include one bounded hop to an active transport
+// owner. Keep this longer than that 500 ms hop without allowing an
+// unresponsive runtime to stall the product shell indefinitely.
+inline constexpr std::chrono::milliseconds kProductBrokerStateTimeout{750};
 
 enum class ProductShellState {
     Offline,

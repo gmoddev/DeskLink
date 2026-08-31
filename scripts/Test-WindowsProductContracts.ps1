@@ -121,6 +121,10 @@ if (($BrokerText | Select-String -Pattern 'BuildProductLauncherArguments' -AllMa
     $BrokerText -match 'BuildLauncherArguments\(') {
     throw 'Every product-broker transport launch must use the fail-closed product provider policy.'
 }
+if ($BrokerText -notmatch
+    'const auto Forwarded = RuntimeProcessMayExist\(\)\s*\?\s*ForwardToActiveRuntime\(Request\)\s*:\s*std::nullopt;') {
+    throw 'The product broker must not wait on the transport pipe when no runtime owner exists.'
+}
 if ($InstallerText -notmatch '(?m)^PrivilegesRequired=lowest\r?$' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.20348\r?$' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.19045\r?$' -or
