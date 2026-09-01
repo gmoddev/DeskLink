@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 6;
+inline constexpr std::uint16_t kControlProtocolVersion = 7;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -63,6 +63,9 @@ enum class ControlCommand : std::uint16_t {
     GetManagedPairingDecision = 25,
     GetPermissionCandidate = 26,
     ResolvePermissionCandidate = 27,
+    GetPairingOperation = 28,
+    RefreshTrustedPeerCapabilities = 29,
+    ApplyManagedPreferences = 30,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -187,6 +190,20 @@ struct ResolvePermissionCandidateControlRequest {
     bool Approved{};
 };
 
+struct GetPairingOperationControlRequest {};
+
+// Internal child-runtime command. The running session reloads the exact
+// stored trust record and never accepts capability bits from this request.
+struct RefreshTrustedPeerCapabilitiesControlRequest {
+    MachineId Machine{};
+};
+
+// Internal broker-to-child command. The child validates the complete product
+// preference snapshot before applying supported session changes in place.
+struct ApplyManagedPreferencesControlRequest {
+    ProductPreferences Preferences;
+};
+
 using ControlRequestPayload = std::variant<
     GetStateControlRequest,
     SetDesiredModeControlRequest,
@@ -214,7 +231,10 @@ using ControlRequestPayload = std::variant<
     PresentManagedPairingCandidateControlRequest,
     GetManagedPairingDecisionControlRequest,
     GetPermissionCandidateControlRequest,
-    ResolvePermissionCandidateControlRequest>;
+    ResolvePermissionCandidateControlRequest,
+    GetPairingOperationControlRequest,
+    RefreshTrustedPeerCapabilitiesControlRequest,
+    ApplyManagedPreferencesControlRequest>;
 
 struct ControlRequest {
     std::uint64_t RequestId{};
@@ -331,6 +351,24 @@ enum class ControlManagedPairingDecision : std::uint8_t {
     Rejected = 2,
 };
 
+enum class ControlPairingPhase : std::uint8_t {
+    WaitingForPeer = 0,
+    VerificationRequired = 1,
+    AwaitingPeer = 2,
+    Succeeded = 3,
+    Canceled = 4,
+    TimedOut = 5,
+    Failed = 6,
+};
+
+struct ControlPairingOperation {
+    std::uint64_t OperationId{};
+    ControlPairingPhase Phase{ControlPairingPhase::WaitingForPeer};
+
+    [[nodiscard]] bool operator==(
+        const ControlPairingOperation&) const noexcept = default;
+};
+
 struct ControlResponse {
     std::uint64_t RequestId{};
     ControlStatus Status{ControlStatus::Failed};
@@ -342,6 +380,7 @@ struct ControlResponse {
     std::optional<ControlNearbyPeerList> NearbyPeers;
     std::optional<ControlManagedPairingDecision> PairingDecision;
     std::optional<ControlPermissionCandidate> PermissionCandidate;
+    std::optional<ControlPairingOperation> PairingOperation;
 };
 
 enum class ControlDecodeError {
@@ -370,6 +409,8 @@ struct ControlDecodeResult {
     const ControlNearbyPeerList& Peers) noexcept;
 [[nodiscard]] bool IsValidControlPermissionCandidate(
     const ControlPermissionCandidate& Candidate) noexcept;
+[[nodiscard]] bool IsValidControlPairingOperation(
+    const ControlPairingOperation& Operation) noexcept;
 [[nodiscard]] bool IsValidControlResponse(const ControlResponse& Response);
 [[nodiscard]] std::optional<ByteBuffer> EncodeControlRequest(
     const ControlRequest& Request);

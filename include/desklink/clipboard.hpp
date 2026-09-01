@@ -64,6 +64,8 @@ public:
     void Stop() noexcept;
     void SetRemoteCapabilities(
         std::optional<CapabilitySet> Capabilities) noexcept;
+    void SetLocalCapabilities(CapabilitySet Capabilities) noexcept;
+    void SetEnabled(bool Enabled) noexcept;
 
     [[nodiscard]] bool ShouldSendHello() const noexcept;
     [[nodiscard]] bool MarkHelloSent() noexcept;
@@ -91,6 +93,7 @@ private:
     std::uint64_t NextUpdateId_{1};
     std::uint64_t LastReceivedUpdateId_{};
     bool Enabled_{};
+    bool RequestedEnabled_{};
     bool HelloSent_{};
     bool PeerHelloReceived_{};
 };

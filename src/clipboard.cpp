@@ -91,7 +91,8 @@ void ClipboardExchange::Begin(
     PeerMachine_ = PeerMachine;
     SessionNonce_ = SessionNonce;
     LocalCapabilities_ = LocalCapabilities;
-    Enabled_ = Enabled && Clock_ != nullptr && SessionNonce != 0 &&
+    RequestedEnabled_ = Enabled;
+    Enabled_ = RequestedEnabled_ && Clock_ != nullptr && SessionNonce != 0 &&
         NonzeroMachine(LocalMachine) && NonzeroMachine(PeerMachine) &&
         LocalMachine != PeerMachine;
 }
@@ -107,17 +108,39 @@ void ClipboardExchange::Stop() noexcept {
     NextUpdateId_ = 1;
     LastReceivedUpdateId_ = 0;
     Enabled_ = false;
+    RequestedEnabled_ = false;
     HelloSent_ = false;
     PeerHelloReceived_ = false;
 }
 
 void ClipboardExchange::SetRemoteCapabilities(
     std::optional<CapabilitySet> Capabilities) noexcept {
+    const bool Changed = RemoteCapabilities_ != Capabilities;
     RemoteCapabilities_ = Capabilities;
-    if (!RemoteCapabilities_) {
+    if (Changed) {
         HelloSent_ = false;
         PeerHelloReceived_ = false;
     }
+}
+
+void ClipboardExchange::SetLocalCapabilities(
+    CapabilitySet Capabilities) noexcept {
+    if (LocalCapabilities_ == Capabilities) return;
+    LocalCapabilities_ = Capabilities;
+    HelloSent_ = false;
+    PeerHelloReceived_ = false;
+}
+
+void ClipboardExchange::SetEnabled(bool Enabled) noexcept {
+    RequestedEnabled_ = Enabled;
+    const bool ValidSession = Clock_ != nullptr && SessionNonce_ != 0 &&
+        NonzeroMachine(LocalMachine_) && NonzeroMachine(PeerMachine_) &&
+        LocalMachine_ != PeerMachine_;
+    const bool Next = RequestedEnabled_ && ValidSession;
+    if (Enabled_ == Next) return;
+    Enabled_ = Next;
+    HelloSent_ = false;
+    PeerHelloReceived_ = false;
 }
 
 bool ClipboardExchange::HasAnyDirection() const noexcept {

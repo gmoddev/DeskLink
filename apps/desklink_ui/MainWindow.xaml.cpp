@@ -21,6 +21,15 @@ constexpr UINT kTrayClipboard = 6;
 constexpr UINT kTrayAudioMute = 7;
 constexpr int kFocusPeerHotkeyId = 0xD311;
 constexpr int kReturnLocalHotkeyId = 0xD312;
+constexpr auto kFocusPresentationTimeout = std::chrono::seconds(4);
+
+bool IsTerminalPairingPhase(
+    desklink::ControlPairingPhase Phase) noexcept {
+    return Phase == desklink::ControlPairingPhase::Succeeded ||
+           Phase == desklink::ControlPairingPhase::Canceled ||
+           Phase == desklink::ControlPairingPhase::TimedOut ||
+           Phase == desklink::ControlPairingPhase::Failed;
+}
 
 struct ProductHotkeyChord {
     UINT Modifiers{};
@@ -434,6 +443,7 @@ void MainWindow::PollBroker() {
     BrokerPaused_ = Response->State->RuntimePhase ==
         desklink::BrokerRuntimePhase::Paused;
     ApplyState(StateFromControl(*Response->State));
+    UpdateFocusRequestPresentation(Now);
     if (FeatureStateChanged) UpdateFeatureControls();
     if (ConnectionStateChanged && DevicesLoaded_) {
         RenderDevices();
@@ -442,6 +452,7 @@ void MainWindow::PollBroker() {
     PollPreferences();
     PollDevices();
     PollNearby();
+    PollPairingOperation();
     PollPairingCandidate();
     PollPermissionCandidate();
 }
@@ -551,8 +562,72 @@ void MainWindow::PollPairingCandidate() {
         (void)ShowPairingCandidate(*Response->PairingCandidate);
         return;
     }
-    if (PairingDialogActive_ && PairingDialog_) {
-        PairingDialog_.Hide();
+    // A missed control-pipe poll is not a pairing outcome. Keep the protected
+    // comparison prompt open until the broker reports an explicit terminal
+    // operation phase; otherwise a transient runtime heartbeat can silently
+    // turn an in-progress approval into a cancellation.
+}
+
+void MainWindow::PollPairingOperation() {
+    const auto Response = Send(
+        desklink::GetPairingOperationControlRequest{});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok ||
+        !Response->PairingOperation ||
+        (PresentedPairingOperation_ &&
+         *PresentedPairingOperation_ == *Response->PairingOperation)) {
+        return;
+    }
+    PresentedPairingOperation_ = *Response->PairingOperation;
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Phase = Response->PairingOperation->Phase;
+    switch (Phase) {
+        case desklink::ControlPairingPhase::WaitingForPeer:
+            PairingStatusBar().Title(L"Pairing started");
+            ShowPairingStatus(
+                L"Waiting for the secure handshake. This operation times out automatically.",
+                InfoBarSeverity::Informational);
+            break;
+        case desklink::ControlPairingPhase::VerificationRequired:
+            PairingStatusBar().Title(L"Verification required");
+            ShowPairingStatus(
+                L"Compare the code on both PCs and approve only matching codes.",
+                InfoBarSeverity::Informational);
+            break;
+        case desklink::ControlPairingPhase::AwaitingPeer:
+            PairingStatusBar().Title(L"Waiting for the other PC");
+            ShowPairingStatus(
+                L"This PC approved the code. Pairing completes only after the other PC approves and both trust records are stored.",
+                InfoBarSeverity::Informational);
+            break;
+        case desklink::ControlPairingPhase::Succeeded:
+            if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
+            PairingStatusBar().Title(L"Pairing complete");
+            ShowPairingStatus(
+                L"Both PCs stored the authenticated identity and permissions. DeskLink is reconnecting normally.",
+                InfoBarSeverity::Success);
+            PollDevices();
+            break;
+        case desklink::ControlPairingPhase::Canceled:
+            if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
+            PairingStatusBar().Title(L"Pairing canceled");
+            ShowPairingStatus(
+                L"No new trust or permission was granted.",
+                InfoBarSeverity::Warning);
+            break;
+        case desklink::ControlPairingPhase::TimedOut:
+            if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
+            PairingStatusBar().Title(L"Pairing timed out");
+            ShowPairingStatus(
+                L"The handshake or two-PC approval did not finish before the five-minute deadline. No new trust was admitted.",
+                InfoBarSeverity::Warning);
+            break;
+        case desklink::ControlPairingPhase::Failed:
+            if (PairingDialogActive_ && PairingDialog_) PairingDialog_.Hide();
+            PairingStatusBar().Title(L"Pairing failed");
+            ShowPairingStatus(
+                L"The secure handshake or trust persistence failed. No partially authenticated session was admitted.",
+                InfoBarSeverity::Error);
+            break;
     }
 }
 
@@ -2003,7 +2078,7 @@ bool MainWindow::SavePreferences(
     }
     const auto Response = Send(
         desklink::SetProductPreferencesControlRequest{Preferences},
-        std::chrono::milliseconds{2'500});
+        std::chrono::milliseconds{5'000});
     if (!Response || Response->Status != desklink::ControlStatus::Ok) {
         ShowFeatureStatus(
             L"Settings unchanged",
@@ -2056,6 +2131,11 @@ void MainWindow::UpdateFeatureControls() {
 
     GamingBehaviorToggle().IsOn(
         Preferences_.Gaming == desklink::GamingBehavior::KeepLocal);
+    InputRoamingDesiredToggle().IsEnabled(
+        Device != nullptr &&
+        Preferences_.Role != desklink::DeskRole::Companion);
+    InputRoamingDesiredToggle().IsOn(
+        Preferences_.InputRoamingDesired);
     FocusPeerHotkeyBox().SelectedIndex(
         static_cast<int>(Preferences_.FocusPeerHotkey));
     ReturnLocalHotkeyBox().SelectedIndex(
@@ -2242,6 +2322,33 @@ void MainWindow::OnGamingBehaviorToggled(
             : L"Only the exact application profiles below affect foreground behavior.");
 }
 
+void MainWindow::SetInputRoamingDesired(bool Desired) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    if (!PreferredDevice()) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Pair a PC first",
+            L"Display-edge roaming requires an authenticated paired PC and a saved display connection.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    auto Updated = Preferences_;
+    Updated.InputRoamingDesired = Desired;
+    (void)SavePreferences(
+        Updated,
+        Desired
+            ? L"Edge roaming is enabled. DeskLink still waits for a connected, mutually authorized peer and a valid saved display route."
+            : L"Edge roaming is off. Manual focus remains available.");
+}
+
+void MainWindow::OnInputRoamingToggled(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (ContentReady_ && !UpdatingFeatureControls_) {
+        SetInputRoamingDesired(InputRoamingDesiredToggle().IsOn());
+    }
+}
+
 void MainWindow::OnApplyCrossingPreset(
     Windows::Foundation::IInspectable const&,
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
@@ -2319,14 +2426,51 @@ void MainWindow::FocusPreferredPeer() {
         ? Send(desklink::FocusMachineControlRequest{Device->Machine})
         : std::nullopt;
     if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        FocusRequestStartedAt_.reset();
         ShowFeatureStatus(
             L"Focus stayed on this PC",
             L"The named peer was not connected and fully admitted for input. DeskLink did not bypass route, trust, capability, nonce, epoch, lease, topology, or peer validation checks.",
             Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    FocusRequestStartedAt_ = std::chrono::steady_clock::now();
+    ShowFeatureStatus(
+        L"Changing focus",
+        L"The authenticated peer accepted the request. DeskLink is waiting for fresh focus admission and input-state reconciliation.",
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational);
+}
+
+void MainWindow::UpdateFocusRequestPresentation(
+    std::chrono::steady_clock::time_point Now) {
+    if (!FocusRequestStartedAt_) return;
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    if (RuntimeState_.RemoteFocused) {
+        FocusRequestStartedAt_.reset();
+        ShowFeatureStatus(
+            L"Focus changed",
+            L"Keyboard and mouse focus is active on the authenticated paired PC.",
+            InfoBarSeverity::Success);
+        return;
+    }
+    if (RuntimeState_.ConnectedPeerCount == 0) {
+        FocusRequestStartedAt_.reset();
+        ShowFeatureStatus(
+            L"Focus stayed on this PC",
+            L"The peer connection ended before focus admission completed.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    if (Now - *FocusRequestStartedAt_ >= kFocusPresentationTimeout) {
+        FocusRequestStartedAt_.reset();
+        ShowFeatureStatus(
+            L"Focus request timed out",
+            L"The peer did not complete focus admission and input-state reconciliation. Input stayed on this PC.",
+            InfoBarSeverity::Warning);
     }
 }
 
 void MainWindow::ReturnLocal() {
+    FocusRequestStartedAt_.reset();
     const auto Response = Send(desklink::ReturnLocalControlRequest{});
     if (Response && Response->Status == desklink::ControlStatus::Ok) {
         ApplyState(desklink::ProductShellState::ConnectedLocal);
@@ -2465,6 +2609,14 @@ Windows::Foundation::IAsyncAction MainWindow::ShowPairingCandidate(
     PairingDialogActive_ = false;
     PairingDialog_ = nullptr;
     ModalDialogActive_ = false;
+    if (PresentedPairingOperation_ &&
+        PresentedPairingOperation_->OperationId == Candidate.OperationId &&
+        IsTerminalPairingPhase(PresentedPairingOperation_->Phase)) {
+        // Polling may close the dialog after the broker has already reached a
+        // terminal result. Do not overwrite that result with a stale resolve.
+        DisplayedPairingOperation_ = 0;
+        co_return;
+    }
     const bool Approved = Result == ContentDialogResult::Primary;
     const auto Response = Send(
         desklink::ResolvePairingCandidateControlRequest{

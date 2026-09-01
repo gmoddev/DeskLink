@@ -75,7 +75,7 @@ add_library(desklink_core
 
 target_include_directories(desklink_core PUBLIC include)
 
-target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=2)
+target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=3)
 
 if(MSVC)
     target_compile_options(desklink_core PRIVATE /W4 /permissive-)

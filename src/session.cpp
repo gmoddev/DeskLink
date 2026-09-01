@@ -1,6 +1,7 @@
 #include "desklink/session.hpp"
 
 #include <algorithm>
+#include <limits>
 
 namespace desklink {
 namespace {
@@ -591,6 +592,9 @@ bool PeerSession::Start() {
             if (Handler) Handler(Reason);
         });
     CapabilityConflict_ = false;
+    LocalCapabilityRevision_ = 1;
+    RemoteCapabilityRevision_ = 0;
+    AcknowledgedLocalCapabilityRevision_ = 0;
     Started_ = true;
     (void)PublishCapabilityGrantLocked();
     return true;
@@ -620,7 +624,11 @@ void PeerSession::Stop() noexcept {
         AudioDatagramSequence_ = 1;
         TopologySequence_ = 1;
         CapabilityConflict_ = false;
+        LocalCapabilityRevision_ = 1;
+        RemoteCapabilityRevision_ = 0;
+        AcknowledgedLocalCapabilityRevision_ = 0;
     }
+    CapabilityChanged_.notify_all();
 }
 
 void PeerSession::Tick() noexcept {
@@ -652,6 +660,68 @@ void PeerSession::FailLocalDirections() noexcept {
         FailLocalDirectionsLocked();
     }
     if (Handlers_.DirectionChanged) Handlers_.DirectionChanged();
+}
+
+bool PeerSession::RefreshLocalCapabilities(
+    std::chrono::milliseconds Timeout) {
+    bool NotifyDirectionChanged = false;
+    std::unique_lock Lock(Mutex_);
+    if (!Started_ || CapabilityConflict_ || Timeout.count() <= 0) {
+        return false;
+    }
+    const auto Trusted = GetTrustedTransportPeer(Transport_, TrustStore_);
+    if (!Trusted || Trusted->Identity.machine_id != PeerMachine_) {
+        CapabilityConflict_ = true;
+        FailLocalDirectionsLocked();
+        CapabilityChanged_.notify_all();
+        return false;
+    }
+    if (Trusted->Capabilities == LocalCapabilities_) return true;
+    if (LocalCapabilityRevision_ ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        CapabilityConflict_ = true;
+        FailLocalDirectionsLocked();
+        CapabilityChanged_.notify_all();
+        return false;
+    }
+
+    FailLocalDirectionsLocked();
+    NotifyDirectionChanged = true;
+    LocalCapabilities_ = Trusted->Capabilities;
+    IncomingCoordinator_.set_peer_capabilities(LocalCapabilities_);
+    TopologyExchange_.Begin(
+        PeerMachine_, SessionNonce_, TopologyOptions_.Enabled,
+        LocalCapabilities_.contains(
+            Capability::DisplayTopologyExchange));
+    ClipboardExchange_.SetLocalCapabilities(LocalCapabilities_);
+    ++LocalCapabilityRevision_;
+    const auto Revision = LocalCapabilityRevision_;
+    if (!PublishCapabilityGrantLocked()) {
+        Lock.unlock();
+        if (NotifyDirectionChanged && Handlers_.DirectionChanged) {
+            Handlers_.DirectionChanged();
+        }
+        return false;
+    }
+    (void)PublishClipboardHelloLocked();
+    const bool Acknowledged = CapabilityChanged_.wait_for(
+        Lock, Timeout, [&] {
+            return !Started_ || CapabilityConflict_ ||
+                   AcknowledgedLocalCapabilityRevision_ >= Revision;
+        }) && Started_ && !CapabilityConflict_ &&
+        AcknowledgedLocalCapabilityRevision_ == Revision;
+    Lock.unlock();
+    if (NotifyDirectionChanged && Handlers_.DirectionChanged) {
+        Handlers_.DirectionChanged();
+    }
+    return Acknowledged;
+}
+
+void PeerSession::SetClipboardEnabled(bool Enabled) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_) return;
+    ClipboardExchange_.SetEnabled(Enabled);
+    (void)PublishClipboardHelloLocked();
 }
 
 void PeerSession::SetLocalDesiredMode(DeskMode Mode) noexcept {
@@ -987,10 +1057,26 @@ bool PeerSession::PublishCapabilityGrantLocked() {
     if (ReliableSequence_ == 0) ++ReliableSequence_;
     if (!Transport_->send_reliable(encode_packet(
             Header, CapabilityGrantMessage{
-                LocalCapabilities_.bits()}))) {
+                LocalCapabilities_.bits(), LocalCapabilityRevision_}))) {
         return false;
     }
     ++Stats_.CapabilityGrantsSent;
+    return true;
+}
+
+bool PeerSession::PublishCapabilityGrantAckLocked(
+    std::uint64_t Capabilities, std::uint64_t Revision) {
+    if (!Started_ || Revision == 0) return false;
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = ReliableSequence_++;
+    if (ReliableSequence_ == 0) ++ReliableSequence_;
+    if (!Transport_->send_reliable(encode_packet(
+            Header, CapabilityGrantAckMessage{
+                Capabilities, Revision}))) {
+        return false;
+    }
+    ++Stats_.CapabilityGrantAcksSent;
     return true;
 }
 
@@ -1074,31 +1160,72 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
         const auto Type = Decoded.packet->header.type;
         if (Type == MessageType::CapabilityGrant) {
             ++Stats_.CapabilityGrantsReceived;
-            const auto Bits = std::get<CapabilityGrantMessage>(
-                Decoded.packet->message).capabilities;
+            const auto Grant = std::get<CapabilityGrantMessage>(
+                Decoded.packet->message);
+            const auto Bits = Grant.capabilities;
             const bool InvalidBits = (Bits & ~kKnownCapabilityBits) != 0;
-            const bool ChangedGrant = RemoteCapabilities_ &&
-                RemoteCapabilities_->bits() != Bits;
-            if (InvalidBits || ChangedGrant || CapabilityConflict_) {
+            const bool FirstGrant = !RemoteCapabilities_;
+            const bool SameGrant = RemoteCapabilities_ &&
+                RemoteCapabilityRevision_ == Grant.revision &&
+                RemoteCapabilities_->bits() == Bits;
+            const bool NextGrant = RemoteCapabilities_ &&
+                RemoteCapabilityRevision_ !=
+                    std::numeric_limits<std::uint64_t>::max() &&
+                Grant.revision == RemoteCapabilityRevision_ + 1;
+            const bool ValidRevision = FirstGrant
+                ? Grant.revision == 1
+                : SameGrant || NextGrant;
+            if (InvalidBits || !ValidRevision || CapabilityConflict_) {
                 ++Stats_.CapabilityGrantsRejected;
                 if (!CapabilityConflict_) {
                     CapabilityConflict_ = true;
                     RemoteCapabilities_.reset();
+                    RemoteCapabilityRevision_ = 0;
                     ClipboardExchange_.SetRemoteCapabilities(std::nullopt);
                     FailLocalDirectionsLocked();
                     NotifyDirectionChanged = true;
+                    CapabilityChanged_.notify_all();
                 }
             } else {
-                const bool FirstGrant = !RemoteCapabilities_;
-                RemoteCapabilities_ = CapabilitySet(Bits);
-                ClipboardExchange_.SetRemoteCapabilities(
-                    RemoteCapabilities_);
-                if (FirstGrant) {
-                    (void)PublishCapabilityGrantLocked();
-                    (void)PublishClipboardHelloLocked();
+                const bool ChangedGrant = !SameGrant && !FirstGrant;
+                if (ChangedGrant) {
+                    FailLocalDirectionsLocked();
                     NotifyDirectionChanged = true;
                 }
+                RemoteCapabilities_ = CapabilitySet(Bits);
+                RemoteCapabilityRevision_ = Grant.revision;
+                ClipboardExchange_.SetRemoteCapabilities(
+                    RemoteCapabilities_);
+                (void)PublishCapabilityGrantAckLocked(
+                    Bits, Grant.revision);
+                if (FirstGrant) {
+                    (void)PublishCapabilityGrantLocked();
+                    NotifyDirectionChanged = true;
+                }
+                (void)PublishClipboardHelloLocked();
             }
+        } else if (Type == MessageType::CapabilityGrantAck) {
+            ++Stats_.CapabilityGrantAcksReceived;
+            const auto Ack = std::get<CapabilityGrantAckMessage>(
+                Decoded.packet->message);
+            const bool InvalidBits =
+                (Ack.capabilities & ~kKnownCapabilityBits) != 0;
+            if (InvalidBits || Ack.revision > LocalCapabilityRevision_ ||
+                (Ack.revision == LocalCapabilityRevision_ &&
+                 Ack.capabilities != LocalCapabilities_.bits()) ||
+                CapabilityConflict_) {
+                ++Stats_.CapabilityGrantAcksRejected;
+                if (!CapabilityConflict_) {
+                    CapabilityConflict_ = true;
+                    FailLocalDirectionsLocked();
+                    NotifyDirectionChanged = true;
+                }
+            } else if (Ack.revision == LocalCapabilityRevision_) {
+                AcknowledgedLocalCapabilityRevision_ = Ack.revision;
+            } else {
+                ++Stats_.CapabilityGrantAcksRejected;
+            }
+            CapabilityChanged_.notify_all();
         } else if (Type == MessageType::DisplayTopologySnapshot) {
             ++Stats_.TopologyReceived;
             if (TopologyExchange_.Admit(

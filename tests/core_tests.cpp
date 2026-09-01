@@ -430,14 +430,28 @@ void SaveTrustedPeer(desklink::InMemoryTrustStore& Store,
 class RecordingRuntimeSafetyController final
     : public desklink::IRuntimeSafetyController {
 public:
+    bool ReturnLocalForPeer(
+        const desklink::MachineId& Machine) noexcept override {
+        ReturnLocalCalls.push_back(Machine);
+        return Succeeds;
+    }
+
+    bool RefreshPeerCapabilities(
+        const desklink::MachineId& Machine) noexcept override {
+        RefreshCalls.push_back(Machine);
+        return Succeeds;
+    }
+
     bool ReturnLocalAndStopPeer(
         const desklink::MachineId& Machine) noexcept override {
-        Calls.push_back(Machine);
+        StopCalls.push_back(Machine);
         return Succeeds;
     }
 
     bool Succeeds{true};
-    std::vector<desklink::MachineId> Calls;
+    std::vector<desklink::MachineId> ReturnLocalCalls;
+    std::vector<desklink::MachineId> RefreshCalls;
+    std::vector<desklink::MachineId> StopCalls;
 };
 
 void CallbackGateClosesAndDrainsAdmittedCallbacks() {
@@ -537,6 +551,24 @@ void protocol_round_trip() {
     CHECK(got.display_id == 3);
     CHECK(got.normalized_x == 12345);
     CHECK(got.normalized_y == 54321);
+
+    const auto GrantBytes = encode_packet(
+        h, CapabilityGrantMessage{0x55, 7});
+    const auto GrantDecoded = decode_packet(GrantBytes, false);
+    CHECK(GrantDecoded.packet.has_value());
+    const auto& Grant = std::get<CapabilityGrantMessage>(
+        GrantDecoded.packet->message);
+    CHECK(Grant.capabilities == 0x55);
+    CHECK(Grant.revision == 7);
+
+    const auto AckBytes = encode_packet(
+        h, CapabilityGrantAckMessage{0x55, 7});
+    const auto AckDecoded = decode_packet(AckBytes, false);
+    CHECK(AckDecoded.packet.has_value());
+    const auto& Ack = std::get<CapabilityGrantAckMessage>(
+        AckDecoded.packet->message);
+    CHECK(Ack.capabilities == 0x55);
+    CHECK(Ack.revision == 7);
 }
 
 void PointerMotionRoundTripAndValidation() {
@@ -583,7 +615,7 @@ void ControlProtocolRoundTripAndValidation() {
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
     ControlPairingToken PairingToken{};
     PairingToken[0] = 0x41;
-    const std::array<ControlRequest, 27> Requests{
+    const std::array<ControlRequest, 30> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -626,6 +658,11 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{26, GetPermissionCandidateControlRequest{}},
         ControlRequest{27, ResolvePermissionCandidateControlRequest{
             45, true}},
+        ControlRequest{28, GetPairingOperationControlRequest{}},
+        ControlRequest{29, RefreshTrustedPeerCapabilitiesControlRequest{
+            MakeMachineId(8)}},
+        ControlRequest{30, ApplyManagedPreferencesControlRequest{
+            Preferences}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -755,6 +792,19 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(DecodedDecision.Decoded.has_value());
     CHECK(DecodedDecision.Decoded->PairingDecision ==
           ControlManagedPairingDecision::Rejected);
+
+    const ControlPairingOperation PairingOperation{
+        44, ControlPairingPhase::Succeeded};
+    ControlResponse OperationResponse{21, ControlStatus::Ok};
+    OperationResponse.PairingOperation = PairingOperation;
+    const auto OperationFrame = EncodeControlResponse(OperationResponse);
+    CHECK(OperationFrame.has_value());
+    const auto DecodedOperation = DecodeControlResponse(*OperationFrame);
+    CHECK(DecodedOperation.Decoded.has_value());
+    CHECK(DecodedOperation.Decoded->PairingOperation == PairingOperation);
+    CHECK(IsValidControlPairingOperation(PairingOperation));
+    CHECK(!IsValidControlPairingOperation(ControlPairingOperation{
+        0, ControlPairingPhase::Succeeded}));
 
     CapabilitySet DesiredPermissions = RequestedCapabilities;
     DesiredPermissions.grant(Capability::ClipboardRead);
@@ -997,7 +1047,9 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     Broader.grant(Capability::ClipboardRead);
     CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Broader) ==
           TrustMutationStatus::ReauthorizationRequired);
-    CHECK(Safety.Calls.empty());
+    CHECK(Safety.ReturnLocalCalls.empty());
+    CHECK(Safety.RefreshCalls.empty());
+    CHECK(Safety.StopCalls.empty());
     CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
           Initial.bits());
 
@@ -1011,7 +1063,9 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
               AlphaBefore->Identity, AlphaBefore->Capabilities,
               AlphaDesired) == TrustMutationStatus::Applied);
-    CHECK(ReauthorizationSafety.Calls.size() == 1);
+    CHECK(ReauthorizationSafety.ReturnLocalCalls.size() == 1);
+    CHECK(ReauthorizationSafety.RefreshCalls.size() == 1);
+    CHECK(ReauthorizationSafety.StopCalls.empty());
     const auto AlphaAfter = Store.GetPeer(Alpha.machine_id);
     CHECK(AlphaAfter.has_value());
     CHECK(AlphaAfter->Identity == AlphaBefore->Identity);
@@ -1020,7 +1074,8 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
               AlphaBefore->Identity, AlphaBefore->Capabilities,
               AlphaDesired) ==
           TrustMutationStatus::ReauthorizationRequired);
-    CHECK(ReauthorizationSafety.Calls.size() == 1);
+    CHECK(ReauthorizationSafety.ReturnLocalCalls.size() == 1);
+    CHECK(ReauthorizationSafety.RefreshCalls.size() == 1);
     auto WrongAlphaIdentity = AlphaAfter->Identity;
     WrongAlphaIdentity.public_key_fingerprint =
         FormatFingerprint(MakeDigest(99));
@@ -1029,36 +1084,47 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
               WrongAlphaIdentity, AlphaDesired, AlphaBroader) ==
           TrustMutationStatus::InvalidRequest);
-    CHECK(ReauthorizationSafety.Calls.size() == 1);
+    CHECK(ReauthorizationSafety.ReturnLocalCalls.size() == 1);
+    CHECK(ReauthorizationSafety.RefreshCalls.size() == 1);
     ReauthorizationSafety.Succeeds = false;
     CHECK(ReauthorizationAuthority.ApplyReauthorizedPermissionChange(
               AlphaAfter->Identity, AlphaDesired, AlphaBroader) ==
           TrustMutationStatus::CleanupFailed);
+    CHECK(ReauthorizationSafety.ReturnLocalCalls.size() == 2);
+    CHECK(ReauthorizationSafety.RefreshCalls.size() == 1);
+    CHECK(ReauthorizationSafety.StopCalls.empty());
     CHECK(Store.GetPeer(Alpha.machine_id)->Capabilities == AlphaDesired);
 
     CapabilitySet Reduced;
     Reduced.grant(Capability::InputInject);
     CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Reduced) ==
           TrustMutationStatus::Applied);
-    CHECK(Safety.Calls.size() == 1);
+    CHECK(Safety.ReturnLocalCalls.size() == 1);
+    CHECK(Safety.RefreshCalls.size() == 1);
+    CHECK(Safety.StopCalls.empty());
     CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
           Reduced.bits());
     CHECK(Authority.RequestPermissionChange(Zulu.machine_id, Reduced) ==
           TrustMutationStatus::NoChange);
-    CHECK(Safety.Calls.size() == 1);
+    CHECK(Safety.ReturnLocalCalls.size() == 1);
+    CHECK(Safety.RefreshCalls.size() == 1);
 
     Safety.Succeeds = false;
     CHECK(Authority.RequestPermissionChange(Zulu.machine_id, {}) ==
           TrustMutationStatus::CleanupFailed);
+    CHECK(Safety.ReturnLocalCalls.size() == 2);
+    CHECK(Safety.RefreshCalls.size() == 1);
     CHECK(Store.GetPeer(Zulu.machine_id)->Capabilities.bits() ==
           Reduced.bits());
     CHECK(Authority.ForgetPeer(Zulu.machine_id) ==
           TrustMutationStatus::CleanupFailed);
+    CHECK(Safety.StopCalls.size() == 1);
     CHECK(Store.GetPeer(Zulu.machine_id).has_value());
 
     Safety.Succeeds = true;
     CHECK(Authority.ForgetPeer(Zulu.machine_id) ==
           TrustMutationStatus::Applied);
+    CHECK(Safety.StopCalls.size() == 2);
     CHECK(!Store.GetPeer(Zulu.machine_id).has_value());
     CHECK(Authority.ForgetPeer(Zulu.machine_id) ==
           TrustMutationStatus::PeerNotFound);
@@ -2316,6 +2382,61 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(!SessionA.IncomingFocused());
     CHECK(InjectorA.release_calls == ReleasesBeforeClose + 1);
+}
+
+void PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x72'83'94u;
+    const auto IdentityA = MakeIdentity(113, "Renegotiation A");
+    const auto IdentityB = MakeIdentity(114, "Renegotiation B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+
+    CapabilitySet InputCapability;
+    InputCapability.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, InputCapability);
+    SaveTrustedPeer(TrustB, IdentityA, InputCapability);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce);
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionB.BeginOutgoingFocus());
+    CHECK(SessionB.OutgoingFocused());
+    CHECK(SessionA.IncomingFocused());
+
+    SaveTrustedPeer(TrustA, IdentityB, CapabilitySet{});
+    CHECK(SessionA.RefreshLocalCapabilities());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(!SessionB.PeerGrantedCapability(Capability::InputInject));
+    CHECK(!SessionB.BeginOutgoingFocus());
+    CHECK(SessionA.PeerGrantedCapability(Capability::InputInject));
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionA.ReleaseOutgoingFocus());
+
+    SaveTrustedPeer(TrustA, IdentityB, InputCapability);
+    CHECK(SessionA.RefreshLocalCapabilities());
+    CHECK(SessionB.PeerGrantedCapability(Capability::InputInject));
+    CHECK(SessionB.BeginOutgoingFocus());
+    CHECK(SessionB.OutgoingFocused());
+    CHECK(SessionB.ReleaseOutgoingFocus());
+    CHECK(SessionA.Stats().CapabilityGrantsSent >= 3);
+    CHECK(SessionA.Stats().CapabilityGrantAcksReceived >= 3);
+    CHECK(SessionB.Stats().CapabilityGrantsReceived >= 3);
+    CHECK(SessionB.Stats().CapabilityGrantAcksSent >= 3);
 }
 
 void PeerSessionResolvesSimultaneousFocusToLocal() {
@@ -6036,6 +6157,7 @@ int main() {
     RoamingRuntimeRecordedTracesRequireOutwardIntent();
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
+    PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();
     PeerSessionResolvesSimultaneousFocusToLocal();
     PeerSessionRequiresTheRemoteDirectionalGrant();
     PeerSessionFailsLocalOnAnInvalidCapabilityReplay();

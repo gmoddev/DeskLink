@@ -278,14 +278,19 @@ TrustMutationStatus RuntimeTrustAuthority::RequestPermissionChange(
         // required to cross this boundary.
         return TrustMutationStatus::ReauthorizationRequired;
     }
-    if (!SafetyController_.ReturnLocalAndStopPeer(Machine)) {
+    if (!SafetyController_.ReturnLocalForPeer(Machine)) {
         return TrustMutationStatus::CleanupFailed;
     }
     auto Updated = *Existing;
     Updated.Capabilities = DesiredCapabilities;
-    return TrustStore_.SavePeer(std::move(Updated))
-        ? TrustMutationStatus::Applied
-        : TrustMutationStatus::StoreFailed;
+    if (!TrustStore_.SavePeer(std::move(Updated))) {
+        return TrustMutationStatus::StoreFailed;
+    }
+    if (!SafetyController_.RefreshPeerCapabilities(Machine)) {
+        (void)SafetyController_.ReturnLocalAndStopPeer(Machine);
+        return TrustMutationStatus::CleanupFailed;
+    }
+    return TrustMutationStatus::Applied;
 }
 
 TrustMutationStatus RuntimeTrustAuthority::ApplyReauthorizedPermissionChange(
@@ -312,15 +317,22 @@ TrustMutationStatus RuntimeTrustAuthority::ApplyReauthorizedPermissionChange(
         Existing->Capabilities.bits() != ExpectedCapabilities.bits()) {
         return TrustMutationStatus::ReauthorizationRequired;
     }
-    if (!SafetyController_.ReturnLocalAndStopPeer(
+    if (!SafetyController_.ReturnLocalForPeer(
             ExpectedIdentity.machine_id)) {
         return TrustMutationStatus::CleanupFailed;
     }
     auto Updated = *Existing;
     Updated.Capabilities = DesiredCapabilities;
-    return TrustStore_.SavePeer(std::move(Updated))
-        ? TrustMutationStatus::Applied
-        : TrustMutationStatus::StoreFailed;
+    if (!TrustStore_.SavePeer(std::move(Updated))) {
+        return TrustMutationStatus::StoreFailed;
+    }
+    if (!SafetyController_.RefreshPeerCapabilities(
+            ExpectedIdentity.machine_id)) {
+        (void)SafetyController_.ReturnLocalAndStopPeer(
+            ExpectedIdentity.machine_id);
+        return TrustMutationStatus::CleanupFailed;
+    }
+    return TrustMutationStatus::Applied;
 }
 
 TrustMutationStatus RuntimeTrustAuthority::ForgetPeer(

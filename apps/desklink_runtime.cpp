@@ -47,6 +47,7 @@ constexpr wchar_t kProductShellMutexName[] = L"Local\\DeskLink.Shell.v1";
 constexpr std::uint16_t kProductionPort = 43'821;
 constexpr auto kPairingCandidateLifetime = std::chrono::seconds(90);
 constexpr auto kPermissionCandidateLifetime = std::chrono::seconds(90);
+constexpr auto kManagedPairingWindow = std::chrono::minutes(5);
 
 class UniqueHandle final {
 public:
@@ -197,6 +198,29 @@ public:
             Sleep(25);
         }
         return !RuntimeProcessMayExist();
+    }
+
+    bool ReturnLocalForPeer(
+        const desklink::MachineId&) noexcept override {
+        return ReturnLocalOnly();
+    }
+
+    bool RefreshPeerCapabilities(
+        const desklink::MachineId& Machine) noexcept override {
+        if (!RuntimeProcessMayExist()) return true;
+        const auto Response = ForwardToActiveRuntime(
+            desklink::ControlRequest{
+                NextRequestId_.fetch_add(1),
+                desklink::RefreshTrustedPeerCapabilitiesControlRequest{
+                    Machine}},
+            std::chrono::milliseconds{2'500});
+        if (Response && Response->Status == desklink::ControlStatus::NotReady) {
+            std::cout
+                << "[Broker:Capabilities] peer is offline; persisted grant will apply on its next authenticated session\n";
+            return true;
+        }
+        return Response &&
+               Response->Status == desklink::ControlStatus::Ok;
     }
 
     bool ReturnLocalAndStopPeer(
@@ -469,6 +493,40 @@ public:
         }
         Changed_.notify_all();
         return Stopped;
+    }
+
+    [[nodiscard]] bool ApplyPreferences(
+        const desklink::ProductPreferences& Previous,
+        const desklink::ProductPreferences& Current) noexcept {
+        const bool RuntimeOwnershipChanged =
+            Previous.Role != Current.Role ||
+            Previous.PreferredPeerMachine != Current.PreferredPeerMachine ||
+            Previous.PreferredPeerEndpoint != Current.PreferredPeerEndpoint ||
+            Previous.AutoStartRuntime != Current.AutoStartRuntime ||
+            Previous.AutoConnect != Current.AutoConnect;
+        if (RuntimeOwnershipChanged || !RuntimeProcessMayExist()) {
+            return ConfigurationChanged();
+        }
+
+        const auto Response = ForwardToActiveRuntime(
+            desklink::ControlRequest{
+                NextRequestId_.fetch_add(1),
+                desklink::ApplyManagedPreferencesControlRequest{Current}},
+            std::chrono::milliseconds{2'500});
+        if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+            std::cerr
+                << "[Broker:Configuration] live negotiation failed; performing fail-local managed restart\n";
+            return ConfigurationChanged();
+        }
+        {
+            std::scoped_lock Lock(Mutex_);
+            ChildPreferences_ = Current;
+            RoamingArmed_ = Current.InputRoamingDesired;
+            AudioGainApplied_ = true;
+        }
+        std::cout
+            << "[Broker:Configuration] settings negotiated without closing the authenticated session\n";
+        return true;
     }
 
     [[nodiscard]] bool BeginPairingOperation() noexcept {
@@ -759,21 +817,23 @@ private:
         Request.Port = Port;
         Request.ExpectedPeerMachine = *Preferences.PreferredPeerMachine;
         Request.BrokerManaged = true;
+        // Keep the local capture/roaming machinery available but routed Local.
+        // Focus and edge-roaming settings can then be negotiated in-session
+        // without rebuilding the authenticated transport.
+        Request.CaptureInput = true;
+        Request.EdgeRoamingSettingsPath = RoamingSettingsPath_;
+        Request.ProfileDefaultMode = Preferences.InputRoamingDesired
+            ? desklink::DeskMode::Roam
+            : desklink::DeskMode::LockPc1;
+        Request.KeepLocalWhenFullscreen =
+            Preferences.Gaming == desklink::GamingBehavior::KeepLocal;
+        Request.ProfileRules = Preferences.ProfileRules;
         Request.SyncClipboard = Preferences.ClipboardDesired;
         Request.ReceiveAudio =
             Preferences.AudioRoute ==
                 desklink::AudioRoutePreference::PeerToLocal ||
             Preferences.AudioRoute ==
                 desklink::AudioRoutePreference::Bidirectional;
-        if (Preferences.InputRoamingDesired &&
-            std::filesystem::is_regular_file(RoamingSettingsPath_)) {
-            Request.CaptureInput = true;
-            Request.EdgeRoamingSettingsPath = RoamingSettingsPath_;
-            Request.ProfileDefaultMode = desklink::DeskMode::Roam;
-            Request.KeepLocalWhenFullscreen =
-                Preferences.Gaming == desklink::GamingBehavior::KeepLocal;
-            Request.ProfileRules = Preferences.ProfileRules;
-        }
         return Launch(Request, Preferences);
     }
 
@@ -876,17 +936,27 @@ private:
         }
 
         bool Intentional{};
+        bool WasBlocked{};
         {
             std::scoped_lock Lock(Mutex_);
             Process_.Reset();
             Intentional = std::exchange(IntentionalStop_, false);
+            WasBlocked = Blocked_;
+            if (ExitCode == 0 && (Intentional || WasBlocked)) {
+                // An orderly child exit proves its fail-local cleanup finished.
+                // Clear a previous cleanup block so the managed session can be
+                // recreated from persisted configuration.
+                Blocked_ = false;
+                Reconnect_.ResetForConfiguration(Clock_.now());
+            }
         }
         std::cout << "[Broker:Process] managed transport exited; code="
                   << ExitCode << '\n';
-        if (!Intentional) {
+        if (!Intentional && !(WasBlocked && ExitCode == 0)) {
             RecordFailure(
                 desklink::ClassifyBrokerManagedProcessExit(ExitCode));
         }
+        Changed_.notify_all();
         return true;
     }
 
@@ -1199,6 +1269,8 @@ public:
             return false;
         }
         Operation_->CandidatePresented = true;
+        Operation_->Phase =
+            desklink::ControlPairingPhase::VerificationRequired;
         return true;
     }
 
@@ -1219,6 +1291,9 @@ public:
         Operation_->Decision = Approved
             ? desklink::ControlManagedPairingDecision::Approved
             : desklink::ControlManagedPairingDecision::Rejected;
+        Operation_->Phase = Approved
+            ? desklink::ControlPairingPhase::AwaitingPeer
+            : desklink::ControlPairingPhase::Canceled;
         return true;
     }
 
@@ -1233,12 +1308,18 @@ public:
         }
         if (Operation_->Decision ==
                 desklink::ControlManagedPairingDecision::Pending &&
-            Operation_->CandidatePresented &&
-            (!ProductShellPresent() ||
-             !Candidates_.Current(Clock_.now()))) {
+            Operation_->CandidatePresented) {
+            const bool ShellPresent = ProductShellPresent();
+            const auto Candidate = Candidates_.Current(Clock_.now());
+            if (ShellPresent && Candidate) {
+                return Operation_->Decision;
+            }
             Candidates_.Reject(Request.OperationId);
             Operation_->Decision =
                 desklink::ControlManagedPairingDecision::Rejected;
+            Operation_->Phase = ShellPresent
+                ? desklink::ControlPairingPhase::TimedOut
+                : desklink::ControlPairingPhase::Canceled;
         }
         return Operation_->Decision;
     }
@@ -1251,6 +1332,14 @@ public:
             : desklink::ControlPairingSource::Incoming;
     }
 
+    [[nodiscard]] std::optional<desklink::ControlPairingOperation>
+    Snapshot() const noexcept {
+        std::scoped_lock Lock(Mutex_);
+        if (!Operation_) return std::nullopt;
+        return desklink::ControlPairingOperation{
+            Operation_->OperationId, Operation_->Phase};
+    }
+
     void Stop() noexcept {
         UniqueHandle Process;
         std::thread Worker;
@@ -1261,6 +1350,8 @@ public:
                 Candidates_.Reject(Operation_->OperationId);
                 Operation_->Decision =
                     desklink::ControlManagedPairingDecision::Rejected;
+                Operation_->Phase =
+                    desklink::ControlPairingPhase::Canceled;
             }
             if (Process_) {
                 HANDLE Duplicate{};
@@ -1288,6 +1379,9 @@ private:
         desklink::CapabilitySet RequestedCapabilities;
         desklink::ControlManagedPairingDecision Decision{
             desklink::ControlManagedPairingDecision::Pending};
+        desklink::ControlPairingPhase Phase{
+            desklink::ControlPairingPhase::WaitingForPeer};
+        desklink::IClock::time_point StartedAt{};
         bool CandidatePresented{};
         bool Active{};
     };
@@ -1333,6 +1427,7 @@ private:
         }
         Result.Source = Source;
         Result.RequestedCapabilities = RequestedCapabilities;
+        Result.Phase = desklink::ControlPairingPhase::WaitingForPeer;
         Result.Active = true;
         return Result;
     }
@@ -1352,12 +1447,13 @@ private:
             if (Worker_.joinable()) Previous = std::move(Worker_);
         }
         if (Previous.joinable()) Previous.join();
-        const auto Operation = NewOperation(Source, RequestedCapabilities);
+        auto Operation = NewOperation(Source, RequestedCapabilities);
         if (!Operation || !Supervisor_.BeginPairingOperation()) {
             std::scoped_lock Lock(Mutex_);
             Starting_ = false;
             return false;
         }
+        Operation->StartedAt = Clock_.now();
         {
             std::scoped_lock Lock(Mutex_);
             if (Stopping_) {
@@ -1432,6 +1528,19 @@ private:
                     Process_.Reset();
                     if (Operation_ &&
                         Operation_->OperationId == OperationId) {
+                        if (ExitCode == 0 && TrustReady) {
+                            Operation_->Phase =
+                                desklink::ControlPairingPhase::Succeeded;
+                        } else if (Operation_->Phase !=
+                                       desklink::ControlPairingPhase::Canceled &&
+                                   Operation_->Phase !=
+                                       desklink::ControlPairingPhase::TimedOut) {
+                            Operation_->Phase =
+                                Clock_.now() - Operation_->StartedAt >=
+                                    kManagedPairingWindow
+                                ? desklink::ControlPairingPhase::TimedOut
+                                : desklink::ControlPairingPhase::Failed;
+                        }
                         Operation_->Active = false;
                     }
                 }
@@ -1662,7 +1771,10 @@ int wmain(int Count, wchar_t** Values) {
                         Previous->RunAtLogin, ProductShellPath);
                 }
                 const bool Reconciled = !Saved ||
-                    Supervisor.ConfigurationChanged();
+                    (Previous
+                        ? Supervisor.ApplyPreferences(
+                            *Previous, Set->Preferences)
+                        : Supervisor.ConfigurationChanged());
                 return desklink::ControlResponse{
                     Request.RequestId,
                     !Saved
@@ -1716,12 +1828,8 @@ int wmain(int Count, wchar_t** Values) {
                 if (!AddsAuthority) {
                     const auto Status = TrustAuthority.RequestPermissionChange(
                         Change->Machine, Change->DesiredCapabilities);
-                    if ((Status == desklink::TrustMutationStatus::Applied ||
-                         Status == desklink::TrustMutationStatus::NoChange) &&
-                        !Supervisor.ConfigurationChanged()) {
-                        return desklink::ControlResponse{
-                            Request.RequestId,
-                            desklink::ControlStatus::CleanupFailed};
+                    if (Status == desklink::TrustMutationStatus::CleanupFailed) {
+                        (void)Supervisor.ConfigurationChanged();
                     }
                     return desklink::ControlResponse{
                         Request.RequestId, MapMutationStatus(Status)};
@@ -1749,11 +1857,6 @@ int wmain(int Count, wchar_t** Values) {
                         Reduction != desklink::TrustMutationStatus::NoChange) {
                         return desklink::ControlResponse{
                             Request.RequestId, MapMutationStatus(Reduction)};
-                    }
-                    if (!Supervisor.ConfigurationChanged()) {
-                        return desklink::ControlResponse{
-                            Request.RequestId,
-                            desklink::ControlStatus::CleanupFailed};
                     }
                 }
 
@@ -1822,6 +1925,17 @@ int wmain(int Count, wchar_t** Values) {
                 return Response;
             }
             if (std::holds_alternative<
+                    desklink::GetPairingOperationControlRequest>(
+                    Request.Payload)) {
+                const auto Operation = Pairing.Snapshot();
+                desklink::ControlResponse Response{
+                    Request.RequestId,
+                    Operation ? desklink::ControlStatus::Ok
+                              : desklink::ControlStatus::NotReady};
+                Response.PairingOperation = Operation;
+                return Response;
+            }
+            if (std::holds_alternative<
                     desklink::GetPermissionCandidateControlRequest>(
                     Request.Payload)) {
                 if (!ProductShellPresent()) {
@@ -1870,12 +1984,8 @@ int wmain(int Count, wchar_t** Values) {
                         Approved->Identity,
                         Approved->CurrentCapabilities,
                         Approved->DesiredCapabilities);
-                if ((Status == desklink::TrustMutationStatus::Applied ||
-                     Status == desklink::TrustMutationStatus::NoChange) &&
-                    !Supervisor.ConfigurationChanged()) {
-                    return desklink::ControlResponse{
-                        Request.RequestId,
-                        desklink::ControlStatus::CleanupFailed};
+                if (Status == desklink::TrustMutationStatus::CleanupFailed) {
+                    (void)Supervisor.ConfigurationChanged();
                 }
                 return desklink::ControlResponse{
                     Request.RequestId, MapMutationStatus(Status)};
@@ -2028,6 +2138,17 @@ int wmain(int Count, wchar_t** Values) {
                 return desklink::ControlResponse{
                     Request.RequestId, desklink::ControlStatus::Ok,
                     State};
+            }
+            if (std::holds_alternative<
+                    desklink::RefreshTrustedPeerCapabilitiesControlRequest>(
+                    Request.Payload) ||
+                std::holds_alternative<
+                    desklink::ApplyManagedPreferencesControlRequest>(
+                    Request.Payload)) {
+                // These are broker-to-child commands. Never let an ordinary
+                // same-user client bypass persisted broker policy with them.
+                return desklink::ControlResponse{
+                    Request.RequestId, desklink::ControlStatus::Unsupported};
             }
             const auto Forwarded = RuntimeProcessMayExist()
                 ? ForwardToActiveRuntime(Request)

@@ -558,11 +558,11 @@ The API defines high-level operations only:
 ```text
 GetState             implemented
 SetDesiredMode       implemented
-FocusMachine         typed, currently unsupported
+FocusMachine         implemented for the exact active authenticated peer
 SetAudioGain         implemented as local bounded render policy
 ToggleAudioMute      implemented as local bounded render policy
 GetProductPreferences implemented as validated current-user policy
-SetProductPreferences implemented with fail-local runtime reconciliation
+SetProductPreferences implemented with in-session negotiation and fail-local restart fallback
 ListTrustedDevices   implemented as bounded metadata/grants only
 RequestLocalPermissionChange reductions immediately; additions require an
                              expiring broker-owned local authorization prompt
@@ -573,6 +573,9 @@ PairNearbyPeer       unique/open/compatible cached record only
 PairManualAddress    bounded explicit fallback through the same pairing lane
 Get/ResolvePairingCandidate expiring reject-default local approval
 Present/GetManagedPairingDecision token-bound internal child bridge only
+GetPairingOperation  bounded terminal and in-progress presentation state
+RefreshTrustedPeerCapabilities exact revisioned internal child negotiation only
+ApplyManagedPreferences internal child negotiation only
 PauseDeskLink        implemented as fail-local supervised stop
 ResumeDeskLink       implemented as Local-first supervised start
 ReturnLocal          implemented

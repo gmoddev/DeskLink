@@ -1,4 +1,4 @@
-# DeskLink Wire Protocol V2
+# DeskLink Wire Protocol V3
 
 ## 1. Scope
 
@@ -17,7 +17,7 @@ Every message has a 36-byte envelope:
 | Field | Size | Description |
 |---|---:|---|
 | magic | 4 | `DLNK` / `0x444C4E4B` |
-| version | 2 | protocol version, currently `2` |
+| version | 2 | protocol version, currently `3` |
 | message_type | 2 | `MessageType` |
 | payload_size | 4 | bytes following envelope |
 | session_nonce | 8 | local logical session identifier |
@@ -35,6 +35,7 @@ The decoder rejects trailing bytes and truncated payloads.
 ```text
 Hello
 CapabilityGrant
+CapabilityGrantAck
 SetMode
 FocusRequest
 FocusReady
@@ -80,18 +81,35 @@ offered_capabilities    u64
 
 ```text
 capabilities            u64
+revision                u64
 ```
 
 For a reciprocal `PeerSession`, this message is sent only after
 `PeerValidated` and fresh session-nonce negotiation. It reports the exact
 capabilities in the sender's persisted local trust record for that peer; it is
-not an offer and cannot modify either trust store. The first valid value is
-immutable for the connection. Exact replays are harmless, while unknown bits
-or a changed value invalidate remote-grant state and fail both input directions
-Local. A peer-reported value can gate this machine's outbound input attempt,
-but it never authorizes disclosure of this machine's audio, topology, or
-clipboard; those remain gated by this machine's persisted local grant. Recovery requires a new
-authenticated connection and nonce.
+not an offer and cannot modify either trust store. Revision 1 establishes the
+initial grant. An exact replay is harmless; each later update must use exactly
+the next revision and immediately fails both input directions Local before the
+new grant is used. Unknown bits, skipped/conflicting revisions, or a changed
+replay invalidate grant state and fail closed. The sender treats an update as
+complete only after receiving the exact matching acknowledgement. A
+peer-reported value can gate this machine's outbound input attempt, but it
+never authorizes disclosure of this machine's audio, topology, or clipboard;
+those remain gated by this machine's persisted local grant.
+
+### CapabilityGrantAck — type 3
+
+```text
+capabilities            u64
+revision                u64
+```
+
+The acknowledgement must exactly match the sender's current grant and
+revision. A future, conflicting, malformed, or otherwise invalid
+acknowledgement fails both directions Local. A stale acknowledgement is
+ignored and cannot complete an update. If the bounded acknowledgement wait
+expires, the broker stops that peer session fail-locally rather than assuming
+the permission change took effect.
 
 ### SetMode — type 10
 
@@ -413,7 +431,7 @@ Audio sequence numbers are consumed by the jitter buffer, which intentionally su
 
 The Windows named-pipe control surface uses a separate local-only binary
 protocol implemented in `control.cpp`; it is never carried over QUIC. Its
-20-byte header contains `DLCT` magic, version `3`, request/response frame type,
+20-byte header contains `DLCT` magic, version `7`, request/response frame type,
 a nonzero 64-bit request ID, and an exact 32-bit payload length. Payloads are
 limited to 512 KiB for bounded topology/device responses and trailing data is
 rejected.
@@ -424,7 +442,7 @@ Request command numbers are:
 |---:|---|---|---|
 | 1 | `GetState` | empty | returns bounded typed runtime state |
 | 2 | `SetDesiredMode` | one validated `DeskMode` byte | applies through the existing focus/session state machines |
-| 3 | `FocusMachine` | one nonzero 16-byte machine ID | `Unsupported` until persistent host orchestration exists |
+| 3 | `FocusMachine` | one nonzero 16-byte machine ID | immediately requests the exact active authenticated peer through normal focus admission |
 | 4 | `SetAudioGain` | unsigned permyriad, `0..10000` | applies bounded gain to the active Host peer receiver; otherwise `NotReady` |
 | 5 | `ToggleAudioMute` | empty | toggles mute on the active Host peer receiver; otherwise `NotReady` |
 | 6 | `GetDisplayTopologies` | empty | returns the bounded read-only current topology view |
@@ -447,6 +465,11 @@ Request command numbers are:
 | 23 | `ResolvePairingCandidate` | operation ID and approve/reject bit | resolves only the current expiring local candidate |
 | 24 | `PresentManagedPairingCandidate` | internal token, operation, identity binding, code, transcript, and grants | accepted only from the matching broker-launched operation; never returned to ordinary UI clients |
 | 25 | `GetManagedPairingDecision` | internal token and operation ID | returns pending/approved/rejected and fails closed on shell loss or expiry |
+| 26 | `GetPermissionCandidate` | empty | returns only the current bounded, expiring local permission candidate |
+| 27 | `ResolvePermissionCandidate` | operation ID and approve/reject bit | resolves only the current permission candidate and persists additions after protected review |
+| 28 | `GetPairingOperation` | empty | returns waiting, verification, peer-wait, success, cancel, timeout, or failure for the latest operation |
+| 29 | `RefreshTrustedPeerCapabilities` | exact machine ID | internal broker-to-child grant refresh with exact peer acknowledgement |
+| 30 | `ApplyManagedPreferences` | bounded typed preferences | internal broker-to-child live module/profile update; ordinary broker clients receive `Unsupported` |
 
 Responses contain a bounded status and an optional typed state record. A state
 record includes local/focused machine IDs, role, desired mode, peer count,
@@ -457,8 +480,8 @@ focus. Each connection exchanges exactly one request/response and completes
 with a fixed acknowledgement byte so the server does not disconnect before the
 client consumes the response.
 
-Commands 24-25 are an internal child bridge on the same current-user transport,
-not general trust primitives. Their fresh 128-bit token is generated by the
+Commands 24-25 and 29-30 are internal child bridges on the same current-user
+transport, not general trust primitives. The pairing bridge's fresh 128-bit token is generated by the
 broker and passed only to the fixed sibling process. This does not claim hostile
 same-user isolation, but it prevents an ordinary client from presenting or
 polling a pairing operation accidentally. Fingerprint and transcript data are
