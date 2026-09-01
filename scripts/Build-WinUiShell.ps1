@@ -30,19 +30,29 @@ $VsWhere = Join-Path ${env:ProgramFiles(x86)} `
 if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) {
     throw 'Visual Studio vswhere.exe was not found.'
 }
-$VisualStudioRoots = @(& $VsWhere -products '*' `
+$VisualStudioInstances = @((& $VsWhere -products '*' `
     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationPath)
-$VisualStudioRoot = $VisualStudioRoots |
-    Where-Object {
-        Test-Path -LiteralPath (Join-Path $_ `
-            'MSBuild\Microsoft\WindowsXaml\v17.0\Microsoft.Windows.UI.Xaml.Cpp.targets') `
-            -PathType Leaf
+    -format json) | ConvertFrom-Json)
+$VisualStudioInstance = $VisualStudioInstances |
+    Where-Object { ([version] $_.installationVersion).Major -ge 17 } |
+    Sort-Object { [version] $_.installationVersion } -Descending |
+    ForEach-Object {
+        $ToolsVersion = "{0}.0" -f ([version] $_.installationVersion).Major
+        $XamlTargets = Join-Path $_.installationPath (
+            "MSBuild\Microsoft\WindowsXaml\v$ToolsVersion\Microsoft.Windows.UI.Xaml.Cpp.targets")
+        if (Test-Path -LiteralPath $XamlTargets -PathType Leaf) {
+            [pscustomobject] @{
+                InstallationPath = $_.installationPath
+                ToolsVersion = $ToolsVersion
+            }
+        }
     } |
     Select-Object -First 1
-if ([string]::IsNullOrWhiteSpace($VisualStudioRoot)) {
+if ($null -eq $VisualStudioInstance) {
     throw 'A Visual Studio installation with the x64 C++ and Windows XAML build tools was not found.'
 }
+$VisualStudioRoot = $VisualStudioInstance.InstallationPath
+$VisualStudioToolsVersion = $VisualStudioInstance.ToolsVersion
 $MsBuild = Join-Path $VisualStudioRoot 'MSBuild\Current\Bin\MSBuild.exe'
 if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
     throw "MSBuild.exe was not found at $MsBuild"
@@ -58,7 +68,7 @@ $Arguments = @(
     '/verbosity:minimal',
     "/p:Configuration=$Configuration",
     '/p:Platform=x64',
-    '/p:VisualStudioVersion=17.0',
+    "/p:VisualStudioVersion=$VisualStudioToolsVersion",
     "/p:DeskLinkUiOutput=$OutputPath",
     "/p:DeskLinkUiIntermediate=$IntermediatePath",
     '/p:RestorePackagesWithLockFile=true'
