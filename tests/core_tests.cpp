@@ -1850,6 +1850,8 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(Request->Landing.normalized_x < 400);
     CHECK(Request->Landing.normalized_y > 32'000);
     CHECK(Request->Landing.normalized_y < 33'500);
+    CHECK(Request->LocalReturnLanding.ScreenX == 1'895);
+    CHECK(Request->LocalReturnLanding.ScreenY == 540);
     CHECK(PushRuntime.State() == RoamingRuntimeState::FocusPending);
 
     auto Stale = *Request;
@@ -1887,6 +1889,11 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     AdmissionRuntime.BeginReturn();
     AdmissionRuntime.ReturnLocal();
     CHECK(AdmissionRuntime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(!AdmissionRuntime.ConfirmLocalReturnLanding({1'919, 540}));
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(AdmissionRuntime.ConfirmLocalReturnLanding(
+        Admitted->LocalReturnLanding));
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::Local);
 
     ManualClock DwellClock;
     RoamingRuntime DwellRuntime(DwellClock);
@@ -1953,6 +1960,8 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(ReverseRequest->Landing.display_id ==
           DeriveStableDisplayId("display-a"));
     CHECK(ReverseRequest->Landing.normalized_x > 65'000);
+    CHECK(ReverseRequest->LocalReturnLanding.ScreenX == 24);
+    CHECK(ReverseRequest->LocalReturnLanding.ScreenY == 720);
 }
 
 void RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown() {

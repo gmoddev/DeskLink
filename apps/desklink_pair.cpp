@@ -3536,12 +3536,28 @@ private:
     }
 
     void ReturnLocalPreservingRoaming(const char* Reason) noexcept {
+        const auto Request = Roaming_.ActiveRequest();
         Roaming_.BeginReturn();
         PendingRoamingRequest_.reset();
         PendingLanding_.reset();
         Profiles_.ClearManualOverride();
         const bool Released = Lifecycle_.ReturnLocal();
         Roaming_.ReturnLocal();
+        bool PointerLanded = false;
+        if (Request) {
+            const auto& Landing = Request->LocalReturnLanding;
+            POINT Actual{};
+            if (SetCursorPos(Landing.ScreenX, Landing.ScreenY) &&
+                GetCursorPos(&Actual)) {
+                PointerLanded = Roaming_.ConfirmLocalReturnLanding({
+                    Actual.x, Actual.y});
+            }
+        }
+        // ReturnLocal tears down the capture observer. Reinstall it now so a
+        // deliberate reverse crossing is observable without waiting for the
+        // periodic 500 ms maintenance tick.
+        MaintainRoaming();
+        const bool ObserverRearmed = Capture_ != nullptr;
         PublishLifecycleStatus();
         {
             std::scoped_lock Lock(Result_->Mutex);
@@ -3550,8 +3566,10 @@ private:
         Result_->Changed.notify_all();
         std::cout
             << "[Roaming:Return] input returned Local; reason=" << Reason
-            << " roaming_rearmed=true release_ack="
-            << (Released ? "true" : "false") << '\n';
+            << " release_sent=" << (Released ? "true" : "false")
+            << " pointer_landed=" << (PointerLanded ? "true" : "false")
+            << " observer_rearmed="
+            << (ObserverRearmed ? "true" : "false") << '\n';
     }
 
     void CaptureFailed(std::string Message) noexcept {
