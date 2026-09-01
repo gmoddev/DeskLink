@@ -114,8 +114,10 @@ if ($ProjectText -notmatch '<DefaultLanguage>en-US</DefaultLanguage>' -or
 $WinUiBuildScript = Get-StrictUtf8 (
     Join-Path $RepositoryRoot 'scripts\Build-WinUiShell.ps1')
 if ($WinUiBuildScript -notmatch '\[switch\] \$ExperimentalWindows10' -or
-    $WinUiBuildScript -notmatch '10\.0\.19041\.0') {
-    throw 'The product build lost its explicit Windows 10 experimental target.'
+    $WinUiBuildScript -notmatch '10\.0\.19041\.0' -or
+    $WinUiBuildScript -notmatch 'VisualStudioToolsVersion' -or
+    $WinUiBuildScript -match '/p:VisualStudioVersion=17\.0') {
+    throw 'The product build lost its explicit Windows 10 target or version-matched Visual Studio selection.'
 }
 if (($BrokerText | Select-String -Pattern 'BuildProductLauncherArguments' -AllMatches).Matches.Count -ne 2 -or
     $BrokerText -match 'BuildLauncherArguments\(') {

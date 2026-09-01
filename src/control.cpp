@@ -278,8 +278,20 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
                                  ValueType,
                                  GetPermissionCandidateControlRequest>) {
             return ControlCommand::GetPermissionCandidate;
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ResolvePermissionCandidateControlRequest>) {
             return ControlCommand::ResolvePermissionCandidate;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 GetPairingOperationControlRequest>) {
+            return ControlCommand::GetPairingOperation;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 RefreshTrustedPeerCapabilitiesControlRequest>) {
+            return ControlCommand::RefreshTrustedPeerCapabilities;
+        } else {
+            return ControlCommand::ApplyManagedPreferences;
         }
     }, Payload);
 }
@@ -373,6 +385,14 @@ ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
                                  ResolvePermissionCandidateControlRequest>) {
             Output.U64(Value.OperationId);
             Output.U8(Value.Approved ? 1u : 0u);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 RefreshTrustedPeerCapabilitiesControlRequest>) {
+            Output.Raw(Value.Machine);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ApplyManagedPreferencesControlRequest>) {
+            EncodePreferences(Output, Value.Preferences);
         }
     }, Request.Payload);
     return Output.Take();
@@ -606,6 +626,24 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
             }
             Request.Approved = Approved != 0;
             return Request;
+        }
+        case ControlCommand::GetPairingOperation:
+            if (Input.Remaining() != 0) return std::nullopt;
+            return GetPairingOperationControlRequest{};
+        case ControlCommand::RefreshTrustedPeerCapabilities: {
+            RefreshTrustedPeerCapabilitiesControlRequest Request;
+            if (!Input.Raw(Request.Machine) || Input.Remaining() != 0 ||
+                !IsNonzeroMachine(Request.Machine)) {
+                return std::nullopt;
+            }
+            return Request;
+        }
+        case ControlCommand::ApplyManagedPreferences: {
+            const auto Preferences = DecodePreferences(Input);
+            if (!Preferences || Input.Remaining() != 0) {
+                return std::nullopt;
+            }
+            return ApplyManagedPreferencesControlRequest{*Preferences};
         }
         default:
             return std::nullopt;
@@ -1166,6 +1204,14 @@ bool IsValidControlRequest(const ControlRequest& Request) noexcept {
                                  ValueType,
                                  ResolvePermissionCandidateControlRequest>) {
             return Value.OperationId != 0;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 RefreshTrustedPeerCapabilitiesControlRequest>) {
+            return IsNonzeroMachine(Value.Machine);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
+                                 ApplyManagedPreferencesControlRequest>) {
+            return IsValidProductPreferences(Value.Preferences);
         } else {
             return true;
         }
@@ -1308,6 +1354,13 @@ bool IsValidControlPermissionCandidate(
                     Candidate.DesiredCapabilities);
 }
 
+bool IsValidControlPairingOperation(
+    const ControlPairingOperation& Operation) noexcept {
+    return Operation.OperationId != 0 &&
+           static_cast<std::uint8_t>(Operation.Phase) <=
+               static_cast<std::uint8_t>(ControlPairingPhase::Failed);
+}
+
 bool IsValidControlResponse(const ControlResponse& Response) {
     if (Response.RequestId == 0 || !IsKnownStatus(Response.Status)) return false;
     if (Response.Status != ControlStatus::Ok &&
@@ -1317,7 +1370,8 @@ bool IsValidControlResponse(const ControlResponse& Response) {
          Response.PairingCandidate.has_value() ||
          Response.NearbyPeers.has_value() ||
          Response.PairingDecision.has_value() ||
-         Response.PermissionCandidate.has_value())) {
+         Response.PermissionCandidate.has_value() ||
+         Response.PairingOperation.has_value())) {
         return false;
     }
     const auto PayloadCount = static_cast<unsigned>(Response.State.has_value()) +
@@ -1327,7 +1381,8 @@ bool IsValidControlResponse(const ControlResponse& Response) {
         static_cast<unsigned>(Response.PairingCandidate.has_value()) +
         static_cast<unsigned>(Response.NearbyPeers.has_value()) +
         static_cast<unsigned>(Response.PairingDecision.has_value()) +
-        static_cast<unsigned>(Response.PermissionCandidate.has_value());
+        static_cast<unsigned>(Response.PermissionCandidate.has_value()) +
+        static_cast<unsigned>(Response.PairingOperation.has_value());
     if (PayloadCount > 1) return false;
     return (!Response.State || IsValidControlState(*Response.State)) &&
            (!Response.Topologies ||
@@ -1346,7 +1401,9 @@ bool IsValidControlResponse(const ControlResponse& Response) {
                      ControlManagedPairingDecision::Rejected)) &&
            (!Response.PermissionCandidate ||
             IsValidControlPermissionCandidate(
-                *Response.PermissionCandidate));
+                *Response.PermissionCandidate)) &&
+           (!Response.PairingOperation ||
+            IsValidControlPairingOperation(*Response.PairingOperation));
 }
 
 std::optional<ByteBuffer> EncodeControlRequest(const ControlRequest& Request) {
@@ -1384,6 +1441,7 @@ std::optional<ByteBuffer> EncodeControlResponse(const ControlResponse& Response)
         : Response.NearbyPeers ? 6u
         : Response.PairingDecision ? 7u
         : Response.PermissionCandidate ? 8u
+        : Response.PairingOperation ? 9u
         : 0u;
     Payload.U8(static_cast<std::uint8_t>(PayloadKind));
     if (Response.State) {
@@ -1402,6 +1460,10 @@ std::optional<ByteBuffer> EncodeControlResponse(const ControlResponse& Response)
         Payload.U8(static_cast<std::uint8_t>(*Response.PairingDecision));
     } else if (Response.PermissionCandidate) {
         EncodePermissionCandidate(Payload, *Response.PermissionCandidate);
+    } else if (Response.PairingOperation) {
+        Payload.U64(Response.PairingOperation->OperationId);
+        Payload.U8(static_cast<std::uint8_t>(
+            Response.PairingOperation->Phase));
     }
     auto PayloadBytes = Payload.Take();
     if (PayloadBytes.size() > kMaximumControlPayload) return std::nullopt;
@@ -1418,7 +1480,7 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
     Reader Input(Frame.subspan(kControlFrameHeaderSize));
     std::uint16_t RawStatus{};
     std::uint8_t PayloadKind{};
-    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 8) {
+    if (!Input.U16(RawStatus) || !Input.U8(PayloadKind) || PayloadKind > 9) {
         return {std::nullopt, ControlDecodeError::InvalidPayload};
     }
     ControlResponse Response;
@@ -1468,6 +1530,17 @@ ControlDecodeResult<ControlResponse> DecodeControlResponse(ByteSpan Frame) {
         if (!Response.PermissionCandidate) {
             return {std::nullopt, ControlDecodeError::InvalidPayload};
         }
+    } else if (PayloadKind == 9) {
+        ControlPairingOperation Operation;
+        std::uint8_t RawPhase{};
+        if (!Input.U64(Operation.OperationId) || !Input.U8(RawPhase)) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+        Operation.Phase = static_cast<ControlPairingPhase>(RawPhase);
+        if (!IsValidControlPairingOperation(Operation)) {
+            return {std::nullopt, ControlDecodeError::InvalidPayload};
+        }
+        Response.PairingOperation = Operation;
     }
     if (Input.Remaining() != 0 || !IsValidControlResponse(Response)) {
         return {std::nullopt, ControlDecodeError::InvalidPayload};

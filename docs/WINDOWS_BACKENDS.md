@@ -432,7 +432,7 @@ first-instance protection. Both endpoints read the opposite process ID and
 compare its token user SID before exchanging data. The client permits at most a
 five-second requested timeout.
 
-The wire protocol is independently versioned (currently version 3) and uses
+The local control protocol is independently versioned (currently version 7) and uses
 exact bounded typed commands; it never exposes arbitrary transport packets,
 input injection, OS commands, or module loading. In addition to runtime state,
 mode, focus, audio, topology, update, and preference operations, it exposes

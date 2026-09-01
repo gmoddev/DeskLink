@@ -113,6 +113,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnGamingBehaviorToggled(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnInputRoamingToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
     void OnApplyCrossingPreset(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -155,6 +158,7 @@ private:
     void PollNearby();
     void PollDevices();
     void PollPairingCandidate();
+    void PollPairingOperation();
     void PollPermissionCandidate();
     void ChooseRole(desklink::DeskRole Role);
     void NavigateTo(winrt::hstring const& Tag);
@@ -186,7 +190,10 @@ private:
         desklink::ProductPreferences const& Preferences);
     void UnregisterProductHotkeys() noexcept;
     void FocusPreferredPeer();
+    void UpdateFocusRequestPresentation(
+        std::chrono::steady_clock::time_point Now);
     void ReturnLocal();
+    void SetInputRoamingDesired(bool Desired);
     void SetClipboardDesired(bool Desired);
     void SetPeerAudioDesired(bool Desired);
     void ShowPairingStatus(
@@ -239,6 +246,10 @@ private:
     std::atomic_uint64_t NextRequestId_{1};
     std::uint64_t DisplayedPairingOperation_{};
     std::uint64_t DisplayedPermissionOperation_{};
+    std::optional<desklink::ControlPairingOperation>
+        PresentedPairingOperation_;
+    std::optional<std::chrono::steady_clock::time_point>
+        FocusRequestStartedAt_;
     desklink::ProductBrokerAvailability BrokerAvailability_;
     bool TrayActive_{};
     bool ExplicitExit_{};

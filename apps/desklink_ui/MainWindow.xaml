@@ -223,6 +223,11 @@
                             <StackPanel Spacing="12">
                                 <TextBlock Text="Switching"
                                            Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <ToggleSwitch x:Name="InputRoamingDesiredToggle"
+                                              Header="Move between PCs by crossing configured display edges"
+                                              OffContent="Off" OnContent="On"
+                                              Toggled="OnInputRoamingToggled"
+                                              AutomationProperties.Name="Enable display-edge roaming" />
                                 <ToggleSwitch x:Name="GamingBehaviorToggle"
                                               Header="When a game is fullscreen, keep keyboard and mouse on this PC"
                                               OffContent="Off" OnContent="On"

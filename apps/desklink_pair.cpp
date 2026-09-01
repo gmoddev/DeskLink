@@ -299,6 +299,7 @@ void PrintUsage() {
         << L"  desklink_pair control mute\n"
         << L"  desklink_pair control preferences\n"
         << L"  desklink_pair control devices\n"
+        << L"  desklink_pair control focus <32-hex-machine-id>\n"
         << L"  desklink_pair control pause|resume\n"
         << L"  desklink_pair control return-local\n\n"
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
@@ -420,6 +421,17 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             std::wstring_view(Arguments[2]) == L"devices") {
             Result.ControlPayload =
                 desklink::ListTrustedDevicesControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 4 &&
+            std::wstring_view(Arguments[2]) == L"focus") {
+            const auto MachineText = ToUtf8(Arguments[3]);
+            if (!MachineText) return std::nullopt;
+            const auto Machine =
+                desklink::ParseDiscoveryMachineId(*MachineText);
+            if (!Machine) return std::nullopt;
+            Result.ControlPayload =
+                desklink::FocusMachineControlRequest{*Machine};
             return Result;
         }
         if (ArgumentCount == 3 &&
@@ -1889,6 +1901,8 @@ struct PeerRuntime {
                 bool DropNextButtonRelease,
                 bool ObserveCleanup,
                 bool ObserveRejections,
+                bool SendAudio,
+                bool ReceiveAudio,
                 bool SyncClipboard)
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
@@ -1934,7 +1948,9 @@ struct PeerRuntime {
                       [this](desklink::ClipboardTextMessage Message) {
                           return Clipboard.ApplyRemote(std::move(Message));
                       }}),
-          ClipboardRequested(SyncClipboard) {
+          ClipboardRequested(SyncClipboard),
+          SendAudioRequested(SendAudio),
+          ReceiveAudioRequested(ReceiveAudio) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
         (void)DropNextKeyRelease;
         (void)DropNextButtonRelease;
@@ -1950,7 +1966,13 @@ struct PeerRuntime {
     }
 
     void StartClipboard() noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        StartClipboardLocked();
+    }
+
+    void StartClipboardLocked() noexcept {
         if (!ClipboardRequested || ClipboardStarted) return;
+        Session.SetClipboardEnabled(true);
         Clipboard.SetLocalPublishing(false);
         try {
             ClipboardStarted = Clipboard.Start();
@@ -1967,6 +1989,12 @@ struct PeerRuntime {
     }
 
     void StopClipboard() noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        StopClipboardLocked();
+    }
+
+    void StopClipboardLocked() noexcept {
+        Session.SetClipboardEnabled(false);
         if (!ClipboardStarted) return;
         Clipboard.SetLocalPublishing(false);
         Clipboard.Stop();
@@ -1988,9 +2016,62 @@ struct PeerRuntime {
     void MaintainDisplayTopology() {
         Session.Tick();
         LocalTopology.Maintain(Session);
+        ReconcileCapabilityModules();
         if (ClipboardStarted) {
             Clipboard.SetLocalPublishing(Session.CanSendClipboard());
         }
+    }
+
+    void ReconcileCapabilityModules() noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        if (ClipboardRequested) {
+            StartClipboardLocked();
+        } else {
+            StopClipboardLocked();
+        }
+        if (SendAudioRequested && Session.CanSendAudio()) {
+            (void)StartSendingAudio();
+        } else if (!SendAudioRequested || !Session.CanSendAudio()) {
+            StopSendingAudio();
+        }
+        if (ReceiveAudioRequested && Session.CanReceiveAudio()) {
+            (void)StartReceivingAudio();
+        } else if (!ReceiveAudioRequested || !Session.CanReceiveAudio()) {
+            StopReceivingAudio();
+        }
+    }
+
+    [[nodiscard]] bool ApplyManagedPreferences(
+        bool ClipboardDesired,
+        bool SendAudioDesired,
+        bool ReceiveAudioDesired,
+        std::uint16_t AudioGainPermyriad) noexcept {
+        if (AudioGainPermyriad >
+            desklink::kDeskLinkAudioMaximumGainPermyriad) {
+            return false;
+        }
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        ClipboardRequested = ClipboardDesired;
+        SendAudioRequested = SendAudioDesired;
+        ReceiveAudioRequested = ReceiveAudioDesired;
+        Session.SetClipboardEnabled(ClipboardRequested);
+        if (!SetAudioGainPermyriad(AudioGainPermyriad)) return false;
+        if (ClipboardRequested) {
+            StartClipboardLocked();
+        } else {
+            StopClipboardLocked();
+        }
+        if (SendAudioRequested && Session.CanSendAudio()) {
+            (void)StartSendingAudio();
+        } else if (!SendAudioRequested || !Session.CanSendAudio()) {
+            StopSendingAudio();
+        }
+        if (ReceiveAudioRequested && Session.CanReceiveAudio()) {
+            (void)StartReceivingAudio();
+        } else if (!ReceiveAudioRequested || !Session.CanReceiveAudio()) {
+            StopReceivingAudio();
+        }
+        return true;
     }
 
     [[nodiscard]] bool SetAudioGainPermyriad(
@@ -2279,6 +2360,9 @@ struct PeerRuntime {
     desklink::PeerSession Session;
     bool ClipboardRequested{};
     bool ClipboardStarted{};
+    bool SendAudioRequested{};
+    bool ReceiveAudioRequested{};
+    std::mutex ModuleLifecycleMutex;
 
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
     std::mutex CaptureLifecycleMutex;
@@ -2510,6 +2594,56 @@ public:
         } catch (...) {
             RequestAsynchronousFailLocal(
                 "manual mode transition result failed");
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool ApplyManagedPreferences(
+        const desklink::ProductPreferences& Preferences) {
+        if (Stopping_.load() ||
+            !desklink::IsValidProductPreferences(Preferences)) {
+            return false;
+        }
+        auto Promise = std::make_shared<std::promise<bool>>();
+        auto Future = Promise->get_future();
+        if (!Post([this, Preferences, Promise] {
+                bool Applied = false;
+                try {
+                    Applied = Profiles_.SetSystemDefault(
+                        Preferences.InputRoamingDesired
+                            ? desklink::DeskMode::Roam
+                            : desklink::DeskMode::LockPc1);
+                    Profiles_.SetKeepLocalWhenFullscreen(
+                        Preferences.Gaming ==
+                            desklink::GamingBehavior::KeepLocal);
+                    Applied = Applied &&
+                        Profiles_.SetRules(Preferences.ProfileRules);
+                    Profiles_.ClearManualOverride();
+                    if (Applied && Profiles_.RequiresForegroundObservation()) {
+                        Applied = EnsureForegroundMonitor();
+                    }
+                    if (Applied && !Profiles_.RequiresForegroundObservation() &&
+                        ForegroundMonitor_) {
+                        ForegroundMonitor_->Stop();
+                        ForegroundMonitor_.reset();
+                        Profiles_.ClearForeground();
+                    }
+                    if (Applied) Applied = ApplyDecision();
+                } catch (...) {
+                    Applied = false;
+                }
+                try {
+                    Promise->set_value(Applied);
+                } catch (...) {
+                }
+            })) {
+            return false;
+        }
+        try {
+            return Future.wait_for(std::chrono::milliseconds{2'000}) ==
+                       std::future_status::ready &&
+                   Future.get();
+        } catch (...) {
             return false;
         }
     }
@@ -2992,6 +3126,11 @@ private:
         }
 
         if (!Profiles_.RequiresForegroundObservation()) return true;
+        return EnsureForegroundMonitor();
+    }
+
+    [[nodiscard]] bool EnsureForegroundMonitor() {
+        if (ForegroundMonitor_) return true;
         const auto Weak = weak_from_this();
         desklink::Win32ForegroundHandlers Handlers;
         Handlers.Changed = [Weak](desklink::ForegroundWindowSnapshot Snapshot) {
@@ -3008,6 +3147,7 @@ private:
             std::make_unique<desklink::Win32ForegroundMonitor>(
                 std::move(Handlers));
         if (!ForegroundMonitor_->Start()) {
+            ForegroundMonitor_.reset();
             Profiles_.EmergencyFailLocal();
             Lifecycle_.FailLocal();
             PublishLifecycleStatus();
@@ -3137,9 +3277,12 @@ private:
             if (RoamingSettings_ &&
                 Decision.Mode != desklink::DeskMode::Roam) {
                 Roaming_.ReturnLocal();
-                Host_->Session.FailLocalDirections();
                 PendingRoamingRequest_.reset();
                 PendingLanding_.reset();
+                if (Decision.Mode == desklink::DeskMode::LockPc1 ||
+                    Decision.Mode == desklink::DeskMode::Game) {
+                    Host_->Session.FailLocalDirections();
+                }
             }
         }
         PublishLifecycleStatus();
@@ -3615,6 +3758,84 @@ int RunTrusted(const CommandLine& Command,
                 desklink::SetAudioGainControlRequest>(&Request.Payload);
             const bool ToggleMute = std::holds_alternative<
                 desklink::ToggleAudioMuteControlRequest>(Request.Payload);
+            const auto* RefreshCapabilities = std::get_if<
+                desklink::RefreshTrustedPeerCapabilitiesControlRequest>(
+                    &Request.Payload);
+            if (RefreshCapabilities) {
+                std::shared_ptr<PeerRuntime> SelectedPeer;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    const auto Match = std::find_if(
+                        PeerRuntimes.begin(), PeerRuntimes.end(),
+                        [&](const auto& Runtime) {
+                            return Runtime->PeerMachine ==
+                                RefreshCapabilities->Machine;
+                        });
+                    if (Match != PeerRuntimes.end()) {
+                        SelectedPeer = *Match;
+                    }
+                }
+                if (!SelectedPeer) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady,
+                        std::nullopt};
+                }
+                const bool Applied =
+                    SelectedPeer->Session.RefreshLocalCapabilities();
+                if (Applied) {
+                    SelectedPeer->ReconcileCapabilityModules();
+                }
+                std::cout
+                    << "[Session:Capabilities] persisted grant renegotiation "
+                    << (Applied ? "acknowledged" : "failed closed")
+                    << '\n';
+                return desklink::ControlResponse{
+                    Request.RequestId,
+                    Applied ? desklink::ControlStatus::Ok
+                            : desklink::ControlStatus::Failed,
+                    std::nullopt};
+            }
+            const auto* ApplyPreferences = std::get_if<
+                desklink::ApplyManagedPreferencesControlRequest>(
+                    &Request.Payload);
+            if (ApplyPreferences) {
+                std::shared_ptr<PeerRuntime> SelectedPeer;
+                std::shared_ptr<HostInputRuntime> ActiveInput;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    SelectedPeer = ActivePeer;
+                    ActiveInput = HostInput;
+                }
+                if (!SelectedPeer) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady,
+                        std::nullopt};
+                }
+                const auto Route =
+                    ApplyPreferences->Preferences.AudioRoute;
+                const bool SendAudio = Command.Mode == Operation::Serve &&
+                    (Route == desklink::AudioRoutePreference::LocalToPeer ||
+                     Route == desklink::AudioRoutePreference::Bidirectional);
+                const bool ReceiveAudio = Command.Mode == Operation::Focus &&
+                    (Route == desklink::AudioRoutePreference::PeerToLocal ||
+                     Route == desklink::AudioRoutePreference::Bidirectional);
+                bool Applied = SelectedPeer->ApplyManagedPreferences(
+                    ApplyPreferences->Preferences.ClipboardDesired,
+                    SendAudio, ReceiveAudio,
+                    ApplyPreferences->Preferences.AudioGainPermyriad);
+                if (Applied && ActiveInput) {
+                    Applied = ActiveInput->ApplyManagedPreferences(
+                        ApplyPreferences->Preferences);
+                }
+                std::cout
+                    << "[Session:Configuration] in-session preferences "
+                    << (Applied ? "applied" : "failed closed") << '\n';
+                return desklink::ControlResponse{
+                    Request.RequestId,
+                    Applied ? desklink::ControlStatus::Ok
+                            : desklink::ControlStatus::Failed,
+                    std::nullopt};
+            }
             if (SetGain || ToggleMute) {
                 std::shared_ptr<PeerRuntime> SelectedPeer;
                 {
@@ -3672,7 +3893,13 @@ int RunTrusted(const CommandLine& Command,
 
             auto RequestedMode = desklink::DeskMode::LockPc1;
             if (SetMode) RequestedMode = SetMode->Mode;
-            if (FocusMachine) RequestedMode = desklink::DeskMode::Roam;
+            if (FocusMachine) {
+                // Named manual focus is an immediate, explicit transition.
+                // Roam is reserved for validated physical edge crossings;
+                // using it here would leave the UI waiting indefinitely when
+                // a roaming graph is configured.
+                RequestedMode = desklink::DeskMode::LockPc2;
+            }
 
             DesiredMode.store(RequestedMode);
             for (const auto& Runtime : Peers) {
@@ -3821,6 +4048,8 @@ int RunTrusted(const CommandLine& Command,
             Command.ValidationDropNextButtonRelease,
             Command.ValidationObserveCleanup,
             Command.ValidationObserveRejections,
+            Command.SendAudio,
+            Command.ReceiveAudio,
             Command.SyncClipboard);
         Runtime->StartClipboard();
         if (!Runtime->Session.Start()) {

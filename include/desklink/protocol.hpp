@@ -15,6 +15,7 @@ namespace desklink {
 enum class MessageType : std::uint16_t {
     Hello              = 1,
     CapabilityGrant    = 2,
+    CapabilityGrantAck = 3,
     SetMode            = 10,
     FocusRequest       = 11,
     FocusReady         = 12,
@@ -74,7 +75,14 @@ struct HelloMessage {
     std::uint64_t offered_capabilities{};
 };
 
-struct CapabilityGrantMessage { std::uint64_t capabilities{}; };
+struct CapabilityGrantMessage {
+    std::uint64_t capabilities{};
+    std::uint64_t revision{1};
+};
+struct CapabilityGrantAckMessage {
+    std::uint64_t capabilities{};
+    std::uint64_t revision{1};
+};
 struct SetModeMessage { DeskMode mode{DeskMode::Roam}; };
 struct FocusRequestMessage {
     std::uint32_t requested_lease_ms{750};
@@ -149,6 +157,7 @@ struct DisplayTopologySnapshotMessage {
 using Message = std::variant<
     HelloMessage,
     CapabilityGrantMessage,
+    CapabilityGrantAckMessage,
     SetModeMessage,
     FocusRequestMessage,
     FocusReadyMessage,

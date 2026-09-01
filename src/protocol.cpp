@@ -146,6 +146,11 @@ ByteBuffer encode_payload(const Message& message) {
             w.u64(value.offered_capabilities);
         } else if constexpr (std::is_same_v<T, CapabilityGrantMessage>) {
             w.u64(value.capabilities);
+            w.u64(value.revision);
+        } else if constexpr (
+            std::is_same_v<T, CapabilityGrantAckMessage>) {
+            w.u64(value.capabilities);
+            w.u64(value.revision);
         } else if constexpr (std::is_same_v<T, SetModeMessage>) {
             w.u8(static_cast<std::uint8_t>(value.mode));
         } else if constexpr (std::is_same_v<T, FocusRequestMessage>) {
@@ -258,7 +263,18 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
         }
         case MessageType::CapabilityGrant: {
             CapabilityGrantMessage m;
-            if (!r.u64(m.capabilities) || r.remaining() != 0) return std::nullopt;
+            if (!r.u64(m.capabilities) || !r.u64(m.revision) ||
+                m.revision == 0 || r.remaining() != 0) {
+                return std::nullopt;
+            }
+            return m;
+        }
+        case MessageType::CapabilityGrantAck: {
+            CapabilityGrantAckMessage m;
+            if (!r.u64(m.capabilities) || !r.u64(m.revision) ||
+                m.revision == 0 || r.remaining() != 0) {
+                return std::nullopt;
+            }
             return m;
         }
         case MessageType::SetMode: {
@@ -462,6 +478,7 @@ bool known_type(std::uint16_t raw) {
     switch (static_cast<MessageType>(raw)) {
         case MessageType::Hello:
         case MessageType::CapabilityGrant:
+        case MessageType::CapabilityGrantAck:
         case MessageType::SetMode:
         case MessageType::FocusRequest:
         case MessageType::FocusReady:
@@ -492,6 +509,7 @@ MessageType message_type(const Message& message) noexcept {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, HelloMessage>) return MessageType::Hello;
         else if constexpr (std::is_same_v<T, CapabilityGrantMessage>) return MessageType::CapabilityGrant;
+        else if constexpr (std::is_same_v<T, CapabilityGrantAckMessage>) return MessageType::CapabilityGrantAck;
         else if constexpr (std::is_same_v<T, SetModeMessage>) return MessageType::SetMode;
         else if constexpr (std::is_same_v<T, FocusRequestMessage>) return MessageType::FocusRequest;
         else if constexpr (std::is_same_v<T, FocusReadyMessage>) return MessageType::FocusReady;

@@ -128,8 +128,16 @@ class IRuntimeSafetyController {
 public:
     virtual ~IRuntimeSafetyController() = default;
 
-    // The implementation must return input Local, release owned input state,
-    // and close the affected authenticated session before returning true.
+    // Permission changes first return both directions Local, then reload the
+    // exact persisted grant over the already-authenticated session. A failed
+    // reload must fall back to the stop path below.
+    [[nodiscard]] virtual bool ReturnLocalForPeer(
+        const MachineId& Machine) noexcept = 0;
+    [[nodiscard]] virtual bool RefreshPeerCapabilities(
+        const MachineId& Machine) noexcept = 0;
+
+    // Forget and failed renegotiation still require full fail-local cleanup
+    // and closure of the affected authenticated session.
     [[nodiscard]] virtual bool ReturnLocalAndStopPeer(
         const MachineId& Machine) noexcept = 0;
 };

@@ -30,12 +30,29 @@ $VsWhere = Join-Path ${env:ProgramFiles(x86)} `
 if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) {
     throw 'Visual Studio vswhere.exe was not found.'
 }
-$VisualStudioRoot = (& $VsWhere -latest -products '*' `
+$VisualStudioInstances = @((& $VsWhere -products '*' `
     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationPath | Select-Object -First 1)
-if ([string]::IsNullOrWhiteSpace($VisualStudioRoot)) {
-    throw 'A Visual Studio installation with the x64 C++ tools was not found.'
+    -format json) | ConvertFrom-Json)
+$VisualStudioInstance = $VisualStudioInstances |
+    Where-Object { ([version] $_.installationVersion).Major -ge 17 } |
+    Sort-Object { [version] $_.installationVersion } -Descending |
+    ForEach-Object {
+        $ToolsVersion = "{0}.0" -f ([version] $_.installationVersion).Major
+        $XamlTargets = Join-Path $_.installationPath (
+            "MSBuild\Microsoft\WindowsXaml\v$ToolsVersion\Microsoft.Windows.UI.Xaml.Cpp.targets")
+        if (Test-Path -LiteralPath $XamlTargets -PathType Leaf) {
+            [pscustomobject] @{
+                InstallationPath = $_.installationPath
+                ToolsVersion = $ToolsVersion
+            }
+        }
+    } |
+    Select-Object -First 1
+if ($null -eq $VisualStudioInstance) {
+    throw 'A Visual Studio installation with the x64 C++ and Windows XAML build tools was not found.'
 }
+$VisualStudioRoot = $VisualStudioInstance.InstallationPath
+$VisualStudioToolsVersion = $VisualStudioInstance.ToolsVersion
 $MsBuild = Join-Path $VisualStudioRoot 'MSBuild\Current\Bin\MSBuild.exe'
 if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
     throw "MSBuild.exe was not found at $MsBuild"
@@ -51,6 +68,7 @@ $Arguments = @(
     '/verbosity:minimal',
     "/p:Configuration=$Configuration",
     '/p:Platform=x64',
+    "/p:VisualStudioVersion=$VisualStudioToolsVersion",
     "/p:DeskLinkUiOutput=$OutputPath",
     "/p:DeskLinkUiIntermediate=$IntermediatePath",
     '/p:RestorePackagesWithLockFile=true'

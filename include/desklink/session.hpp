@@ -10,6 +10,8 @@
 #include "desklink/transport.hpp"
 
 #include <cstdint>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -35,6 +37,9 @@ struct SessionStats {
     std::uint64_t CapabilityGrantsSent{};
     std::uint64_t CapabilityGrantsReceived{};
     std::uint64_t CapabilityGrantsRejected{};
+    std::uint64_t CapabilityGrantAcksSent{};
+    std::uint64_t CapabilityGrantAcksReceived{};
+    std::uint64_t CapabilityGrantAcksRejected{};
     std::uint64_t ClipboardHellosSent{};
     std::uint64_t ClipboardHellosReceived{};
     std::uint64_t ClipboardSent{};
@@ -197,6 +202,14 @@ public:
     void Tick() noexcept;
     void FailLocalDirections() noexcept;
 
+    // Reloads the already-authenticated peer's exact persisted trust record,
+    // returns both directions Local, and waits for an ordered session-scoped
+    // acknowledgement before reporting success. No identity or capability
+    // data is accepted from the caller.
+    [[nodiscard]] bool RefreshLocalCapabilities(
+        std::chrono::milliseconds Timeout = std::chrono::milliseconds{1'500});
+    void SetClipboardEnabled(bool Enabled) noexcept;
+
     void SetLocalDesiredMode(DeskMode Mode) noexcept;
     [[nodiscard]] DeskMode IncomingDesiredMode() const noexcept;
     [[nodiscard]] bool BeginOutgoingFocus(
@@ -241,6 +254,8 @@ private:
         const DecodedPacket& Packet) noexcept;
     void CountDecision(AgentDecision Decision) noexcept;
     [[nodiscard]] bool PublishCapabilityGrantLocked();
+    [[nodiscard]] bool PublishCapabilityGrantAckLocked(
+        std::uint64_t Capabilities, std::uint64_t Revision);
     [[nodiscard]] bool PublishClipboardHelloLocked();
     void ReleaseIncomingDirectionLocked() noexcept;
     void FailLocalDirectionsLocked() noexcept;
@@ -266,9 +281,13 @@ private:
     std::uint64_t ReliableSequence_{1};
     std::uint64_t AudioDatagramSequence_{1};
     std::uint64_t TopologySequence_{1};
+    std::uint64_t LocalCapabilityRevision_{1};
+    std::uint64_t RemoteCapabilityRevision_{};
+    std::uint64_t AcknowledgedLocalCapabilityRevision_{};
     SessionStats Stats_;
     MachineId PeerMachine_{};
     mutable std::recursive_mutex Mutex_;
+    std::condition_variable_any CapabilityChanged_;
     bool CapabilityConflict_{};
     bool Started_{};
 };

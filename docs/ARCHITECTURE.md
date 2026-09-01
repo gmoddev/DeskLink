@@ -487,7 +487,7 @@ Example commands:
 ```text
 GetState             implemented
 SetDesiredMode       implemented
-FocusMachine         typed, currently unsupported
+FocusMachine         implemented for the exact active authenticated peer
 SetAudioGain         implemented on an active Host peer receiver
 ToggleAudioMute      implemented on an active Host peer receiver
 GetDisplayTopologies implemented read-only
@@ -522,9 +522,11 @@ disable active capture fail-locally.
 The product shell's named `FocusMachine` action is narrower than a raw mode
 change. The broker forwards it only to its current managed child, and the Host
 accepts it only when the requested machine exactly matches the active
-authenticated peer and an input lifecycle owner exists. The resulting Roam
-request still traverses normal capability, route, nonce, epoch, lease,
-topology, `PeerValidated`, `FocusReady`, and initial-snapshot admission.
+authenticated peer and an input lifecycle owner exists. The resulting explicit
+`LockPc2` request still traverses normal capability, route, nonce, epoch,
+lease, `PeerValidated`, `FocusReady`, and initial-snapshot admission. It is
+deliberately separate from `Roam`, which waits for a validated configured
+physical-edge crossing.
 
 Application preferences schema 4 stores only two allowlisted local hotkey
 choices, bounded exact foreground rules, and an optional explicit endpoint for
