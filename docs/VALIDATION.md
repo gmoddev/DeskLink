@@ -515,11 +515,12 @@ Physical-distance landing tests additionally prove that EDID-backed landscape
 segments preserve distance along their shared physical edge only when both
 segments are at least 25 mm and their spans agree within the larger of 5 mm or
 5%. Raw-DPI estimates, rotated displays, contradictory spans, and short segments
-all use the existing proportional fallback. Recorded traces require at least
-60% outward motion, reject edge skims/corners/partial-edge misses, accumulate an
-exact eight-count high-poll-rate Push threshold, admit high-velocity and
-intentional diagonal motion, exercise all three policies, and verify cooldown
-in both roaming directions.
+all use the existing proportional fallback. Recorded traces prove **Cross
+immediately** admits the first positive outward count at an exact configured
+edge, including shallow diagonal and high-poll-rate input, while lateral-only
+edge skims, corners, and partial-edge misses remain rejected. Pause-and-push
+and double-push retain the bounded 60% outward-intent threshold. The traces
+exercise all three policies and verify cooldown in both roaming directions.
 
 The standalone reliability harness is registered in CTest with 2,000 default
 iterations. A bounded extended run is:
