@@ -27,6 +27,7 @@ enum class MessageType : std::uint16_t {
     InputStateSnapshot = 23,
     MouseWheel         = 24,
     PointerMotion      = 25,
+    PointerPositionFeedback = 26,
     SetAudioGain       = 30,
     AudioFrame         = 31,
     Heartbeat          = 40,
@@ -120,6 +121,14 @@ struct PointerMotionMessage {
     std::int32_t DeltaY{};
 };
 
+// Authenticated receiver observation used only to decide whether an active
+// roaming direction has crossed back over its configured remote edge.
+struct PointerPositionFeedbackMessage {
+    std::uint16_t DisplayId{};
+    std::uint16_t NormalizedX{};
+    std::uint16_t NormalizedY{};
+};
+
 struct MouseWheelMessage {
     MouseWheelAxis Axis{MouseWheelAxis::Vertical};
     std::int16_t Delta{};
@@ -167,6 +176,7 @@ using Message = std::variant<
     MouseButtonMessage,
     PointerPositionMessage,
     PointerMotionMessage,
+    PointerPositionFeedbackMessage,
     InputStateSnapshotMessage,
     MouseWheelMessage,
     SetAudioGainMessage,

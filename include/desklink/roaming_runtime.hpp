@@ -102,6 +102,10 @@ public:
         const RoamingFocusRequest& Request) noexcept;
     [[nodiscard]] bool AdmitRemoteInput(
         const RoamingFocusRequest& Request) noexcept;
+    // Requires two consecutive authenticated, epoch-bound observations on
+    // the configured remote edge before requesting an ordinary local return.
+    [[nodiscard]] bool ObserveRemotePointer(
+        PointerPositionFeedbackMessage Position) noexcept;
     [[nodiscard]] bool ExpireFocusPending() noexcept;
     void BeginReturn() noexcept;
     void ReturnLocal() noexcept;
@@ -129,6 +133,7 @@ private:
     IClock::time_point FocusRequestedAt_{};
     RoamingRuntimeState State_{RoamingRuntimeState::Local};
     bool ContextValid_{};
+    std::uint8_t RemoteReturnEdgeSamples_{};
 };
 
 enum class PeerDirectionState : std::uint8_t {

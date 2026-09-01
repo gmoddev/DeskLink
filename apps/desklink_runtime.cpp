@@ -523,6 +523,8 @@ public:
             ChildPreferences_ = Current;
             RoamingArmed_ = Current.InputRoamingDesired;
             AudioGainApplied_ = true;
+            ManagedPreferencesApplied_ = true;
+            ManagedPreferencesFailureReported_ = false;
         }
         std::cout
             << "[Broker:Configuration] settings negotiated without closing the authenticated session\n";
@@ -730,6 +732,8 @@ private:
         RoamingArmed_ = Request.CaptureInput &&
             Request.ProfileDefaultMode == desklink::DeskMode::Roam;
         AudioGainApplied_ = false;
+        ManagedPreferencesApplied_ = false;
+        ManagedPreferencesFailureReported_ = false;
         RuntimeLock.unlock();
         std::cout << "[Broker:Process] managed transport started; pid="
                   << Process.dwProcessId << '\n';
@@ -866,18 +870,51 @@ private:
             return;
         }
 
+        bool ApplyPreferences = false;
+        desklink::ProductPreferences Preferences;
         bool ArmRoaming = false;
         bool ApplyGain = false;
         std::uint16_t Gain{};
         {
             std::scoped_lock Lock(Mutex_);
             Reconnect_.ConnectedLocal();
+            ApplyPreferences = !ManagedPreferencesApplied_;
+            Preferences = ChildPreferences_;
             ArmRoaming = ChildPreferences_.InputRoamingDesired &&
                          !RoamingArmed_ &&
                          std::filesystem::is_regular_file(
                              RoamingSettingsPath_);
             ApplyGain = !AudioGainApplied_;
             Gain = ChildPreferences_.AudioGainPermyriad;
+        }
+        if (ApplyPreferences) {
+            const auto PreferencesResponse = ForwardToActiveRuntime(
+                desklink::ControlRequest{
+                    NextRequestId_.fetch_add(1),
+                    desklink::ApplyManagedPreferencesControlRequest{
+                        Preferences}},
+                std::chrono::milliseconds{2'500});
+            if (!PreferencesResponse ||
+                PreferencesResponse->Status !=
+                    desklink::ControlStatus::Ok) {
+                std::scoped_lock Lock(Mutex_);
+                if (!ManagedPreferencesFailureReported_) {
+                    std::cerr
+                        << "[Broker:Configuration] initial in-session settings are not ready; retrying without disconnecting\n";
+                    ManagedPreferencesFailureReported_ = true;
+                }
+                return;
+            }
+            {
+                std::scoped_lock Lock(Mutex_);
+                ManagedPreferencesApplied_ = true;
+                ManagedPreferencesFailureReported_ = false;
+                RoamingArmed_ = Preferences.InputRoamingDesired;
+                AudioGainApplied_ = true;
+            }
+            std::cout
+                << "[Broker:Configuration] saved settings applied to the authenticated session\n";
+            return;
         }
         if (ApplyGain) {
             const auto GainResponse = ForwardToActiveRuntime(
@@ -1053,6 +1090,8 @@ private:
     bool IntentionalStop_{};
     bool RoamingArmed_{};
     bool AudioGainApplied_{};
+    bool ManagedPreferencesApplied_{};
+    bool ManagedPreferencesFailureReported_{};
 };
 
 class BrokerDiscoveryController final {

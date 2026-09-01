@@ -119,6 +119,10 @@ public:
     bool ReconcileState(const desklink::InputStateSnapshotMessage& Snapshot) override {
         snapshots.push_back(Snapshot); return ReconcileSucceeds;
     }
+    std::optional<desklink::PointerPositionMessage>
+    CurrentPointerPosition() override {
+        return CurrentPointer;
+    }
     bool release_owned_state() noexcept override {
         ++release_calls;
         return ReleaseSucceeds;
@@ -130,6 +134,7 @@ public:
     std::vector<desklink::PointerMotionMessage> motions;
     std::vector<desklink::MouseWheelMessage> wheels;
     std::vector<desklink::InputStateSnapshotMessage> snapshots;
+    std::optional<desklink::PointerPositionMessage> CurrentPointer;
     bool ReconcileSucceeds{true};
     bool ReleaseSucceeds{true};
     int release_calls{};
@@ -569,6 +574,17 @@ void protocol_round_trip() {
         AckDecoded.packet->message);
     CHECK(Ack.capabilities == 0x55);
     CHECK(Ack.revision == 7);
+
+    const auto FeedbackBytes = encode_packet(
+        h, PointerPositionFeedbackMessage{3, 0, 32'768});
+    const auto FeedbackDecoded = decode_packet(FeedbackBytes, true);
+    CHECK(FeedbackDecoded.packet.has_value());
+    const auto& Feedback = std::get<PointerPositionFeedbackMessage>(
+        FeedbackDecoded.packet->message);
+    CHECK(Feedback.DisplayId == 3);
+    CHECK(Feedback.NormalizedX == 0);
+    CHECK(Feedback.NormalizedY == 32'768);
+    CHECK(!decode_packet(FeedbackBytes, false).packet.has_value());
 }
 
 void PointerMotionRoundTripAndValidation() {
@@ -1861,6 +1877,17 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(AdmissionRuntime.State() == RoamingRuntimeState::RemoteReady);
     CHECK(AdmissionRuntime.AdmitRemoteInput(*Admitted));
     CHECK(AdmissionRuntime.State() == RoamingRuntimeState::Remote);
+    const PointerPositionFeedbackMessage WrongDisplay{
+        static_cast<std::uint16_t>(Admitted->Landing.display_id + 1u),
+        0, 32'768};
+    CHECK(!AdmissionRuntime.ObserveRemotePointer(WrongDisplay));
+    const PointerPositionFeedbackMessage ReturnEdge{
+        Admitted->Landing.display_id, 0, 32'768};
+    CHECK(!AdmissionRuntime.ObserveRemotePointer(ReturnEdge));
+    CHECK(AdmissionRuntime.ObserveRemotePointer(ReturnEdge));
+    AdmissionRuntime.BeginReturn();
+    AdmissionRuntime.ReturnLocal();
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::LocalCooldown);
 
     ManualClock DwellClock;
     RoamingRuntime DwellRuntime(DwellClock);
@@ -2317,12 +2344,16 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     std::size_t ReadyA{};
     std::size_t ReadyB{};
     std::size_t DirectionChanges{};
+    std::vector<PointerPositionFeedbackMessage> FeedbackA;
     PeerSession SessionA(
         Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
         PeerSessionHandlers{
             [&] { ++ReadyA; },
             [&] { ++DirectionChanges; },
-            {}});
+            {}, {},
+            [&](PointerPositionFeedbackMessage Position) {
+                FeedbackA.push_back(Position);
+            }});
     PeerSession SessionB(
         Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
         PeerSessionHandlers{
@@ -2349,10 +2380,14 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     CHECK(SessionA.SendKey(KeyEventMessage{0x30, false, true}));
     CHECK(SessionA.SendButton(
         MouseButtonMessage{MouseButtonId::Left, true}));
+    InjectorB.CurrentPointer = PointerPositionMessage{7, 0, 32'768};
     CHECK(SessionA.SendPointerMotion(PointerMotionMessage{4, -2}));
     CHECK(InjectorB.keys.size() == 1);
     CHECK(InjectorB.buttons.size() == 1);
     CHECK(InjectorB.motions.size() == 1);
+    CHECK(FeedbackA.size() == 1);
+    CHECK(FeedbackA.front().DisplayId == 7);
+    CHECK(FeedbackA.front().NormalizedX == 0);
     CHECK(SessionA.ReleaseOutgoingFocus());
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
@@ -5459,6 +5494,19 @@ void WindowsSuppressionGateFailsLocal() {
     CHECK(BreakGate.HandleKeyboard(Cancel, true, false) ==
           Win32HookDecision::Emergency);
     CHECK(!BreakGate.RemoteRouting());
+
+    constexpr std::uint32_t LeftShift = 0xA0u;
+    constexpr std::uint32_t F12 = 0x7Bu;
+    Win32SuppressionGate ReturnGate;
+    ReturnGate.SetReturnLocalHotkey(ProductHotkey::CtrlShiftF12);
+    ReturnGate.SetRemoteRouting(true);
+    CHECK(ReturnGate.HandleKeyboard(LeftControl, true, false) ==
+          Win32HookDecision::Suppress);
+    CHECK(ReturnGate.HandleKeyboard(LeftShift, true, false) ==
+          Win32HookDecision::Suppress);
+    CHECK(ReturnGate.HandleKeyboard(F12, true, false) ==
+          Win32HookDecision::ReturnLocal);
+    CHECK(!ReturnGate.RemoteRouting());
 }
 
 void WindowsCaptureSmokeIfRequested() {
@@ -6023,60 +6071,61 @@ void ProductMonitorLayoutSaveIsOrderedAndFailsLocal() {
     using namespace desklink;
 
     std::vector<std::string> Events;
-    const auto Actions = [&](bool Local, bool Pause, bool Save, bool Resume) {
+    const auto Actions = [&](bool Local, bool Return, bool Save, bool Apply) {
         return ProductMonitorSaveActions{
             [&, Local] {
                 Events.emplace_back("local");
                 return Local;
             },
-            [&, Pause] {
-                Events.emplace_back("pause");
-                return Pause;
+            [&, Return] {
+                Events.emplace_back("return");
+                return Return;
             },
             [&, Save] {
                 Events.emplace_back("save");
                 return Save;
             },
-            [&, Resume] {
-                Events.emplace_back("resume");
-                return Resume;
+            [&, Apply] {
+                Events.emplace_back("apply");
+                return Apply;
             }};
     };
 
     CHECK(ApplyProductMonitorLayout(
         false, Actions(true, true, true, true)) ==
         ProductMonitorSaveStatus::Applied);
-    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+    CHECK((Events == std::vector<std::string>{"local", "save", "apply"}));
 
     Events.clear();
     CHECK(ApplyProductMonitorLayout(
-        false, Actions(true, false, true, true)) ==
+        true, Actions(true, false, true, true)) ==
         ProductMonitorSaveStatus::CleanupFailed);
-    CHECK((Events == std::vector<std::string>{"pause"}));
+    CHECK((Events == std::vector<std::string>{"return"}));
 
     Events.clear();
     CHECK(ApplyProductMonitorLayout(
         true, Actions(true, true, true, true)) ==
-        ProductMonitorSaveStatus::AppliedRuntimePaused);
-    CHECK((Events == std::vector<std::string>{"local", "save"}));
+        ProductMonitorSaveStatus::Applied);
+    CHECK((Events == std::vector<std::string>{
+        "return", "local", "save", "apply"}));
 
     Events.clear();
     CHECK(ApplyProductMonitorLayout(
         false, Actions(true, true, false, true)) ==
         ProductMonitorSaveStatus::StoreFailed);
-    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+    CHECK((Events == std::vector<std::string>{"local", "save"}));
 
     Events.clear();
     CHECK(ApplyProductMonitorLayout(
         false, Actions(true, true, true, false)) ==
-        ProductMonitorSaveStatus::AppliedRuntimePaused);
-    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+        ProductMonitorSaveStatus::PreferenceApplyFailed);
+    CHECK((Events == std::vector<std::string>{"local", "save", "apply"}));
 
     Events.clear();
     CHECK(ApplyProductMonitorLayout(
-        false, Actions(true, true, false, false)) ==
-        ProductMonitorSaveStatus::StoreFailedRuntimePaused);
-    CHECK((Events == std::vector<std::string>{"pause", "save", "resume"}));
+        false, Actions(false, true, true, true)) ==
+        ProductMonitorSaveStatus::CleanupFailed);
+    CHECK((Events == std::vector<std::string>{"local"}));
 }
 
 void in_memory_transport_preserves_security_metadata() {

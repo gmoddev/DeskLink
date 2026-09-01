@@ -1959,49 +1959,48 @@ void MainWindow::SaveMonitorLayout() {
     }
     const bool WasPaused = StateResponse->State->RuntimePhase ==
         desklink::BrokerRuntimePhase::Paused;
+    const bool RuntimeRemote = StateResponse->State->RemoteFocused ||
+        StateResponse->State->CaptureActive;
+    const bool HasEnabledRoute = std::any_of(
+        Candidate.Links.begin(), Candidate.Links.end(),
+        [](const auto& Link) { return Link.Enabled; });
+    auto UpdatedPreferences = Preferences_;
+    UpdatedPreferences.InputRoamingDesired = HasEnabledRoute;
     const auto SaveStatus = desklink::ApplyProductMonitorLayout(
-        WasPaused,
+        RuntimeRemote,
         desklink::ProductMonitorSaveActions{
             [&] {
                 const auto Response = Send(
-                    desklink::PauseDeskLinkControlRequest{},
-                    std::chrono::milliseconds{2'500});
+                    desklink::GetStateControlRequest{});
                 return Response &&
-                    Response->Status == desklink::ControlStatus::Ok;
+                    Response->Status == desklink::ControlStatus::Ok &&
+                    Response->State && !Response->State->RemoteFocused &&
+                    !Response->State->CaptureActive;
             },
             [&] {
                 const auto Response = Send(
-                    desklink::PauseDeskLinkControlRequest{},
+                    desklink::ReturnLocalControlRequest{},
                     std::chrono::milliseconds{2'500});
                 return Response &&
                     Response->Status == desklink::ControlStatus::Ok;
             },
             [&] { return RoamingSettings_->Save(Candidate); },
             [&] {
-                const auto Response = Send(
-                    desklink::ResumeDeskLinkControlRequest{},
-                    std::chrono::milliseconds{2'500});
-                return Response &&
-                    Response->Status == desklink::ControlStatus::Ok;
+                return PreferencesLoaded_ && SavePreferences(
+                    UpdatedPreferences, L"");
             }});
     if (SaveStatus == desklink::ProductMonitorSaveStatus::CleanupFailed) {
         ShowMonitorStatus(
             L"Cannot confirm Local",
-            L"DeskLink did not complete fail-local runtime cleanup. The active layout was not changed.",
+            L"DeskLink did not complete fail-local cleanup. The active layout was not changed.",
             InfoBarSeverity::Error);
         return;
     }
-    if (SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed ||
-        SaveStatus ==
-            desklink::ProductMonitorSaveStatus::StoreFailedRuntimePaused) {
+    if (SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed) {
         ShowMonitorStatus(
             L"Layout was not saved",
-            SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed
-                ? L"Atomic replacement failed. The previous validated layout remains on disk."
-                : L"Atomic replacement failed and automatic resume also failed. The previous layout remains on disk and input remains Local.",
-            SaveStatus == desklink::ProductMonitorSaveStatus::StoreFailed
-                ? InfoBarSeverity::Error
-                : InfoBarSeverity::Warning);
+            L"Atomic replacement failed. The previous validated layout remains on disk.",
+            InfoBarSeverity::Error);
         return;
     }
 
@@ -2009,21 +2008,26 @@ void MainWindow::SaveMonitorLayout() {
     MonitorLayoutDirty_ = false;
     MonitorUnsavedText().Text(L"No unsaved changes.");
     RenderMonitorRoutes();
-    if (SaveStatus == desklink::ProductMonitorSaveStatus::Applied) {
+    if (SaveStatus ==
+        desklink::ProductMonitorSaveStatus::PreferenceApplyFailed) {
         ShowMonitorStatus(
-            L"Desk layout saved",
-            L"Input returned Local, the graph was replaced atomically, and the runtime restarted with a fresh session.",
-            InfoBarSeverity::Success);
+            L"Desk layout saved; activation pending",
+            L"The validated graph was stored, but DeskLink could not apply its roaming setting. The authenticated session was not replaced and input remains Local.",
+            InfoBarSeverity::Warning);
     } else if (WasPaused) {
         ShowMonitorStatus(
             L"Desk layout saved",
-            L"The validated graph was replaced atomically while DeskLink remained paused.",
+            HasEnabledRoute
+                ? L"The graph was replaced atomically and edge roaming was enabled. DeskLink remains paused."
+                : L"The graph was replaced atomically and edge roaming was turned off. DeskLink remains paused.",
             InfoBarSeverity::Success);
     } else {
         ShowMonitorStatus(
-            L"Desk layout saved; runtime remains paused",
-            L"The graph is stored, but automatic resume failed. Input remains Local until DeskLink is resumed.",
-            InfoBarSeverity::Warning);
+            L"Desk layout saved",
+            HasEnabledRoute
+                ? L"The graph was applied to the existing authenticated session and edge roaming is ready—no separate switch is required."
+                : L"The graph was applied to the existing authenticated session and edge roaming was turned off.",
+            InfoBarSeverity::Success);
     }
     PollBroker();
 }

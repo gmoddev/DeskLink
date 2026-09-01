@@ -145,14 +145,14 @@ mutates trust.
 
 PR 7 adds release and Debug builds of the production monitor page plus focused
 core coverage for its save coordinator. The tests prove that an active runtime
-is paused/stopped before the atomic-write callback, a previously paused runtime
-must still confirm Local, cleanup failure never reaches persistence, and every
-runtime stopped by the operation receives exactly one resume attempt after
-either write success or failure. Store and resume failures remain explicit and
-fail Local. Existing monitor-model tests continue to prove bounded physical
-sizing, stable/offline identities, deterministic full-edge suggestions,
-presentation-only canvas movement, strict graph validation, and route
-resolution against current topology rather than canvas coordinates.
+returns Local before the atomic-write callback, every save confirms Local,
+cleanup failure never reaches persistence, and live preference negotiation is
+attempted only after a successful write. Store and preference-apply failures
+remain explicit and fail Local without replacing the authenticated session.
+Existing monitor-model tests continue to prove bounded physical sizing,
+stable/offline identities, deterministic full-edge suggestions, presentation-
+only canvas movement, strict graph validation, and route resolution against
+current topology rather than canvas coordinates.
 
 Clean-system keyboard, Narrator, DPI, high-contrast, and visual qualification
 of the PR 7 surface remains a release gate. The real two-supported-Windows-11-PC

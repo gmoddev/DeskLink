@@ -64,10 +64,9 @@ struct ProductShellPresentation {
 
 enum class ProductMonitorSaveStatus {
     Applied,
-    AppliedRuntimePaused,
     CleanupFailed,
     StoreFailed,
-    StoreFailedRuntimePaused,
+    PreferenceApplyFailed,
 };
 
 enum class ProductCrossingPreset {
@@ -83,17 +82,17 @@ enum class ProductCrossingPreset {
     ProductCrossingPreset Preset) noexcept;
 
 struct ProductMonitorSaveActions {
-    std::function<bool()> ConfirmStoppedLocalWhilePaused;
-    std::function<bool()> PauseAndStopRuntime;
+    std::function<bool()> ConfirmLocal;
+    std::function<bool()> ReturnLocal;
     std::function<bool()> SaveAtomically;
-    std::function<bool()> ResumeRuntime;
+    std::function<bool()> ApplyPreferencesLive;
 };
 
-// The save callback is never reached until a stopped/paused runtime has
-// confirmed Local. A runtime stopped by this operation is offered exactly one
-// resume attempt after either save success or failure.
+// A remotely focused runtime must return and then confirm Local before the
+// atomic graph save. The authenticated transport remains alive; preferences
+// are negotiated only after persistence succeeds.
 [[nodiscard]] ProductMonitorSaveStatus ApplyProductMonitorLayout(
-    bool RuntimeWasPaused,
+    bool RuntimeRemote,
     const ProductMonitorSaveActions& Actions);
 
 constexpr ProductShellPresentation PresentProductShellState(

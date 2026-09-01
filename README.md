@@ -230,11 +230,11 @@ consequences.
 cards use stable DisplayConfig identities and checked EDID/raw-DPI physical-size
 metadata; placement remains presentation-only. A snapped edge is only a visible
 proposal until **Accept connection** and **Save desk layout** complete. Saving
-pauses and stops the managed runtime, confirms Local, atomically replaces the
-validated graph, and only then attempts a fresh-session resume. The keyboard-
-accessible editor can move cards and create the same full-edge bidirectional
-link without dragging; partial percentages and one-way routes remain under
-Advanced.
+returns and confirms Local only when capture is active, atomically replaces the
+validated graph, automatically enables any accepted route, and live-reloads the
+existing authenticated session. The keyboard-accessible editor can move cards
+and create the same full-edge bidirectional link without dragging; partial
+percentages and one-way routes remain under Advanced.
 
 The shell can reduce grants or forget a peer only through fail-local broker
 mutations. It cannot add authority through the generic pipe; additions create a

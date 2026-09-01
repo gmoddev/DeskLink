@@ -42,6 +42,9 @@ public:
     [[nodiscard]] bool Start(DeskMode InitialMode = DeskMode::Roam);
     [[nodiscard]] bool ApplyMode(DeskMode Mode);
     [[nodiscard]] bool FocusReady();
+    // Returns input Local without changing the selected policy. This is used
+    // by ordinary roaming returns so Roam can re-arm after its cooldown.
+    [[nodiscard]] bool ReturnLocal() noexcept;
     void FailLocal() noexcept;
 
     [[nodiscard]] HostInputLifecycleStatus Status() const noexcept;

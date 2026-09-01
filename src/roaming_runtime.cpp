@@ -646,7 +646,48 @@ bool RoamingRuntime::AdmitRemoteInput(
         return false;
     }
     State_ = RoamingRuntimeState::Remote;
+    RemoteReturnEdgeSamples_ = 0;
     return true;
+}
+
+bool RoamingRuntime::ObserveRemotePointer(
+    PointerPositionFeedbackMessage Position) noexcept {
+    if (State_ != RoamingRuntimeState::Remote || !ActiveRequest_ ||
+        !ActiveRequestRemainsReady() ||
+        Position.DisplayId != ActiveRequest_->Landing.display_id) {
+        RemoteReturnEdgeSamples_ = 0;
+        return false;
+    }
+    const auto& Link = ActiveRequest_->ConfiguredLink;
+    const auto& Target = TargetEndpoint(
+        Link, ActiveRequest_->Route.Direction);
+    const auto AtReturnEdge = [&] {
+        switch (Target.Side) {
+            case DisplayEdgeSide::Left:
+                return Position.NormalizedX == 0;
+            case DisplayEdgeSide::Top:
+                return Position.NormalizedY == 0;
+            case DisplayEdgeSide::Right:
+                return Position.NormalizedX == 65'535;
+            case DisplayEdgeSide::Bottom:
+                return Position.NormalizedY == 65'535;
+        }
+        return false;
+    }();
+    const auto Along = Target.Side == DisplayEdgeSide::Left ||
+            Target.Side == DisplayEdgeSide::Right
+        ? static_cast<std::uint16_t>(
+              static_cast<std::uint32_t>(Position.NormalizedY) *
+              10'000u / 65'535u)
+        : static_cast<std::uint16_t>(
+              static_cast<std::uint32_t>(Position.NormalizedX) *
+              10'000u / 65'535u);
+    if (!AtReturnEdge || !InSegment(Along, Target)) {
+        RemoteReturnEdgeSamples_ = 0;
+        return false;
+    }
+    if (RemoteReturnEdgeSamples_ < 2) ++RemoteReturnEdgeSamples_;
+    return RemoteReturnEdgeSamples_ >= 2;
 }
 
 bool RoamingRuntime::ExpireFocusPending() noexcept {
@@ -704,6 +745,7 @@ void RoamingRuntime::CancelCandidate() noexcept {
 }
 
 void RoamingRuntime::EnterCooldown() noexcept {
+    RemoteReturnEdgeSamples_ = 0;
     Cooldown_.reset();
     if (ActiveRequest_ && ActiveRequest_->Route.LinkIndex <
             Context_.Configuration.Links.size()) {

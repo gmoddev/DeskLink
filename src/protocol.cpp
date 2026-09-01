@@ -176,6 +176,11 @@ ByteBuffer encode_payload(const Message& message) {
         } else if constexpr (std::is_same_v<T, PointerMotionMessage>) {
             w.i32(value.DeltaX);
             w.i32(value.DeltaY);
+        } else if constexpr (
+            std::is_same_v<T, PointerPositionFeedbackMessage>) {
+            w.u16(value.DisplayId);
+            w.u16(value.NormalizedX);
+            w.u16(value.NormalizedY);
         } else if constexpr (std::is_same_v<T, InputStateSnapshotMessage>) {
             w.raw(value.KeyBitmap);
             w.raw(value.ExtendedKeyBitmap);
@@ -341,6 +346,15 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             }
             return Message;
         }
+        case MessageType::PointerPositionFeedback: {
+            PointerPositionFeedbackMessage Message;
+            if (!r.u16(Message.DisplayId) ||
+                !r.u16(Message.NormalizedX) ||
+                !r.u16(Message.NormalizedY) || r.remaining() != 0) {
+                return std::nullopt;
+            }
+            return Message;
+        }
         case MessageType::InputStateSnapshot: {
             InputStateSnapshotMessage m;
             if (!r.raw(m.KeyBitmap) || !r.raw(m.ExtendedKeyBitmap) ||
@@ -488,6 +502,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::MouseButton:
         case MessageType::PointerPosition:
         case MessageType::PointerMotion:
+        case MessageType::PointerPositionFeedback:
         case MessageType::InputStateSnapshot:
         case MessageType::MouseWheel:
         case MessageType::SetAudioGain:
@@ -519,6 +534,9 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, MouseButtonMessage>) return MessageType::MouseButton;
         else if constexpr (std::is_same_v<T, PointerPositionMessage>) return MessageType::PointerPosition;
         else if constexpr (std::is_same_v<T, PointerMotionMessage>) return MessageType::PointerMotion;
+        else if constexpr (std::is_same_v<T, PointerPositionFeedbackMessage>) {
+            return MessageType::PointerPositionFeedback;
+        }
         else if constexpr (std::is_same_v<T, InputStateSnapshotMessage>) return MessageType::InputStateSnapshot;
         else if constexpr (std::is_same_v<T, MouseWheelMessage>) return MessageType::MouseWheel;
         else if constexpr (std::is_same_v<T, SetAudioGainMessage>) return MessageType::SetAudioGain;
@@ -539,6 +557,7 @@ MessageType message_type(const Message& message) noexcept {
 bool is_datagram_message(MessageType type) noexcept {
     return type == MessageType::PointerPosition ||
            type == MessageType::PointerMotion ||
+           type == MessageType::PointerPositionFeedback ||
            type == MessageType::AudioFrame;
 }
 

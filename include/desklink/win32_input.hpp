@@ -19,6 +19,8 @@ public:
     bool InjectPointerMotion(const PointerMotionMessage& Message) override;
     bool InjectWheel(const MouseWheelMessage& Message) override;
     bool ReconcileState(const InputStateSnapshotMessage& Snapshot) override;
+    [[nodiscard]] std::optional<PointerPositionMessage>
+    CurrentPointerPosition() override;
     [[nodiscard]] bool release_owned_state() noexcept override;
 
     [[nodiscard]] bool RefreshDisplayTopology();

@@ -4,6 +4,7 @@
 
 #include <variant>
 #include <vector>
+#include <optional>
 
 namespace desklink {
 
@@ -16,6 +17,8 @@ public:
     virtual bool InjectPointerMotion(const PointerMotionMessage& Message) = 0;
     virtual bool InjectWheel(const MouseWheelMessage& Message) = 0;
     virtual bool ReconcileState(const InputStateSnapshotMessage& Snapshot) = 0;
+    [[nodiscard]] virtual std::optional<PointerPositionMessage>
+    CurrentPointerPosition() { return std::nullopt; }
     [[nodiscard]] virtual bool release_owned_state() noexcept = 0;
 };
 

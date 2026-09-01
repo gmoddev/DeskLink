@@ -179,6 +179,8 @@ struct PeerSessionHandlers {
     std::function<void()> DirectionChanged;
     std::function<void()> DirectionCollision;
     std::function<void(TransportCloseReason)> TransportClosed;
+    std::function<void(PointerPositionFeedbackMessage)>
+        RemotePointerFeedback;
 };
 
 // Owns both directions of one authenticated peer connection. Capability grants
@@ -280,6 +282,8 @@ private:
     std::optional<PeerDirectionToken> IncomingToken_;
     std::uint64_t ReliableSequence_{1};
     std::uint64_t AudioDatagramSequence_{1};
+    std::uint64_t PointerFeedbackSequence_{1};
+    std::uint64_t LastPointerFeedbackSequence_{};
     std::uint64_t TopologySequence_{1};
     std::uint64_t LocalCapabilityRevision_{1};
     std::uint64_t RemoteCapabilityRevision_{};

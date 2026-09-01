@@ -117,6 +117,12 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
     return AgentDecision::Ignored;
 }
 
+std::optional<PointerPositionMessage>
+AgentCoordinator::CurrentPointerPosition() {
+    if (!RemoteFocused() || InputCleanupPending_) return std::nullopt;
+    return injector_.CurrentPointerPosition();
+}
+
 void AgentCoordinator::SetLocalDesiredMode(DeskMode Mode) noexcept {
     LocalDesiredMode_ = Mode;
     ApplyDesiredMode();

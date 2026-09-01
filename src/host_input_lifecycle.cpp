@@ -88,6 +88,17 @@ bool HostInputLifecycle::FocusReady() {
     return true;
 }
 
+bool HostInputLifecycle::ReturnLocal() noexcept {
+    if (!Started_) return false;
+    Backend_.DisableCapture();
+    CaptureInstalled_ = false;
+    const bool Released = State_ == HostInputLifecycleState::Local ||
+        Backend_.ReleaseFocus();
+    State_ = HostInputLifecycleState::Local;
+    Backend_.StopCapture();
+    return Released;
+}
+
 void HostInputLifecycle::FailLocal() noexcept {
     Backend_.DisableCapture();
     CaptureInstalled_ = false;
