@@ -111,6 +111,35 @@ bool Win32InputInjector::InjectWheel(const MouseWheelMessage& Message) {
     return send_one(Input);
 }
 
+std::optional<PointerPositionMessage>
+Win32InputInjector::CurrentPointerPosition() {
+    if (!DisplayTopology_.RefreshIfDue()) return std::nullopt;
+    POINT Cursor{};
+    if (!GetCursorPos(&Cursor)) return std::nullopt;
+    for (const auto& Display : DisplayTopology_.Current().Displays) {
+        if (Cursor.x < Display.Bounds.Left ||
+            Cursor.x >= Display.Bounds.Right ||
+            Cursor.y < Display.Bounds.Top ||
+            Cursor.y >= Display.Bounds.Bottom) {
+            continue;
+        }
+        const auto Width = Display.Bounds.Right - Display.Bounds.Left;
+        const auto Height = Display.Bounds.Bottom - Display.Bounds.Top;
+        if (Width <= 1 || Height <= 1) return std::nullopt;
+        const auto Normalize = [](std::int32_t Value,
+                                  std::int32_t Length) {
+            return static_cast<std::uint16_t>(
+                static_cast<std::int64_t>(Value) * 65'535 /
+                (Length - 1));
+        };
+        return PointerPositionMessage{
+            Display.Id,
+            Normalize(Cursor.x - Display.Bounds.Left, Width),
+            Normalize(Cursor.y - Display.Bounds.Top, Height)};
+    }
+    return std::nullopt;
+}
+
 bool Win32InputInjector::RefreshDisplayTopology() {
     return DisplayTopology_.Refresh();
 }

@@ -280,33 +280,24 @@ bool HasRuntimePlanBlocker(
 }
 
 ProductMonitorSaveStatus ApplyProductMonitorLayout(
-    bool RuntimeWasPaused,
+    bool RuntimeRemote,
     const ProductMonitorSaveActions& Actions) {
-    if (!Actions.ConfirmStoppedLocalWhilePaused ||
-        !Actions.PauseAndStopRuntime || !Actions.SaveAtomically ||
-        !Actions.ResumeRuntime) {
+    if (!Actions.ConfirmLocal || !Actions.ReturnLocal ||
+        !Actions.SaveAtomically || !Actions.ApplyPreferencesLive) {
         return ProductMonitorSaveStatus::CleanupFailed;
     }
-    const bool LocalConfirmed = RuntimeWasPaused
-        ? Actions.ConfirmStoppedLocalWhilePaused()
-        : Actions.PauseAndStopRuntime();
-    if (!LocalConfirmed) return ProductMonitorSaveStatus::CleanupFailed;
-
-    const bool Saved = Actions.SaveAtomically();
-    if (RuntimeWasPaused) {
-        return Saved
-            ? ProductMonitorSaveStatus::AppliedRuntimePaused
-            : ProductMonitorSaveStatus::StoreFailed;
+    if (RuntimeRemote && !Actions.ReturnLocal()) {
+        return ProductMonitorSaveStatus::CleanupFailed;
     }
-    const bool Resumed = Actions.ResumeRuntime();
-    if (!Saved) {
-        return Resumed
-            ? ProductMonitorSaveStatus::StoreFailed
-            : ProductMonitorSaveStatus::StoreFailedRuntimePaused;
+    if (!Actions.ConfirmLocal()) {
+        return ProductMonitorSaveStatus::CleanupFailed;
     }
-    return Resumed
+    if (!Actions.SaveAtomically()) {
+        return ProductMonitorSaveStatus::StoreFailed;
+    }
+    return Actions.ApplyPreferencesLive()
         ? ProductMonitorSaveStatus::Applied
-        : ProductMonitorSaveStatus::AppliedRuntimePaused;
+        : ProductMonitorSaveStatus::PreferenceApplyFailed;
 }
 
 } // namespace desklink

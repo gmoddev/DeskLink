@@ -3,6 +3,8 @@
 #include "desklink/capabilities.hpp"
 #include "desklink/focus.hpp"
 #include "desklink/input.hpp"
+
+#include <optional>
 #include "desklink/protocol.hpp"
 
 #include <string>
@@ -35,6 +37,8 @@ public:
     }
 
     [[nodiscard]] AgentDecision handle(const DecodedPacket& packet);
+    [[nodiscard]] std::optional<PointerPositionMessage>
+    CurrentPointerPosition();
     void SetLocalDesiredMode(DeskMode Mode) noexcept;
     void tick() noexcept;
     void disconnect() noexcept;

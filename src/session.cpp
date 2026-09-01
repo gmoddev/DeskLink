@@ -1281,6 +1281,7 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 return;
             }
             ++Stats_.OutgoingFocusAccepted;
+            LastPointerFeedbackSequence_ = 0;
             NotifyFocusReady = true;
             NotifyDirectionChanged = true;
         } else if (Type == MessageType::FocusRequest) {
@@ -1378,46 +1379,94 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
 }
 
 void PeerSession::OnDatagram(ByteBuffer Packet) {
-    std::scoped_lock Lock(Mutex_);
-    if (!Started_) return;
-    ++Stats_.datagrams_received;
-    const auto PeekedType = PeekMessageType(Packet);
-    auto Decoded = decode_packet(Packet, true);
-    if (!Decoded.packet) {
-        ++Stats_.decode_rejected;
-        if (PeekedType == MessageType::AudioFrame) {
-            ++Stats_.AudioRejected;
-        }
-        return;
-    }
-    if (!ValidateSession(*Decoded.packet)) {
-        if (Decoded.packet->header.type == MessageType::AudioFrame) {
-            ++Stats_.AudioRejected;
-        }
-        return;
-    }
-    if (Decoded.packet->header.type == MessageType::AudioFrame) {
-        ++Stats_.AudioReceived;
-        if (!LocalCapabilities_.contains(Capability::AudioSend) ||
-            AudioReceiver_ == nullptr ||
-            !AudioReceiver_->Push(
-                Decoded.packet->header.sequence,
-                std::get<AudioFrameMessage>(
-                    std::move(Decoded.packet->message)))) {
-            ++Stats_.authorization_rejected;
-            ++Stats_.AudioRejected;
+    std::function<void(PointerPositionFeedbackMessage)> FeedbackHandler;
+    std::optional<PointerPositionFeedbackMessage> Feedback;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (!Started_) return;
+        ++Stats_.datagrams_received;
+        const auto PeekedType = PeekMessageType(Packet);
+        auto Decoded = decode_packet(Packet, true);
+        if (!Decoded.packet) {
+            ++Stats_.decode_rejected;
+            if (PeekedType == MessageType::AudioFrame) {
+                ++Stats_.AudioRejected;
+            }
             return;
         }
-        ++Stats_.AudioAccepted;
-        return;
+        if (!ValidateSession(*Decoded.packet)) {
+            if (Decoded.packet->header.type == MessageType::AudioFrame) {
+                ++Stats_.AudioRejected;
+            }
+            return;
+        }
+        const auto Type = Decoded.packet->header.type;
+        if (Type == MessageType::AudioFrame) {
+            ++Stats_.AudioReceived;
+            if (!LocalCapabilities_.contains(Capability::AudioSend) ||
+                AudioReceiver_ == nullptr ||
+                !AudioReceiver_->Push(
+                    Decoded.packet->header.sequence,
+                    std::get<AudioFrameMessage>(
+                        std::move(Decoded.packet->message)))) {
+                ++Stats_.authorization_rejected;
+                ++Stats_.AudioRejected;
+                return;
+            }
+            ++Stats_.AudioAccepted;
+            return;
+        }
+        if (Type == MessageType::PointerPositionFeedback) {
+            if (DirectionArbiter_.State() !=
+                    PeerDirectionState::OutgoingActive ||
+                Decoded.packet->header.epoch == 0 ||
+                Decoded.packet->header.epoch !=
+                    OutgoingCoordinator_.remote_epoch() ||
+                Decoded.packet->header.sequence <=
+                    LastPointerFeedbackSequence_) {
+                ++Stats_.DirectionRejected;
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            LastPointerFeedbackSequence_ =
+                Decoded.packet->header.sequence;
+            Feedback = std::get<PointerPositionFeedbackMessage>(
+                Decoded.packet->message);
+            FeedbackHandler = Handlers_.RemotePointerFeedback;
+        } else {
+            if (DirectionArbiter_.State() !=
+                    PeerDirectionState::IncomingActive) {
+                ++Stats_.DirectionRejected;
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            const auto Decision = IncomingCoordinator_.handle(
+                *Decoded.packet);
+            CountDecision(Decision);
+            if (Decision == AgentDecision::Accepted &&
+                (Type == MessageType::PointerPosition ||
+                 Type == MessageType::PointerMotion)) {
+                const auto Position =
+                    IncomingCoordinator_.CurrentPointerPosition();
+                if (Position) {
+                    EnvelopeHeader Header;
+                    Header.session_nonce = SessionNonce_;
+                    Header.epoch =
+                        IncomingCoordinator_.focus_state().epoch();
+                    Header.sequence = PointerFeedbackSequence_++;
+                    if (PointerFeedbackSequence_ == 0) {
+                        ++PointerFeedbackSequence_;
+                    }
+                    (void)Transport_->send_datagram(encode_packet(
+                        Header, PointerPositionFeedbackMessage{
+                            Position->display_id,
+                            Position->normalized_x,
+                            Position->normalized_y}));
+                }
+            }
+        }
     }
-    if (DirectionArbiter_.State() !=
-            PeerDirectionState::IncomingActive) {
-        ++Stats_.DirectionRejected;
-        ++Stats_.authorization_rejected;
-        return;
-    }
-    CountDecision(IncomingCoordinator_.handle(*Decoded.packet));
+    if (Feedback && FeedbackHandler) FeedbackHandler(*Feedback);
 }
 
 } // namespace desklink

@@ -29,6 +29,7 @@ constexpr UINT kStopMessage = WM_APP + 0x45u;
 constexpr UINT kQueueOverflowMessage = WM_APP + 0x46u;
 constexpr UINT kKeyboardCaptureFailureMessage = WM_APP + 0x47u;
 constexpr UINT kMouseWheelCaptureFailureMessage = WM_APP + 0x48u;
+constexpr UINT kReturnLocalMessage = WM_APP + 0x49u;
 constexpr std::size_t kMaximumQueuedEvents = 1024;
 constexpr wchar_t kCaptureWindowClass[] = L"DeskLink.RawInputCapture.v1";
 
@@ -49,6 +50,13 @@ std::uint32_t ModifierBit(std::uint32_t VirtualKey, bool Control) noexcept {
         if (VirtualKey == VK_RMENU) return 2u;
         if (VirtualKey == VK_MENU) return 4u;
     }
+    return 0;
+}
+
+std::uint32_t ShiftModifierBit(std::uint32_t VirtualKey) noexcept {
+    if (VirtualKey == VK_LSHIFT) return 1u;
+    if (VirtualKey == VK_RSHIFT) return 2u;
+    if (VirtualKey == VK_SHIFT) return 4u;
     return 0;
 }
 
@@ -113,6 +121,12 @@ struct Win32InputCapture::State {
         Gate.SetRemoteRouting(false);
         ClearQueue();
         if (Handlers.Emergency) Handlers.Emergency();
+    }
+
+    void ReturnLocal() {
+        Gate.SetRemoteRouting(false);
+        ClearQueue();
+        if (Handlers.ReturnLocal) Handlers.ReturnLocal();
     }
 
     bool Enqueue(CapturedEvent Event) {
@@ -305,6 +319,10 @@ LRESULT CALLBACK KeyboardHook(int Code, WPARAM Message, LPARAM Data) {
         PostThreadMessageW(State->CaptureThreadId, kEmergencyMessage, 0, 0);
         return CallNextHookEx(nullptr, Code, Message, Data);
     }
+    if (Decision == Win32HookDecision::ReturnLocal) {
+        PostThreadMessageW(State->CaptureThreadId, kReturnLocalMessage, 0, 0);
+        return 1;
+    }
     if (Decision == Win32HookDecision::Suppress) {
         if (Event->scanCode == 0 || Event->scanCode > 255u) {
             State->Gate.SetRemoteRouting(false);
@@ -384,7 +402,15 @@ void Win32SuppressionGate::SetRemoteRouting(bool Enabled) noexcept {
     if (!Enabled) {
         ControlMask_.store(0, std::memory_order_relaxed);
         AltMask_.store(0, std::memory_order_relaxed);
+        ShiftMask_.store(0, std::memory_order_relaxed);
     }
+}
+
+void Win32SuppressionGate::SetReturnLocalHotkey(
+    ProductHotkey Hotkey) noexcept {
+    ReturnLocalHotkey_.store(
+        IsValidProductHotkey(Hotkey) ? Hotkey : ProductHotkey::Off,
+        std::memory_order_release);
 }
 
 bool Win32SuppressionGate::RemoteRouting() const noexcept {
@@ -396,12 +422,35 @@ Win32HookDecision Win32SuppressionGate::HandleKeyboard(
     if (Injected) return Win32HookDecision::Pass;
     UpdateModifier(ControlMask_, ModifierBit(VirtualKey, true), Down);
     UpdateModifier(AltMask_, ModifierBit(VirtualKey, false), Down);
+    UpdateModifier(ShiftMask_, ShiftModifierBit(VirtualKey), Down);
     if (Down && (VirtualKey == VK_PAUSE || VirtualKey == VK_CANCEL) &&
         RemoteRouting() &&
         ControlMask_.load(std::memory_order_relaxed) != 0 &&
         AltMask_.load(std::memory_order_relaxed) != 0) {
         SetRemoteRouting(false);
         return Win32HookDecision::Emergency;
+    }
+    const auto Hotkey = ReturnLocalHotkey_.load(std::memory_order_acquire);
+    const bool FunctionKeyMatches =
+        ((Hotkey == ProductHotkey::CtrlAltF11 ||
+          Hotkey == ProductHotkey::CtrlShiftF11) && VirtualKey == VK_F11) ||
+        ((Hotkey == ProductHotkey::CtrlAltF12 ||
+          Hotkey == ProductHotkey::CtrlShiftF12) && VirtualKey == VK_F12);
+    const bool ControlDown =
+        ControlMask_.load(std::memory_order_relaxed) != 0;
+    const bool AltDown = AltMask_.load(std::memory_order_relaxed) != 0;
+    const bool ShiftDown = ShiftMask_.load(std::memory_order_relaxed) != 0;
+    const bool ModifiersMatch =
+        (Hotkey == ProductHotkey::CtrlAltF11 ||
+         Hotkey == ProductHotkey::CtrlAltF12)
+            ? ControlDown && AltDown && !ShiftDown
+            : (Hotkey == ProductHotkey::CtrlShiftF11 ||
+               Hotkey == ProductHotkey::CtrlShiftF12)
+                ? ControlDown && ShiftDown && !AltDown
+                : false;
+    if (Down && RemoteRouting() && FunctionKeyMatches && ModifiersMatch) {
+        SetRemoteRouting(false);
+        return Win32HookDecision::ReturnLocal;
     }
     return RemoteRouting()
         ? Win32HookDecision::Suppress : Win32HookDecision::Pass;
@@ -592,6 +641,9 @@ bool Win32InputCapture::Start() {
             while (GetMessageW(&Message, nullptr, 0, 0) > 0) {
                 if (Message.message == kStopMessage) break;
                 if (Message.message == kEmergencyMessage) State->Emergency();
+                if (Message.message == kReturnLocalMessage) {
+                    State->ReturnLocal();
+                }
                 if (Message.message == kQueueOverflowMessage) {
                     State->Fail("bounded input queue overflowed");
                 }
@@ -627,6 +679,11 @@ bool Win32InputCapture::Start() {
 void Win32InputCapture::SetRemoteRouting(bool Enabled) noexcept {
     State_->Gate.SetRemoteRouting(Enabled);
     if (!Enabled) State_->ClearQueue();
+}
+
+void Win32InputCapture::SetReturnLocalHotkey(
+    ProductHotkey Hotkey) noexcept {
+    State_->Gate.SetReturnLocalHotkey(Hotkey);
 }
 
 bool Win32InputCapture::RemoteRouting() const noexcept {

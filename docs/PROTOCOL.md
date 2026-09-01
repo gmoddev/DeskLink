@@ -17,7 +17,7 @@ Every message has a 36-byte envelope:
 | Field | Size | Description |
 |---|---:|---|
 | magic | 4 | `DLNK` / `0x444C4E4B` |
-| version | 2 | protocol version, currently `3` |
+| version | 2 | protocol version, currently `4` |
 | message_type | 2 | `MessageType` |
 | payload_size | 4 | bytes following envelope |
 | session_nonce | 8 | local logical session identifier |
@@ -57,6 +57,7 @@ ClipboardText
 ```text
 PointerPosition
 PointerMotion
+PointerPositionFeedback
 AudioFrame
 ```
 
@@ -244,6 +245,22 @@ axis must be nonzero and each axis is bounded to `-1000000..1000000`.
 monitor transitions and resynchronization. Both pointer message types share
 one monotonic datagram sequence gate for the current focus epoch.
 
+### PointerPositionFeedback — type 26
+
+```text
+display_id              u16
+normalized_x            u16
+normalized_y            u16
+```
+
+After accepting and injecting a pointer datagram, the Agent may report the
+resulting cursor position. The Host admits this feedback only while its
+outgoing direction is active and the authenticated session nonce, focus epoch,
+and monotonic feedback sequence match. It grants no authority and cannot inject
+input. The roaming runtime requires two consecutive observations on the exact
+configured target display, edge, and segment before returning Local. Stale,
+replayed, wrong-epoch, wrong-direction, or wrong-display feedback is ignored.
+
 ### SetAudioGain — type 30
 
 ```text
@@ -397,7 +414,7 @@ It does not replace QUIC/TLS anti-replay or authentication.
 
 ## 7. Versioning policy
 
-V2 is strict. Unknown message types and unsupported envelope versions are rejected.
+The wire format is strict. Unknown message types and unsupported envelope versions are rejected.
 
 Future compatibility should be introduced deliberately, preferably using:
 
@@ -422,6 +439,9 @@ Pointer datagram sequence numbers are monotonic within a focus epoch. Absolute
 position and relative motion messages share the same newest-accepted sequence.
 The Agent rejects an older or duplicate pointer packet, preventing reordered
 motion from being applied after a newer position or motion event.
+
+Pointer feedback has an independent monotonic sequence and is accepted only
+for the Host's current outgoing focus epoch.
 
 Audio sequence numbers are consumed by the jitter buffer, which intentionally supports limited reordering rather than strict newest-only semantics.
 

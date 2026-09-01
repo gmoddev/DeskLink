@@ -672,9 +672,10 @@ shell reads the same bounded topology snapshot used by Alpha, builds cards with
 the shared `MonitorCanvasModel`, and persists only a strictly validated
 `RoamingConfiguration` in current-user application state. Stable machine and
 display identities—not XAML coordinates—compile every accepted link. A save
-uses the shared product monitor coordinator to pause/stop the broker-managed
-runtime and confirm Local before the existing atomic settings replacement; only
-after persistence may the runtime resume and negotiate a fresh session. A UI
-crash between stop and resume therefore leaves input Local and the runtime
-paused. Identify remains a local, click-through, no-activate overlay and does
-not capture or suppress input.
+uses the shared product monitor coordinator to return and confirm Local only
+when capture is active, atomically replaces the settings, and then negotiates
+the roaming preference through the existing authenticated session. The runtime
+reloads the graph in place, so saving no longer tears down transport; failure
+before persistence leaves the old graph active, while a preference-apply
+failure leaves the new graph stored and input Local. Identify remains a local,
+click-through, no-activate overlay and does not capture or suppress input.

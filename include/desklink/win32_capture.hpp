@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "desklink/protocol.hpp"
+#include "desklink/product.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -16,6 +17,7 @@ namespace desklink {
 enum class Win32HookDecision {
     Pass,
     Suppress,
+    ReturnLocal,
     Emergency,
 };
 
@@ -63,6 +65,7 @@ private:
 class Win32SuppressionGate final {
 public:
     void SetRemoteRouting(bool Enabled) noexcept;
+    void SetReturnLocalHotkey(ProductHotkey Hotkey) noexcept;
     [[nodiscard]] bool RemoteRouting() const noexcept;
     [[nodiscard]] Win32HookDecision HandleKeyboard(
         std::uint32_t VirtualKey, bool Down, bool Injected) noexcept;
@@ -72,6 +75,8 @@ private:
     std::atomic_bool RemoteRouting_{};
     std::atomic_uint32_t ControlMask_{};
     std::atomic_uint32_t AltMask_{};
+    std::atomic_uint32_t ShiftMask_{};
+    std::atomic<ProductHotkey> ReturnLocalHotkey_{ProductHotkey::Off};
 };
 
 struct Win32CaptureHandlers {
@@ -81,6 +86,7 @@ struct Win32CaptureHandlers {
     std::function<void(PointerMotionMessage)> PointerMotion;
     std::function<void(Win32LocalPointerObservation)> LocalPointerMotion;
     std::function<void(MouseWheelMessage)> Wheel;
+    std::function<void()> ReturnLocal;
     std::function<void()> Emergency;
     std::function<void(std::string)> Failed;
 };
@@ -98,6 +104,7 @@ public:
     Win32InputCapture& operator=(const Win32InputCapture&) = delete;
 
     [[nodiscard]] bool Start();
+    void SetReturnLocalHotkey(ProductHotkey Hotkey) noexcept;
     void SetRemoteRouting(bool Enabled) noexcept;
     [[nodiscard]] bool RemoteRouting() const noexcept;
     void Stop() noexcept;

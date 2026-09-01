@@ -1353,6 +1353,11 @@ public:
         return true;
     }
 
+    std::optional<desklink::PointerPositionMessage>
+    CurrentPointerPosition() override {
+        return Injector_.CurrentPointerPosition();
+    }
+
     bool release_owned_state() noexcept override {
         bool Released = false;
         if (ObserveCleanup_) {
@@ -2559,6 +2564,29 @@ public:
         }
     }
 
+    void NotifyRemotePointerFeedback(
+        desklink::PointerPositionFeedbackMessage Position) noexcept {
+        if (!Post([this, Position] {
+                if (!Roaming_.ObserveRemotePointer(Position)) return;
+                ReturnLocalPreservingRoaming(
+                    "authenticated remote edge crossed");
+            }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal(
+                "remote pointer feedback queue overflow");
+        }
+    }
+
+    void ReturnLocalFromShortcut() noexcept {
+        DisableCaptureImmediately();
+        if (!Post([this] {
+                ReturnLocalPreservingRoaming(
+                    "configured Return to this PC shortcut");
+            }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal(
+                "return-local shortcut queue overflow");
+        }
+    }
+
     [[nodiscard]] bool ApplyManualMode(desklink::DeskMode Mode) {
         if (Stopping_.load()) return false;
         if (std::this_thread::get_id() == DispatcherId_) {
@@ -2619,6 +2647,14 @@ public:
                     Applied = Applied &&
                         Profiles_.SetRules(Preferences.ProfileRules);
                     Profiles_.ClearManualOverride();
+                    ReturnLocalHotkey_ = Preferences.ReturnLocalHotkey;
+                    {
+                        std::scoped_lock Lock(CaptureLifetimeMutex_);
+                        if (ActiveCapture_) {
+                            ActiveCapture_->SetReturnLocalHotkey(
+                                ReturnLocalHotkey_);
+                        }
+                    }
                     if (Applied && Profiles_.RequiresForegroundObservation()) {
                         Applied = EnsureForegroundMonitor();
                     }
@@ -2844,6 +2880,11 @@ private:
             Handlers.Wheel = [Weak](desklink::MouseWheelMessage Message) {
                 if (const auto Runtime = Weak.lock()) Runtime->ForwardWheel(Message);
             };
+            Handlers.ReturnLocal = [Weak] {
+                if (const auto Runtime = Weak.lock()) {
+                    Runtime->ReturnLocalFromShortcut();
+                }
+            };
             Handlers.Emergency = [Weak] {
                 if (const auto Runtime = Weak.lock()) Runtime->EmergencyRelease();
             };
@@ -2855,6 +2896,7 @@ private:
 
             Capture_ = std::make_unique<desklink::Win32InputCapture>(
                 std::move(Handlers), PointerCalibration_);
+            Capture_->SetReturnLocalHotkey(ReturnLocalHotkey_);
             if (!Capture_->Start()) {
                 Capture_.reset();
                 LastBackendFailure_ = BackendFailure::StartCapture;
@@ -3493,6 +3535,25 @@ private:
         }
     }
 
+    void ReturnLocalPreservingRoaming(const char* Reason) noexcept {
+        Roaming_.BeginReturn();
+        PendingRoamingRequest_.reset();
+        PendingLanding_.reset();
+        Profiles_.ClearManualOverride();
+        const bool Released = Lifecycle_.ReturnLocal();
+        Roaming_.ReturnLocal();
+        PublishLifecycleStatus();
+        {
+            std::scoped_lock Lock(Result_->Mutex);
+            Result_->Ready = false;
+        }
+        Result_->Changed.notify_all();
+        std::cout
+            << "[Roaming:Return] input returned Local; reason=" << Reason
+            << " roaming_rearmed=true release_ack="
+            << (Released ? "true" : "false") << '\n';
+    }
+
     void CaptureFailed(std::string Message) noexcept {
         CaptureTransportFailed(Message.empty()
             ? "physical input capture failed"
@@ -3540,6 +3601,8 @@ private:
     bool RoamingSettingsHealthy_{};
     bool RoamingSettingsFailureReported_{};
     desklink::Win32PointerCalibration PointerCalibration_;
+    desklink::ProductHotkey ReturnLocalHotkey_{
+        desklink::ProductHotkey::Off};
     bool ConfigurationValid_{};
     std::optional<desklink::ProfileModeDecision> LastDecision_;
     BackendFailure LastBackendFailure_{BackendFailure::None};
@@ -4021,6 +4084,12 @@ int RunTrusted(const CommandLine& Command,
                 Input->NotifyDirectionCollision();
             }
         };
+        SessionHandlers.RemotePointerFeedback = [RuntimeTarget](
+            desklink::PointerPositionFeedbackMessage Position) {
+            if (const auto Input = RuntimeTarget->lock()) {
+                Input->NotifyRemotePointerFeedback(Position);
+            }
+        };
         SessionHandlers.TransportClosed = [
             Result, Managed = Command.BrokerManaged,
             Initiator = Command.Mode == Operation::Focus](
@@ -4160,7 +4229,10 @@ int RunTrusted(const CommandLine& Command,
         if (!Bootstrap->StartListener(Command.Port)) {
             std::cerr << "[Session:Control] could not listen on UDP port "
                       << Command.Port << '\n';
-            return 1;
+            return Command.BrokerManaged
+                ? static_cast<int>(
+                      desklink::kBrokerManagedRetryableProcessExit)
+                : 1;
         }
         std::cout << "[Session:Control] serving trusted sessions on UDP port "
                   << Bootstrap->BoundPort() << "\n"

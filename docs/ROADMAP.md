@@ -273,15 +273,17 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   state, local Identify overlays, deterministic snap proposals, and explicit
   acceptance. A keyboard-accessible editor supplies card movement and full-edge
   two-way authoring without the canvas; one-way and partial segments remain in
-  Advanced. Saving strictly validates the complete graph, pauses/stops the
-  managed runtime Local, atomically replaces the settings file, and then
-  attempts a fresh-session resume. Canvas movement alone never changes routing;
+  Advanced. Saving strictly validates the complete graph, confirms Local when
+  capture is active, atomically replaces the settings file, automatically arms
+  any enabled route, and live-reloads the authenticated session. Canvas
+  movement alone never changes routing;
 - **Product UX PR 8 implemented:** Home exposes concrete preferred-PC
   clipboard/audio intent, bounded peer-audio volume/mute, fullscreen keep-local
   behavior, three crossing presets, and fixed-list local focus/return hotkeys.
   Advanced persists at most 32 exact executable/fullscreen rules. Missing
   permission never creates consent, focus shortcuts use the named authenticated
-  admission path, crossing changes reuse Local-before-atomic-save, and required
+  admission path, the capture hook owns Return-to-this-PC while remote,
+  crossing changes reuse Local-before-atomic-save, and required
   but uninspectable foreground state remains Local. Preferences schema 4
   migrates both previous formats;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu,

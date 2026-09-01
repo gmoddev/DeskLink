@@ -817,10 +817,11 @@ local five-second Identify overlays. Dragging or keyboard nudging changes only
 pending canvas placement. Cross-PC adjacency produces a highlighted proposal
 that must be accepted explicitly; the non-canvas editor can create the same
 full-edge bidirectional link, and Advanced retains exact percentages and one-
-way direction. The shared save coordinator is unit-tested to require Local plus
-a stopped/paused managed runtime before atomic persistence and to remain paused
-on uncertain resume. Topology loss continues to resolve saved links as not
-Ready rather than falling back to canvas geometry.
+way direction. The shared save coordinator is unit-tested to return active
+capture Local, confirm that state before atomic persistence, and apply the
+roaming preference only after the write. It keeps the authenticated transport
+alive and automatically arms accepted routes. Topology loss continues to
+resolve saved links as not Ready rather than falling back to canvas geometry.
 
 ### PR 8 — Feature intent and profiles
 
