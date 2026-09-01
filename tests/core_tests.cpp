@@ -1883,7 +1883,6 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(!AdmissionRuntime.ObserveRemotePointer(WrongDisplay));
     const PointerPositionFeedbackMessage ReturnEdge{
         Admitted->Landing.display_id, 0, 32'768};
-    CHECK(!AdmissionRuntime.ObserveRemotePointer(ReturnEdge));
     CHECK(AdmissionRuntime.ObserveRemotePointer(ReturnEdge));
     AdmissionRuntime.BeginReturn();
     AdmissionRuntime.ReturnLocal();

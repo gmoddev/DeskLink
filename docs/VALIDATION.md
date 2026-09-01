@@ -498,9 +498,10 @@ Production profile-runtime validation additionally requires:
 
 Controlled-roaming automation now covers Push, DwellAndPush, and DoublePush;
 edge/segment rejection; proportional horizontal, vertical, and reverse
-landing; target corner clearance; re-entry cooldown; the 1.5-second focus
-timeout; presentation-only canvas mutation; and active link/topology/nonce
-invalidation. Negative cases revoke peer validation, `InputInject`, topology
+landing; first-sample authenticated remote-edge return; target corner
+clearance; re-entry cooldown; the 1.5-second focus timeout; presentation-only
+canvas mutation; and active link/topology/nonce invalidation. Negative cases
+revoke peer validation, `InputInject`, topology
 freshness, or link enablement and prove that none can reach Remote. Reciprocal
 session tests exercise focus and input in both directions, independent local
 grants, simultaneous opposite intent, busy ownership, peer/nonce/generation-

@@ -257,9 +257,11 @@ After accepting and injecting a pointer datagram, the Agent may report the
 resulting cursor position. The Host admits this feedback only while its
 outgoing direction is active and the authenticated session nonce, focus epoch,
 and monotonic feedback sequence match. It grants no authority and cannot inject
-input. The roaming runtime requires two consecutive observations on the exact
-configured target display, edge, and segment before returning Local. Stale,
-replayed, wrong-epoch, wrong-direction, or wrong-display feedback is ignored.
+input. The roaming runtime returns Local on the first admitted observation on
+the exact configured target display, edge, and segment. The landing inset and
+the source-side re-entry latch prevent immediate bounce without making the user
+push against the remote edge twice. Stale, replayed, wrong-epoch,
+wrong-direction, or wrong-display feedback is ignored.
 
 ### SetAudioGain — type 30
 
