@@ -646,7 +646,6 @@ bool RoamingRuntime::AdmitRemoteInput(
         return false;
     }
     State_ = RoamingRuntimeState::Remote;
-    RemoteReturnEdgeSamples_ = 0;
     return true;
 }
 
@@ -655,7 +654,6 @@ bool RoamingRuntime::ObserveRemotePointer(
     if (State_ != RoamingRuntimeState::Remote || !ActiveRequest_ ||
         !ActiveRequestRemainsReady() ||
         Position.DisplayId != ActiveRequest_->Landing.display_id) {
-        RemoteReturnEdgeSamples_ = 0;
         return false;
     }
     const auto& Link = ActiveRequest_->ConfiguredLink;
@@ -683,11 +681,9 @@ bool RoamingRuntime::ObserveRemotePointer(
               static_cast<std::uint32_t>(Position.NormalizedX) *
               10'000u / 65'535u);
     if (!AtReturnEdge || !InSegment(Along, Target)) {
-        RemoteReturnEdgeSamples_ = 0;
         return false;
     }
-    if (RemoteReturnEdgeSamples_ < 2) ++RemoteReturnEdgeSamples_;
-    return RemoteReturnEdgeSamples_ >= 2;
+    return true;
 }
 
 bool RoamingRuntime::ExpireFocusPending() noexcept {
@@ -745,7 +741,6 @@ void RoamingRuntime::CancelCandidate() noexcept {
 }
 
 void RoamingRuntime::EnterCooldown() noexcept {
-    RemoteReturnEdgeSamples_ = 0;
     Cooldown_.reset();
     if (ActiveRequest_ && ActiveRequest_->Route.LinkIndex <
             Context_.Configuration.Links.size()) {
