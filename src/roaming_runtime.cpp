@@ -557,7 +557,10 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
         Candidate.Route.Link, Candidate.Route.Key.Direction);
     const auto IntentReady = HasOutwardIntent(
         Candidate.OutwardDistance, Candidate.LateralDistance);
-    if (Candidate.LateralDistance >= Crossing.PushDistancePixels &&
+    const auto ImmediatePush = Crossing.Policy == CrossingPolicy::Push &&
+        Delta > 0;
+    if (!ImmediatePush &&
+        Candidate.LateralDistance >= Crossing.PushDistancePixels &&
         !IntentReady) {
         CancelCandidate();
         return std::nullopt;
@@ -566,8 +569,15 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
     bool Triggered = false;
     switch (Crossing.Policy) {
         case CrossingPolicy::Push:
-            Triggered = Candidate.OutwardDistance >=
-                    Crossing.PushDistancePixels && IntentReady;
+            // "Cross immediately" is intentionally contact based. Once the
+            // physical pointer is on a configured edge, the first outward Raw
+            // Input count is sufficient. Requiring accumulated distance or a
+            // dominant outward ratio made diagonal approaches depend on mouse
+            // polling and repeatedly cancelled otherwise valid crossings.
+            // Exact-edge, route, session, topology, capability, and cooldown
+            // admission above remain mandatory; lateral-only motion cannot
+            // trigger this path.
+            Triggered = ImmediatePush;
             break;
         case CrossingPolicy::DwellAndPush:
             Triggered = Candidate.OutwardDistance >=

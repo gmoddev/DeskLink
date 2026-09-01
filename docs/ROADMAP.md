@@ -184,11 +184,16 @@ at least 25 mm and the two physical spans must agree within the larger of 5 mm
 or 5%; estimated, rotated, contradictory, or short geometry deterministically
 uses the existing proportional mapping. Route selection, peer/capability
 admission, and saved canvas positions remain independent of physical metadata.
-Bounded outward-intent scoring requires at least 60% outward motion and
-recorded traces cover edge skimming, high-poll-rate accumulation, high velocity,
-diagonal intent, corners, partial edges, all three policies, cooldown, and both
-crossing directions. Physical feel/tuning and selection of a production default
-remain part of milestone 3.
+The default **Cross immediately** policy fires on the first positive outward
+Raw Input count at an exact configured edge. It deliberately ignores lateral
+distance so diagonal approaches do not depend on mouse polling rate or require
+repeated pushes. Lateral-only motion still cannot cross, and the exact route,
+session, topology, capability, and re-entry cooldown gates remain mandatory.
+The advanced pause-and-push and double-push policies retain bounded 60%
+outward-intent scoring and their configured thresholds. Recorded traces cover
+edge skimming, first-contact high-poll-rate input, high velocity, diagonal
+intent, corners, partial edges, all three policies, cooldown, and both crossing
+directions.
 
 ### 3. Reliability and failure qualification — automated harness complete
 

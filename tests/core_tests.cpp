@@ -1836,11 +1836,11 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(PushRuntime.State() == RoamingRuntimeState::Local);
     CHECK(!PushRuntime.Observe({1919, 50, 8, 0}));
     CHECK(PushRuntime.State() == RoamingRuntimeState::Local);
-    CHECK(!PushRuntime.Observe({1919, 540, 3, 0}));
+    CHECK(!PushRuntime.Observe({1919, 540, 0, 7}));
     CHECK(PushRuntime.State() == RoamingRuntimeState::EdgeCandidate);
     CHECK(!PushRuntime.Observe({1919, 540, -1, 0}));
     CHECK(PushRuntime.State() == RoamingRuntimeState::Local);
-    const auto Request = PushRuntime.Observe(Edge);
+    const auto Request = PushRuntime.Observe({1919, 540, 1, 24});
     CHECK(Request.has_value());
     CHECK(Request->PeerMachine == MakeMachineId(2));
     CHECK(Request->SessionNonce == PushContext.SessionNonce);
@@ -2051,7 +2051,7 @@ void RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown() {
     RoamingRuntime CandidateRuntime(Clock);
     Context = MakeRoamingRuntimeContext();
     CHECK(CandidateRuntime.UpdateContext(Context).ReadyRouteCount == 1);
-    CHECK(!CandidateRuntime.Observe({1919, 540, 3, 0}));
+    CHECK(!CandidateRuntime.Observe({1919, 540, 0, 3}));
     CHECK(CandidateRuntime.State() == RoamingRuntimeState::EdgeCandidate);
     ++Context.SessionNonce;
     CHECK(!CandidateRuntime.UpdateContext(Context).MustFailLocal);
@@ -2063,7 +2063,8 @@ void RoamingRuntimeHandlesExtremeLocalPointerDeltas() {
 
     ManualClock Clock;
     RoamingRuntime AccumulationRuntime(Clock);
-    auto Context = MakeRoamingRuntimeContext();
+    auto Context = MakeRoamingRuntimeContext(CrossingPolicy::DwellAndPush);
+    Context.Configuration.Links[0].AToB.DwellMilliseconds = 0;
     CHECK(AccumulationRuntime.UpdateContext(Context).ReadyRouteCount == 1);
     CHECK(!AccumulationRuntime.Observe({1919, 540, 3, 0}));
     const auto Accumulated = AccumulationRuntime.Observe({
@@ -2144,7 +2145,7 @@ void RoamingRuntimeUsesPhysicalLandingHintsOnlyWhenTrustworthy() {
     CHECK(ObserveLanding(std::move(TooShort)) == EstimatedFallback);
 }
 
-void RoamingRuntimeRecordedTracesRequireOutwardIntent() {
+void RoamingRuntimeRecordedTracesRespectCrossingPolicies() {
     using namespace desklink;
 
     ManualClock SkimClock;
@@ -2152,12 +2153,12 @@ void RoamingRuntimeRecordedTracesRequireOutwardIntent() {
     CHECK(SkimRuntime.UpdateContext(MakeRoamingRuntimeContext())
               .ReadyRouteCount == 1);
     const std::array SkimTrace{
-        RecordedPointerSample{0, {1'919, 500, 1, 6}},
-        RecordedPointerSample{1, {1'919, 506, 1, 6}},
-        RecordedPointerSample{1, {1'919, 512, 1, 6}},
-        RecordedPointerSample{1, {1'919, 518, 1, 6}},
-        RecordedPointerSample{1, {1'919, 524, 1, 6}},
-        RecordedPointerSample{1, {1'919, 530, 1, 6}},
+        RecordedPointerSample{0, {1'919, 500, 0, 6}},
+        RecordedPointerSample{1, {1'919, 506, 0, 6}},
+        RecordedPointerSample{1, {1'919, 512, 0, 6}},
+        RecordedPointerSample{1, {1'919, 518, 0, 6}},
+        RecordedPointerSample{1, {1'919, 524, 0, 6}},
+        RecordedPointerSample{1, {1'919, 530, 0, 6}},
     };
     CHECK(ReplayRoamingTrace(SkimRuntime, SkimClock, SkimTrace).empty());
     CHECK(SkimRuntime.State() != RoamingRuntimeState::FocusPending);
@@ -2166,30 +2167,18 @@ void RoamingRuntimeRecordedTracesRequireOutwardIntent() {
     RoamingRuntime PollRuntime(PollClock);
     CHECK(PollRuntime.UpdateContext(MakeRoamingRuntimeContext())
               .ReadyRouteCount == 1);
-    const std::array HighPollTrace{
+    const std::array FirstContactTrace{
         RecordedPointerSample{0, {1'919, 540, 1, 0}},
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
     };
-    CHECK(ReplayRoamingTrace(PollRuntime, PollClock, HighPollTrace).empty());
-    const std::array ThresholdTrace{
-        RecordedPointerSample{1, {1'919, 540, 1, 0}},
-    };
-    CHECK(ReplayRoamingTrace(PollRuntime, PollClock, ThresholdTrace).size() == 1);
+    CHECK(ReplayRoamingTrace(
+              PollRuntime, PollClock, FirstContactTrace).size() == 1);
 
     ManualClock DiagonalClock;
     RoamingRuntime DiagonalRuntime(DiagonalClock);
     CHECK(DiagonalRuntime.UpdateContext(MakeRoamingRuntimeContext())
               .ReadyRouteCount == 1);
     const std::array DiagonalTrace{
-        RecordedPointerSample{0, {1'919, 540, 2, 1}},
-        RecordedPointerSample{1, {1'919, 541, 2, 1}},
-        RecordedPointerSample{1, {1'919, 542, 2, 1}},
-        RecordedPointerSample{1, {1'919, 543, 2, 1}},
+        RecordedPointerSample{0, {1'919, 540, 1, 12}},
     };
     CHECK(ReplayRoamingTrace(
               DiagonalRuntime, DiagonalClock, DiagonalTrace).size() == 1);
@@ -6202,7 +6191,7 @@ int main() {
     RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown();
     RoamingRuntimeHandlesExtremeLocalPointerDeltas();
     RoamingRuntimeUsesPhysicalLandingHintsOnlyWhenTrustworthy();
-    RoamingRuntimeRecordedTracesRequireOutwardIntent();
+    RoamingRuntimeRecordedTracesRespectCrossingPolicies();
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
     PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();

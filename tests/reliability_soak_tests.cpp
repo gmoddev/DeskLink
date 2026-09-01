@@ -239,17 +239,13 @@ struct HarnessOptions {
         return Runtime.Observe(
             {ScreenX, ScreenY, OutwardDelta, 0});
     }
-    for (std::uint16_t Sample = 0; Sample < 8; ++Sample) {
-        const auto Request = Runtime.Observe(
-            {ScreenX, ScreenY, ThresholdDelta, 0});
-        if (Sample < 7 && Request) {
-            (void)Fail(Iteration, Scenario,
-                       "8 kHz trace crossed before the push threshold");
-            return std::nullopt;
-        }
-        if (Request) return Request;
+    const auto Request = Runtime.Observe(
+        {ScreenX, ScreenY, ThresholdDelta, 0});
+    if (!Request) {
+        (void)Fail(Iteration, Scenario,
+                   "high-poll-rate trace did not cross on first contact");
     }
-    return std::nullopt;
+    return Request;
 }
 
 [[nodiscard]] bool ExerciseRoamingFault(
