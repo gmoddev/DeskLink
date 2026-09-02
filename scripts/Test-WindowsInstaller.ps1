@@ -427,13 +427,26 @@ try {
     Set-ItemProperty -LiteralPath $RunKeyPath -Name DeskLink `
         -Value $LegacyStartup
 
-    $Shell = Start-Process -FilePath (Join-Path $InstallPath 'desklink.exe') `
+    $LegacyBackgroundShell = Start-Process `
+        -FilePath (Join-Path $InstallPath 'desklink.exe') `
         -ArgumentList '--background' -PassThru
-    Start-Sleep -Seconds 2
-    if ($Shell.HasExited) {
-        throw 'Installed product shell did not remain active as the primary UI.'
+    if (-not $LegacyBackgroundShell.WaitForExit(15000) -or
+        $LegacyBackgroundShell.ExitCode -ne 0) {
+        throw 'Legacy product-shell background launch retained the WinUI process.'
     }
     Wait-ForBrokerReady
+    $Broker = Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -eq (Join-Path $InstallPath 'desklink_runtime.exe')
+    } | Select-Object -First 1
+    if (-not $Broker) {
+        throw 'The short-lived product bootstrap did not leave the lightweight runtime active.'
+    }
+    $Shell = Start-Process -FilePath (Join-Path $InstallPath 'desklink.exe') `
+        -PassThru
+    Start-Sleep -Seconds 2
+    if ($Shell.HasExited) {
+        throw 'Installed product shell did not remain active while visible.'
+    }
     $IdentityBefore = Get-IdentitySnapshot
     $StateHashesBefore = Get-PreservedStateHashes
     $Devices = Start-Process `
@@ -459,6 +472,9 @@ try {
         throw 'The product shell did not honor bounded explicit exit.'
     }
     Wait-ForBrokerReady
+    if (-not (Get-Process -Id $Broker.ProcessId -ErrorAction SilentlyContinue)) {
+        throw 'Closing the product shell stopped the lightweight background runtime.'
+    }
 
     $Alpha = Start-Process -FilePath (Join-Path $InstallPath 'desklink_alpha.exe') `
         -ArgumentList '--background' -PassThru
@@ -468,8 +484,7 @@ try {
     }
 
     $ShellForUpdate = Start-Process `
-        -FilePath (Join-Path $InstallPath 'desklink.exe') `
-        -ArgumentList '--background' -PassThru
+        -FilePath (Join-Path $InstallPath 'desklink.exe') -PassThru
     Start-Sleep -Seconds 2
     if ($ShellForUpdate.HasExited) {
         throw 'The product shell did not start for update coordination.'
@@ -565,7 +580,7 @@ try {
     Assert-IdentitySnapshot $IdentityBefore 'Upgrade'
     Assert-PreservedStateHashes $StateHashesBefore
     if ((Get-StartupCommand) -ne $ProductStartup) {
-        throw 'Upgrade did not migrate the enabled Alpha startup command to the product shell.'
+        throw 'Upgrade did not migrate the enabled Alpha startup command to the short-lived product bootstrap.'
     }
     $Uninstaller = Join-Path $InstallPath 'unins000.exe'
     if (-not (Test-Path -LiteralPath $Uninstaller -PathType Leaf)) {

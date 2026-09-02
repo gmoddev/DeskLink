@@ -84,9 +84,10 @@ unsigned package remain experimental/unsupported; see
   intent, bounded peer-audio gain and mute, fullscreen keep-local policy, three
   plain-language crossing presets, allowlisted focus/return hotkeys, and exact
   executable/fullscreen profile editing
-- Single-instance Windows companion lifecycle with first-run guidance,
-  close-to-tray, tray Open/Return Local/Exit, and optional current-user sign-in
-  startup
+- Lightweight Windows background lifecycle: the native current-user broker
+  owns the tray and product hotkeys, while the single-instance WinUI settings
+  window opens on demand and fully exits when closed; optional sign-in startup
+  uses a short-lived fixed-path bootstrap
 - Explicitly enabled experimental edge roaming with local Raw Input observation,
   Push/DwellAndPush/DoublePush intent, proportional corner-safe landing,
   re-entry cooldown, a 1.5-second focus timeout, and fail-closed route/session

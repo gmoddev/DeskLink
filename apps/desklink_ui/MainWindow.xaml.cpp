@@ -11,16 +11,6 @@ namespace {
 
 constexpr wchar_t kLifecycleWindowClass[] =
     L"DeskLinkShellLifecycleWindow.v1";
-constexpr UINT kTrayMessage = WM_APP + 1;
-constexpr UINT kTrayOpen = 1;
-constexpr UINT kTrayReturnLocal = 2;
-constexpr UINT kTrayPause = 3;
-constexpr UINT kTrayExit = 4;
-constexpr UINT kTrayFocusPeer = 5;
-constexpr UINT kTrayClipboard = 6;
-constexpr UINT kTrayAudioMute = 7;
-constexpr int kFocusPeerHotkeyId = 0xD311;
-constexpr int kReturnLocalHotkeyId = 0xD312;
 constexpr auto kFocusPresentationTimeout = std::chrono::seconds(4);
 
 bool IsTerminalPairingPhase(
@@ -29,32 +19,6 @@ bool IsTerminalPairingPhase(
            Phase == desklink::ControlPairingPhase::Canceled ||
            Phase == desklink::ControlPairingPhase::TimedOut ||
            Phase == desklink::ControlPairingPhase::Failed;
-}
-
-struct ProductHotkeyChord {
-    UINT Modifiers{};
-    UINT Key{};
-};
-
-std::optional<ProductHotkeyChord> HotkeyChord(
-    desklink::ProductHotkey Hotkey) noexcept {
-    switch (Hotkey) {
-        case desklink::ProductHotkey::Off:
-            return std::nullopt;
-        case desklink::ProductHotkey::CtrlAltF11:
-            return ProductHotkeyChord{MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                                      VK_F11};
-        case desklink::ProductHotkey::CtrlAltF12:
-            return ProductHotkeyChord{MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                                      VK_F12};
-        case desklink::ProductHotkey::CtrlShiftF11:
-            return ProductHotkeyChord{MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
-                                      VK_F11};
-        case desklink::ProductHotkey::CtrlShiftF12:
-            return ProductHotkeyChord{MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
-                                      VK_F12};
-    }
-    return std::nullopt;
 }
 
 const wchar_t* ProfileModeName(desklink::DeskMode Mode) noexcept {
@@ -392,7 +356,7 @@ MainWindow::MainWindow(bool DeveloperMode)
     ContentReady_ = true;
     Title(L"DeskLink");
     Navigation().SelectedItem(HomeNavigation());
-    if (!CreateLifecycleWindow() || !AddTrayIcon()) {
+    if (!CreateLifecycleWindow()) {
         throw winrt::hresult_error(
             E_FAIL, L"Could not initialize DeskLink lifecycle controls.");
     }
@@ -438,8 +402,6 @@ void MainWindow::InitializeWindowLifecycle() {
 MainWindow::~MainWindow() {
     if (PollTimer_) PollTimer_.Stop();
     if (DeveloperPollTimer_) DeveloperPollTimer_.Stop();
-    UnregisterProductHotkeys();
-    RemoveTrayIcon();
     if (MainWindowHandle_) {
         RemoveWindowSubclass(
             MainWindowHandle_, MainWindowSubclassProcedure, 1);
@@ -527,14 +489,6 @@ void MainWindow::PollPreferences() {
         NavigateTo(L"Onboarding");
     }
     if (Changed) {
-        if (!RegisterProductHotkeys(Preferences_) &&
-            (Preferences_.FocusPeerHotkey != desklink::ProductHotkey::Off ||
-             Preferences_.ReturnLocalHotkey != desklink::ProductHotkey::Off)) {
-            ShowFeatureStatus(
-                L"Hotkey unavailable",
-                L"Another application owns a saved DeskLink hotkey. DeskLink left that shortcut inactive; Ctrl+Alt+Pause/Break is unchanged.",
-                Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
-        }
         UpdateFeatureControls();
         RenderProfiles();
         if (DevicesLoaded_) {
@@ -2456,21 +2410,9 @@ void MainWindow::OnApplyHotkeys(
             InfoBarSeverity::Error);
         return;
     }
-    const auto Previous = Preferences_;
-    if (!RegisterProductHotkeys(Updated)) {
-        (void)RegisterProductHotkeys(Previous);
-        UpdateFeatureControls();
-        ShowFeatureStatus(
-            L"Hotkey unavailable",
-            L"Windows reports that another application already owns one of these shortcuts.",
-            InfoBarSeverity::Warning);
-        return;
-    }
-    if (!SavePreferences(
-            Updated,
-            L"The local shortcuts were registered. They request normal authenticated focus and never bypass admission.")) {
-        (void)RegisterProductHotkeys(Previous);
-    }
+    (void)SavePreferences(
+        Updated,
+        L"The background runtime saved and registered the local shortcuts. They request normal authenticated focus and never bypass admission.");
 }
 
 void MainWindow::FocusPreferredPeer() {
@@ -3134,14 +3076,6 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
         : Microsoft::UI::Xaml::Visibility::Collapsed);
     ActionRequiredBar().IsOpen(Presentation.ShowActionRequired);
     UpdateHome();
-    if (TrayActive_) {
-        StringCchPrintfW(
-            TrayIcon_.szTip, ARRAYSIZE(TrayIcon_.szTip),
-            L"DeskLink — %.*s",
-            static_cast<int>(Presentation.Badge.size()),
-            Presentation.Badge.data());
-        Shell_NotifyIconW(NIM_MODIFY, &TrayIcon_);
-    }
 }
 
 bool MainWindow::CreateLifecycleWindow() {
@@ -3159,151 +3093,10 @@ bool MainWindow::CreateLifecycleWindow() {
     return LifecycleWindow_ != nullptr;
 }
 
-bool MainWindow::AddTrayIcon() {
-    TrayIcon_.cbSize = sizeof(TrayIcon_);
-    TrayIcon_.hWnd = LifecycleWindow_;
-    TrayIcon_.uID = 1;
-    TrayIcon_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
-    TrayIcon_.uCallbackMessage = kTrayMessage;
-    TrayIcon_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    StringCchCopyW(
-        TrayIcon_.szTip, ARRAYSIZE(TrayIcon_.szTip), L"DeskLink — Starting");
-    TrayIcon_.uVersion = NOTIFYICON_VERSION_4;
-    if (!Shell_NotifyIconW(NIM_ADD, &TrayIcon_)) return false;
-    Shell_NotifyIconW(NIM_SETVERSION, &TrayIcon_);
-    TrayActive_ = true;
-    return true;
-}
-
-void MainWindow::RemoveTrayIcon() noexcept {
-    if (!TrayActive_) return;
-    Shell_NotifyIconW(NIM_DELETE, &TrayIcon_);
-    TrayActive_ = false;
-}
-
-void MainWindow::HideToTray() {
-    if (MainWindowHandle_) ShowWindow(MainWindowHandle_, SW_HIDE);
-}
-
 void MainWindow::ShowFromTray() {
     if (!MainWindowHandle_) return;
     ShowWindow(MainWindowHandle_, SW_SHOW);
     SetForegroundWindow(MainWindowHandle_);
-}
-
-void MainWindow::TogglePaused() {
-    const bool Resume = State_ == desklink::ProductShellState::Paused;
-    const auto Response = Send(Resume
-        ? desklink::ControlRequestPayload(
-              desklink::ResumeDeskLinkControlRequest{})
-        : desklink::ControlRequestPayload(
-              desklink::PauseDeskLinkControlRequest{}));
-    if (Response && Response->Status == desklink::ControlStatus::Ok) {
-        ApplyState(Resume ? desklink::ProductShellState::Offline
-                          : desklink::ProductShellState::Paused);
-    }
-}
-
-void MainWindow::UnregisterProductHotkeys() noexcept {
-    if (!LifecycleWindow_) return;
-    (void)UnregisterHotKey(LifecycleWindow_, kFocusPeerHotkeyId);
-    (void)UnregisterHotKey(LifecycleWindow_, kReturnLocalHotkeyId);
-}
-
-bool MainWindow::RegisterProductHotkeys(
-    desklink::ProductPreferences const& Preferences) {
-    if (!LifecycleWindow_) return false;
-    UnregisterProductHotkeys();
-    const auto Focus = HotkeyChord(Preferences.FocusPeerHotkey);
-    const auto Return = HotkeyChord(Preferences.ReturnLocalHotkey);
-    if (Focus && !RegisterHotKey(
-            LifecycleWindow_, kFocusPeerHotkeyId,
-            Focus->Modifiers, Focus->Key)) {
-        return false;
-    }
-    if (Return && !RegisterHotKey(
-            LifecycleWindow_, kReturnLocalHotkeyId,
-            Return->Modifiers, Return->Key)) {
-        UnregisterProductHotkeys();
-        return false;
-    }
-    return true;
-}
-
-void MainWindow::ShowTrayMenu() {
-    const auto Menu = CreatePopupMenu();
-    if (!Menu) return;
-    const auto Presentation = desklink::PresentProductShellState(State_);
-    std::wstring StateLabel(L"Status: ");
-    StateLabel.append(Presentation.Badge);
-    AppendMenuW(Menu, MF_STRING | MF_DISABLED, 0, StateLabel.c_str());
-    const auto Device = PreferredDevice();
-    if (Device) {
-        const auto PeerName = ToHString(Device->DisplayName);
-        std::wstring FocusLabel(L"Focus ");
-        FocusLabel.append(PeerName.c_str(), PeerName.size());
-        AppendMenuW(
-            Menu,
-            MF_STRING |
-                (RuntimeStateLoaded_ && RuntimeState_.ConnectedPeerCount != 0
-                    ? MF_ENABLED : MF_GRAYED),
-            kTrayFocusPeer, FocusLabel.c_str());
-        std::wstring ClipboardLabel = Preferences_.ClipboardDesired
-            ? L"Turn off clipboard with " : L"Turn on clipboard with ";
-        ClipboardLabel.append(PeerName.c_str(), PeerName.size());
-        AppendMenuW(Menu, MF_STRING, kTrayClipboard, ClipboardLabel.c_str());
-        const auto AudioPercent = std::to_wstring(
-            Preferences_.AudioGainPermyriad / 100u);
-        std::wstring AudioLabel = RuntimeStateLoaded_ && RuntimeState_.AudioMuted
-            ? L"Unmute " : L"Mute ";
-        AudioLabel.append(PeerName.c_str(), PeerName.size());
-        AudioLabel += L" audio (" + AudioPercent + L"%)";
-        AppendMenuW(
-            Menu,
-            MF_STRING |
-                (RuntimeStateLoaded_ && RuntimeState_.ConnectedPeerCount != 0
-                    ? MF_ENABLED : MF_GRAYED),
-            kTrayAudioMute, AudioLabel.c_str());
-    }
-    AppendMenuW(Menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(Menu, MF_STRING, kTrayOpen, L"Open DeskLink");
-    AppendMenuW(Menu, MF_STRING, kTrayReturnLocal, L"Return to this PC");
-    AppendMenuW(
-        Menu, MF_STRING, kTrayPause,
-        State_ == desklink::ProductShellState::Paused
-            ? L"Resume DeskLink" : L"Pause DeskLink");
-    AppendMenuW(Menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(Menu, MF_STRING, kTrayExit, L"Exit");
-    POINT Cursor{};
-    GetCursorPos(&Cursor);
-    SetForegroundWindow(LifecycleWindow_);
-    const auto Command = TrackPopupMenu(
-        Menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-        Cursor.x, Cursor.y, 0, LifecycleWindow_, nullptr);
-    DestroyMenu(Menu);
-    switch (Command) {
-        case kTrayOpen: ShowFromTray(); break;
-        case kTrayFocusPeer: FocusPreferredPeer(); break;
-        case kTrayClipboard:
-            SetClipboardDesired(!Preferences_.ClipboardDesired);
-            break;
-        case kTrayAudioMute: {
-            const auto Response = Send(desklink::ToggleAudioMuteControlRequest{});
-            if (Response && Response->Status == desklink::ControlStatus::Ok) {
-                RuntimeState_.AudioMuted = !RuntimeState_.AudioMuted;
-                RuntimeStateLoaded_ = true;
-                UpdateFeatureControls();
-            }
-            break;
-        }
-        case kTrayReturnLocal:
-            ReturnLocal();
-            PollBroker();
-            break;
-        case kTrayPause: TogglePaused(); break;
-        case kTrayExit: RequestExit(); break;
-        default: break;
-    }
 }
 
 void MainWindow::RequestExit() {
@@ -3311,7 +3104,6 @@ void MainWindow::RequestExit() {
     ExplicitExit_ = true;
     if (PollTimer_) PollTimer_.Stop();
     if (PairingDialog_) PairingDialog_.Hide();
-    RemoveTrayIcon();
     if (MainWindowHandle_) SendMessageW(MainWindowHandle_, WM_CLOSE, 0, 0);
     Microsoft::UI::Xaml::Application::Current().Exit();
 }
@@ -3321,7 +3113,7 @@ LRESULT CALLBACK MainWindow::MainWindowSubclassProcedure(
     UINT_PTR, DWORD_PTR ReferenceData) {
     const auto Self = reinterpret_cast<MainWindow*>(ReferenceData);
     if (Message == WM_CLOSE && Self && !Self->ExplicitExit_) {
-        Self->HideToTray();
+        Self->RequestExit();
         return 0;
     }
     if (Message == WM_NCDESTROY) {
@@ -3350,27 +3142,6 @@ LRESULT CALLBACK MainWindow::LifecycleWindowProcedure(
         Message == GetPrepareUpdateMessage()) {
         Self->RequestExit();
         return 0;
-    }
-    if (Message == WM_HOTKEY) {
-        if (WParam == kFocusPeerHotkeyId) {
-            Self->FocusPreferredPeer();
-            return 0;
-        }
-        if (WParam == kReturnLocalHotkeyId) {
-            Self->ReturnLocal();
-            return 0;
-        }
-    }
-    if (Message == kTrayMessage) {
-        switch (LOWORD(LParam)) {
-            case WM_LBUTTONDBLCLK:
-                Self->ShowFromTray();
-                return 0;
-            case WM_CONTEXTMENU:
-                Self->ShowTrayMenu();
-                return 0;
-            default: break;
-        }
     }
     return DefWindowProcW(Window, Message, WParam, LParam);
 }
