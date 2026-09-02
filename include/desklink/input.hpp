@@ -20,6 +20,10 @@ public:
     [[nodiscard]] virtual std::optional<PointerPositionMessage>
     CurrentPointerPosition() { return std::nullopt; }
     [[nodiscard]] virtual bool release_owned_state() noexcept = 0;
+    // Cosmetic only: an implementation may park its now-inactive pointer
+    // after an authenticated, orderly focus release. Failure must never
+    // prevent key/button cleanup or fail-local focus release.
+    [[nodiscard]] virtual bool ParkPointer() noexcept { return true; }
 };
 
 using InputStateTransition = std::variant<KeyEventMessage, MouseButtonMessage>;

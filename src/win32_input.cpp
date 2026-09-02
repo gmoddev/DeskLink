@@ -31,6 +31,23 @@ DWORD xbutton_data(MouseButtonId button) {
 
 } // namespace
 
+bool ParkWin32Pointer() noexcept {
+    POINT Cursor{};
+    if (!GetCursorPos(&Cursor)) return false;
+    const auto Monitor = MonitorFromPoint(Cursor, MONITOR_DEFAULTTONEAREST);
+    if (!Monitor) return false;
+    MONITORINFO Information{};
+    Information.cbSize = sizeof(Information);
+    if (!GetMonitorInfoW(Monitor, &Information) ||
+        Information.rcMonitor.right <= Information.rcMonitor.left ||
+        Information.rcMonitor.bottom <= Information.rcMonitor.top) {
+        return false;
+    }
+    return SetCursorPos(
+        Information.rcMonitor.right - 1,
+        Information.rcMonitor.bottom - 1) != FALSE;
+}
+
 Win32InputInjector::Win32InputInjector() {
     (void)DisplayTopology_.Refresh();
 }
@@ -204,6 +221,10 @@ bool Win32InputInjector::release_owned_state() noexcept {
     }
     DisplayGeneration_.reset();
     return ReleasedAll;
+}
+
+bool Win32InputInjector::ParkPointer() noexcept {
+    return ParkWin32Pointer();
 }
 
 } // namespace desklink

@@ -127,6 +127,10 @@ public:
         ++release_calls;
         return ReleaseSucceeds;
     }
+    bool ParkPointer() noexcept override {
+        ++park_calls;
+        return ParkSucceeds;
+    }
 
     std::vector<desklink::KeyEventMessage> keys;
     std::vector<desklink::MouseButtonMessage> buttons;
@@ -137,7 +141,9 @@ public:
     std::optional<desklink::PointerPositionMessage> CurrentPointer;
     bool ReconcileSucceeds{true};
     bool ReleaseSucceeds{true};
+    bool ParkSucceeds{true};
     int release_calls{};
+    int park_calls{};
 };
 
 class PausableTransportEndpoint final
@@ -2411,6 +2417,7 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
     CHECK(InjectorB.release_calls == 1);
+    CHECK(InjectorB.park_calls == 1);
 
     CHECK(SessionB.BeginOutgoingFocus(750));
     CHECK(ReadyB == 1);
@@ -2488,10 +2495,13 @@ void PeerSessionImmediatelyReacquiresAfterLostRelease() {
     CHECK(SessionB.DirectionState() ==
           PeerDirectionState::IncomingActive);
     CHECK(InjectorB.release_calls == 1);
+    CHECK(InjectorB.park_calls == 0);
+    InjectorB.ParkSucceeds = false;
     CHECK(SessionA.ReleaseOutgoingFocus());
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
     CHECK(InjectorB.release_calls == 2);
+    CHECK(InjectorB.park_calls == 1);
 }
 
 void PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting() {

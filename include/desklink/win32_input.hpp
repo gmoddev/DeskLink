@@ -9,6 +9,10 @@
 
 namespace desklink {
 
+// Moves the pointer to the bottom-right pixel of its current monitor so an
+// inactive DeskLink PC does not retain a distracting cursor at a roam edge.
+[[nodiscard]] bool ParkWin32Pointer() noexcept;
+
 class Win32InputInjector final : public IInputInjector {
 public:
     Win32InputInjector();
@@ -22,6 +26,7 @@ public:
     [[nodiscard]] std::optional<PointerPositionMessage>
     CurrentPointerPosition() override;
     [[nodiscard]] bool release_owned_state() noexcept override;
+    [[nodiscard]] bool ParkPointer() noexcept override;
 
     [[nodiscard]] bool RefreshDisplayTopology();
     [[nodiscard]] const DisplayTopologySnapshot& CurrentDisplayTopology() const noexcept;

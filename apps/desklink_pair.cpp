@@ -2767,6 +2767,7 @@ public:
         try {
             std::scoped_lock Lock(CaptureLifetimeMutex_);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            RestoreParkedLocalCursorLocked();
         } catch (...) {
         }
     }
@@ -2778,6 +2779,7 @@ public:
             {
                 std::scoped_lock Lock(CaptureLifetimeMutex_);
                 if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+                RestoreParkedLocalCursorLocked();
                 ActiveCapture_ = nullptr;
             }
             if (Capture_) {
@@ -2849,6 +2851,8 @@ public:
                 if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
                 return;
             }
+            RestoreParkedLocalCursorLocked();
+            std::optional<desklink::RoamingLocalLanding> CursorRestore;
             if (PendingRoamingRequest_) {
                 if (PendingLanding_ ||
                     Host_->Session.DirectionState() !=
@@ -2861,7 +2865,23 @@ public:
                     ActiveCapture_->SetRemoteRouting(false);
                     return;
                 }
+                CursorRestore =
+                    PendingRoamingRequest_->LocalReturnLanding;
                 PendingRoamingRequest_.reset();
+            } else {
+                POINT Cursor{};
+                if (GetCursorPos(&Cursor)) {
+                    CursorRestore = desklink::RoamingLocalLanding{
+                        Cursor.x, Cursor.y};
+                }
+            }
+            if (CursorRestore) {
+                if (desklink::ParkWin32Pointer()) {
+                    ParkedLocalCursorRestore_ = *CursorRestore;
+                } else {
+                    std::cerr
+                        << "[Input:Pointer] local cursor parking failed; remote input remains fail-safe\n";
+                }
             }
             ActiveCapture_->SetRemoteRouting(true);
             CaptureActive_.store(true);
@@ -3492,7 +3512,18 @@ private:
         try {
             std::scoped_lock Lock(CaptureLifetimeMutex_);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            RestoreParkedLocalCursorLocked();
         } catch (...) {
+        }
+    }
+
+    void RestoreParkedLocalCursorLocked() noexcept {
+        if (!ParkedLocalCursorRestore_) return;
+        const auto Restore = *ParkedLocalCursorRestore_;
+        ParkedLocalCursorRestore_.reset();
+        if (!SetCursorPos(Restore.ScreenX, Restore.ScreenY)) {
+            std::cerr
+                << "[Input:Pointer] local cursor restore failed after remote focus\n";
         }
     }
 
@@ -3502,6 +3533,7 @@ private:
             FailLocalRequested_.store(true);
             CaptureActive_.store(false);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            RestoreParkedLocalCursorLocked();
         } catch (...) {
             FailLocalRequested_.store(true);
             CaptureActive_.store(false);
@@ -3704,6 +3736,8 @@ private:
     std::unique_ptr<desklink::Win32InputCapture> Capture_;
     std::mutex CaptureLifetimeMutex_;
     desklink::Win32InputCapture* ActiveCapture_{};
+    std::optional<desklink::RoamingLocalLanding>
+        ParkedLocalCursorRestore_;
 
     std::thread Dispatcher_;
     std::thread::id DispatcherId_{};

@@ -64,8 +64,9 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         focus_.release_remote_focus();
-        return ReleaseOwnedState()
-            ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
+        if (!ReleaseOwnedState()) return AgentDecision::RejectedMalformed;
+        (void)injector_.ParkPointer();
+        return AgentDecision::Accepted;
     }
 
     if (type == MessageType::KeyEvent || type == MessageType::MouseButton ||
