@@ -9,8 +9,9 @@
 
 namespace desklink {
 
-// Moves the pointer to the bottom-right pixel of its current monitor so an
-// inactive DeskLink PC does not retain a distracting cursor at a roam edge.
+// Moves the pointer just beyond the visible right edge of its current monitor,
+// away from either corner, so an inactive DeskLink PC does not retain a
+// distracting cursor or activate a taskbar/hot-corner target.
 [[nodiscard]] bool ParkWin32Pointer() noexcept;
 
 class Win32InputInjector final : public IInputInjector {
