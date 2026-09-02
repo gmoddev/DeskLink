@@ -37,6 +37,12 @@ bool ReceivesPeerAudio(
            Route == desklink::AudioRoutePreference::Bidirectional;
 }
 
+bool SendsLocalAudio(
+    desklink::AudioRoutePreference Route) noexcept {
+    return Route == desklink::AudioRoutePreference::LocalToPeer ||
+           Route == desklink::AudioRoutePreference::Bidirectional;
+}
+
 std::optional<std::filesystem::path> GetDataDirectory() {
     PWSTR RawPath{};
     if (FAILED(SHGetKnownFolderPath(
@@ -2126,6 +2132,14 @@ void MainWindow::UpdateFeatureControls() {
         : winrt::hstring(L"Pair a PC to configure its audio."));
     PeerAudioDesiredToggle().IsEnabled(Device != nullptr);
     PeerAudioDesiredToggle().IsOn(ReceivesPeerAudio(Preferences_.AudioRoute));
+    LocalAudioIntentLabel().Text(Device
+        ? JoinText(
+              L"Share ", ThisPcName,
+              JoinText(L" audio with ", PeerName,
+                       L". The other PC must separately allow playback."))
+        : winrt::hstring(L"Pair a PC to share this PC's audio."));
+    LocalAudioDesiredToggle().IsEnabled(Device != nullptr);
+    LocalAudioDesiredToggle().IsOn(SendsLocalAudio(Preferences_.AudioRoute));
     PeerAudioGainBox().Value(
         static_cast<double>(Preferences_.AudioGainPermyriad) / 100.0);
     PeerAudioGainBox().IsEnabled(Device != nullptr);
@@ -2264,6 +2278,44 @@ void MainWindow::SetPeerAudioDesired(bool Desired) {
             : L"Peer audio playback is off on this PC.");
 }
 
+void MainWindow::SetLocalAudioDesired(bool Desired) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Device = PreferredDevice();
+    if (!Device) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Pair a PC first",
+            L"Audio intent is stored per preferred paired PC.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    if (Desired && !desklink::CanEnableLocalAudioIntent(Device->Capabilities)) {
+        UpdateFeatureControls();
+        ShowFeatureStatus(
+            L"Permission required on this PC",
+            L"Allow the paired PC to receive audio captured on this PC under Devices & permissions. The paired PC must separately allow audio playback.",
+            InfoBarSeverity::Warning);
+        return;
+    }
+    auto Updated = Preferences_;
+    if (Desired) {
+        Updated.AudioRoute = Updated.AudioRoute ==
+                desklink::AudioRoutePreference::PeerToLocal
+            ? desklink::AudioRoutePreference::Bidirectional
+            : desklink::AudioRoutePreference::LocalToPeer;
+    } else {
+        Updated.AudioRoute = Updated.AudioRoute ==
+                desklink::AudioRoutePreference::Bidirectional
+            ? desklink::AudioRoutePreference::PeerToLocal
+            : desklink::AudioRoutePreference::Off;
+    }
+    (void)SavePreferences(
+        Updated,
+        Desired
+            ? L"This PC's audio is shared only after both stored permission sets and authenticated audio admission agree."
+            : L"Audio capture and sharing are off on this PC.");
+}
+
 void MainWindow::OnClipboardIntentToggled(
     Windows::Foundation::IInspectable const&,
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
@@ -2277,6 +2329,14 @@ void MainWindow::OnPeerAudioIntentToggled(
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
     if (ContentReady_ && !UpdatingFeatureControls_) {
         SetPeerAudioDesired(PeerAudioDesiredToggle().IsOn());
+    }
+}
+
+void MainWindow::OnLocalAudioIntentToggled(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (ContentReady_ && !UpdatingFeatureControls_) {
+        SetLocalAudioDesired(LocalAudioDesiredToggle().IsOn());
     }
 }
 
