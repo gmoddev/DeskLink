@@ -144,6 +144,11 @@
                                 <TextBlock x:Name="InputSummary" Text="Input is on this PC"
                                            TextWrapping="Wrap"
                                            AutomationProperties.LiveSetting="Polite" />
+                                <TextBlock x:Name="DeveloperInputStatus"
+                                           Text="DEV input diagnostics unavailable"
+                                           FontFamily="Consolas" FontSize="12"
+                                           Opacity="0.78" TextWrapping="Wrap"
+                                           Visibility="Collapsed" />
                                 <Button x:Name="ReturnLocalButton"
                                         Content="Return to this PC"
                                         HorizontalAlignment="Left"

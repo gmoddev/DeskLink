@@ -6,6 +6,7 @@ namespace winrt::DeskLink::Product::implementation {
 
 struct MainWindow : MainWindowT<MainWindow> {
     MainWindow();
+    explicit MainWindow(bool DeveloperMode);
     ~MainWindow();
 
     void OnNavigationChanged(
@@ -153,6 +154,7 @@ private:
     void ShowFromTray();
     void TogglePaused();
     void ApplyState(desklink::ProductShellState State);
+    void UpdateDeveloperInputStatus();
     void PollBroker();
     void PollPreferences();
     void PollNearby();
@@ -224,12 +226,21 @@ private:
     HWND LifecycleWindow_{};
     NOTIFYICONDATAW TrayIcon_{};
     Microsoft::UI::Dispatching::DispatcherQueueTimer PollTimer_{nullptr};
+    Microsoft::UI::Dispatching::DispatcherQueueTimer
+        DeveloperPollTimer_{nullptr};
     Microsoft::UI::Xaml::Controls::ContentDialog PairingDialog_{nullptr};
     desklink::ProductPreferences Preferences_;
     desklink::ControlState RuntimeState_;
     std::vector<desklink::ControlNearbyPeer> NearbyPeers_;
     std::vector<desklink::ControlTrustedDevice> TrustedDevices_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore> RoamingSettings_;
+    std::unique_ptr<desklink::Win32RoamingSettingsStore>
+        DeveloperRoamingSettings_;
+    desklink::Win32DisplayTopology DeveloperDisplayTopology_;
+    std::chrono::steady_clock::time_point
+        LastDeveloperSettingsLoad_{};
+    std::optional<desklink::RoamingConfiguration>
+        DeveloperRoamingConfiguration_;
     desklink::RoamingConfiguration MonitorConfiguration_;
     std::vector<desklink::MonitorCanvasMachine> MonitorMachines_;
     desklink::MonitorCanvasModel MonitorModel_;
@@ -265,6 +276,7 @@ private:
     bool BrokerPaused_{};
     bool MonitorLayoutLoaded_{};
     bool MonitorLayoutDirty_{};
+    bool DeveloperMode_{};
     desklink::ProductShellState State_{
         desklink::ProductShellState::Offline};
 };

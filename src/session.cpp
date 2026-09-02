@@ -1285,7 +1285,21 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
             NotifyFocusReady = true;
             NotifyDirectionChanged = true;
         } else if (Type == MessageType::FocusRequest) {
-            const auto Direction = DirectionArbiter_.BeginIncoming();
+            // A release and immediate reacquisition normally arrive in order
+            // on the session's single reliable stream. Still accept a fresh
+            // request from the same authenticated peer while the old incoming
+            // direction is active: AgentCoordinator first releases every
+            // DeskLink-owned key/button, invalidates the old epoch, and only
+            // then admits a fresh epoch. This also removes the lease-sized
+            // dead period when the preceding release was not delivered.
+            const bool ReacquiringIncoming =
+                DirectionArbiter_.State() ==
+                    PeerDirectionState::IncomingActive &&
+                IncomingToken_.has_value();
+            const auto Direction = ReacquiringIncoming
+                ? PeerDirectionDecision{
+                      PeerDirectionOutcome::Admitted, IncomingToken_}
+                : DirectionArbiter_.BeginIncoming();
             if (Direction.Outcome ==
                     PeerDirectionOutcome::CollisionFailLocal) {
                 ++Stats_.DirectionCollisions;
@@ -1297,12 +1311,18 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                        !Direction.Token) {
                 ++Stats_.DirectionRejected;
             } else {
-                IncomingToken_ = *Direction.Token;
+                if (!ReacquiringIncoming) {
+                    IncomingToken_ = *Direction.Token;
+                }
                 const auto Decision = IncomingCoordinator_.handle(
                     *Decoded.packet);
                 CountDecision(Decision);
                 if (Decision != AgentDecision::Accepted) {
-                    ReleaseIncomingDirectionLocked();
+                    if (!ReacquiringIncoming ||
+                        (!IncomingCoordinator_.RemoteFocused() &&
+                         !IncomingCoordinator_.InputCleanupPending())) {
+                        ReleaseIncomingDirectionLocked();
+                    }
                     ++Stats_.DirectionRejected;
                 } else {
                     const auto& Request = std::get<FocusRequestMessage>(
