@@ -4802,6 +4802,24 @@ void HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus() {
     CHECK((Backend.Calls == std::vector<std::string>{
         "send-snapshot", "start-capture", "enable-capture"}));
     CHECK(Lifecycle.Status().CaptureInstalled);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ReturnLocal());
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "disable-capture", "release-focus", "stop-capture"}));
+    CHECK(Lifecycle.Status().Mode == DeskMode::Roam);
+    CHECK(Lifecycle.Status().State == HostInputLifecycleState::Local);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ApplyMode(DeskMode::Roam));
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "set-mode-0", "request-focus"}));
+    CHECK(Lifecycle.Status().State ==
+          HostInputLifecycleState::AwaitingFocus);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ApplyMode(DeskMode::Roam));
+    CHECK(Backend.Calls.empty());
 }
 
 void HostInputLifecycleFailuresRemainLocal() {

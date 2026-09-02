@@ -29,7 +29,17 @@ bool HostInputLifecycle::Start(DeskMode InitialMode) {
 
 bool HostInputLifecycle::ApplyMode(DeskMode Mode) {
     if (!Started_ || !IsValidDeskMode(Mode)) return false;
-    if (Mode == Mode_) return true;
+    if (Mode == Mode_) {
+        // Returning from a roaming peer intentionally preserves the selected
+        // Roam policy while moving focus back Local. A later edge crossing
+        // must therefore reacquire focus even though the policy itself did
+        // not change. Pending and active focus remain idempotent no-ops.
+        if (!IsRestrictedMode(Mode) &&
+            State_ == HostInputLifecycleState::Local) {
+            return ApplyPermissiveMode(Mode);
+        }
+        return true;
+    }
     return IsRestrictedMode(Mode)
         ? ApplyRestrictedMode(Mode)
         : ApplyPermissiveMode(Mode);
