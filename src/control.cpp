@@ -212,6 +212,10 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
             return ControlCommand::GetDisplayTopologies;
         } else if constexpr (std::is_same_v<
                                  ValueType,
+                                 IdentifyPeerDisplaysControlRequest>) {
+            return ControlCommand::IdentifyPeerDisplays;
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
                                  PrepareForUpdateControlRequest>) {
             return ControlCommand::PrepareForUpdate;
         } else if constexpr (std::is_same_v<
@@ -332,6 +336,10 @@ ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
             EncodePreferences(Output, Value.Preferences);
         } else if constexpr (std::is_same_v<
                                  ValueType,
+                                 IdentifyPeerDisplaysControlRequest>) {
+            Output.U16(Value.FirstDisplayNumber);
+        } else if constexpr (std::is_same_v<
+                                 ValueType,
                                  RequestLocalPermissionChangeControlRequest>) {
             Output.Raw(Value.Machine);
             Output.U64(Value.DesiredCapabilities.bits());
@@ -447,6 +455,16 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::GetDisplayTopologies:
             if (Input.Remaining() != 0) return std::nullopt;
             return GetDisplayTopologiesControlRequest{};
+        case ControlCommand::IdentifyPeerDisplays: {
+            IdentifyPeerDisplaysControlRequest Request;
+            if (!Input.U16(Request.FirstDisplayNumber) ||
+                Input.Remaining() != 0 ||
+                Request.FirstDisplayNumber == 0 ||
+                Request.FirstDisplayNumber > kMaxDisplayCount) {
+                return std::nullopt;
+            }
+            return Request;
+        }
         case ControlCommand::PrepareForUpdate:
             if (Input.Remaining() != 0) return std::nullopt;
             return PrepareForUpdateControlRequest{};

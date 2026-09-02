@@ -32,6 +32,7 @@ enum class MessageType : std::uint16_t {
     AudioFrame         = 31,
     Heartbeat          = 40,
     DisplayTopologySnapshot = 50,
+    DisplayIdentifyRequest = 51,
     ClipboardHello     = 60,
     ClipboardText      = 61,
 };
@@ -163,6 +164,13 @@ struct DisplayTopologySnapshotMessage {
         const DisplayTopologySnapshotMessage&) const noexcept = default;
 };
 
+// Authenticated request to show the peer's bounded local monitor
+// identification overlays using the requesting desk canvas's ordinal.
+// Admission still requires mutual topology grants.
+struct DisplayIdentifyRequestMessage {
+    std::uint16_t FirstDisplayNumber{1};
+};
+
 using Message = std::variant<
     HelloMessage,
     CapabilityGrantMessage,
@@ -183,6 +191,7 @@ using Message = std::variant<
     AudioFrameMessage,
     HeartbeatMessage,
     DisplayTopologySnapshotMessage,
+    DisplayIdentifyRequestMessage,
     ClipboardHelloMessage,
     ClipboardTextMessage>;
 
@@ -228,6 +237,8 @@ struct DecodeResult {
     const PointerMotionMessage& Message) noexcept;
 [[nodiscard]] bool IsValidDisplayTopologySnapshotMessage(
     const DisplayTopologySnapshotMessage& Message);
+[[nodiscard]] bool IsValidDisplayIdentifyRequestMessage(
+    const DisplayIdentifyRequestMessage& Message) noexcept;
 [[nodiscard]] std::optional<MessageType> PeekMessageType(
     ByteSpan Bytes) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);

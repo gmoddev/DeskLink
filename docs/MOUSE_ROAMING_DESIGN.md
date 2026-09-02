@@ -370,8 +370,13 @@ partial normalized segments remain under advanced editing. No drag operation
 silently enables input.
 
 **Identify displays** creates a borderless, topmost, no-activate, click-through
-window per local display. It shows number, PC, resolution, and refresh for five
-seconds, then closes without installing capture or suppression.
+window per display across the connected desk. Local overlays are created
+directly. A peer overlay request uses the admitted reliable session and is
+accepted only with mutual `DisplayTopologyExchange` grants; an already-active
+five-second peer overlay suppresses duplicate requests. Each overlay shows
+number, PC, resolution, and refresh, then closes without installing capture or
+suppression. If the peer is unavailable or lacks permission, local displays
+still identify and the UI reports that only this PC was reached.
 
 Saving validates a complete candidate graph before atomic replacement. If a
 mutation affects the active route, DeskLink first returns local and confirms

@@ -1738,7 +1738,35 @@ void MainWindow::OnIdentifyDisplays(
             L"Identify unavailable",
             L"DeskLink could not create the five-second local display overlays.",
             Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
+        return;
     }
+    const auto PeerTile = std::find_if(
+        MonitorModel_.Tiles.begin(), MonitorModel_.Tiles.end(),
+        [](const auto& Tile) { return Tile.Online && !Tile.Local; });
+    if (PeerTile == MonitorModel_.Tiles.end()) {
+        ShowMonitorStatus(
+            L"Only this PC was identified",
+            L"No online paired-PC display was present in the current desk layout.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    const auto FirstPeerDisplayNumber = static_cast<std::uint16_t>(
+        std::distance(MonitorModel_.Tiles.begin(), PeerTile) + 1);
+    const auto Response = Send(
+        desklink::IdentifyPeerDisplaysControlRequest{
+            FirstPeerDisplayNumber},
+        std::chrono::milliseconds{1'000});
+    if (!Response || Response->Status != desklink::ControlStatus::Ok) {
+        ShowMonitorStatus(
+            L"Only this PC was identified",
+            L"The paired PC was unavailable or has not mutually allowed display-layout exchange.",
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Warning);
+        return;
+    }
+    ShowMonitorStatus(
+        L"Identifying the whole desk",
+        L"Numbered overlays are shown for five seconds on this PC and the authenticated paired PC.",
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
 }
 
 void MainWindow::OnMonitorTilePointerPressed(

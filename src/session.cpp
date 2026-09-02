@@ -1016,6 +1016,32 @@ bool PeerSession::PublishDisplayTopology(
     return true;
 }
 
+bool PeerSession::RequestPeerDisplayIdentification(
+    std::uint16_t FirstDisplayNumber) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || CapabilityConflict_ || !TopologyOptions_.Enabled ||
+        !LocalCapabilities_.contains(Capability::DisplayTopologyExchange) ||
+        !RemoteCapabilities_ ||
+        !RemoteCapabilities_->contains(
+            Capability::DisplayTopologyExchange) ||
+        !IsValidDisplayIdentifyRequestMessage(
+            DisplayIdentifyRequestMessage{FirstDisplayNumber})) {
+        ++Stats_.DisplayIdentifySendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = ReliableSequence_++;
+    if (ReliableSequence_ == 0) ++ReliableSequence_;
+    if (!Transport_->send_reliable(encode_packet(
+            Header, DisplayIdentifyRequestMessage{FirstDisplayNumber}))) {
+        ++Stats_.DisplayIdentifySendRejected;
+        return false;
+    }
+    ++Stats_.DisplayIdentifySent;
+    return true;
+}
+
 DisplayTopologyExchangeStatus
 PeerSession::DisplayTopologyStatus() const noexcept {
     std::scoped_lock Lock(Mutex_);
@@ -1235,6 +1261,28 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 ++Stats_.TopologyAccepted;
             } else {
                 ++Stats_.TopologyRejected;
+            }
+            return;
+        } else if (Type == MessageType::DisplayIdentifyRequest) {
+            ++Stats_.DisplayIdentifyReceived;
+            const auto Message = std::get<DisplayIdentifyRequestMessage>(
+                Decoded.packet->message);
+            if (CapabilityConflict_ || !TopologyOptions_.Enabled ||
+                !LocalCapabilities_.contains(
+                    Capability::DisplayTopologyExchange) ||
+                !RemoteCapabilities_ ||
+                !RemoteCapabilities_->contains(
+                    Capability::DisplayTopologyExchange) ||
+                !Handlers_.IdentifyDisplays) {
+                ++Stats_.DisplayIdentifyRejected;
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            try {
+                Handlers_.IdentifyDisplays(Message.FirstDisplayNumber);
+                ++Stats_.DisplayIdentifyAccepted;
+            } catch (...) {
+                ++Stats_.DisplayIdentifyRejected;
             }
             return;
         } else if (Type == MessageType::ClipboardHello) {

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -1082,11 +1083,20 @@ bool ShowWin32MonitorConfigurator(
     return Window.Show();
 }
 
-bool ShowWin32DisplayIdentification(HWND Owner) {
+bool ShowWin32DisplayIdentification(
+    HWND Owner, std::uint16_t FirstDisplayNumber) {
     Win32DisplayTopology Topology;
-    if (!Topology.Refresh() || Topology.Current().Displays.empty()) return false;
-    const auto Instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(
-        Owner, GWLP_HINSTANCE));
+    if (FirstDisplayNumber == 0 || FirstDisplayNumber > kMaxDisplayCount ||
+        !Topology.Refresh() || Topology.Current().Displays.empty() ||
+        Topology.Current().Displays.size() >
+            kMaxDisplayCount - FirstDisplayNumber + 1u) {
+        return false;
+    }
+    const auto Instance = Owner
+        ? reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(
+              Owner, GWLP_HINSTANCE))
+        : GetModuleHandleW(nullptr);
+    if (!Instance) return false;
     if (!RegisterIdentifyClass(Instance)) return false;
     wchar_t ComputerName[MAX_COMPUTERNAME_LENGTH + 1]{};
     DWORD ComputerNameLength = static_cast<DWORD>(std::size(ComputerName));
@@ -1104,7 +1114,7 @@ bool ShowWin32DisplayIdentification(HWND Owner) {
         const auto Height = std::max<std::int32_t>(
             1, Display.Bounds.Bottom - Display.Bounds.Top);
         auto Payload = std::make_unique<IdentifyPayload>();
-        Payload->Text = std::to_wstring(Index + 1) + L"\n" +
+        Payload->Text = std::to_wstring(FirstDisplayNumber + Index) + L"\n" +
             std::wstring(ComputerName, ComputerNameLength) + L"\r\n" +
             std::to_wstring(Display.PixelWidth) + L"×" +
             std::to_wstring(Display.PixelHeight) + L" · " +
@@ -1138,6 +1148,44 @@ bool ShowWin32DisplayIdentification(HWND Owner) {
         ++Created;
     }
     return Created == Topology.Current().Displays.size();
+}
+
+bool RunWin32DisplayIdentification(
+    std::uint16_t FirstDisplayNumber, std::stop_token StopToken) {
+    if (!ShowWin32DisplayIdentification(nullptr, FirstDisplayNumber)) {
+        return false;
+    }
+    const auto Deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(kIdentifyDurationMilliseconds + 250u);
+    MSG Message{};
+    while (!StopToken.stop_requested() &&
+           std::chrono::steady_clock::now() < Deadline) {
+        while (PeekMessageW(&Message, nullptr, 0, 0, PM_REMOVE)) {
+            if (Message.message == WM_QUIT) return true;
+            TranslateMessage(&Message);
+            DispatchMessageW(&Message);
+        }
+        (void)MsgWaitForMultipleObjectsEx(
+            0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND Window, LPARAM) -> BOOL {
+            wchar_t ClassName[64]{};
+            if (GetClassNameW(
+                    Window, ClassName,
+                    static_cast<int>(std::size(ClassName))) > 0 &&
+                std::wstring_view(ClassName) == kIdentifyClass) {
+                DestroyWindow(Window);
+            }
+            return TRUE;
+        },
+        0);
+    while (PeekMessageW(&Message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&Message);
+        DispatchMessageW(&Message);
+    }
+    return true;
 }
 
 } // namespace desklink

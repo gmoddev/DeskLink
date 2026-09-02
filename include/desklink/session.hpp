@@ -34,6 +34,11 @@ struct SessionStats {
     std::uint64_t TopologyReceived{};
     std::uint64_t TopologyAccepted{};
     std::uint64_t TopologyRejected{};
+    std::uint64_t DisplayIdentifySent{};
+    std::uint64_t DisplayIdentifySendRejected{};
+    std::uint64_t DisplayIdentifyReceived{};
+    std::uint64_t DisplayIdentifyAccepted{};
+    std::uint64_t DisplayIdentifyRejected{};
     std::uint64_t CapabilityGrantsSent{};
     std::uint64_t CapabilityGrantsReceived{};
     std::uint64_t CapabilityGrantsRejected{};
@@ -181,6 +186,8 @@ struct PeerSessionHandlers {
     std::function<void(TransportCloseReason)> TransportClosed;
     std::function<void(PointerPositionFeedbackMessage)>
         RemotePointerFeedback;
+    // Must return promptly. The runtime owns any overlay worker lifetime.
+    std::function<void(std::uint16_t)> IdentifyDisplays;
 };
 
 // Owns both directions of one authenticated peer connection. Capability grants
@@ -243,6 +250,8 @@ public:
     [[nodiscard]] bool PublishDisplayTopology(
         const MachineId& LocalMachine,
         const DisplayTopologySnapshot& Topology);
+    [[nodiscard]] bool RequestPeerDisplayIdentification(
+        std::uint16_t FirstDisplayNumber);
     [[nodiscard]] DisplayTopologyExchangeStatus
     DisplayTopologyStatus() const noexcept;
     [[nodiscard]] std::optional<DisplayTopologySnapshot>

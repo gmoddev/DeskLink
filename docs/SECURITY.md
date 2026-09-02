@@ -342,6 +342,16 @@ the connection usable for already-authorized modules but the affected roaming
 route remains unavailable. Recovery from rejection requires a fresh
 authenticated connection and nonce.
 
+The display-identification request is a separate reliable message containing
+only a bounded 1-64 starting display ordinal. It is sent and admitted only
+after the same authenticated session and fresh nonce are established and both
+stored trust records grant `DisplayTopologyExchange`. Admission can create only
+the fixed five-second, no-activate, click-through local overlays; all monitor
+data and text are generated locally, and the request carries no coordinates,
+window handles, commands, or authority changes. The runtime ignores duplicates
+while an overlay worker is active, and teardown stops the worker without
+affecting input or session state.
+
 The production monitor page preserves that separation. Dragging or keyboard
 nudge changes presentation coordinates only, and a snap is an inert proposal
 until local acceptance. Both canvas and non-canvas authoring compile links from
