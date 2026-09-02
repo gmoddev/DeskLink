@@ -131,7 +131,9 @@ void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
         (void)desklink::EnsureWin32RuntimeBroker(*Executable);
     }
 
-    const auto ProductWindow = winrt::make_self<MainWindow>();
+    const bool DeveloperMode = HasCommandLineArgument(L"-dev") ||
+        HasCommandLineArgument(L"--dev");
+    const auto ProductWindow = winrt::make_self<MainWindow>(DeveloperMode);
     Window_ = *ProductWindow;
     if (!ValidateUpdate) Window_.Activate();
     ProductWindow->InitializeWindowLifecycle();

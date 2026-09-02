@@ -43,6 +43,14 @@ struct RoamingRouteKey {
         const RoamingRouteKey&) const noexcept = default;
 };
 
+struct RoamingLocalLanding {
+    std::int32_t ScreenX{};
+    std::int32_t ScreenY{};
+
+    [[nodiscard]] bool operator==(
+        const RoamingLocalLanding&) const noexcept = default;
+};
+
 struct RoamingFocusRequest {
     RoamingRouteKey Route;
     RoamingLink ConfiguredLink;
@@ -51,6 +59,7 @@ struct RoamingFocusRequest {
     std::uint64_t SourceTopologyGeneration{};
     std::uint64_t TargetTopologyGeneration{};
     PointerPositionMessage Landing;
+    RoamingLocalLanding LocalReturnLanding;
 
     [[nodiscard]] bool operator==(
         const RoamingFocusRequest& Other) const noexcept {
@@ -64,7 +73,8 @@ struct RoamingFocusRequest {
                    Other.TargetTopologyGeneration &&
                Landing.display_id == Other.Landing.display_id &&
                Landing.normalized_x == Other.Landing.normalized_x &&
-               Landing.normalized_y == Other.Landing.normalized_y;
+               Landing.normalized_y == Other.Landing.normalized_y &&
+               LocalReturnLanding == Other.LocalReturnLanding;
     }
 };
 
@@ -111,6 +121,10 @@ public:
     void BeginReturn() noexcept;
     void ReturnLocal() noexcept;
     void FailLocal() noexcept;
+    // Clears the spatial re-entry latch only after the platform confirms that
+    // the returned local pointer is safely inside the original source display.
+    [[nodiscard]] bool ConfirmLocalReturnLanding(
+        RoamingLocalLanding Landing) noexcept;
 
     [[nodiscard]] RoamingRuntimeState State() const noexcept;
     [[nodiscard]] std::optional<RoamingFocusRequest>

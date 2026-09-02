@@ -211,6 +211,43 @@ const wchar_t* MonitorSideName(desklink::DisplayEdgeSide Side) noexcept {
     return L"unknown";
 }
 
+const wchar_t* DeveloperRoamingStateName(
+    desklink::ControlRoamingState State) noexcept {
+    switch (State) {
+        case desklink::ControlRoamingState::Unavailable: return L"unavailable";
+        case desklink::ControlRoamingState::Local: return L"local";
+        case desklink::ControlRoamingState::EdgeCandidate: return L"edge-candidate";
+        case desklink::ControlRoamingState::FocusPending: return L"focus-pending";
+        case desklink::ControlRoamingState::RemoteReady: return L"remote-ready";
+        case desklink::ControlRoamingState::Remote: return L"remote";
+        case desklink::ControlRoamingState::ReturnPending: return L"return-pending";
+        case desklink::ControlRoamingState::LocalCooldown: return L"local-cooldown";
+    }
+    return L"invalid";
+}
+
+const wchar_t* DeveloperPeerDirectionName(
+    desklink::ControlPeerDirectionState State) noexcept {
+    switch (State) {
+        case desklink::ControlPeerDirectionState::Unavailable: return L"unavailable";
+        case desklink::ControlPeerDirectionState::Local: return L"local";
+        case desklink::ControlPeerDirectionState::OutgoingPending: return L"outgoing-pending";
+        case desklink::ControlPeerDirectionState::OutgoingActive: return L"outgoing-active";
+        case desklink::ControlPeerDirectionState::IncomingActive: return L"incoming-active";
+    }
+    return L"invalid";
+}
+
+bool HasRoamingDirection(
+    const desklink::RoamingLink& Link,
+    desklink::RoamingDirection Direction) noexcept {
+    return Direction == desklink::RoamingDirection::AToB
+        ? Link.Direction == desklink::RoamingDirectionMode::AToB ||
+              Link.Direction == desklink::RoamingDirectionMode::Bidirectional
+        : Link.Direction == desklink::RoamingDirectionMode::BToA ||
+              Link.Direction == desklink::RoamingDirectionMode::Bidirectional;
+}
+
 winrt::hstring RefreshRateText(std::uint32_t MilliHertz) {
     if (MilliHertz == 0) return L"refresh unknown";
     std::wostringstream Output;
@@ -347,7 +384,10 @@ desklink::ProductShellState StateFromControl(
 
 namespace winrt::DeskLink::Product::implementation {
 
-MainWindow::MainWindow() {
+MainWindow::MainWindow() : MainWindow(false) {}
+
+MainWindow::MainWindow(bool DeveloperMode)
+    : DeveloperMode_(DeveloperMode) {
     InitializeComponent();
     ContentReady_ = true;
     Title(L"DeskLink");
@@ -367,7 +407,15 @@ MainWindow::MainWindow() {
     PollTimer_.Interval(std::chrono::milliseconds{750});
     PollTimer_.Tick([this](auto&&, auto&&) { PollBroker(); });
     PollTimer_.Start();
+    if (DeveloperMode_) {
+        DeveloperPollTimer_ = DispatcherQueue().CreateTimer();
+        DeveloperPollTimer_.Interval(std::chrono::milliseconds{100});
+        DeveloperPollTimer_.Tick(
+            [this](auto&&, auto&&) { UpdateDeveloperInputStatus(); });
+        DeveloperPollTimer_.Start();
+    }
     PollBroker();
+    UpdateDeveloperInputStatus();
 }
 
 void MainWindow::InitializeWindowLifecycle() {
@@ -389,6 +437,7 @@ void MainWindow::InitializeWindowLifecycle() {
 
 MainWindow::~MainWindow() {
     if (PollTimer_) PollTimer_.Stop();
+    if (DeveloperPollTimer_) DeveloperPollTimer_.Stop();
     UnregisterProductHotkeys();
     RemoveTrayIcon();
     if (MainWindowHandle_) {
@@ -2891,12 +2940,194 @@ void MainWindow::OnReturnLocal(
     ReturnLocal();
 }
 
+void MainWindow::UpdateDeveloperInputStatus() {
+    if (!DeveloperMode_) return;
+    POINT Cursor{};
+    if (!GetCursorPos(&Cursor)) {
+        DeveloperInputStatus().Text(
+            L"DEV cursor unavailable (GetCursorPos failed)");
+        return;
+    }
+
+    const auto Now = std::chrono::steady_clock::now();
+    if (!DeveloperRoamingSettings_) {
+        const auto Directory = GetDataDirectory();
+        if (Directory) {
+            DeveloperRoamingSettings_ =
+                std::make_unique<desklink::Win32RoamingSettingsStore>(
+                    *Directory / L"roaming.settings");
+        }
+    }
+    if (DeveloperRoamingSettings_ &&
+        (LastDeveloperSettingsLoad_ ==
+             std::chrono::steady_clock::time_point{} ||
+         Now - LastDeveloperSettingsLoad_ >=
+             std::chrono::milliseconds{500})) {
+        LastDeveloperSettingsLoad_ = Now;
+        DeveloperRoamingConfiguration_ =
+            DeveloperRoamingSettings_->Load()
+            ? DeveloperRoamingSettings_->Current()
+            : std::nullopt;
+    }
+
+    std::wostringstream Output;
+    Output << L"DEV cursor=(" << Cursor.x << L',' << Cursor.y << L')';
+    if (!DeveloperDisplayTopology_.RefreshIfDue(
+            std::chrono::milliseconds{250})) {
+        Output << L" display=unavailable";
+    } else {
+        const auto& Topology = DeveloperDisplayTopology_.Current();
+        const auto Display = std::find_if(
+            Topology.Displays.begin(), Topology.Displays.end(),
+            [&](const desklink::DisplayDescriptor& Value) {
+                return Cursor.x >= Value.Bounds.Left &&
+                    Cursor.x < Value.Bounds.Right &&
+                    Cursor.y >= Value.Bounds.Top &&
+                    Cursor.y < Value.Bounds.Bottom;
+            });
+        if (Display == Topology.Displays.end()) {
+            Output << L" display=outside-current-topology";
+        } else {
+            Output << L" display=\""
+                   << ToHString(Display->FriendlyName).c_str()
+                   << L"\" bounds=[" << Display->Bounds.Left << L','
+                   << Display->Bounds.Top << L".."
+                   << Display->Bounds.Right - 1 << L','
+                   << Display->Bounds.Bottom - 1 << L']';
+
+            struct RouteCandidate {
+                const desklink::RoamingEndpoint* Source{};
+                const desklink::CrossingConfiguration* Crossing{};
+                const desklink::RoamingLink* Link{};
+                std::int64_t Distance{};
+                std::uint16_t Along{};
+                bool InSegment{};
+            };
+            std::optional<RouteCandidate> Candidate;
+            const auto Consider = [&](const desklink::RoamingLink& Link,
+                                      desklink::RoamingDirection Direction) {
+                if (!Link.Enabled || !HasRoamingDirection(Link, Direction)) {
+                    return;
+                }
+                const auto& Source = Direction ==
+                        desklink::RoamingDirection::AToB
+                    ? Link.EndpointA : Link.EndpointB;
+                if (Source.Machine != LocalMachine_ ||
+                    Source.StableDisplayIdentity != Display->StableIdentity) {
+                    return;
+                }
+                const bool VerticalEdge =
+                    Source.Side == desklink::DisplayEdgeSide::Left ||
+                    Source.Side == desklink::DisplayEdgeSide::Right;
+                const auto Length = VerticalEdge
+                    ? Display->Bounds.Bottom - Display->Bounds.Top
+                    : Display->Bounds.Right - Display->Bounds.Left;
+                if (Length <= 1) return;
+                const auto AlongPixel = VerticalEdge
+                    ? Cursor.y - Display->Bounds.Top
+                    : Cursor.x - Display->Bounds.Left;
+                const auto BoundedAlong = std::clamp<std::int64_t>(
+                    AlongPixel, 0, static_cast<std::int64_t>(Length - 1));
+                const auto Along = static_cast<std::uint16_t>(
+                    BoundedAlong * 10'000 /
+                    (Length - 1));
+                const bool InSegment =
+                    Along >= Source.SegmentStartPermyriad &&
+                    (Along < Source.SegmentEndPermyriad ||
+                     Source.SegmentEndPermyriad == 10'000);
+                std::int64_t Distance{};
+                switch (Source.Side) {
+                    case desklink::DisplayEdgeSide::Left:
+                        Distance = Cursor.x - Display->Bounds.Left;
+                        break;
+                    case desklink::DisplayEdgeSide::Top:
+                        Distance = Cursor.y - Display->Bounds.Top;
+                        break;
+                    case desklink::DisplayEdgeSide::Right:
+                        Distance = Display->Bounds.Right - 1 - Cursor.x;
+                        break;
+                    case desklink::DisplayEdgeSide::Bottom:
+                        Distance = Display->Bounds.Bottom - 1 - Cursor.y;
+                        break;
+                }
+                const auto& Crossing = Direction ==
+                        desklink::RoamingDirection::AToB
+                    ? Link.AToB : Link.BToA;
+                const RouteCandidate Next{
+                    &Source, &Crossing, &Link,
+                    std::max<std::int64_t>(0, Distance), Along, InSegment};
+                if (!Candidate ||
+                    (Next.InSegment && !Candidate->InSegment) ||
+                    (Next.InSegment == Candidate->InSegment &&
+                     Next.Distance < Candidate->Distance)) {
+                    Candidate = Next;
+                }
+            };
+            if (DeveloperRoamingConfiguration_) {
+                for (const auto& Link :
+                     DeveloperRoamingConfiguration_->Links) {
+                    Consider(Link, desklink::RoamingDirection::AToB);
+                    Consider(Link, desklink::RoamingDirection::BToA);
+                }
+            }
+
+            Output << L"\nDEV route=";
+            if (!Candidate) {
+                Output << L"none on this display";
+            } else {
+                Output << MonitorSideName(Candidate->Source->Side)
+                       << L" distance=" << Candidate->Distance
+                       << L" px (need 0) segment="
+                       << (Candidate->InSegment ? L"yes" : L"no")
+                       << L" along=" << Candidate->Along / 100.0
+                       << L"% reentry="
+                       << Candidate->Link->ReentryDistancePixels << L" px ";
+                switch (Candidate->Crossing->Policy) {
+                    case desklink::CrossingPolicy::Push:
+                        Output << L"trigger=first outward count";
+                        break;
+                    case desklink::CrossingPolicy::DwellAndPush:
+                        Output << L"trigger=push "
+                               << Candidate->Crossing->PushDistancePixels
+                               << L" px + dwell "
+                               << Candidate->Crossing->DwellMilliseconds
+                               << L" ms";
+                        break;
+                    case desklink::CrossingPolicy::DoublePush:
+                        Output << L"trigger=double push "
+                               << Candidate->Crossing->PushDistancePixels
+                               << L" px within "
+                               << Candidate->Crossing
+                                      ->DoublePushWindowMilliseconds
+                               << L" ms";
+                        break;
+                }
+            }
+        }
+    }
+    Output << L"\nDEV runtime roaming="
+           << DeveloperRoamingStateName(RuntimeState_.RoamingState)
+           << L" direction="
+           << DeveloperPeerDirectionName(RuntimeState_.PeerDirection)
+           << L" observer="
+           << (RuntimeState_.RoamingObserverActive ? L"on" : L"off")
+           << L" ready_routes=" << RuntimeState_.ReadyRoamingRouteCount
+           << L" capture="
+           << (RuntimeState_.CaptureActive ? L"remote" : L"local");
+    DeveloperInputStatus().Text(Output.str());
+}
+
 void MainWindow::ApplyState(desklink::ProductShellState State) {
     State_ = State;
     const auto Presentation = desklink::PresentProductShellState(State);
     StatusBadge().Text(Presentation.Badge);
     InputTitle().Text(Presentation.KeyboardAndMouseTitle);
     InputSummary().Text(Presentation.KeyboardAndMouseSummary);
+    DeveloperInputStatus().Visibility(
+        DeveloperMode_ && RuntimeState_.ConnectedPeerCount != 0
+        ? Microsoft::UI::Xaml::Visibility::Visible
+        : Microsoft::UI::Xaml::Visibility::Collapsed);
+    UpdateDeveloperInputStatus();
     DiagnosticRuntimePhase().Text(Presentation.ConnectionDetail);
     ReturnLocalButton().Visibility(Presentation.ShowReturnLocal
         ? Microsoft::UI::Xaml::Visibility::Visible

@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 7;
+inline constexpr std::uint16_t kControlProtocolVersion = 8;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -82,6 +82,25 @@ enum class ControlRole : std::uint8_t {
     Idle = 0,
     Agent = 1,
     Host = 2,
+};
+
+enum class ControlRoamingState : std::uint8_t {
+    Unavailable = 0,
+    Local = 1,
+    EdgeCandidate = 2,
+    FocusPending = 3,
+    RemoteReady = 4,
+    Remote = 5,
+    ReturnPending = 6,
+    LocalCooldown = 7,
+};
+
+enum class ControlPeerDirectionState : std::uint8_t {
+    Unavailable = 0,
+    Local = 1,
+    OutgoingPending = 2,
+    OutgoingActive = 3,
+    IncomingActive = 4,
 };
 
 struct GetStateControlRequest {};
@@ -251,9 +270,14 @@ struct ControlState {
     std::uint16_t RetryAttempt{};
     BrokerRuntimePhase RuntimePhase{BrokerRuntimePhase::Stopped};
     BrokerRuntimeFailure RuntimeFailure{BrokerRuntimeFailure::None};
+    ControlRoamingState RoamingState{ControlRoamingState::Unavailable};
+    ControlPeerDirectionState PeerDirection{
+        ControlPeerDirectionState::Unavailable};
+    std::uint16_t ReadyRoamingRouteCount{};
     bool RemoteFocused{};
     bool CaptureActive{};
     bool AudioMuted{};
+    bool RoamingObserverActive{};
 };
 
 struct ControlMachineTopology {

@@ -239,6 +239,59 @@ namespace {
          (Length - 1) / 2) / (Length - 1));
 }
 
+[[nodiscard]] std::int64_t DistanceFromEdge(
+    const DisplayDescriptor& Display,
+    DisplayEdgeSide Side,
+    std::int32_t ScreenX,
+    std::int32_t ScreenY) noexcept {
+    switch (Side) {
+        case DisplayEdgeSide::Left:
+            return static_cast<std::int64_t>(ScreenX) - Display.Bounds.Left;
+        case DisplayEdgeSide::Top:
+            return static_cast<std::int64_t>(ScreenY) - Display.Bounds.Top;
+        case DisplayEdgeSide::Right:
+            return static_cast<std::int64_t>(Display.Bounds.Right) - 1 -
+                ScreenX;
+        case DisplayEdgeSide::Bottom:
+            return static_cast<std::int64_t>(Display.Bounds.Bottom) - 1 -
+                ScreenY;
+    }
+    return -1;
+}
+
+[[nodiscard]] std::optional<RoamingLocalLanding> BuildLocalReturnLanding(
+    const RoamingEndpoint& Source,
+    const DisplayDescriptor& SourceDisplay,
+    const RoamingLink& Link,
+    const LocalPointerObservation& Observation) noexcept {
+    const auto Width = DisplayWidth(SourceDisplay);
+    const auto Height = DisplayHeight(SourceDisplay);
+    const auto Inset = static_cast<std::int32_t>(
+        Link.ReentryDistancePixels);
+    if (Width <= Inset || Height <= Inset) return std::nullopt;
+
+    RoamingLocalLanding Landing{
+        std::clamp(Observation.ScreenX, SourceDisplay.Bounds.Left,
+                   SourceDisplay.Bounds.Right - 1),
+        std::clamp(Observation.ScreenY, SourceDisplay.Bounds.Top,
+                   SourceDisplay.Bounds.Bottom - 1)};
+    switch (Source.Side) {
+        case DisplayEdgeSide::Left:
+            Landing.ScreenX = SourceDisplay.Bounds.Left + Inset;
+            break;
+        case DisplayEdgeSide::Top:
+            Landing.ScreenY = SourceDisplay.Bounds.Top + Inset;
+            break;
+        case DisplayEdgeSide::Right:
+            Landing.ScreenX = SourceDisplay.Bounds.Right - 1 - Inset;
+            break;
+        case DisplayEdgeSide::Bottom:
+            Landing.ScreenY = SourceDisplay.Bounds.Bottom - 1 - Inset;
+            break;
+    }
+    return Landing;
+}
+
 [[nodiscard]] std::optional<PointerPositionMessage> BuildLanding(
     const RoamingEndpoint& Source,
     const RoamingEndpoint& Target,
@@ -468,29 +521,9 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
                 Cooldown_->Source.Side, Observation);
             Cooldown_->InwardDistance +=
                 std::max<std::int64_t>(0, -Outward);
-            std::int64_t EdgeDistance{};
-            switch (Cooldown_->Source.Side) {
-                case DisplayEdgeSide::Left:
-                    EdgeDistance =
-                        static_cast<std::int64_t>(Observation.ScreenX) -
-                        Display.Bounds.Left;
-                    break;
-                case DisplayEdgeSide::Top:
-                    EdgeDistance =
-                        static_cast<std::int64_t>(Observation.ScreenY) -
-                        Display.Bounds.Top;
-                    break;
-                case DisplayEdgeSide::Right:
-                    EdgeDistance =
-                        static_cast<std::int64_t>(Display.Bounds.Right) - 1 -
-                        Observation.ScreenX;
-                    break;
-                case DisplayEdgeSide::Bottom:
-                    EdgeDistance =
-                        static_cast<std::int64_t>(Display.Bounds.Bottom) - 1 -
-                        Observation.ScreenY;
-                    break;
-            }
+            const auto EdgeDistance = DistanceFromEdge(
+                Display, Cooldown_->Source.Side, Observation.ScreenX,
+                Observation.ScreenY);
             if (Cooldown_->InwardDistance >= Cooldown_->RequiredDistance ||
                 EdgeDistance >= Cooldown_->RequiredDistance) {
                 Cooldown_.reset();
@@ -616,7 +649,10 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
     const auto Landing = BuildLanding(
         Source, Target, Candidate.Route.SourceDisplay,
         Candidate.Route.TargetDisplay, Candidate.Route.Link, Observation);
-    if (!Landing) {
+    const auto LocalReturnLanding = BuildLocalReturnLanding(
+        Source, Candidate.Route.SourceDisplay, Candidate.Route.Link,
+        Observation);
+    if (!Landing || !LocalReturnLanding) {
         CancelCandidate();
         return std::nullopt;
     }
@@ -628,6 +664,7 @@ std::optional<RoamingFocusRequest> RoamingRuntime::Observe(
         Candidate.Route.Source.TopologyGeneration,
         Candidate.Route.Target.TopologyGeneration,
         *Landing,
+        *LocalReturnLanding,
     };
     FocusRequestedAt_ = Now;
     Candidate_.reset();
@@ -717,6 +754,20 @@ void RoamingRuntime::BeginReturn() noexcept {
 void RoamingRuntime::ReturnLocal() noexcept { EnterCooldown(); }
 
 void RoamingRuntime::FailLocal() noexcept { EnterCooldown(); }
+
+bool RoamingRuntime::ConfirmLocalReturnLanding(
+    RoamingLocalLanding Landing) noexcept {
+    if (State_ != RoamingRuntimeState::LocalCooldown || !Cooldown_ ||
+        !Contains(Cooldown_->Display, Landing.ScreenX, Landing.ScreenY) ||
+        DistanceFromEdge(
+            Cooldown_->Display, Cooldown_->Source.Side, Landing.ScreenX,
+            Landing.ScreenY) < Cooldown_->RequiredDistance) {
+        return false;
+    }
+    Cooldown_.reset();
+    State_ = RoamingRuntimeState::Local;
+    return true;
+}
 
 RoamingRuntimeState RoamingRuntime::State() const noexcept { return State_; }
 

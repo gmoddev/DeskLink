@@ -127,6 +127,10 @@ public:
         ++release_calls;
         return ReleaseSucceeds;
     }
+    bool ParkPointer() noexcept override {
+        ++park_calls;
+        return ParkSucceeds;
+    }
 
     std::vector<desklink::KeyEventMessage> keys;
     std::vector<desklink::MouseButtonMessage> buttons;
@@ -137,7 +141,9 @@ public:
     std::optional<desklink::PointerPositionMessage> CurrentPointer;
     bool ReconcileSucceeds{true};
     bool ReleaseSucceeds{true};
+    bool ParkSucceeds{true};
     int release_calls{};
+    int park_calls{};
 };
 
 class PausableTransportEndpoint final
@@ -156,6 +162,12 @@ public:
         {
             std::scoped_lock Lock(Mutex_);
             if (Closed_) return false;
+            if (DropNextReliableType_ &&
+                desklink::PeekMessageType(Packet) ==
+                    DropNextReliableType_) {
+                DropNextReliableType_.reset();
+                return true;
+            }
             if (ReliablePaused_) {
                 ReliableQueue_.push_back(std::move(Packet));
                 return true;
@@ -214,6 +226,11 @@ public:
         ReliablePaused_ = Paused;
     }
 
+    void DropNextReliable(desklink::MessageType Type) noexcept {
+        std::scoped_lock Lock(Mutex_);
+        DropNextReliableType_ = Type;
+    }
+
     [[nodiscard]] bool FlushOneReliable() {
         desklink::ByteBuffer Packet;
         {
@@ -250,6 +267,7 @@ private:
     ReceiveHandler DatagramHandler_;
     CloseHandler CloseHandler_;
     std::deque<desklink::ByteBuffer> ReliableQueue_;
+    std::optional<desklink::MessageType> DropNextReliableType_;
     bool ReliablePaused_{};
     bool Closed_{};
 };
@@ -712,8 +730,12 @@ void ControlProtocolRoundTripAndValidation() {
     State.ConnectedPeerCount = 1;
     State.AudioGainPermyriad = 8'000;
     State.RuntimePhase = BrokerRuntimePhase::ConnectedLocal;
+    State.RoamingState = ControlRoamingState::Remote;
+    State.PeerDirection = ControlPeerDirectionState::OutgoingActive;
+    State.ReadyRoamingRouteCount = 1;
     State.RemoteFocused = true;
     State.CaptureActive = true;
+    State.RoamingObserverActive = true;
     const auto ResponseFrame = EncodeControlResponse(
         ControlResponse{9, ControlStatus::Ok, State});
     CHECK(ResponseFrame.has_value());
@@ -726,6 +748,12 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(Response.Decoded->State->CaptureActive);
     CHECK(Response.Decoded->State->RuntimePhase ==
           BrokerRuntimePhase::ConnectedLocal);
+    CHECK(Response.Decoded->State->RoamingState ==
+          ControlRoamingState::Remote);
+    CHECK(Response.Decoded->State->PeerDirection ==
+          ControlPeerDirectionState::OutgoingActive);
+    CHECK(Response.Decoded->State->ReadyRoamingRouteCount == 1);
+    CHECK(Response.Decoded->State->RoamingObserverActive);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -1850,6 +1878,8 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(Request->Landing.normalized_x < 400);
     CHECK(Request->Landing.normalized_y > 32'000);
     CHECK(Request->Landing.normalized_y < 33'500);
+    CHECK(Request->LocalReturnLanding.ScreenX == 1'895);
+    CHECK(Request->LocalReturnLanding.ScreenY == 540);
     CHECK(PushRuntime.State() == RoamingRuntimeState::FocusPending);
 
     auto Stale = *Request;
@@ -1887,6 +1917,11 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     AdmissionRuntime.BeginReturn();
     AdmissionRuntime.ReturnLocal();
     CHECK(AdmissionRuntime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(!AdmissionRuntime.ConfirmLocalReturnLanding({1'919, 540}));
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::LocalCooldown);
+    CHECK(AdmissionRuntime.ConfirmLocalReturnLanding(
+        Admitted->LocalReturnLanding));
+    CHECK(AdmissionRuntime.State() == RoamingRuntimeState::Local);
 
     ManualClock DwellClock;
     RoamingRuntime DwellRuntime(DwellClock);
@@ -1953,6 +1988,8 @@ void RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed() {
     CHECK(ReverseRequest->Landing.display_id ==
           DeriveStableDisplayId("display-a"));
     CHECK(ReverseRequest->Landing.normalized_x > 65'000);
+    CHECK(ReverseRequest->LocalReturnLanding.ScreenX == 24);
+    CHECK(ReverseRequest->LocalReturnLanding.ScreenY == 720);
 }
 
 void RoamingRuntimeInvalidatesActiveRoutesAndEnforcesCooldown() {
@@ -2380,6 +2417,7 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
     CHECK(InjectorB.release_calls == 1);
+    CHECK(InjectorB.park_calls == 1);
 
     CHECK(SessionB.BeginOutgoingFocus(750));
     CHECK(ReadyB == 1);
@@ -2405,6 +2443,65 @@ void PeerSessionSupportsReciprocalFocusAndIndependentGrants() {
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(!SessionA.IncomingFocused());
     CHECK(InjectorA.release_calls == ReleasesBeforeClose + 1);
+}
+
+void PeerSessionImmediatelyReacquiresAfterLostRelease() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x71'82'94u;
+    const auto IdentityA = MakeIdentity(103, "Reacquire A");
+    const auto IdentityB = MakeIdentity(104, "Reacquire B");
+    auto Pair = MakePausableTransportPair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+
+    CapabilitySet InputCapability;
+    InputCapability.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, InputCapability);
+    SaveTrustedPeer(TrustB, IdentityA, InputCapability);
+
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t ReadyA{};
+    PeerSession SessionA(
+        Pair.A, OutgoingA, IncomingA, TrustA, Nonce,
+        PeerSessionHandlers{[&] { ++ReadyA; }});
+    PeerSession SessionB(
+        Pair.B, OutgoingB, IncomingB, TrustB, Nonce);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(ReadyA == 1);
+    CHECK(SessionB.IncomingFocused());
+    CHECK(SessionA.SendKey(KeyEventMessage{0x30, false, true}));
+
+    Pair.A->DropNextReliable(MessageType::FocusRelease);
+    CHECK(SessionA.ReleaseOutgoingFocus());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() ==
+          PeerDirectionState::IncomingActive);
+
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(ReadyA == 2);
+    CHECK(SessionA.DirectionState() ==
+          PeerDirectionState::OutgoingActive);
+    CHECK(SessionB.DirectionState() ==
+          PeerDirectionState::IncomingActive);
+    CHECK(InjectorB.release_calls == 1);
+    CHECK(InjectorB.park_calls == 0);
+    InjectorB.ParkSucceeds = false;
+    CHECK(SessionA.ReleaseOutgoingFocus());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(InjectorB.release_calls == 2);
+    CHECK(InjectorB.park_calls == 1);
 }
 
 void PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting() {
@@ -4715,6 +4812,24 @@ void HostInputLifecycleRecreatesCaptureOnlyAfterFreshFocus() {
     CHECK((Backend.Calls == std::vector<std::string>{
         "send-snapshot", "start-capture", "enable-capture"}));
     CHECK(Lifecycle.Status().CaptureInstalled);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ReturnLocal());
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "disable-capture", "release-focus", "stop-capture"}));
+    CHECK(Lifecycle.Status().Mode == DeskMode::Roam);
+    CHECK(Lifecycle.Status().State == HostInputLifecycleState::Local);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ApplyMode(DeskMode::Roam));
+    CHECK((Backend.Calls == std::vector<std::string>{
+        "set-mode-0", "request-focus"}));
+    CHECK(Lifecycle.Status().State ==
+          HostInputLifecycleState::AwaitingFocus);
+
+    Backend.Calls.clear();
+    CHECK(Lifecycle.ApplyMode(DeskMode::Roam));
+    CHECK(Backend.Calls.empty());
 }
 
 void HostInputLifecycleFailuresRemainLocal() {
@@ -6194,6 +6309,7 @@ int main() {
     RoamingRuntimeRecordedTracesRespectCrossingPolicies();
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
+    PeerSessionImmediatelyReacquiresAfterLostRelease();
     PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();
     PeerSessionResolvesSimultaneousFocusToLocal();
     PeerSessionRequiresTheRemoteDirectionalGrant();

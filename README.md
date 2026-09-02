@@ -245,6 +245,15 @@ but exiting/crashing during a pairing prompt makes the managed child reject the
 candidate. **Exit** ends only the shell. Alpha remains available from the Start
 menu only as **DeskLink diagnostics (Alpha)** during the migration release.
 
+For physical roaming diagnosis, launch the product shell explicitly as
+`desklink.exe -dev` (or `--dev`) after closing the existing shell instance. While
+an authenticated peer is connected, the keyboard-and-mouse card then shows the
+local cursor coordinates and display bounds, the nearest configured route edge,
+distance to that edge, segment membership, crossing policy, re-entry distance,
+and the runtime roaming/focus/observer state. This opt-in view is in-memory UI
+metadata only; it does not log or display keys, buttons, clipboard text, audio,
+or other captured input content. Normal launches do not show or poll this view.
+
 Windows CI also creates an explicitly unsigned current-user development
 installer containing the product shell, broker, transport runtime, updater, and
 Alpha diagnostics fallback. It validates product-shell-only broker startup,

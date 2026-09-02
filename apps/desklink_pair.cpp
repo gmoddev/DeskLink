@@ -902,6 +902,45 @@ std::string_view ControlRoleName(desklink::ControlRole Role) noexcept {
     return "invalid";
 }
 
+desklink::ControlRoamingState ToControlRoamingState(
+    desklink::RoamingRuntimeState State) noexcept {
+    return static_cast<desklink::ControlRoamingState>(
+        static_cast<std::uint8_t>(State) + 1u);
+}
+
+desklink::ControlPeerDirectionState ToControlPeerDirectionState(
+    desklink::PeerDirectionState State) noexcept {
+    return static_cast<desklink::ControlPeerDirectionState>(
+        static_cast<std::uint8_t>(State) + 1u);
+}
+
+std::string_view ControlRoamingStateName(
+    desklink::ControlRoamingState State) noexcept {
+    switch (State) {
+        case desklink::ControlRoamingState::Unavailable: return "unavailable";
+        case desklink::ControlRoamingState::Local: return "local";
+        case desklink::ControlRoamingState::EdgeCandidate: return "edge-candidate";
+        case desklink::ControlRoamingState::FocusPending: return "focus-pending";
+        case desklink::ControlRoamingState::RemoteReady: return "remote-ready";
+        case desklink::ControlRoamingState::Remote: return "remote";
+        case desklink::ControlRoamingState::ReturnPending: return "return-pending";
+        case desklink::ControlRoamingState::LocalCooldown: return "local-cooldown";
+    }
+    return "invalid";
+}
+
+std::string_view ControlPeerDirectionName(
+    desklink::ControlPeerDirectionState State) noexcept {
+    switch (State) {
+        case desklink::ControlPeerDirectionState::Unavailable: return "unavailable";
+        case desklink::ControlPeerDirectionState::Local: return "local";
+        case desklink::ControlPeerDirectionState::OutgoingPending: return "outgoing-pending";
+        case desklink::ControlPeerDirectionState::OutgoingActive: return "outgoing-active";
+        case desklink::ControlPeerDirectionState::IncomingActive: return "incoming-active";
+    }
+    return "invalid";
+}
+
 std::string_view DeskModeName(desklink::DeskMode Mode) noexcept {
     switch (Mode) {
         case desklink::DeskMode::Roam: return "roam";
@@ -983,6 +1022,13 @@ int RunControl(const CommandLine& Command) {
               << " peers=" << State.ConnectedPeerCount
               << " remote_focused=" << (State.RemoteFocused ? "true" : "false")
               << " capture_active=" << (State.CaptureActive ? "true" : "false")
+              << " roaming_state="
+              << ControlRoamingStateName(State.RoamingState)
+              << " peer_direction="
+              << ControlPeerDirectionName(State.PeerDirection)
+              << " ready_routes=" << State.ReadyRoamingRouteCount
+              << " roaming_observer="
+              << (State.RoamingObserverActive ? "true" : "false")
               << " audio_gain=" << State.AudioGainPermyriad
               << " audio_muted=" << (State.AudioMuted ? "true" : "false")
               << " local_machine=" << FormatHex(State.LocalMachine);
@@ -2698,21 +2744,42 @@ public:
                Host_->Session.OutgoingFocused();
     }
 
+    [[nodiscard]] desklink::ControlRoamingState
+    DiagnosticRoamingState() const noexcept {
+        return RoamingState_.load();
+    }
+
+    [[nodiscard]] desklink::ControlPeerDirectionState
+    DiagnosticPeerDirection() const noexcept {
+        return ToControlPeerDirectionState(Host_->Session.DirectionState());
+    }
+
+    [[nodiscard]] std::uint16_t ReadyRoamingRouteCount() const noexcept {
+        return ReadyRoamingRouteCount_.load();
+    }
+
+    [[nodiscard]] bool RoamingObserverActive() const noexcept {
+        return RoamingObserverActive_.load();
+    }
+
     void DisableCapture() noexcept override {
         CaptureActive_.store(false);
         try {
             std::scoped_lock Lock(CaptureLifetimeMutex_);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            RestoreParkedLocalCursorLocked();
         } catch (...) {
         }
     }
 
     void StopCapture() noexcept override {
         CaptureActive_.store(false);
+        RoamingObserverActive_.store(false);
         try {
             {
                 std::scoped_lock Lock(CaptureLifetimeMutex_);
                 if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+                RestoreParkedLocalCursorLocked();
                 ActiveCapture_ = nullptr;
             }
             if (Capture_) {
@@ -2784,6 +2851,8 @@ public:
                 if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
                 return;
             }
+            RestoreParkedLocalCursorLocked();
+            std::optional<desklink::RoamingLocalLanding> CursorRestore;
             if (PendingRoamingRequest_) {
                 if (PendingLanding_ ||
                     Host_->Session.DirectionState() !=
@@ -2796,7 +2865,23 @@ public:
                     ActiveCapture_->SetRemoteRouting(false);
                     return;
                 }
+                CursorRestore =
+                    PendingRoamingRequest_->LocalReturnLanding;
                 PendingRoamingRequest_.reset();
+            } else {
+                POINT Cursor{};
+                if (GetCursorPos(&Cursor)) {
+                    CursorRestore = desklink::RoamingLocalLanding{
+                        Cursor.x, Cursor.y};
+                }
+            }
+            if (CursorRestore) {
+                if (desklink::ParkWin32Pointer()) {
+                    ParkedLocalCursorRestore_ = *CursorRestore;
+                } else {
+                    std::cerr
+                        << "[Input:Pointer] local cursor parking failed; remote input remains fail-safe\n";
+                }
             }
             ActiveCapture_->SetRemoteRouting(true);
             CaptureActive_.store(true);
@@ -2850,6 +2935,7 @@ private:
             if (Capture_) {
                 std::scoped_lock Lock(CaptureLifetimeMutex_);
                 ActiveCapture_ = Capture_.get();
+                RoamingObserverActive_.store(RoamingSettings_ != nullptr);
                 return true;
             }
             desklink::Win32CaptureHandlers Handlers;
@@ -2899,6 +2985,7 @@ private:
             Capture_->SetReturnLocalHotkey(ReturnLocalHotkey_);
             if (!Capture_->Start()) {
                 Capture_.reset();
+                RoamingObserverActive_.store(false);
                 LastBackendFailure_ = BackendFailure::StartCapture;
                 return false;
             }
@@ -2906,9 +2993,11 @@ private:
                 std::scoped_lock Lock(CaptureLifetimeMutex_);
                 ActiveCapture_ = Capture_.get();
             }
+            RoamingObserverActive_.store(RoamingSettings_ != nullptr);
             return true;
         } catch (...) {
             Capture_.reset();
+            RoamingObserverActive_.store(false);
             LastBackendFailure_ = BackendFailure::StartCapture;
             return false;
         }
@@ -2999,6 +3088,10 @@ private:
         if (!RoamingSettings_) return;
         try {
             const auto Update = RefreshRoamingContext();
+            ReadyRoamingRouteCount_.store(static_cast<std::uint16_t>(
+                std::min<std::size_t>(
+                    Update.ReadyRouteCount,
+                    std::numeric_limits<std::uint16_t>::max())));
             if (!LastReadyRouteCount_ ||
                 *LastReadyRouteCount_ != Update.ReadyRouteCount) {
                 std::cout << "[Roaming:Runtime] ready_routes="
@@ -3111,6 +3204,7 @@ private:
             Observation->ScreenY,
             Observation->DeltaX,
             Observation->DeltaY});
+        RoamingState_.store(ToControlRoamingState(Roaming_.State()));
         if (!Request) return;
 
         PendingRoamingRequest_ = *Request;
@@ -3369,6 +3463,7 @@ private:
         const auto Status = Lifecycle_.Status();
         DesiredMode_.store(Status.Mode);
         LifecycleState_.store(Status.State);
+        RoamingState_.store(ToControlRoamingState(Roaming_.State()));
         if (Status.State != desklink::HostInputLifecycleState::Remote) {
             CaptureActive_.store(false);
         }
@@ -3417,7 +3512,18 @@ private:
         try {
             std::scoped_lock Lock(CaptureLifetimeMutex_);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            RestoreParkedLocalCursorLocked();
         } catch (...) {
+        }
+    }
+
+    void RestoreParkedLocalCursorLocked() noexcept {
+        if (!ParkedLocalCursorRestore_) return;
+        const auto Restore = *ParkedLocalCursorRestore_;
+        ParkedLocalCursorRestore_.reset();
+        if (!SetCursorPos(Restore.ScreenX, Restore.ScreenY)) {
+            std::cerr
+                << "[Input:Pointer] local cursor restore failed after remote focus\n";
         }
     }
 
@@ -3427,6 +3533,7 @@ private:
             FailLocalRequested_.store(true);
             CaptureActive_.store(false);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
+            RestoreParkedLocalCursorLocked();
         } catch (...) {
             FailLocalRequested_.store(true);
             CaptureActive_.store(false);
@@ -3536,12 +3643,28 @@ private:
     }
 
     void ReturnLocalPreservingRoaming(const char* Reason) noexcept {
+        const auto Request = Roaming_.ActiveRequest();
         Roaming_.BeginReturn();
         PendingRoamingRequest_.reset();
         PendingLanding_.reset();
         Profiles_.ClearManualOverride();
         const bool Released = Lifecycle_.ReturnLocal();
         Roaming_.ReturnLocal();
+        bool PointerLanded = false;
+        if (Request) {
+            const auto& Landing = Request->LocalReturnLanding;
+            POINT Actual{};
+            if (SetCursorPos(Landing.ScreenX, Landing.ScreenY) &&
+                GetCursorPos(&Actual)) {
+                PointerLanded = Roaming_.ConfirmLocalReturnLanding({
+                    Actual.x, Actual.y});
+            }
+        }
+        // ReturnLocal tears down the capture observer. Reinstall it now so a
+        // deliberate reverse crossing is observable without waiting for the
+        // periodic 500 ms maintenance tick.
+        MaintainRoaming();
+        const bool ObserverRearmed = Capture_ != nullptr;
         PublishLifecycleStatus();
         {
             std::scoped_lock Lock(Result_->Mutex);
@@ -3550,8 +3673,10 @@ private:
         Result_->Changed.notify_all();
         std::cout
             << "[Roaming:Return] input returned Local; reason=" << Reason
-            << " roaming_rearmed=true release_ack="
-            << (Released ? "true" : "false") << '\n';
+            << " release_sent=" << (Released ? "true" : "false")
+            << " pointer_landed=" << (PointerLanded ? "true" : "false")
+            << " observer_rearmed="
+            << (ObserverRearmed ? "true" : "false") << '\n';
     }
 
     void CaptureFailed(std::string Message) noexcept {
@@ -3611,6 +3736,8 @@ private:
     std::unique_ptr<desklink::Win32InputCapture> Capture_;
     std::mutex CaptureLifetimeMutex_;
     desklink::Win32InputCapture* ActiveCapture_{};
+    std::optional<desklink::RoamingLocalLanding>
+        ParkedLocalCursorRestore_;
 
     std::thread Dispatcher_;
     std::thread::id DispatcherId_{};
@@ -3630,6 +3757,10 @@ private:
     std::atomic<desklink::DeskMode> DesiredMode_{desklink::DeskMode::LockPc1};
     std::atomic<desklink::HostInputLifecycleState> LifecycleState_{
         desklink::HostInputLifecycleState::Local};
+    std::atomic<desklink::ControlRoamingState> RoamingState_{
+        desklink::ControlRoamingState::Local};
+    std::atomic_uint16_t ReadyRoamingRouteCount_{};
+    std::atomic_bool RoamingObserverActive_{};
     std::atomic_bool CaptureActive_{};
     std::atomic_bool EmergencyTriggered_{};
     std::atomic_uint64_t KeyEventsCaptured_{};
@@ -3750,9 +3881,21 @@ int RunTrusted(const CommandLine& Command,
                     State.DesiredMode = ActiveInput->DesiredMode();
                     State.CaptureActive = ActiveInput->CaptureActive();
                     State.RemoteFocused = ActiveInput->RemoteFocused();
+                    State.RoamingState =
+                        ActiveInput->DiagnosticRoamingState();
+                    State.PeerDirection =
+                        ActiveInput->DiagnosticPeerDirection();
+                    State.ReadyRoamingRouteCount =
+                        ActiveInput->ReadyRoamingRouteCount();
+                    State.RoamingObserverActive =
+                        ActiveInput->RoamingObserverActive();
                     if (State.RemoteFocused) {
                         State.FocusedMachine = SelectedPeer->PeerMachine;
                     }
+                }
+                if (SelectedPeer && !ActiveInput) {
+                    State.PeerDirection = ToControlPeerDirectionState(
+                        SelectedPeer->Session.DirectionState());
                 }
                 if (!State.RemoteFocused) {
                     for (const auto& Runtime : Peers) {

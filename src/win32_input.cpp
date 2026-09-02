@@ -3,8 +3,10 @@
 #include "desklink/win32_input.hpp"
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 
+#include <algorithm>
 #include <type_traits>
 
 namespace desklink {
@@ -30,6 +32,32 @@ DWORD xbutton_data(MouseButtonId button) {
 }
 
 } // namespace
+
+bool ParkWin32Pointer() noexcept {
+    POINT Cursor{};
+    if (!GetCursorPos(&Cursor)) return false;
+    const auto Monitor = MonitorFromPoint(Cursor, MONITOR_DEFAULTTONEAREST);
+    if (!Monitor) return false;
+    MONITORINFO Information{};
+    Information.cbSize = sizeof(Information);
+    if (!GetMonitorInfoW(Monitor, &Information) ||
+        Information.rcMonitor.right <= Information.rcMonitor.left ||
+        Information.rcMonitor.bottom <= Information.rcMonitor.top) {
+        return false;
+    }
+    // Keep the cursor hotspot on the rightmost pixel so almost all of the
+    // pointer is outside the visible monitor. Preserve its crossing height,
+    // but stay clear of the corners: the bottom-right corner can reveal an
+    // auto-hidden taskbar or activate the Show Desktop target.
+    constexpr LONG CornerClearance = 48;
+    const auto Height = Information.rcMonitor.bottom - Information.rcMonitor.top;
+    const auto VerticalInset =
+        std::min(CornerClearance, (Height - 1) / 2);
+    const auto MinimumY = Information.rcMonitor.top + VerticalInset;
+    const auto MaximumY = Information.rcMonitor.bottom - 1 - VerticalInset;
+    const auto ParkY = std::clamp(Cursor.y, MinimumY, MaximumY);
+    return SetCursorPos(Information.rcMonitor.right - 1, ParkY) != FALSE;
+}
 
 Win32InputInjector::Win32InputInjector() {
     (void)DisplayTopology_.Refresh();
@@ -204,6 +232,10 @@ bool Win32InputInjector::release_owned_state() noexcept {
     }
     DisplayGeneration_.reset();
     return ReleasedAll;
+}
+
+bool Win32InputInjector::ParkPointer() noexcept {
+    return ParkWin32Pointer();
 }
 
 } // namespace desklink

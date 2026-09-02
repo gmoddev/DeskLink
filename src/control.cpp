@@ -99,6 +99,18 @@ bool IsValidRole(ControlRole Role) noexcept {
            static_cast<std::uint8_t>(ControlRole::Host);
 }
 
+bool IsKnownRoamingState(ControlRoamingState State) noexcept {
+    return static_cast<std::uint8_t>(State) <=
+        static_cast<std::uint8_t>(ControlRoamingState::LocalCooldown);
+}
+
+bool IsKnownPeerDirectionState(
+    ControlPeerDirectionState State) noexcept {
+    return static_cast<std::uint8_t>(State) <=
+        static_cast<std::uint8_t>(
+            ControlPeerDirectionState::IncomingActive);
+}
+
 bool IsNonzeroMachine(const MachineId& Machine) noexcept {
     return std::any_of(Machine.begin(), Machine.end(),
                        [](std::uint8_t Byte) { return Byte != 0; });
@@ -986,10 +998,14 @@ void EncodeState(Writer& Output, const ControlState& State) {
     Output.U16(State.RetryAttempt);
     Output.U8(static_cast<std::uint8_t>(State.RuntimePhase));
     Output.U8(static_cast<std::uint8_t>(State.RuntimeFailure));
+    Output.U8(static_cast<std::uint8_t>(State.RoamingState));
+    Output.U8(static_cast<std::uint8_t>(State.PeerDirection));
+    Output.U16(State.ReadyRoamingRouteCount);
     std::uint8_t Flags = 0;
     if (State.RemoteFocused) Flags |= 0x01u;
     if (State.CaptureActive) Flags |= 0x02u;
     if (State.AudioMuted) Flags |= 0x04u;
+    if (State.RoamingObserverActive) Flags |= 0x08u;
     Output.U8(Flags);
 }
 
@@ -999,6 +1015,8 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     std::uint8_t RawMode{};
     std::uint8_t RawRuntimePhase{};
     std::uint8_t RawRuntimeFailure{};
+    std::uint8_t RawRoamingState{};
+    std::uint8_t RawPeerDirection{};
     std::uint8_t Flags{};
     if (!Input.Raw(State.LocalMachine) || !Input.Raw(State.FocusedMachine) ||
         !Input.U8(RawRole) || !Input.U8(RawMode) ||
@@ -1006,6 +1024,8 @@ std::optional<ControlState> DecodeState(Reader& Input) {
         !Input.U16(State.AudioGainPermyriad) ||
         !Input.U16(State.RetryAttempt) ||
         !Input.U8(RawRuntimePhase) || !Input.U8(RawRuntimeFailure) ||
+        !Input.U8(RawRoamingState) || !Input.U8(RawPeerDirection) ||
+        !Input.U16(State.ReadyRoamingRouteCount) ||
         !Input.U8(Flags)) {
         return std::nullopt;
     }
@@ -1013,10 +1033,14 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.DesiredMode = static_cast<DeskMode>(RawMode);
     State.RuntimePhase = static_cast<BrokerRuntimePhase>(RawRuntimePhase);
     State.RuntimeFailure = static_cast<BrokerRuntimeFailure>(RawRuntimeFailure);
+    State.RoamingState = static_cast<ControlRoamingState>(RawRoamingState);
+    State.PeerDirection = static_cast<ControlPeerDirectionState>(
+        RawPeerDirection);
     State.RemoteFocused = (Flags & 0x01u) != 0;
     State.CaptureActive = (Flags & 0x02u) != 0;
     State.AudioMuted = (Flags & 0x04u) != 0;
-    if ((Flags & 0xf8u) != 0 || !IsValidControlState(State)) return std::nullopt;
+    State.RoamingObserverActive = (Flags & 0x08u) != 0;
+    if ((Flags & 0xf0u) != 0 || !IsValidControlState(State)) return std::nullopt;
     return State;
 }
 
@@ -1222,7 +1246,9 @@ bool IsValidControlState(const ControlState& State) noexcept {
     if (!IsValidRole(State.Role) || !IsValidDeskMode(State.DesiredMode) ||
         State.AudioGainPermyriad > 10'000 ||
         !IsKnownRuntimePhase(State.RuntimePhase) ||
-        !IsKnownRuntimeFailure(State.RuntimeFailure)) {
+        !IsKnownRuntimeFailure(State.RuntimeFailure) ||
+        !IsKnownRoamingState(State.RoamingState) ||
+        !IsKnownPeerDirectionState(State.PeerDirection)) {
         return false;
     }
     if (State.RuntimePhase == BrokerRuntimePhase::RetryWaiting) {
@@ -1248,6 +1274,15 @@ bool IsValidControlState(const ControlState& State) noexcept {
         return false;
     }
     if (!State.RemoteFocused && IsNonzeroMachine(State.FocusedMachine)) {
+        return false;
+    }
+    if (State.RoamingObserverActive &&
+        (State.Role != ControlRole::Host ||
+         State.RoamingState == ControlRoamingState::Unavailable)) {
+        return false;
+    }
+    if (State.ReadyRoamingRouteCount != 0 &&
+        State.RoamingState == ControlRoamingState::Unavailable) {
         return false;
     }
     return true;
