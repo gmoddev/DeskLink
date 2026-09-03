@@ -90,6 +90,8 @@ struct ProductPreferences {
     CapabilitySet LocalGrantsToPeer) noexcept;
 [[nodiscard]] bool CanEnablePeerAudioIntent(
     CapabilitySet LocalGrantsToPeer) noexcept;
+[[nodiscard]] bool CanEnableLocalAudioIntent(
+    CapabilitySet LocalGrantsToPeer) noexcept;
 
 enum class RuntimePlanBlocker : std::uint32_t {
     None = 0,

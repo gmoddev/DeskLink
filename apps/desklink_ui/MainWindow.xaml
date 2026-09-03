@@ -205,6 +205,21 @@
                                                   Toggled="OnPeerAudioIntentToggled"
                                                   AutomationProperties.Name="Play paired PC audio on this PC" />
                                 </Grid>
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="LocalAudioIntentLabel"
+                                               Text="Pair a PC to share this PC's audio."
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center" />
+                                    <ToggleSwitch x:Name="LocalAudioDesiredToggle"
+                                                  Grid.Column="1" OffContent="Off"
+                                                  OnContent="On"
+                                                  Toggled="OnLocalAudioIntentToggled"
+                                                  AutomationProperties.Name="Share this PC's audio with paired PC" />
+                                </Grid>
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <NumberBox x:Name="PeerAudioGainBox"
                                                Header="Volume (%)" Value="100"

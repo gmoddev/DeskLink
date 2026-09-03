@@ -137,6 +137,10 @@ bool CanEnablePeerAudioIntent(CapabilitySet LocalGrantsToPeer) noexcept {
     return LocalGrantsToPeer.contains(Capability::AudioSend);
 }
 
+bool CanEnableLocalAudioIntent(CapabilitySet LocalGrantsToPeer) noexcept {
+    return LocalGrantsToPeer.contains(Capability::AudioReceive);
+}
+
 bool ApplyProductCrossingPreset(
     RoamingConfiguration& Configuration,
     ProductCrossingPreset Preset) noexcept {

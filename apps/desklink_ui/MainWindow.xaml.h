@@ -105,6 +105,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnPeerAudioIntentToggled(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnLocalAudioIntentToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
     void OnApplyAudioGain(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -190,6 +193,7 @@ private:
     void SetInputRoamingDesired(bool Desired);
     void SetClipboardDesired(bool Desired);
     void SetPeerAudioDesired(bool Desired);
+    void SetLocalAudioDesired(bool Desired);
     void ShowPairingStatus(
         winrt::hstring const& Message,
         Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);

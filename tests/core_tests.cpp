@@ -4898,11 +4898,15 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CapabilitySet LocalFeatureGrants;
     CHECK(!CanEnableClipboardIntent(LocalFeatureGrants));
     CHECK(!CanEnablePeerAudioIntent(LocalFeatureGrants));
+    CHECK(!CanEnableLocalAudioIntent(LocalFeatureGrants));
     LocalFeatureGrants.grant(Capability::ClipboardRead);
     LocalFeatureGrants.grant(Capability::ClipboardWrite);
     CHECK(CanEnableClipboardIntent(LocalFeatureGrants));
     LocalFeatureGrants.grant(Capability::AudioSend);
     CHECK(CanEnablePeerAudioIntent(LocalFeatureGrants));
+    CHECK(!CanEnableLocalAudioIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::AudioReceive);
+    CHECK(CanEnableLocalAudioIntent(LocalFeatureGrants));
 
     RuntimePlannerContext Ready;
     Ready.PreferredPeerTrusted = true;

@@ -995,6 +995,8 @@ int RunControl(const CommandLine& Command) {
                   << (Preferences.AutoStartRuntime ? "true" : "false")
                   << " auto_connect="
                   << (Preferences.AutoConnect ? "true" : "false")
+                  << " audio_route="
+                  << static_cast<unsigned>(Preferences.AudioRoute)
                   << " first_run_complete="
                   << (Preferences.FirstRunComplete ? "true" : "false")
                   << '\n';
