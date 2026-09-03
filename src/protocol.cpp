@@ -226,6 +226,9 @@ ByteBuffer encode_payload(const Message& message) {
                 w.u8(static_cast<std::uint8_t>(Display.PhysicalSize));
                 w.u8(static_cast<std::uint8_t>(Display.Orientation));
             }
+        } else if constexpr (
+            std::is_same_v<T, DisplayIdentifyRequestMessage>) {
+            w.u16(value.FirstDisplayNumber);
         } else if constexpr (std::is_same_v<T, ClipboardHelloMessage>) {
             w.u16(value.Version);
             w.u32(value.MaximumTextBytes);
@@ -452,6 +455,14 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             }
             return Message;
         }
+        case MessageType::DisplayIdentifyRequest: {
+            DisplayIdentifyRequestMessage Message;
+            if (!r.u16(Message.FirstDisplayNumber) || r.remaining() != 0 ||
+                !IsValidDisplayIdentifyRequestMessage(Message)) {
+                return std::nullopt;
+            }
+            return Message;
+        }
         case MessageType::ClipboardHello: {
             ClipboardHelloMessage Message;
             if (!r.u16(Message.Version) ||
@@ -508,6 +519,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::SetAudioGain:
         case MessageType::AudioFrame:
         case MessageType::DisplayTopologySnapshot:
+        case MessageType::DisplayIdentifyRequest:
         case MessageType::ClipboardHello:
         case MessageType::ClipboardText:
         case MessageType::Heartbeat:
@@ -543,6 +555,9 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, AudioFrameMessage>) return MessageType::AudioFrame;
         else if constexpr (std::is_same_v<T, DisplayTopologySnapshotMessage>) {
             return MessageType::DisplayTopologySnapshot;
+        }
+        else if constexpr (std::is_same_v<T, DisplayIdentifyRequestMessage>) {
+            return MessageType::DisplayIdentifyRequest;
         }
         else if constexpr (std::is_same_v<T, ClipboardHelloMessage>) {
             return MessageType::ClipboardHello;
@@ -643,6 +658,12 @@ bool IsValidDisplayTopologySnapshotMessage(
         PayloadSize += DisplaySize;
     }
     return true;
+}
+
+bool IsValidDisplayIdentifyRequestMessage(
+    const DisplayIdentifyRequestMessage& Message) noexcept {
+    return Message.FirstDisplayNumber != 0 &&
+           Message.FirstDisplayNumber <= kMaxDisplayCount;
 }
 
 std::optional<MessageType> PeekMessageType(ByteSpan Bytes) noexcept {

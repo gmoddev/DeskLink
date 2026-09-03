@@ -11,6 +11,7 @@
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_foreground.hpp"
 #include "desklink/win32_input.hpp"
+#include "desklink/win32_monitor_configurator.hpp"
 #include "desklink/win32_pairing.hpp"
 #include "desklink/win32_roaming_settings.hpp"
 #include "desklink/win32_discovery.hpp"
@@ -2013,6 +2014,7 @@ struct PeerRuntime {
     }
 
     ~PeerRuntime() {
+        StopDisplayIdentification();
         StopClipboard();
         StopSendingAudio();
         StopReceivingAudio();
@@ -2400,6 +2402,36 @@ struct PeerRuntime {
                   << " restarts=" << CaptureRestartCount.load() << '\n';
     }
 
+    void IdentifyDisplaysAsync(std::uint16_t FirstDisplayNumber) {
+        std::scoped_lock Lock(DisplayIdentificationMutex);
+        if (DisplayIdentificationRunning.exchange(true)) {
+            std::cout
+                << "[Display:Identify] active overlay request already running\n";
+            return;
+        }
+        if (DisplayIdentificationWorker.joinable()) {
+            DisplayIdentificationWorker.join();
+        }
+        DisplayIdentificationWorker = std::jthread(
+            [this, FirstDisplayNumber](std::stop_token StopToken) {
+                const bool Shown =
+                    desklink::RunWin32DisplayIdentification(
+                        FirstDisplayNumber, StopToken);
+                std::cout << "[Display:Identify] authenticated peer request "
+                          << (Shown ? "shown" : "failed") << '\n';
+                DisplayIdentificationRunning.store(false);
+            });
+    }
+
+    void StopDisplayIdentification() noexcept {
+        std::scoped_lock Lock(DisplayIdentificationMutex);
+        if (DisplayIdentificationWorker.joinable()) {
+            DisplayIdentificationWorker.request_stop();
+            DisplayIdentificationWorker.join();
+        }
+        DisplayIdentificationRunning.store(false);
+    }
+
     desklink::MachineId PeerMachine{};
     LocalTopologyRuntime LocalTopology;
     std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
@@ -2430,6 +2462,10 @@ struct PeerRuntime {
     std::atomic_uint64_t RenderRecoveryGeneration{};
     std::atomic_uint64_t RenderRestartCount{};
     std::thread RenderPump;
+
+    std::mutex DisplayIdentificationMutex;
+    std::atomic_bool DisplayIdentificationRunning{};
+    std::jthread DisplayIdentificationWorker;
 };
 
 const char* ProfileSourceName(desklink::ProfileModeSource Source) noexcept {
@@ -3858,6 +3894,24 @@ int RunTrusted(const CommandLine& Command,
                     std::nullopt, std::move(State)};
             }
 
+            if (const auto* Identify = std::get_if<
+                    desklink::IdentifyPeerDisplaysControlRequest>(
+                    &Request.Payload)) {
+                std::shared_ptr<PeerRuntime> SelectedPeer;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    SelectedPeer = ActivePeer;
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId,
+                    SelectedPeer &&
+                            SelectedPeer->Session
+                                .RequestPeerDisplayIdentification(
+                                    Identify->FirstDisplayNumber)
+                        ? desklink::ControlStatus::Ok
+                        : desklink::ControlStatus::NotReady};
+            }
+
             if (std::holds_alternative<desklink::GetStateControlRequest>(
                     Request.Payload)) {
                 desklink::ControlState State;
@@ -4213,6 +4267,8 @@ int RunTrusted(const CommandLine& Command,
 
         const auto RuntimeTarget =
             std::make_shared<std::weak_ptr<HostInputRuntime>>();
+        const auto DisplayIdentificationTarget =
+            std::make_shared<std::weak_ptr<PeerRuntime>>();
         desklink::PeerSessionHandlers SessionHandlers;
         SessionHandlers.OutgoingFocusReady = [RuntimeTarget] {
             if (const auto Input = RuntimeTarget->lock()) {
@@ -4233,6 +4289,12 @@ int RunTrusted(const CommandLine& Command,
             desklink::PointerPositionFeedbackMessage Position) {
             if (const auto Input = RuntimeTarget->lock()) {
                 Input->NotifyRemotePointerFeedback(Position);
+            }
+        };
+        SessionHandlers.IdentifyDisplays = [DisplayIdentificationTarget](
+            std::uint16_t FirstDisplayNumber) {
+            if (const auto Runtime = DisplayIdentificationTarget->lock()) {
+                Runtime->IdentifyDisplaysAsync(FirstDisplayNumber);
             }
         };
         SessionHandlers.TransportClosed = [
@@ -4265,6 +4327,7 @@ int RunTrusted(const CommandLine& Command,
             Command.SendAudio,
             Command.ReceiveAudio,
             Command.SyncClipboard);
+        *DisplayIdentificationTarget = Runtime;
         Runtime->StartClipboard();
         if (!Runtime->Session.Start()) {
             Runtime->StopClipboard();

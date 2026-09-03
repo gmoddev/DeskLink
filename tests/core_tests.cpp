@@ -649,7 +649,7 @@ void ControlProtocolRoundTripAndValidation() {
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
     ControlPairingToken PairingToken{};
     PairingToken[0] = 0x41;
-    const std::array<ControlRequest, 30> Requests{
+    const std::array<ControlRequest, 31> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -697,6 +697,7 @@ void ControlProtocolRoundTripAndValidation() {
             MakeMachineId(8)}},
         ControlRequest{30, ApplyManagedPreferencesControlRequest{
             Preferences}},
+        ControlRequest{31, IdentifyPeerDisplaysControlRequest{4}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -721,6 +722,12 @@ void ControlProtocolRoundTripAndValidation() {
             DecodedPermissionRequest.Decoded->Payload);
     CHECK(PermissionRequest.Machine == MakeMachineId(8));
     CHECK(PermissionRequest.DesiredCapabilities == RequestedCapabilities);
+    const auto DecodedIdentifyRequest = DecodeControlRequest(
+        *EncodeControlRequest(Requests[30]));
+    CHECK(DecodedIdentifyRequest.Decoded.has_value());
+    CHECK(std::get<IdentifyPeerDisplaysControlRequest>(
+              DecodedIdentifyRequest.Decoded->Payload)
+              .FirstDisplayNumber == 4);
 
     ControlState State;
     State.LocalMachine[0] = 0x11;
@@ -2747,6 +2754,7 @@ void PeerSessionDoesNotTreatRemoteGrantsAsLocalDisclosureConsent() {
     CHECK(!SessionA.PublishDisplayTopology(
         IdentityA.machine_id,
         MakeDisplayTopology("disclosure-a", "Disclosure A")));
+    CHECK(!SessionA.RequestPeerDisplayIdentification(1));
 }
 
 void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
@@ -2774,11 +2782,19 @@ void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
     HostCoordinator OutgoingB(Nonce);
     AudioReceiver ReceiverA([](AudioFrameMessage) { return true; });
     AudioReceiver ReceiverB([](AudioFrameMessage) { return true; });
+    std::uint64_t IdentifyA{};
+    std::uint64_t IdentifyB{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.IdentifyDisplays = [&](std::uint16_t) { ++IdentifyA; };
+    PeerSessionHandlers HandlersB;
+    HandlersB.IdentifyDisplays = [&](std::uint16_t) { ++IdentifyB; };
     PeerSession SessionA(
-        Pair.a, OutgoingA, IncomingA, TrustA, Nonce, {}, &ReceiverA,
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA), &ReceiverA,
         DisplayTopologyExchangeOptions{true, &Clock});
     PeerSession SessionB(
-        Pair.b, OutgoingB, IncomingB, TrustB, Nonce, {}, &ReceiverB,
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        std::move(HandlersB), &ReceiverB,
         DisplayTopologyExchangeOptions{true, &Clock});
     CHECK(SessionA.Start());
     CHECK(SessionB.Start());
@@ -2806,6 +2822,24 @@ void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
           DisplayTopologyExchangeStatus::Ready);
     CHECK(SessionA.RemoteDisplayTopology() == TopologyB);
     CHECK(SessionB.RemoteDisplayTopology() == TopologyA);
+    CHECK(SessionA.RequestPeerDisplayIdentification(4));
+    CHECK(IdentifyA == 0);
+    CHECK(IdentifyB == 1);
+    CHECK(SessionB.RequestPeerDisplayIdentification(1));
+    CHECK(IdentifyA == 1);
+    CHECK(IdentifyB == 1);
+    CHECK(SessionA.Stats().DisplayIdentifySent == 1);
+    CHECK(SessionA.Stats().DisplayIdentifyAccepted == 1);
+    CHECK(SessionB.Stats().DisplayIdentifySent == 1);
+    CHECK(SessionB.Stats().DisplayIdentifyAccepted == 1);
+
+    EnvelopeHeader StaleIdentify;
+    StaleIdentify.session_nonce = Nonce + 1;
+    StaleIdentify.sequence = 88;
+    CHECK(Pair.a->send_reliable(encode_packet(
+        StaleIdentify, DisplayIdentifyRequestMessage{4})));
+    CHECK(IdentifyB == 1);
+    CHECK(SessionB.Stats().session_rejected >= 1);
 }
 
 void ClipboardProtocolIsUtf8BoundedAndReliableOnly() {
@@ -3142,6 +3176,30 @@ void DisplayTopologyProtocolIsBoundedAndStrict() {
     CHECK(std::get<DisplayTopologySnapshotMessage>(
               Decoded.packet->message) == Message);
     CHECK(!decode_packet(Encoded, true).packet.has_value());
+
+    const auto Identify = encode_packet(
+        Header, DisplayIdentifyRequestMessage{4});
+    CHECK(PeekMessageType(Identify) ==
+          MessageType::DisplayIdentifyRequest);
+    const auto DecodedIdentify = decode_packet(Identify, false);
+    CHECK(DecodedIdentify.packet.has_value());
+    CHECK(std::holds_alternative<DisplayIdentifyRequestMessage>(
+        DecodedIdentify.packet->message));
+    CHECK(std::get<DisplayIdentifyRequestMessage>(
+              DecodedIdentify.packet->message).FirstDisplayNumber == 4);
+    CHECK(!decode_packet(Identify, true).packet.has_value());
+    auto InvalidIdentify = Identify;
+    InvalidIdentify.push_back(0);
+    CHECK(!decode_packet(InvalidIdentify, false).packet.has_value());
+    CHECK(!decode_packet(
+        encode_packet(Header, DisplayIdentifyRequestMessage{0}),
+        false).packet.has_value());
+    CHECK(!decode_packet(
+        encode_packet(
+            Header,
+            DisplayIdentifyRequestMessage{
+                static_cast<std::uint16_t>(kMaxDisplayCount + 1u)}),
+        false).packet.has_value());
 
     auto Truncated = Encoded;
     Truncated.pop_back();

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <stop_token>
 
 namespace desklink {
 
@@ -24,7 +25,11 @@ struct Win32MonitorConfiguratorCallbacks {
     HWND Owner,
     std::filesystem::path SettingsPath,
     Win32MonitorConfiguratorCallbacks Callbacks);
-[[nodiscard]] bool ShowWin32DisplayIdentification(HWND Owner);
+[[nodiscard]] bool ShowWin32DisplayIdentification(
+    HWND Owner, std::uint16_t FirstDisplayNumber = 1);
+[[nodiscard]] bool RunWin32DisplayIdentification(
+    std::uint16_t FirstDisplayNumber,
+    std::stop_token StopToken = {});
 
 } // namespace desklink
 

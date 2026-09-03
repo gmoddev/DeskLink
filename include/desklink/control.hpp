@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 8;
+inline constexpr std::uint16_t kControlProtocolVersion = 9;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -66,6 +66,7 @@ enum class ControlCommand : std::uint16_t {
     GetPairingOperation = 28,
     RefreshTrustedPeerCapabilities = 29,
     ApplyManagedPreferences = 30,
+    IdentifyPeerDisplays = 31,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -120,6 +121,10 @@ struct SetAudioGainControlRequest {
 struct ToggleAudioMuteControlRequest {};
 
 struct GetDisplayTopologiesControlRequest {};
+
+struct IdentifyPeerDisplaysControlRequest {
+    std::uint16_t FirstDisplayNumber{1};
+};
 
 struct PrepareForUpdateControlRequest {};
 
@@ -230,6 +235,7 @@ using ControlRequestPayload = std::variant<
     SetAudioGainControlRequest,
     ToggleAudioMuteControlRequest,
     GetDisplayTopologiesControlRequest,
+    IdentifyPeerDisplaysControlRequest,
     PrepareForUpdateControlRequest,
     GetProductPreferencesControlRequest,
     SetProductPreferencesControlRequest,

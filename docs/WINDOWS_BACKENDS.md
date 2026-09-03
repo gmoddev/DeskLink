@@ -245,11 +245,14 @@ opposing-edge full link, but only explicit confirmation adds it; the advanced
 editor supports normalized partial segments and one-way modes.
 
 `Identify displays` creates a borderless topmost/no-activate/click-through
-overlay near the top-left of each active local display. It shows display number,
-PC, resolution, refresh, and estimate state, destroys itself after five seconds,
-and does not interact with capture. The companion refreshes authenticated peer
-topology asynchronously through bounded same-SID IPC so the UI thread does not
-wait for network synchronization.
+overlay near the top-left of each active display on the connected desk. It
+shows display number, PC, resolution, refresh, and estimate state, destroys
+itself after five seconds, and does not interact with capture. The local shell
+creates its overlays directly; the peer runtime uses a stoppable message-pump
+worker after an authenticated, mutually topology-authorized request. Duplicate
+requests are ignored while that worker is active. The companion refreshes
+authenticated peer topology asynchronously through bounded same-SID IPC so the
+UI thread does not wait for network synchronization.
 
 Phase 4 adds an explicit experimental outbound mode. `Win32InputCapture` may
 remain installed while Local to report only screen position plus raw motion;
