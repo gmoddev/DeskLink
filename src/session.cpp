@@ -6,6 +6,13 @@
 namespace desklink {
 namespace {
 
+std::uint64_t TimestampUs(const IClock* Clock) noexcept {
+    if (!Clock) return 0;
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            Clock->now().time_since_epoch()).count());
+}
+
 std::optional<TrustedPeer> GetTrustedTransportPeer(
     const std::shared_ptr<ITransportEndpoint>& Transport,
     const ITrustStore& TrustStore) {
@@ -534,7 +541,8 @@ PeerSession::PeerSession(
     PeerSessionHandlers Handlers,
     AudioReceiver* Receiver,
     DisplayTopologyExchangeOptions TopologyOptions,
-    ClipboardSessionOptions ClipboardOptions) noexcept
+    ClipboardSessionOptions ClipboardOptions,
+    LatencyDiagnosticOptions LatencyOptions) noexcept
     : Transport_(std::move(Transport)),
       OutgoingCoordinator_(OutgoingCoordinator),
       IncomingCoordinator_(IncomingCoordinator),
@@ -545,7 +553,8 @@ PeerSession::PeerSession(
       TopologyOptions_(TopologyOptions),
       TopologyExchange_(TopologyOptions.Clock),
       ClipboardOptions_(std::move(ClipboardOptions)),
-      ClipboardExchange_(ClipboardOptions_.Clock) {}
+      ClipboardExchange_(ClipboardOptions_.Clock),
+      LatencyOptions_(std::move(LatencyOptions)) {}
 
 PeerSession::~PeerSession() { Stop(); }
 
@@ -617,6 +626,7 @@ void PeerSession::Stop() noexcept {
         RemoteCapabilities_.reset();
         TopologyExchange_.Stop();
         ClipboardExchange_.Stop();
+        PendingClockProbes_.clear();
         LocalTopologyMachine_.reset();
         DirectionArbiter_.ResetSession();
         PeerMachine_ = {};
@@ -953,6 +963,35 @@ bool PeerSession::SendAudioFrame(AudioFrameMessage Frame) {
     return true;
 }
 
+bool PeerSession::SendClockSyncProbe(std::uint64_t ProbeId) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || !LatencyOptions_.Enabled ||
+        !LatencyOptions_.Clock || ProbeId == 0) {
+        ++Stats_.ClockSyncRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = ReliableSequence_++;
+    if (ReliableSequence_ == 0) ++ReliableSequence_;
+    if (PendingClockProbes_.size() >= 64 ||
+        PendingClockProbes_.contains(ProbeId)) {
+        ++Stats_.ClockSyncRejected;
+        return false;
+    }
+    const ClockSyncRequestMessage Message{
+        ProbeId, TimestampUs(LatencyOptions_.Clock)};
+    PendingClockProbes_.emplace(
+        Message.ProbeId, Message.OriginSendTimestampUs);
+    if (!Transport_->send_reliable(encode_packet(Header, Message))) {
+        PendingClockProbes_.erase(ProbeId);
+        ++Stats_.ClockSyncRejected;
+        return false;
+    }
+    ++Stats_.ClockSyncSent;
+    return true;
+}
+
 bool PeerSession::CanSendClipboard() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return Started_ && !CapabilityConflict_ && ClipboardExchange_.CanSend();
@@ -1184,7 +1223,60 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
         }
 
         const auto Type = Decoded.packet->header.type;
-        if (Type == MessageType::CapabilityGrant) {
+        if (Type == MessageType::ClockSyncRequest) {
+            if (!LatencyOptions_.Enabled || !LatencyOptions_.Clock) {
+                ++Stats_.ClockSyncRejected;
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            const auto Request = std::get<ClockSyncRequestMessage>(
+                Decoded.packet->message);
+            ClockSyncResponseMessage Response;
+            Response.ProbeId = Request.ProbeId;
+            Response.OriginSendTimestampUs =
+                Request.OriginSendTimestampUs;
+            Response.RemoteReceiveTimestampUs =
+                TimestampUs(LatencyOptions_.Clock);
+            Response.RemoteSendTimestampUs =
+                TimestampUs(LatencyOptions_.Clock);
+            EnvelopeHeader Header;
+            Header.session_nonce = SessionNonce_;
+            Header.sequence = ReliableSequence_++;
+            if (ReliableSequence_ == 0) ++ReliableSequence_;
+            if (!Transport_->send_reliable(
+                    encode_packet(Header, Response))) {
+                ++Stats_.ClockSyncRejected;
+                return;
+            }
+            ++Stats_.ClockSyncReceived;
+            return;
+        } else if (Type == MessageType::ClockSyncResponse) {
+            if (!LatencyOptions_.Enabled || !LatencyOptions_.Clock ||
+                !LatencyOptions_.ClockSample) {
+                ++Stats_.ClockSyncRejected;
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            const auto Response = std::get<ClockSyncResponseMessage>(
+                Decoded.packet->message);
+            const auto Pending = PendingClockProbes_.find(
+                Response.ProbeId);
+            if (Pending == PendingClockProbes_.end() ||
+                Pending->second != Response.OriginSendTimestampUs) {
+                ++Stats_.ClockSyncRejected;
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            PendingClockProbes_.erase(Pending);
+            try {
+                LatencyOptions_.ClockSample(
+                    Response, TimestampUs(LatencyOptions_.Clock));
+                ++Stats_.ClockSyncReceived;
+            } catch (...) {
+                ++Stats_.ClockSyncRejected;
+            }
+            return;
+        } else if (Type == MessageType::CapabilityGrant) {
             ++Stats_.CapabilityGrantsReceived;
             const auto Grant = std::get<CapabilityGrantMessage>(
                 Decoded.packet->message);
@@ -1471,12 +1563,30 @@ void PeerSession::OnDatagram(ByteBuffer Packet) {
         const auto Type = Decoded.packet->header.type;
         if (Type == MessageType::AudioFrame) {
             ++Stats_.AudioReceived;
+            auto Frame = std::get<AudioFrameMessage>(
+                std::move(Decoded.packet->message));
             if (!LocalCapabilities_.contains(Capability::AudioSend) ||
-                AudioReceiver_ == nullptr ||
-                !AudioReceiver_->Push(
+                AudioReceiver_ == nullptr) {
+                ++Stats_.authorization_rejected;
+                ++Stats_.AudioRejected;
+                return;
+            }
+            const auto ArrivalTimestampUs =
+                LatencyOptions_.Enabled && LatencyOptions_.Clock
+                ? TimestampUs(LatencyOptions_.Clock)
+                : 0;
+            if (LatencyOptions_.Enabled &&
+                LatencyOptions_.AudioFrameArrival) {
+                try {
+                    LatencyOptions_.AudioFrameArrival(
+                        Decoded.packet->header.sequence, Frame,
+                        ArrivalTimestampUs);
+                } catch (...) {
+                }
+            }
+            if (!AudioReceiver_->Push(
                     Decoded.packet->header.sequence,
-                    std::get<AudioFrameMessage>(
-                        std::move(Decoded.packet->message)))) {
+                    std::move(Frame))) {
                 ++Stats_.authorization_rejected;
                 ++Stats_.AudioRejected;
                 return;

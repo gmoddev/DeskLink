@@ -603,6 +603,32 @@ void protocol_round_trip() {
     CHECK(Feedback.NormalizedX == 0);
     CHECK(Feedback.NormalizedY == 32'768);
     CHECK(!decode_packet(FeedbackBytes, false).packet.has_value());
+
+    const auto ClockRequestBytes = encode_packet(
+        h, ClockSyncRequestMessage{7, 1'000});
+    const auto ClockRequestDecoded = decode_packet(
+        ClockRequestBytes, false);
+    CHECK(ClockRequestDecoded.packet.has_value());
+    const auto& ClockRequest = std::get<ClockSyncRequestMessage>(
+        ClockRequestDecoded.packet->message);
+    CHECK(ClockRequest.ProbeId == 7);
+    CHECK(ClockRequest.OriginSendTimestampUs == 1'000);
+    CHECK(!decode_packet(ClockRequestBytes, true).packet.has_value());
+
+    const auto ClockResponseBytes = encode_packet(
+        h, ClockSyncResponseMessage{7, 1'000, 1'250, 1'260});
+    const auto ClockResponseDecoded = decode_packet(
+        ClockResponseBytes, false);
+    CHECK(ClockResponseDecoded.packet.has_value());
+    const auto& ClockResponse = std::get<ClockSyncResponseMessage>(
+        ClockResponseDecoded.packet->message);
+    CHECK(ClockResponse.RemoteReceiveTimestampUs == 1'250);
+    CHECK(ClockResponse.RemoteSendTimestampUs == 1'260);
+
+    const auto InvalidClockResponse = encode_packet(
+        h, ClockSyncResponseMessage{7, 1'000, 1'260, 1'250});
+    CHECK(!decode_packet(
+        InvalidClockResponse, false).packet.has_value());
 }
 
 void PointerMotionRoundTripAndValidation() {
@@ -2784,6 +2810,9 @@ void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
     AudioReceiver ReceiverB([](AudioFrameMessage) { return true; });
     std::uint64_t IdentifyA{};
     std::uint64_t IdentifyB{};
+    std::uint64_t ClockSamplesA{};
+    std::uint64_t AudioArrivalsA{};
+    std::uint64_t AudioArrivalsB{};
     PeerSessionHandlers HandlersA;
     HandlersA.IdentifyDisplays = [&](std::uint16_t) { ++IdentifyA; };
     PeerSessionHandlers HandlersB;
@@ -2791,17 +2820,35 @@ void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
     PeerSession SessionA(
         Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
         std::move(HandlersA), &ReceiverA,
-        DisplayTopologyExchangeOptions{true, &Clock});
+        DisplayTopologyExchangeOptions{true, &Clock}, {},
+        LatencyDiagnosticOptions{
+            true, &Clock,
+            [&](const ClockSyncResponseMessage&, std::uint64_t) {
+                ++ClockSamplesA;
+            },
+            [&](std::uint64_t, const AudioFrameMessage&, std::uint64_t) {
+                ++AudioArrivalsA;
+            }});
     PeerSession SessionB(
         Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
         std::move(HandlersB), &ReceiverB,
-        DisplayTopologyExchangeOptions{true, &Clock});
+        DisplayTopologyExchangeOptions{true, &Clock}, {},
+        LatencyDiagnosticOptions{
+            true, &Clock, {},
+            [&](std::uint64_t, const AudioFrameMessage&, std::uint64_t) {
+                ++AudioArrivalsB;
+            }});
     CHECK(SessionA.Start());
     CHECK(SessionB.Start());
     CHECK(SessionA.CanSendAudio());
     CHECK(SessionA.CanReceiveAudio());
     CHECK(SessionB.CanSendAudio());
     CHECK(SessionB.CanReceiveAudio());
+    CHECK(SessionA.SendClockSyncProbe(1));
+    CHECK(ClockSamplesA == 1);
+    CHECK(SessionA.Stats().ClockSyncSent == 1);
+    CHECK(SessionA.Stats().ClockSyncReceived == 1);
+    CHECK(SessionB.Stats().ClockSyncReceived == 1);
     AudioFrameMessage Frame;
     Frame.stream_id = 1;
     Frame.pcm.assign(kDeskLinkAudioBytesPerBlock, 0x33);
@@ -2809,6 +2856,8 @@ void PeerSessionPreservesExplicitAudioAndTopologyExchange() {
     CHECK(SessionB.SendAudioFrame(Frame));
     CHECK(SessionA.Stats().AudioAccepted == 1);
     CHECK(SessionB.Stats().AudioAccepted == 1);
+    CHECK(AudioArrivalsA == 1);
+    CHECK(AudioArrivalsB == 1);
 
     const auto TopologyA = MakeDisplayTopology("modules-a", "Modules A");
     const auto TopologyB = MakeDisplayTopology("modules-b", "Modules B");

@@ -37,6 +37,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -125,6 +126,7 @@ struct CommandLine {
     bool ValidationObserveCleanup{};
     bool ValidationObserveRejections{};
     bool ValidationTerminateHeldInput{};
+    bool ValidationAudioLatency{};
     std::uint64_t ValidationStaleSessionNonce{};
     std::uint32_t ValidationDurationMs{};
 };
@@ -334,6 +336,7 @@ void PrintUsage() {
         << L"  focus --validation-reconciliation-probe\n"
         << L"        --validation-terminate-held-input\n"
         << L"        --validation-rejection-probe <prior-session-nonce>\n"
+        << L"  serve|focus --validation-audio-latency\n"
         << L"  serve|focus --validation-duration-ms <1000..60000>\n";
 #endif
 }
@@ -669,6 +672,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.ValidationTerminateHeldInput = true;
             continue;
         }
+        if (Argument == L"--validation-audio-latency") {
+            if (Result.ValidationAudioLatency) return std::nullopt;
+            Result.ValidationAudioLatency = true;
+            continue;
+        }
         if (Argument == L"--validation-rejection-probe") {
             if (Result.ValidationStaleSessionNonce != 0 ||
                 Index + 1 >= ArgumentCount) {
@@ -776,6 +784,11 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     if (Result.ValidationDurationMs != 0 &&
         Result.Mode != Operation::Serve &&
         Result.Mode != Operation::Focus) {
+        return std::nullopt;
+    }
+    if (Result.ValidationAudioLatency &&
+        !((Result.Mode == Operation::Serve && Result.SendAudio) ||
+          (Result.Mode == Operation::Focus && Result.ReceiveAudio))) {
         return std::nullopt;
     }
     return Result;
@@ -1945,6 +1958,151 @@ struct HostRuntime {
     std::thread AudioPump;
 };
 
+class AudioLatencyDiagnostics final {
+public:
+    AudioLatencyDiagnostics(
+        const desklink::IClock& Clock, bool Enabled) noexcept
+        : Clock_(Clock), Enabled_(Enabled) {}
+
+    [[nodiscard]] bool Enabled() const noexcept { return Enabled_; }
+
+    [[nodiscard]] std::uint64_t NowUs() const noexcept {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                Clock_.now().time_since_epoch()).count());
+    }
+
+    void ObserveClockSample(
+        const desklink::ClockSyncResponseMessage& Response,
+        std::uint64_t LocalReceiveTimestampUs) noexcept {
+        if (!Enabled_ ||
+            LocalReceiveTimestampUs < Response.OriginSendTimestampUs ||
+            Response.RemoteSendTimestampUs <
+                Response.RemoteReceiveTimestampUs) {
+            return;
+        }
+        const auto LocalSpan = LocalReceiveTimestampUs -
+            Response.OriginSendTimestampUs;
+        const auto RemoteSpan = Response.RemoteSendTimestampUs -
+            Response.RemoteReceiveTimestampUs;
+        if (LocalSpan < RemoteSpan) return;
+        const auto RttUs = LocalSpan - RemoteSpan;
+        const auto OffsetSum =
+            (static_cast<std::int64_t>(
+                 Response.RemoteReceiveTimestampUs) -
+             static_cast<std::int64_t>(
+                 Response.OriginSendTimestampUs)) +
+            (static_cast<std::int64_t>(
+                 Response.RemoteSendTimestampUs) -
+             static_cast<std::int64_t>(LocalReceiveTimestampUs));
+        std::scoped_lock Lock(Mutex_);
+        ++ClockSamples_;
+        if (!BestRttUs_ || RttUs < *BestRttUs_) {
+            BestRttUs_ = RttUs;
+            RemoteMinusLocalOffsetUs_ = OffsetSum / 2;
+        }
+    }
+
+    void MarkEmission(desklink::AudioFrameMessage& Frame) noexcept {
+        if (Enabled_) Frame.capture_timestamp_us = NowUs();
+    }
+
+    void ObserveArrival(
+        std::uint64_t,
+        const desklink::AudioFrameMessage& Frame,
+        std::uint64_t LocalArrivalTimestampUs) noexcept {
+        Observe(Frame, LocalArrivalTimestampUs, ArrivalLatencyUs_);
+    }
+
+    void ObserveSubmission(
+        const desklink::AudioFrameMessage& Frame) noexcept {
+        Observe(Frame, NowUs(), SubmissionLatencyUs_);
+    }
+
+    void Report() const noexcept {
+        if (!Enabled_) return;
+        try {
+            std::scoped_lock Lock(Mutex_);
+            std::ostringstream Output;
+            Output << "[Audio:Latency] clock_samples=" << ClockSamples_;
+            if (BestRttUs_ && RemoteMinusLocalOffsetUs_) {
+                Output << " remote_minus_local_offset_us="
+                       << *RemoteMinusLocalOffsetUs_
+                       << " best_rtt_us=" << *BestRttUs_
+                       << " uncertainty_us=" << (*BestRttUs_ / 2);
+            } else {
+                Output << " calibration=unavailable";
+            }
+            Output << '\n';
+            PrintSummary(Output, "emit_to_arrival", ArrivalLatencyUs_);
+            PrintSummary(Output, "emit_to_submit", SubmissionLatencyUs_);
+            std::cout << Output.str();
+        } catch (...) {
+            std::cerr << "[Audio:Latency] report unavailable\n";
+        }
+    }
+
+private:
+    static bool ContainsSignal(
+        const desklink::AudioFrameMessage& Frame) noexcept {
+        for (std::size_t Index = 0; Index + 1 < Frame.pcm.size();
+             Index += 2) {
+            const auto Raw = static_cast<std::uint16_t>(Frame.pcm[Index]) |
+                (static_cast<std::uint16_t>(Frame.pcm[Index + 1]) << 8u);
+            const auto Sample = static_cast<std::int16_t>(Raw);
+            if (Sample > 64 || Sample < -64) return true;
+        }
+        return false;
+    }
+
+    void Observe(const desklink::AudioFrameMessage& Frame,
+                 std::uint64_t LocalTimestampUs,
+                 std::vector<std::uint64_t>& Samples) noexcept {
+        if (!Enabled_ || Frame.capture_timestamp_us == 0 ||
+            !ContainsSignal(Frame)) {
+            return;
+        }
+        std::scoped_lock Lock(Mutex_);
+        if (!RemoteMinusLocalOffsetUs_ || Samples.size() >= 50'000) return;
+        const auto LocalEmitTimestampUs =
+            static_cast<std::int64_t>(Frame.capture_timestamp_us) -
+            *RemoteMinusLocalOffsetUs_;
+        const auto LatencyUs = static_cast<std::int64_t>(LocalTimestampUs) -
+            LocalEmitTimestampUs;
+        if (LatencyUs < 0 || LatencyUs > 10'000'000) return;
+        Samples.push_back(static_cast<std::uint64_t>(LatencyUs));
+    }
+
+    static void PrintSummary(
+        std::ostringstream& Output, const char* Name,
+        const std::vector<std::uint64_t>& Input) {
+        std::vector<std::uint64_t> Samples(Input);
+        std::sort(Samples.begin(), Samples.end());
+        Output << "[Audio:Latency] " << Name
+               << " samples=" << Samples.size();
+        if (!Samples.empty()) {
+            const auto Percentile = [&](std::size_t Numerator) {
+                const auto Index = ((Samples.size() - 1) * Numerator) / 100;
+                return Samples[Index];
+            };
+            Output << " median_us=" << Percentile(50)
+                   << " p95_us=" << Percentile(95)
+                   << " p99_us=" << Percentile(99)
+                   << " max_us=" << Samples.back();
+        }
+        Output << '\n';
+    }
+
+    const desklink::IClock& Clock_;
+    bool Enabled_{};
+    mutable std::mutex Mutex_;
+    std::uint64_t ClockSamples_{};
+    std::optional<std::uint64_t> BestRttUs_;
+    std::optional<std::int64_t> RemoteMinusLocalOffsetUs_;
+    std::vector<std::uint64_t> ArrivalLatencyUs_;
+    std::vector<std::uint64_t> SubmissionLatencyUs_;
+};
+
 struct PeerRuntime {
     PeerRuntime(const desklink::IClock& Clock,
                 const desklink::ITrustStore& TrustStore,
@@ -1957,7 +2115,9 @@ struct PeerRuntime {
                 bool ObserveRejections,
                 bool SendAudio,
                 bool ReceiveAudio,
-                bool SyncClipboard)
+                bool SyncClipboard,
+                bool ValidationAudioLatency,
+                bool InitiateLatencyCalibration)
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
           LocalTopology(LocalMachine),
@@ -1974,12 +2134,14 @@ struct PeerRuntime {
           IncomingCoordinator(Clock, Injector),
 #endif
           OutgoingCoordinator(Trusted.SessionNonce),
+          LatencyDiagnostics(Clock, ValidationAudioLatency),
           Renderer(desklink::Win32WasapiRenderHandlers{
               [this](desklink::Win32WasapiFailureKind Kind,
                      std::string Message) {
                   RequestRenderRecovery(Kind, std::move(Message));
               }}),
           Receiver([this](desklink::AudioFrameMessage Frame) {
+              LatencyDiagnostics.ObserveSubmission(Frame);
               return Renderer.Submit(std::move(Frame));
           }),
           Clipboard(desklink::Win32ClipboardHandlers{
@@ -2001,10 +2163,26 @@ struct PeerRuntime {
                       SyncClipboard, LocalMachine, &Clock,
                       [this](desklink::ClipboardTextMessage Message) {
                           return Clipboard.ApplyRemote(std::move(Message));
+                      }},
+                  desklink::LatencyDiagnosticOptions{
+                      ValidationAudioLatency, &Clock,
+                      [this](
+                          const desklink::ClockSyncResponseMessage& Response,
+                          std::uint64_t LocalReceiveTimestampUs) {
+                          LatencyDiagnostics.ObserveClockSample(
+                              Response, LocalReceiveTimestampUs);
+                      },
+                      [this](
+                          std::uint64_t Sequence,
+                          const desklink::AudioFrameMessage& Frame,
+                          std::uint64_t LocalArrivalTimestampUs) {
+                          LatencyDiagnostics.ObserveArrival(
+                              Sequence, Frame, LocalArrivalTimestampUs);
                       }}),
           ClipboardRequested(SyncClipboard),
           SendAudioRequested(SendAudio),
-          ReceiveAudioRequested(ReceiveAudio) {
+          ReceiveAudioRequested(ReceiveAudio),
+          InitiateLatencyCalibration_(InitiateLatencyCalibration) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
         (void)DropNextKeyRelease;
         (void)DropNextButtonRelease;
@@ -2014,10 +2192,33 @@ struct PeerRuntime {
     }
 
     ~PeerRuntime() {
+        StopLatencyCalibration();
         StopDisplayIdentification();
         StopClipboard();
         StopSendingAudio();
         StopReceivingAudio();
+    }
+
+    void StartLatencyCalibration() {
+        if (!InitiateLatencyCalibration_ ||
+            LatencyCalibrationWorker.joinable()) {
+            return;
+        }
+        LatencyCalibrationWorker = std::jthread(
+            [this](std::stop_token StopToken) {
+                for (std::uint64_t Probe = 1;
+                     Probe <= 32 && !StopToken.stop_requested(); ++Probe) {
+                    (void)Session.SendClockSyncProbe(Probe);
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(20));
+                }
+            });
+    }
+
+    void StopLatencyCalibration() noexcept {
+        if (!LatencyCalibrationWorker.joinable()) return;
+        LatencyCalibrationWorker.request_stop();
+        LatencyCalibrationWorker.join();
     }
 
     void StartClipboard() noexcept {
@@ -2245,12 +2446,14 @@ struct PeerRuntime {
     }
 
     void StopReceivingAudio() noexcept {
+        const bool WasRunning = RenderPump.joinable();
         RenderStop.store(true);
         if (RenderPump.joinable() &&
             RenderPump.get_id() != std::this_thread::get_id()) {
             RenderPump.join();
         }
         Renderer.Stop();
+        if (WasRunning) LatencyDiagnostics.Report();
         const auto Statistics = Receiver.Stats();
         if (Statistics.Accepted || Statistics.Submitted ||
             Statistics.RenderRejected) {
@@ -2345,6 +2548,7 @@ struct PeerRuntime {
         }
         desklink::Win32WasapiCaptureHandlers Handlers;
         Handlers.Frame = [this](desklink::AudioFrameMessage Frame) {
+            LatencyDiagnostics.MarkEmission(Frame);
             return Session.SendAudioFrame(std::move(Frame));
         };
         Handlers.Failed = [this](
@@ -2439,6 +2643,7 @@ struct PeerRuntime {
     AgentInputInjector Injector;
     desklink::AgentCoordinator IncomingCoordinator;
     desklink::HostCoordinator OutgoingCoordinator;
+    AudioLatencyDiagnostics LatencyDiagnostics;
     desklink::Win32WasapiRenderer Renderer;
     desklink::AudioReceiver Receiver;
     desklink::Win32ClipboardSynchronizer Clipboard;
@@ -2447,7 +2652,9 @@ struct PeerRuntime {
     bool ClipboardStarted{};
     bool SendAudioRequested{};
     bool ReceiveAudioRequested{};
+    bool InitiateLatencyCalibration_{};
     std::mutex ModuleLifecycleMutex;
+    std::jthread LatencyCalibrationWorker;
 
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
     std::mutex CaptureLifecycleMutex;
@@ -4326,7 +4533,10 @@ int RunTrusted(const CommandLine& Command,
             Command.ValidationObserveRejections,
             Command.SendAudio,
             Command.ReceiveAudio,
-            Command.SyncClipboard);
+            Command.SyncClipboard,
+            Command.ValidationAudioLatency,
+            Command.ValidationAudioLatency &&
+                Command.Mode == Operation::Focus);
         *DisplayIdentificationTarget = Runtime;
         Runtime->StartClipboard();
         if (!Runtime->Session.Start()) {
@@ -4341,6 +4551,7 @@ int RunTrusted(const CommandLine& Command,
             return;
         }
         Runtime->Session.SetLocalDesiredMode(DesiredMode.load());
+        Runtime->StartLatencyCalibration();
         Runtime->MaintainDisplayTopology();
         if (Command.SendAudio && !Runtime->StartSendingAudio()) {
             std::cerr << "[Audio:Capture] requested audio was not started; "

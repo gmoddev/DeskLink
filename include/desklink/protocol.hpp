@@ -35,6 +35,8 @@ enum class MessageType : std::uint16_t {
     DisplayIdentifyRequest = 51,
     ClipboardHello     = 60,
     ClipboardText      = 61,
+    ClockSyncRequest   = 70,
+    ClockSyncResponse  = 71,
 };
 
 enum class DeskMode : std::uint8_t {
@@ -155,6 +157,20 @@ struct AudioFrameMessage {
     ByteBuffer pcm;
 };
 
+// Authenticated, diagnostics-only NTP-style clock exchange. These timestamps
+// are telemetry and must never affect admission, playback, or focus state.
+struct ClockSyncRequestMessage {
+    std::uint64_t ProbeId{};
+    std::uint64_t OriginSendTimestampUs{};
+};
+
+struct ClockSyncResponseMessage {
+    std::uint64_t ProbeId{};
+    std::uint64_t OriginSendTimestampUs{};
+    std::uint64_t RemoteReceiveTimestampUs{};
+    std::uint64_t RemoteSendTimestampUs{};
+};
+
 struct DisplayTopologySnapshotMessage {
     MachineId Machine{};
     std::uint64_t SessionNonce{};
@@ -193,7 +209,9 @@ using Message = std::variant<
     DisplayTopologySnapshotMessage,
     DisplayIdentifyRequestMessage,
     ClipboardHelloMessage,
-    ClipboardTextMessage>;
+    ClipboardTextMessage,
+    ClockSyncRequestMessage,
+    ClockSyncResponseMessage>;
 
 struct DecodedPacket {
     EnvelopeHeader header;

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 
@@ -56,6 +57,9 @@ struct SessionStats {
     std::uint64_t DirectionCollisions{};
     std::uint64_t IncomingFocusAccepted{};
     std::uint64_t OutgoingFocusAccepted{};
+    std::uint64_t ClockSyncSent{};
+    std::uint64_t ClockSyncReceived{};
+    std::uint64_t ClockSyncRejected{};
 };
 
 struct DisplayTopologyExchangeOptions {
@@ -68,6 +72,16 @@ struct ClipboardSessionOptions {
     MachineId LocalMachine{};
     const IClock* Clock{};
     std::function<bool(ClipboardTextMessage)> ApplyText;
+};
+
+struct LatencyDiagnosticOptions {
+    bool Enabled{};
+    const IClock* Clock{};
+    std::function<void(
+        const ClockSyncResponseMessage&, std::uint64_t)> ClockSample;
+    std::function<void(
+        std::uint64_t, const AudioFrameMessage&, std::uint64_t)>
+        AudioFrameArrival;
 };
 
 class AgentSession {
@@ -203,7 +217,8 @@ public:
                 PeerSessionHandlers Handlers = {},
                 AudioReceiver* Receiver = nullptr,
                 DisplayTopologyExchangeOptions TopologyOptions = {},
-                ClipboardSessionOptions ClipboardOptions = {}) noexcept;
+                ClipboardSessionOptions ClipboardOptions = {},
+                LatencyDiagnosticOptions LatencyOptions = {}) noexcept;
     ~PeerSession();
 
     [[nodiscard]] bool Start();
@@ -244,6 +259,7 @@ public:
     [[nodiscard]] bool CanSendAudio() const noexcept;
     [[nodiscard]] bool CanReceiveAudio() const noexcept;
     [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
+    [[nodiscard]] bool SendClockSyncProbe(std::uint64_t ProbeId);
     [[nodiscard]] bool CanSendClipboard() const noexcept;
     [[nodiscard]] bool CanReceiveClipboard() const noexcept;
     [[nodiscard]] bool PublishClipboardText(std::string Text);
@@ -285,6 +301,8 @@ private:
     DisplayTopologyExchangeTracker TopologyExchange_;
     ClipboardSessionOptions ClipboardOptions_;
     ClipboardExchange ClipboardExchange_;
+    LatencyDiagnosticOptions LatencyOptions_;
+    std::map<std::uint64_t, std::uint64_t> PendingClockProbes_;
     std::optional<MachineId> LocalTopologyMachine_;
     PeerDirectionArbiter DirectionArbiter_;
     std::optional<PeerDirectionToken> OutgoingToken_;

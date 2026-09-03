@@ -377,6 +377,28 @@ the sender's local `ClipboardRead` plus the receiver-reported
 wrong-peer, wrong-session, malformed, and faster-than-20-per-second updates are
 rejected without changing focus or input state.
 
+### ClockSyncRequest / ClockSyncResponse — types 70 and 71
+
+```text
+request:
+  probe_id                         u64, nonzero
+  origin_send_timestamp_us         u64
+
+response:
+  probe_id                         u64, nonzero
+  origin_send_timestamp_us         u64, echoed exactly
+  remote_receive_timestamp_us      u64
+  remote_send_timestamp_us         u64, >= remote_receive_timestamp_us
+```
+
+These reliable messages exist only for authenticated development diagnostics.
+The installed production executable never enables or sends them. A validation
+receiver estimates remote-minus-local monotonic-clock offset with the standard
+four-timestamp calculation and retains the lowest-round-trip sample. The
+timestamps are telemetry only: they cannot affect peer validation, admission,
+capabilities, focus, playback, leases, or reconnect behavior. A session with
+diagnostics disabled rejects them.
+
 ---
 
 ## 5. Focus transaction
