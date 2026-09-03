@@ -488,7 +488,8 @@ canonical descriptors, monotonic generation, and a five-second freshness lease
 all gate separate route readiness. Phase 3 now adds the presentation-only native
 configurator, offline display/route state, explicit adjacency suggestions,
 advanced directional edge editing, atomic Local-before-save replacement,
-five-second Identify overlays, and the companion tray/startup lifecycle.
+five-second Identify overlays, and the native broker-owned tray/startup
+lifecycle with an on-demand WinUI settings process.
 Phase 4 now adds an explicitly enabled reciprocal crossing slice: local Raw Input
 observation without suppression, three bounded intent policies, proportional
 corner-safe landing, cooldown, a focus timeout, active-route/session

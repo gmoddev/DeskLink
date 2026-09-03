@@ -6,9 +6,12 @@ for the Windows 11 / Windows Server 2022+ production baseline. It installs to
 and registers its uninstaller only under HKCU. It does not request elevation,
 install a service, add Firewall rules, or modify the Windows network profile.
 
-PR 9A makes `desklink.exe` the normal Start menu, post-install, sign-in, and
-updater-restart entry point. `desklink_alpha.exe` remains for one migration
-release as the explicitly labeled **DeskLink diagnostics (Alpha)** fallback.
+PR 9A makes `desklink.exe` the normal Start menu and post-install entry point.
+The sign-in command uses `desklink.exe --background` only as a windowless,
+short-lived bootstrap for the native broker; updates restart
+`desklink_runtime.exe` directly without retaining WinUI. `desklink_alpha.exe`
+remains for one migration release as the explicitly labeled **DeskLink
+diagnostics (Alpha)** fallback.
 
 A separate `-ExperimentalWindows10 -DevelopmentUnsigned` build mode creates a
 Development Alpha installer for Windows 10 22H2 build 19045. It includes both
@@ -117,9 +120,9 @@ account to verify:
 1. an active DeskLink lifecycle mutex blocks Setup;
 2. installation and same-version repair remain current-user, install the complete allowlisted
    runtime, diagnostic Alpha, and self-contained WinUI payload;
-3. launching only the installed product shell starts the fixed sibling broker,
-   secondary activation and bounded exit work, and shell exit leaves the broker
-   responsive;
+3. `desklink.exe --background` starts the fixed sibling broker and exits before
+   constructing the WinUI tree; a normal launch supports secondary activation
+   and bounded exit, and shell exit leaves the broker and tray responsive;
 4. unsigned packages are rejected by the production updater before UI shutdown;
 5. injected candidate health failure rolls back to the current version and
    restores the exact prior Alpha startup command;

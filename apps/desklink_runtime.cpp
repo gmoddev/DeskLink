@@ -15,6 +15,7 @@
 #include "desklink/discovery.hpp"
 #include "desklink/runtime_broker.hpp"
 #include "desklink/win32_application_settings.hpp"
+#include "desklink/win32_background_shell.hpp"
 #include "desklink/win32_control.hpp"
 #include "desklink/win32_device_certificate.hpp"
 #include "desklink/win32_discovery.hpp"
@@ -1696,7 +1697,9 @@ int wmain(int Count, wchar_t** Values) {
     if (Count == 2 && std::wstring_view(Values[1]) == L"--validate-update") {
         return ValidateInstalledBrokerForUpdate() ? 0 : 1;
     }
-    if (Count != 1) {
+    const bool BackgroundLaunch = Count == 2 &&
+        std::wstring_view(Values[1]) == L"--background";
+    if (Count != 1 && !BackgroundLaunch) {
         std::cerr << "[Broker:Lifecycle] unexpected command-line argument\n";
         return 2;
     }
@@ -1782,6 +1785,7 @@ int wmain(int Count, wchar_t** Values) {
         return 1;
     }
 
+    std::unique_ptr<desklink::Win32BackgroundShell> BackgroundShell;
     desklink::Win32ControlPipeServer Server(
         [&](const desklink::ControlRequest& Request) {
             if (std::holds_alternative<
@@ -1799,6 +1803,20 @@ int wmain(int Count, wchar_t** Values) {
                     desklink::SetProductPreferencesControlRequest>(
                     &Request.Payload)) {
                 const auto Previous = PreferencesStore.Current();
+                const bool HotkeysChanged = Previous &&
+                    (Previous->FocusPeerHotkey !=
+                         Set->Preferences.FocusPeerHotkey ||
+                     Previous->ReturnLocalHotkey !=
+                         Set->Preferences.ReturnLocalHotkey);
+                if (HotkeysChanged &&
+                    (!BackgroundShell ||
+                     !BackgroundShell->ApplyPreferences(Set->Preferences))) {
+                    if (BackgroundShell && Previous) {
+                        (void)BackgroundShell->ApplyPreferences(*Previous);
+                    }
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::Failed};
+                }
                 const bool StartupSaved =
                     desklink::IsSafeWin32ProductFile(ProductShellPath) &&
                     desklink::SetWin32RunAtLogin(
@@ -1808,12 +1826,18 @@ int wmain(int Count, wchar_t** Values) {
                 if (!Saved && Previous) {
                     (void)desklink::SetWin32RunAtLogin(
                         Previous->RunAtLogin, ProductShellPath);
+                    if (HotkeysChanged && BackgroundShell) {
+                        (void)BackgroundShell->ApplyPreferences(*Previous);
+                    }
                 }
                 const bool Reconciled = !Saved ||
                     (Previous
                         ? Supervisor.ApplyPreferences(
                             *Previous, Set->Preferences)
                         : Supervisor.ConfigurationChanged());
+                if (Saved && BackgroundShell) {
+                    BackgroundShell->PreferencesChanged();
+                }
                 return desklink::ControlResponse{
                     Request.RequestId,
                     !Saved
@@ -2215,8 +2239,22 @@ int wmain(int Count, wchar_t** Values) {
         std::cerr << "[Broker:Lifecycle] runtime supervisor could not start\n";
         return 1;
     }
+    BackgroundShell = std::make_unique<desklink::Win32BackgroundShell>(
+        ProductShellPath, PreferencesStore,
+        [&StopEvent] { (void)SetEvent(StopEvent.Get()); });
+    if (!BackgroundShell->Start()) {
+        (void)Supervisor.Stop();
+        Server.Stop();
+        if (NetworkNotificationArmed) {
+            (void)CancelIPChangeNotify(&NetworkOverlapped);
+        }
+        std::cerr
+            << "[Broker:Tray] lightweight background shell could not start\n";
+        return 1;
+    }
 
-    std::cout << "[Broker:Lifecycle] per-user runtime broker ready; input is Local\n";
+    std::cout
+        << "[Broker:Lifecycle] per-user runtime broker and tray ready; input is Local\n";
     for (;;) {
         const HANDLE Events[] = {
             StopEvent.Get(), NetworkEvent.Get(), PowerEvent.Get()};
@@ -2261,6 +2299,7 @@ int wmain(int Count, wchar_t** Values) {
         }
         if (Wait != WAIT_TIMEOUT) {
             std::cerr << "[Broker:Lifecycle] stop-event wait failed\n";
+            BackgroundShell->Stop();
             Pairing.Stop();
             (void)Supervisor.Stop();
             Server.Stop();
@@ -2274,6 +2313,7 @@ int wmain(int Count, wchar_t** Values) {
         Server.Stop();
         if (!Server.Start()) {
             std::cerr << "[Broker:Control] current-user endpoint recovery failed\n";
+            BackgroundShell->Stop();
             Pairing.Stop();
             (void)Supervisor.Stop();
             if (NetworkNotificationArmed) {
@@ -2286,6 +2326,7 @@ int wmain(int Count, wchar_t** Values) {
     if (NetworkNotificationArmed) {
         (void)CancelIPChangeNotify(&NetworkOverlapped);
     }
+    BackgroundShell->Stop();
     Pairing.Stop();
     PermissionCandidates.RejectAll();
     (void)Supervisor.Stop();

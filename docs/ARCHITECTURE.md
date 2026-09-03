@@ -587,9 +587,9 @@ Current implementation:
 
 ```text
 User session
-├── desklink_runtime.exe     one persistent current-user broker
+├── desklink_runtime.exe     persistent broker, tray, and product hotkeys
 │   └── desklink_pair.exe    at most one broker-owned transport/session child
-├── desklink.exe             normal self-contained WinUI product shell/tray
+├── desklink.exe             on-demand self-contained WinUI settings shell
 ├── desklink_alpha.exe       temporary explicit diagnostics fallback
 └── future typed local clients, including a Stream Deck plugin
 ```
@@ -604,6 +604,16 @@ schedule bounded reconnect. Security, identity, credential, signing,
 authentication, capability, protocol, and unknown failures require action.
 Pause, configuration/trust mutation, update, and exit first confirm fail-local
 cleanup and child exit; uncertain cleanup blocks a replacement owner.
+
+The broker's message-only window owns the notification icon and allowlisted
+product hotkeys. Closing `desklink.exe` destroys the complete WinUI/XAML tree
+without stopping an active locally safe broker. Tray **Open DeskLink** starts
+the fixed, validated sibling or activates the existing single UI instance.
+The current-user sign-in entry remains `desklink.exe --background` as a
+windowless, short-lived bootstrap so the console-subsystem broker never opens a
+console window; the bootstrap starts the broker and exits before constructing
+the WinUI tree. Tray **Exit DeskLink** signals the broker's normal ordered
+fail-local shutdown.
 
 The broker also registers a native suspend/resume callback. The callback only
 records a bounded event; the broker main loop then stops the managed transport
@@ -648,14 +658,17 @@ and invokes the prevalidated rollback installer before any optional restart if
 candidate install or health validation fails.
 
 The product shell is an unpackaged, self-contained C++/WinRT application with a
-locked minimal Windows App SDK component graph. It is the normal Start menu,
-post-install, sign-in, and updater-restart entry point. At launch it probes the
+locked minimal Windows App SDK component graph. It is the normal Start menu and
+post-install entry point, plus the short-lived `--background` sign-in
+bootstrap. At launch it probes the
 same-user broker and, when absent and no install/update gate is active, starts
 only the fixed sibling `desklink_runtime.exe` with `CreateProcessW`, no shell,
 no inherited handles, and a bounded readiness wait. It owns presentation and
 local activation plus bounded current-user roaming preferences only. PR 6
 replaces its foundation simulations with bounded typed
-requests to the persistent current-user broker; the shell still cannot open
+requests to the persistent current-user broker; after a normal window closes,
+the process releases its entire WinUI/XAML graph while the broker-owned tray
+remains. The shell still cannot open
 transport, directly mutate trust, capture input, or inject input. The broker
 owns discovery and the exclusive pairing child, and presents only an expiring,
 identity-bound candidate for local approval. It uses a separate lifecycle mutex

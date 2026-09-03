@@ -53,45 +53,43 @@ and companion may share extracted runtime components.
 
 ### Single instance
 
-Exactly one companion instance is allowed per Windows user. Use a SID-scoped
-single-instance object plus a current-user activation endpoint protected with
-the same one-SID DACL and process-SID checks as the control pipe. A second
-launch sends `Open DeskLink` to the existing process and exits. It must not
-create a second tray icon, listener, connection manager, or input owner.
+Exactly one visible WinUI companion instance is allowed per Windows user. A
+second launch sends `Open DeskLink` to its message-only activation window and
+exits. The persistent native broker independently owns exactly one tray icon,
+listener, connection manager, and input owner.
 
 ### Startup and responsiveness budgets
 
 Initial performance budgets for release builds are:
 
 - warm main-window visibility: preferably under 500 ms at P95;
-- cold main-window or background tray availability: under 1 second at P95,
+- cold main-window or native background tray availability: under 1 second at P95,
   excluding an OS-controlled first-run signature scan;
 - no discovery, connection, authentication, or topology wait on the UI thread;
 - no periodic canvas rendering while the window is hidden;
 - hidden and idle CPU: under 0.5% of one logical processor averaged over one
   minute with no network events; and
-- steady background working set target: under 100 MiB on the Schannel build.
+- steady background private working set target: under 16 MiB for the broker and
+  transport child on the Schannel build.
 
-These are profiling budgets, not reasons to weaken validation. Local settings,
-single-instance activation, and the tray initialize first. Discovery,
-reconnection, topology synchronization, and recoverable operations run on
-bounded background workers and publish state changes asynchronously. Avoid
-tight polling; the hidden UI should be event-driven.
+These are profiling budgets, not reasons to weaken validation. The native
+broker, tray, and input authority initialize first. Discovery, reconnection,
+topology synchronization, and recoverable operations run on bounded background
+workers and publish state changes asynchronously. The WinUI process is not a
+background worker and must not remain resident after its window closes.
 
 ### Close, tray, and exit contract
 
-`CloseToTray` defaults on:
+The native broker owns background lifetime:
 
-- the main-window X hides the window and preserves the existing process and
-  sessions;
-- launching DeskLink again restores that same window;
+- the main-window X fully exits WinUI while preserving the broker and sessions;
+- launching DeskLink again creates the on-demand settings window;
 - Windows logoff/shutdown performs ordered fail-local cleanup without an
   unnecessary prompt; and
 - **Tray > Exit DeskLink** always returns local, releases DeskLink-owned remote
   state, stops capture, closes sessions, removes the tray icon, and exits.
 
-When **Keep DeskLink running when I close the window** is off, X performs that
-same ordered exit. The tray menu provides at least:
+The tray menu provides at least:
 
 ```text
 DeskLink — Connected / Reconnecting / Offline
@@ -112,11 +110,11 @@ It does not revoke trust or silently change the persisted `AutoConnect` choice.
 
 ### Start with Windows and first run
 
-**Start DeskLink when I sign in to Windows** is user-scoped, requires no
-elevation, and starts the signed executable with a fixed `--background`
-argument through a per-user Windows startup registration. DeskLink validates
-that registration against its own installed path; no preference value becomes
-an arbitrary command line.
+**Start DeskLink when I sign in to Windows** is user-scoped and requires no
+elevation. It starts the signed `desklink.exe` at its fixed path with
+`--background`; that process starts the fixed sibling native broker and exits
+before constructing WinUI. DeskLink validates the registration against its own
+installed path; no preference value becomes an arbitrary command line.
 
 First launch does not disappear into the tray. It opens onboarding with:
 
@@ -448,8 +446,8 @@ This can proceed in parallel with Phases 1-2 and must integrate before the
 configurator becomes the primary UI:
 
 1. versioned preference store, single-instance activation, first-run state,
-   close-to-tray, ordered exit, user-scoped sign-in startup, and performance
-   instrumentation;
+   native broker-owned tray/hotkeys, on-demand WinUI lifetime, ordered exit,
+   user-scoped sign-in bootstrap, and performance instrumentation;
 2. reusable event-driven peer connection manager, per-peer auto-connect,
    bounded reconnect/backoff, duplicate convergence, asynchronous status, and
    startup-always-Local tests.
@@ -508,10 +506,10 @@ Local, and the file is atomically replaced; failure leaves the previous graph.
 
 Identify creates one topmost, no-activate, click-through local overlay per
 active display for five seconds and never starts capture or suppression. The
-companion is single-instance, shows first-run guidance, supports close-to-tray,
-tray Open/Return Local/Exit, ordered shutdown, and opt-in current-user sign-in
-startup. Automatic peer reconnection remains companion follow-up work and never
-restores remote focus.
+native broker owns tray Open/Return Local/Exit and product hotkeys. Its
+single-instance WinUI settings client shows first-run guidance and exits when
+closed; opt-in sign-in startup uses a short-lived bootstrap. Automatic peer
+reconnection remains companion follow-up work and never restores remote focus.
 
 ### Phase 4: roaming implementation and experimental testing — automated slice complete
 

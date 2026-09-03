@@ -33,9 +33,10 @@ release-signing identity and clean Windows 11 / Windows Server 2022 validation.
    trust/preferences/roaming loading through the broker health mode;
 8. if install or validation fails, run and validate the already-approved
    rollback installer and restore the exact captured Run value; and
-9. only after candidate or rollback validation may the product shell receive
-   the optional background restart, which is successful only after both shell
-   and broker are ready.
+9. only after candidate or rollback validation may the native broker receive
+   the optional `CREATE_NO_WINDOW` background restart, which is successful only
+   after its same-user control endpoint is ready; the WinUI settings shell stays
+   closed.
 
 An authentication, hash, version, local-state, shutdown, installer, health, or
 rollback error has no alternate package/provider path. A rollback failure leaves

@@ -120,15 +120,23 @@ void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
     } else if (desklink::IsWin32DeskLinkLifecycleOperationActive()) {
         ExitProcess(ERROR_INSTALL_ALREADY_RUNNING);
     }
+    if (!ValidateUpdate && Executable) {
+        (void)desklink::EnsureWin32RuntimeBroker(*Executable);
+    }
+
+    // Legacy sign-in registrations may still start desklink.exe with
+    // --background. The durable native broker now owns the tray, so do not
+    // construct and retain the WinUI tree for a background-only launch.
+    if (!ValidateUpdate && HasCommandLineArgument(L"--background")) {
+        Exit();
+        return;
+    }
+
     if (IsSecondaryInstance()) {
         if (ValidateUpdate) ExitProcess(ERROR_BUSY);
         RedirectToPrimary();
         Exit();
         return;
-    }
-
-    if (!ValidateUpdate && Executable) {
-        (void)desklink::EnsureWin32RuntimeBroker(*Executable);
     }
 
     const bool DeveloperMode = HasCommandLineArgument(L"-dev") ||
@@ -137,9 +145,6 @@ void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
     Window_ = *ProductWindow;
     if (!ValidateUpdate) Window_.Activate();
     ProductWindow->InitializeWindowLifecycle();
-    if (ValidateUpdate || HasCommandLineArgument(L"--background")) {
-        ProductWindow->HideToTray();
-    }
     if (ValidateUpdate || HasCommandLineArgument(L"--smoke-test")) {
         ProductWindow->RequestExit();
     }

@@ -766,15 +766,17 @@ public:
 
     bool RestartApplication() override {
         UpdateGate_.reset();
-        const auto ProductPath = InstallRoot_ / L"desklink.exe";
+        const auto RuntimePath = InstallRoot_ / L"desklink_runtime.exe";
         const auto CommandLine = desklink::BuildWindowsCommandLine(
-            ProductPath.wstring(), {L"--background"});
+            RuntimePath.wstring(), {L"--background"});
         if (!CommandLine) return false;
         auto MutableCommand = *CommandLine;
         STARTUPINFOW Startup{sizeof(Startup)};
         PROCESS_INFORMATION Process{};
-        if (!CreateProcessW(ProductPath.c_str(), MutableCommand.data(), nullptr,
-                            nullptr, FALSE, 0, nullptr, InstallRoot_.c_str(),
+        if (!CreateProcessW(RuntimePath.c_str(), MutableCommand.data(), nullptr,
+                            nullptr, FALSE,
+                            CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                            nullptr, InstallRoot_.c_str(),
                             &Startup, &Process)) {
             return false;
         }
@@ -787,8 +789,7 @@ public:
                 desklink::ControlRequest{
                     ++RequestId_, desklink::GetStateControlRequest{}},
                 L"broker", std::chrono::milliseconds{100});
-            if (MutexExists(kShellMutexName) && Response &&
-                Response->Status == desklink::ControlStatus::Ok &&
+            if (Response && Response->Status == desklink::ControlStatus::Ok &&
                 Response->State) {
                 return true;
             }

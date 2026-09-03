@@ -272,6 +272,7 @@ endif()
 if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     add_library(desklink_windows
         src/win32_application_settings.cpp
+        src/win32_background_shell.cpp
         src/win32_control.cpp
         src/win32_launcher.cpp
         src/win32_monitor_configurator.cpp

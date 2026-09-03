@@ -67,9 +67,10 @@ Work proceeds in this order:
    bidirectional adjacency suggestions, advanced one-way/partial-edge editing,
    route-resolution status, atomic Local-before-save replacement, and
    five-second local Identify overlays. Bounded read-only topology IPC remains
-   same-SID and does not expose focus or trust mutation. Single-instance,
-   first-run, tray, close-to-background, ordered exit, and user-scoped sign-in
-   startup behavior are also implemented.
+   same-SID and does not expose focus or trust mutation. The native broker owns
+   the tray and hotkeys; the single-instance WinUI settings process exits when
+   closed, while ordered fail-local exit and a short-lived user-scoped sign-in
+   bootstrap are implemented.
 7. **Complete:** bounded LAN DNS-SD/mDNS discovery. `listen` and `serve`
    advertise `_desklink._udp.local`; `discover [1..30 seconds]` reports strict,
    expiring, deterministic candidates without connecting, pairing, granting a
@@ -261,8 +262,9 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   action-required;
 - **Product UX PR 5 implemented:** the locked, self-contained C++/WinRT shell
   foundation provides Home, Advanced, and Diagnostics over simulated broker
-  states plus single-instance activation, close-to-tray, explicit exit, and
-  coordinated-update behavior. The installer carries its exact 243-file
+  states plus single-instance activation, on-demand WinUI lifetime, native
+  broker-owned tray/hotkeys, explicit exit, and coordinated-update behavior.
+  The installer carries its exact 243-file
   allowlisted runtime. PR 9A later promotes it to the installed default;
   Production signing and clean supported-system accessibility/update
   qualification remain release gates;
@@ -291,9 +293,11 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   crossing changes reuse Local-before-atomic-save, and required
   but uninspectable foreground state remains Local. Preferences schema 4
   migrates both previous formats;
-- **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu,
-  post-install, sign-in, and updater-restart entry point and starts only its
-  fixed sibling broker with a bounded no-shell launch. Alpha remains an
+- **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu
+  and post-install entry point. Its `--background` mode is a short-lived
+  sign-in bootstrap, while updates restart the native broker directly. Every
+  launch starts only the fixed sibling broker with a bounded no-shell launch.
+  Alpha remains an
   explicitly labeled diagnostics fallback for one migration release. Setup
   migrates only an exact legacy Alpha Run command. The updater anchors signer
   trust on the product shell, runs separate shell and broker/state health

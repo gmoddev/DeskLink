@@ -26,11 +26,11 @@ creates, broadens, or replaces a trust grant.
 The proposed process model is:
 
 ```text
-WinUI 3 companion shell
+On-demand WinUI 3 settings shell
         │
         │ bounded same-user typed control protocol
         ▼
-Per-user native DeskLink runtime broker
+Per-user native DeskLink runtime broker + tray/hotkeys
         │
         ├── existing identity / trust / pairing
         ├── existing MsQuic transport and PeerValidated gate
@@ -43,8 +43,9 @@ desklink_pair.exe remains a diagnostic and compatibility CLI
 
 The broker is an ordinary current-user process, not a Windows service and not
 permanently elevated. It becomes the single owner of the current-user control
-endpoint and runtime lifecycle. The visible shell may open and close without
-stopping an active, locally safe runtime.
+endpoint and runtime lifecycle. The visible shell may open and fully exit
+without stopping an active, locally safe runtime or removing its lightweight
+native tray and product hotkeys.
 
 The target production shell is WinUI 3 with C++/WinRT, gated by an early
 deployment prototype. The existing fixed-coordinate Alpha wrapper remains a
@@ -270,8 +271,8 @@ Before feature work, a deployment spike must prove:
 - Windows App SDK version/support policy;
 - framework-dependent versus self-contained package size and servicing choice;
 - signed Inno Setup installation and rollback integration;
-- single-instance activation, tray behavior, startup registration, and update
-  shutdown;
+- single-instance activation, broker-owned tray behavior, short-lived startup
+  bootstrap, and update shutdown;
 - a clean Windows 11 and Windows Server 2022 Desktop Experience install;
 - no runtime dependency or UI failure can stop the broker from failing Local.
 
@@ -484,6 +485,9 @@ Normal Home does not show ports, TLS provider, machine IDs, raw role/mode,
 pointer DPI, process controls, or the diagnostic log.
 
 ### 10.2 Tray
+
+The persistent native broker owns this menu. The WinUI process is started only
+for **Open DeskLink** and exits completely when its window closes.
 
 The tray menu provides:
 
@@ -757,8 +761,10 @@ and notices, and rejects unexpected files,
 reparse points, or invalid Microsoft runtime signatures. Home, Advanced, and
 Diagnostics render six bounded simulated states without opening network,
 trust, capture, or input authority. The shell has its own lifecycle mutex,
-single-instance activation, close-to-tray behavior, explicit bounded exit, and
-coordinated-update window. Installer/update orchestration stops both visible
+single-instance activation, explicit bounded exit, and a coordinated-update
+window. The completed lightweight lifecycle moves tray and hotkey ownership to
+the native broker and exits WinUI on close. Installer/update orchestration
+stops both visible
 clients when present while rollback remains compatible with pre-shell packages.
 Alpha intentionally remains the default installed entry point through PR 8.
 

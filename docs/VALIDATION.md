@@ -96,6 +96,25 @@ second supported Windows 11/Server 2022+ system is available.
 
 ---
 
+## Lightweight background lifetime validation
+
+The broker-owned tray lifecycle was measured on the Windows 11 development PC
+after a real trusted Windows 10 compatibility connection. Before this change,
+the hidden WinUI process retained about 65.5 MiB of private working set. With
+the visible settings window closed, no `desklink.exe` process remained; the
+Schannel broker used 2.47 MiB and its connected transport child used 5.35 MiB,
+for 7.82 MiB total private working set. The same Windows 10 OpenSSL/CNG path
+used 2.06 MiB for the broker and 6.50 MiB for its transport child. These are
+development measurements rather than release guarantees.
+
+The test launched `desklink.exe --background`, required that bootstrap to exit,
+opened and closed the normal WinUI window, confirmed the broker and connected
+session survived, returned input Local, and reran the identity snapshot. Key
+name, provider, algorithm, zero export policy, public key, certificate DER
+hash, and DeskLink pin remained unchanged on both PCs.
+
+---
+
 ## Product UX PR 5-8 automated validation
 
 The WinUI deployment foundation is built with locked NuGet resolution and an
@@ -106,7 +125,8 @@ unpackaged self-contained x64 payload. Local validation proves:
   pinned SDK license/notices, no reparse points, and valid Microsoft signatures
   on every redistributed DLL/EXE;
 - distinct Alpha and product-shell lifecycle mutexes, secondary activation,
-  close-to-tray background lifetime, and bounded explicit exit;
+  a short-lived `--background` WinUI bootstrap, broker-owned tray lifetime,
+  complete visible-shell exit, and bounded explicit exit;
 - the full Windows core regression suite after the new fail-local presentation
   mapping tests;
 - interactive UI Automation controls have accessible names; and
@@ -640,16 +660,19 @@ product-shell lifecycle mutexes and proves Setup cannot proceed. It proves coord
 Setup cannot run without the update mutex and that ordinary Setup/runtime
 startup cannot overlap that mutex. After installing 0.1.0, it seeds valid
 product preferences, a saved monitor layout, one current-user DPAPI trust
-record, and an exact legacy Alpha Run value. Starting only `desklink.exe` must
-start the broker; secondary activation and shell-only exit must leave it
-responsive. The explicitly labeled Alpha diagnostics shell is then started to
+record, and an exact legacy Alpha Run value. Starting
+`desklink.exe --background` must start the broker and exit without retaining a
+WinUI process. A normal product launch must support secondary activation, and
+closing that visible shell must leave the lightweight broker responsive. The
+explicitly labeled Alpha diagnostics shell is then started to
 retain dual-UI update-shutdown coverage. The production updater must reject
 unsigned packages without stopping either UI or changing the version.
 
 A validation-only updater injects candidate health failure and must restore
 0.1.0 plus the exact prior startup command. A clean transaction then advances
 to 0.1.1 and migrates that exact command to `desklink.exe --background`.
-Product-shell and broker/state health probes must pass during both paths. The
+Broker/state health probes and the product-shell validation mode must pass
+during both paths. The
 test compares the full CNG key/provider/algorithm/export-policy/public-key/
 certificate-hash/identity-pin snapshot and exact hashes of trust, preferences,
 and roaming files after each transaction. Finally uninstall removes the Run

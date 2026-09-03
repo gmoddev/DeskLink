@@ -133,7 +133,6 @@ struct MainWindow : MainWindowT<MainWindow> {
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
 
-    void HideToTray();
     void InitializeWindowLifecycle();
     void RequestExit();
 
@@ -148,11 +147,7 @@ private:
         UINT_PTR SubclassId,
         DWORD_PTR ReferenceData);
     bool CreateLifecycleWindow();
-    bool AddTrayIcon();
-    void RemoveTrayIcon() noexcept;
-    void ShowTrayMenu();
     void ShowFromTray();
-    void TogglePaused();
     void ApplyState(desklink::ProductShellState State);
     void UpdateDeveloperInputStatus();
     void PollBroker();
@@ -188,9 +183,6 @@ private:
         desklink::ProductPreferences const& Preferences,
         winrt::hstring const& SuccessMessage);
     [[nodiscard]] desklink::ControlTrustedDevice const* PreferredDevice() const;
-    [[nodiscard]] bool RegisterProductHotkeys(
-        desklink::ProductPreferences const& Preferences);
-    void UnregisterProductHotkeys() noexcept;
     void FocusPreferredPeer();
     void UpdateFocusRequestPresentation(
         std::chrono::steady_clock::time_point Now);
@@ -224,7 +216,6 @@ private:
 
     HWND MainWindowHandle_{};
     HWND LifecycleWindow_{};
-    NOTIFYICONDATAW TrayIcon_{};
     Microsoft::UI::Dispatching::DispatcherQueueTimer PollTimer_{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer
         DeveloperPollTimer_{nullptr};
@@ -262,7 +253,6 @@ private:
     std::optional<std::chrono::steady_clock::time_point>
         FocusRequestStartedAt_;
     desklink::ProductBrokerAvailability BrokerAvailability_;
-    bool TrayActive_{};
     bool ExplicitExit_{};
     bool ContentReady_{};
     bool PreferencesLoaded_{};
