@@ -647,6 +647,26 @@ AudioPumpResult AudioReceiver::Pump() noexcept {
     }
 }
 
+AudioPumpResult AudioReceiver::PumpAvailable(
+    std::size_t MaximumBlocks) noexcept {
+    bool Submitted = false;
+    const auto Limit = std::min(
+        MaximumBlocks, kDeskLinkAudioMaximumPumpBatch);
+    for (std::size_t Attempt = 0; Attempt < Limit; ++Attempt) {
+        const auto Result = Pump();
+        if (Result == AudioPumpResult::RenderRejected) return Result;
+        if (Result == AudioPumpResult::Buffering) {
+            return Submitted
+                ? AudioPumpResult::Submitted
+                : AudioPumpResult::Buffering;
+        }
+        Submitted = true;
+    }
+    return Submitted
+        ? AudioPumpResult::Submitted
+        : AudioPumpResult::Buffering;
+}
+
 bool AudioReceiver::SetGainPermyriad(std::uint16_t Gain) noexcept {
     if (Gain > kDeskLinkAudioMaximumGainPermyriad) return false;
     std::scoped_lock Lock(Mutex_);

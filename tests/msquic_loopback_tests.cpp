@@ -544,6 +544,39 @@ void RunLoopback(const std::wstring& FirstKeyName,
             Lock, std::chrono::seconds(5), [&] { return Received; }));
     }
 
+    bool DatagramReceived = false;
+    FirstEndpoint->set_datagram_handler([&](ByteBuffer Bytes) {
+        const auto Decoded = decode_packet(Bytes, true);
+        {
+            std::scoped_lock Lock(ReceiveMutex);
+            DatagramReceived = Decoded.packet.has_value() &&
+                std::holds_alternative<PointerMotionMessage>(
+                    Decoded.packet->message);
+        }
+        ReceiveChanged.notify_all();
+    });
+    bool DatagramSent = false;
+    const auto DatagramDeadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(5);
+    do {
+        EnvelopeHeader DatagramHeader = Header;
+        DatagramHeader.sequence = 2;
+        DatagramSent = SecondEndpoint->send_datagram(encode_packet(
+            DatagramHeader, PointerMotionMessage{4, -3}));
+        if (!DatagramSent) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    } while (!DatagramSent &&
+             std::chrono::steady_clock::now() < DatagramDeadline);
+    CHECK(DatagramSent);
+    {
+        std::unique_lock Lock(ReceiveMutex);
+        CHECK(ReceiveChanged.wait_for(
+            Lock, std::chrono::seconds(5), [&] {
+                return DatagramReceived;
+            }));
+    }
+
     std::mutex CloseMutex;
     std::condition_variable CloseChanged;
     std::optional<TransportCloseReason> CloseReason;

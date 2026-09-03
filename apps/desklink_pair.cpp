@@ -1867,7 +1867,7 @@ struct HostRuntime {
                 continue;
             }
 
-            if (Receiver.Pump() ==
+            if (Receiver.PumpAvailable() ==
                 desklink::AudioPumpResult::RenderRejected) {
                 std::cerr << "[Audio:Render] receiver rejected playout; "
                              "scheduling audio-only recovery\n";
@@ -2206,7 +2206,7 @@ struct PeerRuntime {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
-            if (Receiver.Pump() ==
+            if (Receiver.PumpAvailable() ==
                 desklink::AudioPumpResult::RenderRejected) {
                 std::cerr
                     << "[Audio:Render] receiver rejected playout; scheduling audio-only recovery\n";

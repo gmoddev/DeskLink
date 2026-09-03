@@ -283,6 +283,8 @@ struct BootstrapConnectionState {
     PeerValidationState PeerValidation{PeerValidationState::NotStarted};
     bool ValidationSlotHeld{};
     bool ConnectedObserved{};
+    bool DatagramSendEnabled{};
+    std::uint16_t MaximumDatagramSendLength{};
     bool AdmissionStarted{};
     std::optional<PairingOffer> LocalPairingOffer;
     std::optional<PairingCommitment> LocalCommitment;
@@ -1322,6 +1324,7 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State,
                             ByteBuffer InitialReliableBytes) {
     HQUIC Connection{};
     bool Outgoing = false;
+    MsQuicDatagramState InitialDatagramState;
     TransportPeerInfo Peer;
     bool MissingPeer = false;
     {
@@ -1335,6 +1338,9 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State,
             State->EndpointDelivered = true;
             Connection = State->Connection;
             Outgoing = State->Outgoing;
+            InitialDatagramState = {
+                State->DatagramSendEnabled,
+                State->MaximumDatagramSendLength};
             Peer = *State->TrustedPeer;
         }
     }
@@ -1345,7 +1351,7 @@ void DeliverTrustedEndpoint(const ConnectionHolder& State,
     auto Endpoint = MsQuicTransportEndpoint::Adopt(
         State->Owner->Api, Connection, Stream, std::move(Peer),
         MsQuicPeerValidation::PeerValidated,
-        std::move(InitialReliableBytes));
+        std::move(InitialReliableBytes), InitialDatagramState);
     if (!Endpoint) {
         ShutdownConnection(State);
         return;
@@ -1593,6 +1599,15 @@ QUIC_STATUS BootstrapConnectionCallbackImpl(
             }
         }
         HandleValidatedConnection(State);
+        return QUIC_STATUS_SUCCESS;
+    case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
+        {
+            std::scoped_lock Lock(State->Mutex);
+            State->DatagramSendEnabled =
+                Event->DATAGRAM_STATE_CHANGED.SendEnabled != FALSE;
+            State->MaximumDatagramSendLength =
+                Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+        }
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
         ReportFailure(State->Owner,
