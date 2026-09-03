@@ -301,6 +301,7 @@ public:
 private:
     void OnReliable(ByteBuffer Packet);
     void OnDatagram(ByteBuffer Packet);
+    void HandleTransportClosed(TransportCloseReason Reason) noexcept;
     [[nodiscard]] bool ValidateSession(
         const DecodedPacket& Packet) noexcept;
     void CountDecision(AgentDecision Decision) noexcept;
@@ -351,6 +352,7 @@ private:
     std::condition_variable_any CapabilityChanged_;
     bool CapabilityConflict_{};
     bool InputUnavailableClosePending_{};
+    bool TransportCloseNotified_{};
     bool Started_{};
 };
 

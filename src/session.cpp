@@ -602,20 +602,16 @@ bool PeerSession::Start() {
             if (Guard) OnDatagram(std::move(Packet));
         });
     Transport_->set_close_handler(
-        [this, Gate, Handler = Handlers_.TransportClosed](
-            TransportCloseReason Reason) {
+        [this, Gate](TransportCloseReason Reason) {
             auto Guard = Gate->TryEnter();
             if (!Guard) return;
-            // A known transport loss is stronger than waiting for the focus
-            // lease to expire. Release every DeskLink-owned direction before
-            // the outer runtime observes the close or schedules reconnect.
-            FailLocalDirections();
-            if (Handler) Handler(Reason);
+            HandleTransportClosed(Reason);
         });
     CapabilityConflict_ = false;
     LocalCapabilityRevision_ = 1;
     RemoteCapabilityRevision_ = 0;
     AcknowledgedLocalCapabilityRevision_ = 0;
+    TransportCloseNotified_ = false;
     Started_ = true;
     (void)PublishCapabilityGrantLocked();
     return true;
@@ -686,7 +682,34 @@ void PeerSession::Tick() noexcept {
     // Close outside Mutex_: transport close callbacks may synchronously enter
     // session teardown. Unavailable is retryable, so the source releases its
     // capture immediately and the trusted session reconnects after UAC exits.
-    if (CloseForUnavailableInput) Transport_->close();
+    if (CloseForUnavailableInput) {
+        Transport_->close();
+        // Some endpoints only notify the remote side for a locally initiated
+        // close. Explicitly wake this broker too; the guard deduplicates an
+        // endpoint that also reports its own close.
+        HandleTransportClosed(TransportCloseReason::Unavailable);
+    }
+}
+
+void PeerSession::HandleTransportClosed(
+    TransportCloseReason Reason) noexcept {
+    std::function<void(TransportCloseReason)> Handler;
+    {
+        std::scoped_lock Lock(Mutex_);
+        if (TransportCloseNotified_) return;
+        TransportCloseNotified_ = true;
+        // A known transport loss is stronger than waiting for the focus
+        // lease to expire. Release every DeskLink-owned direction before
+        // the outer runtime observes the close or schedules reconnect.
+        if (Started_) FailLocalDirectionsLocked();
+        Handler = Handlers_.TransportClosed;
+    }
+    if (Handler) {
+        try {
+            Handler(Reason);
+        } catch (...) {
+        }
+    }
 }
 
 void PeerSession::FailLocalDirections() noexcept {

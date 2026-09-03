@@ -6472,6 +6472,7 @@ void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
     HostCoordinator OutgoingA(Nonce);
     HostCoordinator OutgoingB(Nonce);
     std::size_t ClosedA{};
+    std::size_t ClosedB{};
     PeerSessionHandlers HandlersA;
     HandlersA.TransportClosed = [&](TransportCloseReason Reason) {
         CHECK(Reason == TransportCloseReason::Unavailable);
@@ -6481,7 +6482,13 @@ void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
         Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
         std::move(HandlersA));
     PeerSession SessionB(
-        Pair.b, OutgoingB, IncomingB, TrustB, Nonce);
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        PeerSessionHandlers{
+            {}, {}, {},
+            [&](TransportCloseReason Reason) {
+                CHECK(Reason == TransportCloseReason::Unavailable);
+                ++ClosedB;
+            }});
     CHECK(SessionA.Start());
     CHECK(SessionB.Start());
     CHECK(SessionA.BeginOutgoingFocus());
@@ -6496,6 +6503,7 @@ void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
     CHECK(ClosedA == 1);
+    CHECK(ClosedB == 1);
 }
 
 void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
