@@ -3696,6 +3696,9 @@ void MainWindow::ShowFromTray() {
 void MainWindow::RequestExit() {
     if (ExplicitExit_) return;
     ExplicitExit_ = true;
+    // The UI owns this PTT gesture. Never leave its local capture authority
+    // asserted when the window/process lifetime ends.
+    (void)Send(desklink::SetVoiceTransmitControlRequest{false});
     if (PollTimer_) PollTimer_.Stop();
     if (PairingDialog_) PairingDialog_.Hide();
     if (MainWindowHandle_) SendMessageW(MainWindowHandle_, WM_CLOSE, 0, 0);

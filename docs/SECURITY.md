@@ -115,6 +115,8 @@ InputSend
 InputInject
 AudioSend
 AudioReceive
+VoiceSend
+VoiceReceive
 ClipboardRead
 ClipboardWrite
 SystemSleep
@@ -276,6 +278,31 @@ The backend never logs audio samples. Loopback capture requires an explicit
 grants the peer `AudioReceive`. Rendering requires `--receive-audio` after
 `PeerValidated` and a local trust record that grants the sender `AudioSend`.
 Both grants are independently confirmed during manual pairing and default off.
+
+### Voice privacy and authorization
+
+Microphone voice cannot reuse `AudioSend` or `AudioReceive`. Sending requires
+the local persisted `VoiceReceive` grant, the peer's authenticated
+`VoiceSend` report, and an exact acknowledgement of the current local grant
+revision. Receiving requires the complementary pair and repeats the check
+after protocol, lane, nonce, stream, sequence, codec, and payload validation.
+Voice is never admitted before `PeerValidated`.
+
+Only the local current-user control boundary may press PTT, set hard mute, or
+select the input endpoint. No QUIC message can perform those actions. Enabling
+a route does not open capture. PTT release, hard mute, grant loss, disconnect,
+endpoint loss, or shutdown closes capture and stale reconnect state never
+reopens it. The exact saved microphone never silently falls back to another
+device. Samples remain memory-only and diagnostics expose counters/state, not
+content.
+
+The voice source is an `eCapture` communications endpoint; a build check
+rejects loopback APIs in that backend. Rendering uses the communications role.
+Default-on echo guard mutes only incoming DeskLink voice while transmitting and
+does not claim acoustic echo cancellation. Voice device/codec loss remains
+module-local and cannot alter identity, TLS, session admission, focus, input,
+clipboard, or system-audio authority. See
+[`VOICE_FORWARDING.md`](VOICE_FORWARDING.md).
 
 Every audio datagram is decoded on the datagram lane, bound to the fresh
 session nonce, fixed to the canonical frame shape, restricted to one nonzero

@@ -119,6 +119,7 @@ public:
 private:
     void ResetStreamLocked(std::uint32_t StreamId,
                            std::uint64_t Sequence) noexcept;
+    void ObserveJitterLocked(bool Unstable) noexcept;
     void ApplyGainLocked(VoicePcmFrame& Frame) noexcept;
 
     RenderHandler Renderer_;
@@ -128,8 +129,10 @@ private:
     std::optional<std::uint32_t> StreamId_;
     std::optional<std::uint64_t> NextSequence_;
     std::uint64_t HighestSequence_{};
+    std::size_t InitialTargetPackets_{};
     std::size_t TargetPackets_{};
     std::size_t MaximumPackets_{};
+    std::size_t StablePacketCount_{};
     std::uint16_t GainPermyriad_{kVoiceMaximumGainPermyriad};
     std::uint16_t AppliedGainPermyriad_{kVoiceMaximumGainPermyriad};
     bool Muted_{};

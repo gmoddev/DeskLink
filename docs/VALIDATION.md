@@ -133,7 +133,7 @@ unpackaged self-contained x64 payload. Local validation proves:
 - real Inno Setup 7.1.0 compilation of the unsigned development installer.
 
 PR 5 intentionally drove the shell from simulated broker states. PR 6 replaces
-those simulations with the version-3 current-user control protocol. The shell
+those simulations with the current-user control protocol. The shell
 now reads broker-owned state, preferences, trust records, discovery results,
 and pairing candidates without opening transport, identity, capture, or input
 authority itself. Automated PR 6 validation additionally proves:
@@ -183,7 +183,7 @@ round trips, exact version-1/version-2/version-3 migration, malformed/reserved/t
 data rejection, bounded explicit-endpoint rejection, allowlisted and conflicting hotkeys, duplicate profile
 rejection, global fullscreen fail-local precedence, all three product crossing
 presets, and exact launcher propagation into the managed Host child. The
-version-6 local control codec round-trips the bounded preferences, exact trusted
+current local control codec round-trips the bounded preferences, exact trusted
 connection state, and permission-authorization candidate payloads.
 
 The standard Release tree, MsQuic-enabled Release tree, and locked WinUI
@@ -714,6 +714,20 @@ binary. They run only after authenticated session admission, accept no
 unauthorized audio, never log PCM, and have no authority over validation,
 capabilities, focus, playout, leases, or reconnect decisions.
 
+## Voice-forwarding validation
+
+Protocol-v5 tests cover exact voice framing, datagram-only lane policy,
+malformed metadata and bounds, Opus encode/decode, FEC/PLC, stream/sequence
+rejection, adaptive 40-120 ms jitter, gain/mute, reciprocal acknowledged
+grants, live revocation, and preference/control migration. Native validation
+also builds the complete MsQuic runtime and locked WinUI shell and runs the
+source gate proving that the microphone backend does not use loopback capture.
+
+Physical two-PC privacy, endpoint, loss/reorder, feedback, reconnect, and
+bidirectional PTT qualification is still required before voice is described as
+production-qualified. The exact matrix and latency goals are in
+[`VOICE_FORWARDING.md`](VOICE_FORWARDING.md#validation-gates).
+
 ## Limitations of this validation
 
 This validation does not yet prove:
@@ -725,6 +739,8 @@ This validation does not yet prove:
   target and bounded rebuffer tests
 - physical two-PC audio privacy, interruption, reconnect, and endpoint-change behavior
 - physical two-PC text-clipboard privacy, contention, owner-exit, loop, and reconnect behavior
+- physical two-PC microphone/PTT privacy, endpoint selection, packet-loss,
+  feedback, and reconnect behavior
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

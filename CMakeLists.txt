@@ -41,11 +41,21 @@ add_custom_target(desklink_private_key_export_check ALL
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoPrivateKeyExport.cmake"
     VERBATIM)
 
+add_custom_target(desklink_voice_capture_isolation_check ALL
+    COMMAND ${CMAKE_COMMAND}
+        "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVoiceCaptureIsolation.cmake"
+    VERBATIM)
+
 if(DESKLINK_BUILD_TESTS)
     add_test(NAME desklink_private_key_export_check
         COMMAND ${CMAKE_COMMAND}
             "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoPrivateKeyExport.cmake")
+    add_test(NAME desklink_voice_capture_isolation_check
+        COMMAND ${CMAKE_COMMAND}
+            "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVoiceCaptureIsolation.cmake")
 endif()
 
 add_library(desklink_core
@@ -405,7 +415,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         RUNTIME DESTINATION . COMPONENT Alpha)
     install(FILES "${DESKLINK_MSQUIC_SCHANNEL_DLL}"
         DESTINATION runtime/schannel COMPONENT Alpha)
-    install(FILES LICENSE docs/ALPHA_WRAPPER.md
+    install(FILES LICENSE OPUS-LICENSE.txt docs/ALPHA_WRAPPER.md
         DESTINATION . COMPONENT Alpha)
 
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")

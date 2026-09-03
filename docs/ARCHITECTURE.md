@@ -467,6 +467,24 @@ than four source blocks and still emits exact canonical blocks. Target/timing
 discontinuity, reconnect, and endpoint recovery clear the correction; peer
 timestamps never directly choose a ratio. Gain/mute remains separate work.
 
+### 9.1 Microphone voice architecture
+
+Voice is a separate capability module, not a mode of system-audio loopback.
+Protocol 5 carries a datagram-only Opus `VoiceFrame` with its own sequence and
+per-PTT stream ID. The sender opens an `eCapture` communications endpoint only
+after reciprocal acknowledged `VoiceSend`/`VoiceReceive` grants, local route
+intent, clear hard mute, and a local PTT press. The receiver repeats nonce,
+grant, stream, sequence, codec, shape, and size admission before bounded
+40-120 ms FEC/PLC playout to the `eRender` communications endpoint.
+
+PTT release, mute, permission loss, disconnect, configuration change, endpoint
+loss, or shutdown closes capture and requires a fresh local activation. The
+peer has no protocol command that can activate or unmute the microphone.
+Echo guard defaults on and ramps incoming DeskLink voice to mute during local
+transmission. It is half-duplex feedback protection, not acoustic echo
+cancellation. The full boundary and physical qualification matrix are in
+[`VOICE_FORWARDING.md`](VOICE_FORWARDING.md).
+
 ---
 
 ## 10. Local control API
@@ -490,6 +508,8 @@ SetDesiredMode       implemented
 FocusMachine         implemented for the exact active authenticated peer
 SetAudioGain         implemented on an active Host peer receiver
 ToggleAudioMute      implemented on an active Host peer receiver
+SetVoiceTransmit     implemented as local PTT authority on an admitted peer
+SetVoiceMuted        implemented as local hard microphone mute
 GetDisplayTopologies implemented read-only
 GetProductPreferences implemented read-only
 SetProductPreferences implemented validated current-user policy
@@ -528,9 +548,11 @@ lease, `PeerValidated`, `FocusReady`, and initial-snapshot admission. It is
 deliberately separate from `Roam`, which waits for a validated configured
 physical-edge crossing.
 
-Application preferences schema 4 stores only two allowlisted local hotkey
+Application preferences schema 5 stores only two allowlisted local hotkey
 choices, bounded exact foreground rules, and an optional explicit endpoint for
-the preferred trusted machine. The broker tries authenticated mDNS resolution
+the preferred trusted machine, plus a separate voice route, exact optional
+microphone endpoint, incoming gain, and echo guard. The broker tries
+authenticated mDNS resolution
 first and consults that endpoint only when no matching machine record exists.
 The endpoint is a routing hint, not an identity: every launch still supplies
 the stored expected machine ID and transport certificate pin. Ambiguous or

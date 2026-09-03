@@ -6510,11 +6510,15 @@ void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     CHECK(Receiver.Push(1, Frame));
     Frame.CaptureTimestampUs = 60'000;
     CHECK(Receiver.Push(3, Frame));
+    Frame.CaptureTimestampUs = 80'000;
+    CHECK(Receiver.Push(4, Frame));
     CHECK(Receiver.Pump() == VoicePumpResult::Submitted);
     CHECK(Receiver.Pump() == VoicePumpResult::Submitted);
     CHECK(Rendered.size() == 2);
     CHECK(Rendered.back().Concealed);
     CHECK(Receiver.Stats().FecRecovered + Receiver.Stats().PlcGenerated == 1);
+    CHECK(Receiver.Stats().CurrentJitterTarget == 3);
+    CHECK(Receiver.Stats().PeakJitterTarget == 3);
     CHECK(!Receiver.Push(1, Frame));
     CHECK(Receiver.Stats().SequenceRejected >= 1);
 
@@ -6531,6 +6535,28 @@ void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     Frame.StreamId = 10;
     CHECK(!Receiver.Push(99, Frame));
     CHECK(Receiver.Stats().StreamRejected >= 1);
+
+    VoiceReceiver Adaptive([](VoicePcmFrame) { return true; });
+    Frame.StreamId = 12;
+    for (const auto Sequence : {1u, 3u, 5u, 7u, 9u, 11u}) {
+        Frame.CaptureTimestampUs = Sequence * 20'000u;
+        CHECK(Adaptive.Push(Sequence, Frame));
+    }
+    CHECK(Adaptive.Stats().CurrentJitterTarget ==
+          kVoiceMaximumJitterPackets);
+    CHECK(Adaptive.Stats().PeakJitterTarget ==
+          kVoiceMaximumJitterPackets);
+
+    VoiceReceiver Muted([&](VoicePcmFrame Pcm) {
+        Rendered.push_back(std::move(Pcm));
+        return true;
+    }, 1);
+    Muted.SetMuted(true);
+    Frame.StreamId = 13;
+    Frame.CaptureTimestampUs = 20'000;
+    CHECK(Muted.Push(1, Frame));
+    CHECK(Muted.Pump() == VoicePumpResult::Submitted);
+    CHECK(Rendered.back().Samples.back() == 0);
 }
 
 void PeerVoiceRequiresComplementaryAcknowledgedGrants() {

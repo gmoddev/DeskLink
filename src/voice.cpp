@@ -127,8 +127,9 @@ VoiceReceiver::VoiceReceiver(
     RenderHandler Renderer, std::size_t TargetPackets,
     std::size_t MaximumPackets)
     : Renderer_(std::move(Renderer)),
-      TargetPackets_(std::clamp(
+      InitialTargetPackets_(std::clamp(
           TargetPackets, std::size_t{1}, kVoiceMaximumJitterPackets)),
+      TargetPackets_(InitialTargetPackets_),
       MaximumPackets_(std::clamp(
           MaximumPackets, TargetPackets_, kVoiceMaximumQueuedPackets)) {
     Stats_.CurrentJitterTarget = TargetPackets_;
@@ -141,6 +142,7 @@ void VoiceReceiver::ResetStreamLocked(
     StreamId_ = StreamId;
     NextSequence_ = Sequence;
     Started_ = false;
+    StablePacketCount_ = 0;
     AppliedGainPermyriad_ = Muted_ ? 0 : GainPermyriad_;
     (void)Decoder_.Reset();
     ++Stats_.StreamResets;
@@ -175,7 +177,10 @@ bool VoiceReceiver::Push(
         ++Stats_.Duplicates;
         return false;
     }
-    if (Sequence < HighestSequence_) ++Stats_.Reordered;
+    const bool Reordered = Sequence < HighestSequence_;
+    const bool Gap = HighestSequence_ != 0 && Sequence > HighestSequence_ + 1u;
+    if (Reordered) ++Stats_.Reordered;
+    ObserveJitterLocked(Reordered || Gap);
     HighestSequence_ = std::max(HighestSequence_, Sequence);
     Packets_.emplace(Sequence, std::move(Frame));
     while (Packets_.size() > MaximumPackets_) {
@@ -297,12 +302,36 @@ void VoiceReceiver::Reset() noexcept {
     NextSequence_.reset();
     HighestSequence_ = 0;
     Started_ = false;
+    TargetPackets_ = InitialTargetPackets_;
+    StablePacketCount_ = 0;
+    Stats_.CurrentJitterTarget = TargetPackets_;
     (void)Decoder_.Reset();
 }
 
 VoiceReceiverStats VoiceReceiver::Stats() const noexcept {
     std::scoped_lock Lock(Mutex_);
     return Stats_;
+}
+
+void VoiceReceiver::ObserveJitterLocked(bool Unstable) noexcept {
+    const auto MaximumTarget = std::min(
+        MaximumPackets_, kVoiceMaximumJitterPackets);
+    if (Unstable) {
+        StablePacketCount_ = 0;
+        if (TargetPackets_ < MaximumTarget) {
+            ++TargetPackets_;
+            Started_ = false;
+        }
+    } else if (TargetPackets_ > InitialTargetPackets_) {
+        ++StablePacketCount_;
+        if (StablePacketCount_ >= 100) {
+            --TargetPackets_;
+            StablePacketCount_ = 0;
+        }
+    }
+    Stats_.CurrentJitterTarget = TargetPackets_;
+    Stats_.PeakJitterTarget = std::max<std::uint64_t>(
+        Stats_.PeakJitterTarget, TargetPackets_);
 }
 
 void VoiceReceiver::ApplyGainLocked(VoicePcmFrame& Frame) noexcept {

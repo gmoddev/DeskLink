@@ -346,6 +346,10 @@ InputRoamingDesired
 ClipboardDesired
 AudioRoute
 AudioGain
+VoiceRoute
+VoiceInputEndpointId
+VoiceGain
+VoiceEchoGuard
 GamingBehavior
 AdvancedModeEnabled
 FirstRunComplete
@@ -655,6 +659,21 @@ Use concrete routes such as **Play HOSTPC audio on THIS-PC**, with gain/mute nea
 that route. Missing local or peer authority opens a permission explanation; it
 does not reverse or infer `AudioSend`/`AudioReceive` silently.
 
+### Voice and microphone
+
+Voice is presented separately from system audio. Pairing and permission review
+name the two local consequences independently: allowing peer microphone
+playback and allowing this microphone to be received. Both default off and
+neither may be inferred from an audio switch.
+
+The feature surface uses a press-and-hold PTT button, an explicit hard mute,
+communications microphone selection, incoming gain, and a default-on echo
+guard. It visibly distinguishes off, missing permission, PTT ready,
+transmitting, muted, and unavailable-input states. Route enablement never opens
+capture; release/cancel/pointer-capture loss stops it. Echo guard is labeled as
+half-duplex feedback protection and never as acoustic echo cancellation. A
+global PTT binding is deferred until it has a separate input-lifecycle design.
+
 ## 15. Accessibility and visual requirements
 
 - Responsive XAML layout with no fixed 940×890-style dependency.
@@ -785,7 +804,7 @@ Gate: ambiguous/spoofed discovery grants nothing; codes and local consequences
 appear on both PCs; timeout/UI exit rejects; permission additions require local
 approval; revocation is immediate and fail-local.
 
-Implementation checkpoint: the version-6 local control protocol now carries
+Implementation checkpoint: the version-11 local control protocol now carries
 bounded discovery, pairing-start, candidate-decision, and Nearby result types.
 The broker owns the five-minute discovery/pairing lifecycle and launches only
 its fixed sibling pairing executable after stopping the normal runtime Local.
@@ -862,7 +881,7 @@ allowlist; `Ctrl+Alt+Pause/Break` is reserved. A named focus request reaches the
 existing authenticated input lifecycle only when that exact peer and the Host
 input owner are active, so a shortcut cannot bypass normal admission.
 
-Application preferences schema 4 persists at most 32 exact executable rules,
+Application preferences schema 5 persists at most 32 exact executable rules,
 optional fullscreen matching, the two bounded shortcuts, and the simple global
 fullscreen keep-local choice. The broker passes these only to the explicit
 input-roaming child. A Roam fallback arms edge observation without installing a

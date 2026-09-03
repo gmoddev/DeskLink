@@ -299,14 +299,16 @@ void PrintUsage() {
         << L"Usage:\n"
         << L"  desklink_pair identity\n"
         << L"  desklink_pair discover [seconds: 1..30]\n"
-        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
-        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
-        << L"  desklink_pair serve [port] [--send-audio] [--sync-clipboard] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio] [--sync-clipboard] [--edge-roaming <absolute-settings-path>]\n"
+        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-voice-send|--grant-voice-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
+        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-voice-send|--grant-voice-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
+        << L"  desklink_pair serve [port] [--send-audio] [--receive-audio] [--send-voice] [--receive-voice] [--voice-input <endpoint-id>] [--sync-clipboard] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--send-audio] [--receive-audio] [--send-voice] [--receive-voice] [--voice-input <endpoint-id>] [--sync-clipboard] [--edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n"
         << L"  desklink_pair control gain 0..10000\n"
         << L"  desklink_pair control mute\n"
+        << L"  desklink_pair control voice-ptt down|up\n"
+        << L"  desklink_pair control voice-mute on|off\n"
         << L"  desklink_pair control preferences\n"
         << L"  desklink_pair control devices\n"
         << L"  desklink_pair control focus <32-hex-machine-id>\n"
@@ -315,12 +317,17 @@ void PrintUsage() {
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
         << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
+        << L"--grant-voice-send allows the remote PC to play microphone voice into this PC.\n"
+        << L"--grant-voice-receive allows the remote PC to receive this PC's microphone voice.\n"
         << L"--grant-topology allows the authenticated peer to exchange bounded display topology snapshots.\n"
         << L"--grant-clipboard-read allows the authenticated peer to read this PC's text clipboard.\n"
         << L"--grant-clipboard-write allows the authenticated peer to replace this PC's text clipboard.\n"
         << L"--sync-clipboard explicitly enables bounded text-only synchronization; both peers still need complementary grants.\n"
         << L"--send-audio explicitly starts loopback capture for authorized peers.\n"
         << L"--receive-audio explicitly starts shared-mode rendering for an authorized peer.\n"
+        << L"--send-voice enables local push-to-talk for an authorized peer; it never opens the microphone by itself.\n"
+        << L"--receive-voice enables communications-device voice rendering for an authorized peer.\n"
+        << L"--voice-input selects an exact microphone endpoint; no fallback occurs if it is unavailable.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
         << L"--pointer-gain scales relative motion; 100 preserves raw counts.\n"
         << L"--pointer-dpi normalizes a known source DPI to an 800-DPI reference.\n"
@@ -2626,6 +2633,52 @@ struct PeerRuntime {
         }
     }
 
+    void RunVoiceRenderPump() noexcept {
+        bool RendererReady = VoiceRenderer.Running();
+        auto Delay = kAudioRecoveryInitialDelay;
+        auto RetryAt = std::chrono::steady_clock::now() + Delay;
+        while (!VoiceRenderStop.load()) {
+            const auto Now = std::chrono::steady_clock::now();
+            if (RendererReady &&
+                (VoiceRenderRecovery.exchange(false) ||
+                 !VoiceRenderer.Running())) {
+                VoiceRenderer.Stop();
+                VoiceReceiver.Reset();
+                RendererReady = false;
+                Delay = kAudioRecoveryInitialDelay;
+                RetryAt = Now + Delay;
+            }
+            if (!RendererReady) {
+                (void)VoiceRenderRecovery.exchange(false);
+                if (Now >= RetryAt) {
+                    bool Restarted = false;
+                    try {
+                        VoiceRenderer.Stop();
+                        VoiceReceiver.Reset();
+                        Restarted = !VoiceRenderStop.load() &&
+                            VoiceRenderer.Start();
+                    } catch (...) {
+                        Restarted = false;
+                    }
+                    if (Restarted) {
+                        RendererReady = true;
+                        Delay = kAudioRecoveryInitialDelay;
+                        ++VoiceRenderRestartCount;
+                        std::cout
+                            << "[Voice:Render] communications endpoint recovered; session and input remained active\n";
+                    } else {
+                        Delay = NextAudioRecoveryDelay(Delay);
+                        RetryAt = std::chrono::steady_clock::now() + Delay;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            (void)VoiceReceiver.PumpAvailable();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
     [[nodiscard]] bool StartReceivingVoiceLocked() noexcept {
         if (VoiceRenderPump.joinable()) return true;
         if (!Session.CanReceiveVoice()) return false;
@@ -2635,20 +2688,8 @@ struct PeerRuntime {
         bool Started = false;
         try {
             Started = VoiceRenderer.Start();
-            VoiceRenderPump = std::thread([this] {
-                while (!VoiceRenderStop.load()) {
-                    if (VoiceRenderRecovery.exchange(false) ||
-                        !VoiceRenderer.Running()) {
-                        VoiceRenderer.Stop();
-                        VoiceReceiver.Reset();
-                        if (!VoiceRenderStop.load()) {
-                            (void)VoiceRenderer.Start();
-                        }
-                    }
-                    (void)VoiceReceiver.PumpAvailable();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                }
-            });
+            VoiceRenderPump = std::thread(
+                [this] { RunVoiceRenderPump(); });
         } catch (...) {
             VoiceRenderer.Stop();
             return false;
@@ -2665,6 +2706,7 @@ struct PeerRuntime {
         }
         VoiceRenderer.Stop();
         VoiceReceiver.Reset();
+        VoiceRenderRecovery.store(false);
     }
 
     void StopVoice() noexcept {
@@ -2674,6 +2716,7 @@ struct PeerRuntime {
     }
 
     [[nodiscard]] bool VoiceEnabled() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
         return SendVoiceRequested || ReceiveVoiceRequested;
     }
     [[nodiscard]] bool VoiceMuted() const noexcept {
@@ -2683,16 +2726,19 @@ struct PeerRuntime {
         return VoiceTransmitting_.load();
     }
     [[nodiscard]] bool VoicePttReady() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
         return SendVoiceRequested && !VoiceMuted_.load() &&
             Session.CanSendVoice();
     }
     [[nodiscard]] bool VoicePermissionMissing() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
         return SendVoiceRequested && !Session.CanSendVoice();
     }
     [[nodiscard]] bool VoiceInputUnavailable() const noexcept {
         return VoiceInputUnavailable_.load();
     }
     [[nodiscard]] std::uint16_t VoiceGainPermyriad() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
         return VoiceGainPermyriad_;
     }
 
@@ -3021,12 +3067,13 @@ struct PeerRuntime {
     std::atomic_bool VoiceInputUnavailable_{};
     std::atomic_bool VoiceCaptureFailed{};
     std::atomic_bool VoiceRenderRecovery{};
+    std::atomic_uint64_t VoiceRenderRestartCount{};
     std::uint32_t NextVoiceStreamId_{1};
     std::uint64_t VoicePttActivations_{};
     std::uint64_t VoiceEncodedFrames_{};
     std::uint64_t VoiceCodecFailures_{};
     bool InitiateLatencyCalibration_{};
-    std::mutex ModuleLifecycleMutex;
+    mutable std::mutex ModuleLifecycleMutex;
     std::jthread LatencyCalibrationWorker;
 
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;

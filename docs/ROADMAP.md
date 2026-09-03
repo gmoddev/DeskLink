@@ -248,7 +248,26 @@ are automated. Physical two-PC privacy, rapid-contention/coalescing behavior,
 clipboard-owner exit, and real reconnect tests remain required before this item
 is production-qualified. Image clipboard and file transfer remain excluded.
 
-### 5. Installation and daily-use productization
+### 5. PTT voice forwarding — automated implementation complete
+
+- protocol 5 adds independent default-off `VoiceSend`/`VoiceReceive` grants and
+  a strictly bounded datagram-only Opus voice frame;
+- the product and runtime expose separate voice route, communications
+  microphone selection, incoming gain, hard mute, PTT state, and default-on
+  half-duplex echo guard without modifying pairing or system-audio policy;
+- capture opens only for a local PTT press after reciprocal acknowledged
+  grants and closes on release, mute, revocation, disconnect, endpoint loss,
+  configuration change, or shutdown;
+- pinned Opus 1.6.1, FEC/PLC, and a bounded adaptive 40-120 ms jitter target
+  are covered by portable/native tests; and
+- production sign-off remains open until the two-PC privacy, device,
+  loss/reorder, feedback, reconnect, and system-audio regression matrix passes.
+  Full criteria are in [`VOICE_FORWARDING.md`](VOICE_FORWARDING.md).
+
+Global PTT and full acoustic echo cancellation are explicitly deferred. Voice
+must not be described as production-qualified before physical validation.
+
+### 6. Installation and daily-use productization
 
 - **Product UX PRs 1-3 complete:** safer default-off pairing grants, the
   versioned role/preferences/planner model, and the single current-user broker
@@ -291,7 +310,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, the capture hook owns Return-to-this-PC while remote,
   crossing changes reuse Local-before-atomic-save, and required
-  but uninspectable foreground state remains Local. Preferences schema 4
+  but uninspectable foreground state remains Local. Preferences schema 5
   migrates both previous formats;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu
   and post-install entry point. Its `--background` mode is a short-lived
@@ -330,7 +349,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
   production-signed repair/upgrades, physical sleep/resume and endpoint
   changes, and uninstall on clean supported systems.
 
-### 6. MCP observation plane
+### 7. MCP observation plane
 
 Expose DeskLink as a machine-readable trusted desk, initially through a
 default-off local current-user MCP server (stdio or the existing same-SID local
@@ -346,7 +365,7 @@ from peer pairing before shipping this phase. Resource content and peer/job
 output are untrusted data, cannot grant capabilities, and cannot override local
 policy or user approval.
 
-### 7. Bounded MCP actions
+### 8. Bounded MCP actions
 
 - add narrow typed tools such as `return_local`, `set_mode`, `focus_peer`,
   `set_audio_route`, `identify_display`, and `request_capability` rather than a
@@ -360,7 +379,7 @@ policy or user approval.
   MCP loss or client cancellation must return affected control operations to a
   safe local state.
 
-### 8. Cross-PC workspace and job orchestration
+### 9. Cross-PC workspace and job orchestration
 
 After the observation and bounded-action surfaces pass security review, add
 separate permissions for workspace read/write, build, test, process launch, and
@@ -376,7 +395,7 @@ appropriate peer, deployment of a verified artifact, bounded physical or
 automated validation, and collection of results. There remains no normal
 `remote.shell` capability.
 
-### 9. Later extensions
+### 10. Later extensions
 
 - image clipboard and explicit file transfer after their independent
   capability/privacy/security design and text-clipboard qualification;

@@ -56,6 +56,12 @@ room propagation, or microphone capture latency. See
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
+- Protocol-v5, PTT-first microphone forwarding with separate reciprocal voice
+  grants, pinned Opus 1.6.1, exact 48 kHz mono/20 ms frames, a dedicated
+  datagram sequence, and bounded 40-120 ms FEC/PLC playout
+- Communications-role microphone selection and voice rendering, local hard
+  mute/incoming gain, and default-on half-duplex echo guard; full acoustic echo
+  cancellation and a global PTT binding remain deferred
 - Explicit, text-only clipboard synchronization with complementary per-peer
   read/write grants, a session-scoped module handshake, and loop suppression
 - Default-endpoint notification and bounded audio-only WASAPI recovery
@@ -442,6 +448,16 @@ On the receiving Host, `control gain` applies a per-peer `0..10000` render
 gain and `control mute` toggles mute. Changes ramp across one five-millisecond
 block, persist through audio-only endpoint recovery, and never change the
 Windows endpoint or system mixer volume.
+
+Microphone voice is a separate PTT-only module. It requires distinct
+`VoiceSend`/`VoiceReceive` grants and explicit route intent on both PCs; system
+audio permissions cannot authorize it. The microphone remains closed until the
+local user holds PTT, and release, hard mute, permission loss, disconnect, or
+endpoint loss stops capture. Voice uses pinned Opus 1.6.1 at 48 kHz mono in
+20 ms datagrams with bounded 40-120 ms FEC/PLC playout. Echo guard defaults on
+and mutes incoming DeskLink voice while transmitting; it is half-duplex
+feedback protection, not acoustic echo cancellation. See
+[`docs/VOICE_FORWARDING.md`](docs/VOICE_FORWARDING.md).
 
 Text clipboard synchronization is separately opt-in and requires complementary
 grants. To synchronize both directions, pair each PC with both clipboard grants,

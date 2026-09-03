@@ -133,6 +133,7 @@ $RequiredFiles = @(
     'vcruntime140.dll',
     'vcruntime140_1.dll',
     'LICENSE',
+    'OPUS-LICENSE.txt',
     'ALPHA_WRAPPER.md'
 )
 if ($ExperimentalWindows10) {

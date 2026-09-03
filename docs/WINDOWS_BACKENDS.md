@@ -445,7 +445,7 @@ first-instance protection. Both endpoints read the opposite process ID and
 compare its token user SID before exchanging data. The client permits at most a
 five-second requested timeout.
 
-The local control protocol is independently versioned (currently version 7) and uses
+The local control protocol is independently versioned (currently version 11) and uses
 exact bounded typed commands; it never exposes arbitrary transport packets,
 input injection, OS commands, or module loading. In addition to runtime state,
 mode, focus, audio, topology, update, and preference operations, it exposes
@@ -463,3 +463,20 @@ and resolves its current operation. Shell absence/exit, expiry, token mismatch,
 pipe failure, signing/authentication failure, or child failure rejects rather
 than falling back. A successful child exit causes an in-process trust-store
 reload before the role-driven runtime resumes.
+
+---
+
+## 11. Microphone voice
+
+`Win32WasapiMicrophoneCapture` enumerates and opens only active `eCapture`
+endpoints. The default path follows the communications-role microphone; an
+explicit saved endpoint is exact and fails without fallback. Shared-mode,
+event-driven 48 kHz mono PCM16 capture is normalized into 20 ms frames and is
+created only for a local PTT-down lifetime. `NOPERSIST` and the Communications
+category avoid persistent mixer-policy changes.
+
+`Win32WasapiVoiceRenderer` independently opens the communications-role
+`eRender` endpoint and owns a twelve-frame bounded queue. Voice endpoint loss
+restarts only voice playout. Microphone loss stops transmission and requires a
+fresh PTT action. Neither adapter touches the system-audio loopback backend;
+the CMake voice-isolation gate rejects such a dependency.

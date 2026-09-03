@@ -79,6 +79,7 @@ function Assert-InstalledPayload() {
         'WindowsAppSDK-Runtime-NOTICE.txt',
         'WindowsAppSDK-WinUI-NOTICE.txt',
         'LICENSE',
+        'OPUS-LICENSE.txt',
         'ALPHA_WRAPPER.md'
     )
     if ($ExperimentalWindows10) {
