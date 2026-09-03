@@ -17,8 +17,8 @@
 [Setup]
 AppId={{58944975-11A2-4DD6-B881-A0700574270F}
 #ifdef ExperimentalWindows10
-AppName=DeskLink Development Alpha
-AppVerName=DeskLink {#AppVersion} Development Alpha
+AppName=DeskLink Beta
+AppVerName=DeskLink {#AppVersion} Beta 1 (Unsigned)
 #else
 AppName=DeskLink
 AppVerName=DeskLink {#AppVersion}
@@ -29,7 +29,7 @@ AppPublisherURL=https://github.com/gmoddev/DeskLink
 AppSupportURL=https://github.com/gmoddev/DeskLink/issues
 AppUpdatesURL=https://github.com/gmoddev/DeskLink/releases
 #ifdef ExperimentalWindows10
-AppComments=Unsigned experimental Windows 10 OpenSSL/CNG compatibility build.
+AppComments=Unsigned DeskLink beta; Windows 10 OpenSSL/CNG remains experimental.
 #else
 AppComments=Secure local keyboard, mouse, audio, and clipboard roaming.
 #endif
@@ -47,7 +47,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 SetupArchitecture=x64
 #ifdef ExperimentalWindows10
 MinVersion=10.0.19045
-InfoBeforeFile={#StagePath}\WINDOWS10_DEVELOPMENT_ALPHA.md
+InfoBeforeFile={#StagePath}\WINDOWS10_BETA_NOTICE.md
 #else
 MinVersion=10.0.20348
 #endif
@@ -114,7 +114,7 @@ Source: "{#StagePath}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
 #ifdef ExperimentalWindows10
-Source: "{#StagePath}\WINDOWS10_DEVELOPMENT_ALPHA.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagePath}\WINDOWS10_BETA_NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 
 [Icons]

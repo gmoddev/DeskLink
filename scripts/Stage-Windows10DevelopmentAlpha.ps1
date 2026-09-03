@@ -59,7 +59,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "WinUI staging failed with exit code $LASTEXITCODE"
 }
 Copy-Item -LiteralPath (
-    Join-Path $RepositoryRoot 'docs\WINDOWS10_DEVELOPMENT_ALPHA.md') `
-    -Destination (Join-Path $StagePath 'WINDOWS10_DEVELOPMENT_ALPHA.md')
+    Join-Path $RepositoryRoot 'docs\WINDOWS10_BETA_NOTICE.md') `
+    -Destination (Join-Path $StagePath 'WINDOWS10_BETA_NOTICE.md')
 
-Write-Host "[Packaging:Windows10Alpha] staged $StagePath"
+Write-Host "[Packaging:Windows10Beta] staged $StagePath"
