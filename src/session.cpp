@@ -91,8 +91,13 @@ void AgentSession::stop() noexcept {
 }
 
 void AgentSession::tick() noexcept {
-    std::scoped_lock Lock(Mutex_);
-    coordinator_.tick();
+    bool CloseForUnavailableInput = false;
+    {
+        std::scoped_lock Lock(Mutex_);
+        coordinator_.tick();
+        CloseForUnavailableInput = coordinator_.InputUnavailable();
+    }
+    if (CloseForUnavailableInput) transport_->close();
 }
 
 void AgentSession::SetLocalDesiredMode(DeskMode Mode) noexcept {
@@ -656,10 +661,13 @@ void PeerSession::Stop() noexcept {
 
 void PeerSession::Tick() noexcept {
     bool DirectionChanged = false;
+    bool CloseForUnavailableInput = false;
     {
         std::scoped_lock Lock(Mutex_);
         if (!Started_) return;
         IncomingCoordinator_.tick();
+        CloseForUnavailableInput = InputUnavailableClosePending_ ||
+            IncomingCoordinator_.InputUnavailable();
         if (DirectionArbiter_.State() ==
                 PeerDirectionState::IncomingActive &&
             !IncomingCoordinator_.RemoteFocused()) {
@@ -670,10 +678,15 @@ void PeerSession::Tick() noexcept {
             (void)PublishCapabilityGrantLocked();
         }
         (void)PublishClipboardHelloLocked();
+        InputUnavailableClosePending_ = false;
     }
     if (DirectionChanged && Handlers_.DirectionChanged) {
         Handlers_.DirectionChanged();
     }
+    // Close outside Mutex_: transport close callbacks may synchronously enter
+    // session teardown. Unavailable is retryable, so the source releases its
+    // capture immediately and the trusted session reconnects after UAC exits.
+    if (CloseForUnavailableInput) Transport_->close();
 }
 
 void PeerSession::FailLocalDirections() noexcept {
@@ -1534,6 +1547,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 const auto Decision = IncomingCoordinator_.handle(
                     *Decoded.packet);
                 CountDecision(Decision);
+                if (Decision == AgentDecision::RejectedInputUnavailable) {
+                    InputUnavailableClosePending_ = true;
+                }
                 if (Decision != AgentDecision::Accepted) {
                     if (!ReacquiringIncoming ||
                         (!IncomingCoordinator_.RemoteFocused() &&
@@ -1583,6 +1599,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 const auto Decision = IncomingCoordinator_.handle(
                     *Decoded.packet);
                 CountDecision(Decision);
+                if (Decision == AgentDecision::RejectedInputUnavailable) {
+                    InputUnavailableClosePending_ = true;
+                }
                 if ((Type == MessageType::FocusRelease ||
                      Type == MessageType::SetMode) &&
                     Decision == AgentDecision::Accepted &&
@@ -1735,6 +1754,9 @@ void PeerSession::OnDatagram(ByteBuffer Packet) {
             const auto Decision = IncomingCoordinator_.handle(
                 *Decoded.packet);
             CountDecision(Decision);
+            if (Decision == AgentDecision::RejectedInputUnavailable) {
+                InputUnavailableClosePending_ = true;
+            }
             if (Decision == AgentDecision::Accepted &&
                 (Type == MessageType::PointerPosition ||
                  Type == MessageType::PointerMotion)) {

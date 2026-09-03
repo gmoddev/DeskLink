@@ -7,13 +7,58 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 namespace desklink {
 namespace {
 
 bool send_one(INPUT input) {
     return SendInput(1, &input, static_cast<int>(sizeof(INPUT))) == 1;
+}
+
+std::optional<std::wstring> DesktopName(HDESK Desktop) {
+    DWORD Required = 0;
+    (void)GetUserObjectInformationW(
+        Desktop, UOI_NAME, nullptr, 0, &Required);
+    if (Required < sizeof(wchar_t)) return std::nullopt;
+    std::vector<wchar_t> Buffer(
+        (Required + sizeof(wchar_t) - 1) / sizeof(wchar_t));
+    if (!GetUserObjectInformationW(
+            Desktop, UOI_NAME, Buffer.data(),
+            static_cast<DWORD>(Buffer.size() * sizeof(wchar_t)),
+            &Required)) {
+        return std::nullopt;
+    }
+    return std::wstring(Buffer.data());
+}
+
+std::optional<DWORD> ProcessIntegrityLevel(HANDLE Process) {
+    HANDLE Token = nullptr;
+    if (!OpenProcessToken(Process, TOKEN_QUERY, &Token)) {
+        return std::nullopt;
+    }
+    DWORD Required = 0;
+    (void)GetTokenInformation(
+        Token, TokenIntegrityLevel, nullptr, 0, &Required);
+    if (Required == 0) {
+        CloseHandle(Token);
+        return std::nullopt;
+    }
+    std::vector<std::byte> Buffer(Required);
+    if (!GetTokenInformation(
+            Token, TokenIntegrityLevel, Buffer.data(), Required,
+            &Required)) {
+        CloseHandle(Token);
+        return std::nullopt;
+    }
+    CloseHandle(Token);
+    const auto* Label = reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(
+        Buffer.data());
+    const auto Count = *GetSidSubAuthorityCount(Label->Label.Sid);
+    if (Count == 0) return std::nullopt;
+    return *GetSidSubAuthority(Label->Label.Sid, Count - 1);
 }
 
 DWORD button_flag(MouseButtonId button, bool down) {
@@ -61,6 +106,31 @@ bool ParkWin32Pointer() noexcept {
 
 Win32InputInjector::Win32InputInjector() {
     (void)DisplayTopology_.Refresh();
+}
+
+bool Win32InputInjector::ReadyForInput() const noexcept {
+    const auto ThreadDesktop = GetThreadDesktop(GetCurrentThreadId());
+    const auto InputDesktop = OpenInputDesktop(
+        0, FALSE, DESKTOP_READOBJECTS);
+    if (!ThreadDesktop || !InputDesktop) return false;
+    const auto ThreadName = DesktopName(ThreadDesktop);
+    const auto InputName = DesktopName(InputDesktop);
+    CloseDesktop(InputDesktop);
+    if (!ThreadName || !InputName || *ThreadName != *InputName) return false;
+
+    const auto Foreground = GetForegroundWindow();
+    if (!Foreground) return false;
+    DWORD ForegroundProcessId = 0;
+    (void)GetWindowThreadProcessId(Foreground, &ForegroundProcessId);
+    if (ForegroundProcessId == 0) return false;
+    const auto ForegroundProcess = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ForegroundProcessId);
+    if (!ForegroundProcess) return false;
+    const auto ForegroundIntegrity = ProcessIntegrityLevel(ForegroundProcess);
+    CloseHandle(ForegroundProcess);
+    const auto CurrentIntegrity = ProcessIntegrityLevel(GetCurrentProcess());
+    return ForegroundIntegrity && CurrentIntegrity &&
+        *ForegroundIntegrity <= *CurrentIntegrity;
 }
 
 bool Win32InputInjector::inject_key(const KeyEventMessage& event) {

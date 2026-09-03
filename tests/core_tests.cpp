@@ -107,21 +107,22 @@ desklink::DiscoveryEndpoint MakeDiscoveryEndpoint(
 
 class RecordingInjector final : public desklink::IInputInjector {
 public:
+    bool ReadyForInput() const noexcept override { return Ready; }
     bool inject_key(const desklink::KeyEventMessage& event) override {
-        keys.push_back(event); return true;
+        keys.push_back(event); return InjectSucceeds;
     }
     bool inject_button(const desklink::MouseButtonMessage& event) override {
         buttons.push_back(event); return true;
     }
     bool inject_pointer(const desklink::PointerPositionMessage& event) override {
-        pointers.push_back(event); return true;
+        pointers.push_back(event); return InjectSucceeds;
     }
     bool InjectPointerMotion(
         const desklink::PointerMotionMessage& Message) override {
-        motions.push_back(Message); return true;
+        motions.push_back(Message); return InjectSucceeds;
     }
     bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
-        wheels.push_back(Message); return true;
+        wheels.push_back(Message); return InjectSucceeds;
     }
     bool ReconcileState(const desklink::InputStateSnapshotMessage& Snapshot) override {
         snapshots.push_back(Snapshot); return ReconcileSucceeds;
@@ -147,6 +148,8 @@ public:
     std::vector<desklink::InputStateSnapshotMessage> snapshots;
     std::optional<desklink::PointerPositionMessage> CurrentPointer;
     bool ReconcileSucceeds{true};
+    bool Ready{true};
+    bool InjectSucceeds{true};
     bool ReleaseSucceeds{true};
     bool ParkSucceeds{true};
     int release_calls{};
@@ -6447,6 +6450,90 @@ void ProductMonitorLayoutSaveIsOrderedAndFailsLocal() {
     CHECK((Events == std::vector<std::string>{"local"}));
 }
 
+void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x71'82'95u;
+    const auto IdentityA = MakeIdentity(105, "Unavailable A");
+    const auto IdentityB = MakeIdentity(106, "Unavailable B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t ClosedA{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.TransportClosed = [&](TransportCloseReason Reason) {
+        CHECK(Reason == TransportCloseReason::Unavailable);
+        ++ClosedA;
+    };
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA));
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionB.IncomingFocused());
+
+    InjectorB.InjectSucceeds = false;
+    CHECK(SessionA.SendPointerMotion(PointerMotionMessage{4, 2}));
+    CHECK(!SessionB.IncomingFocused());
+    SessionB.Tick();
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(ClosedA == 1);
+}
+
+void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
+    using namespace desklink;
+    ManualClock Clock;
+    RecordingInjector Injector;
+    AgentCoordinator Agent(Clock, Injector);
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Agent.set_peer_capabilities(Capabilities);
+
+    EnvelopeHeader Header;
+    const auto Request = decode_packet(
+        encode_packet(Header, FocusRequestMessage{750, 1}), false);
+    CHECK(Request.packet.has_value());
+    Injector.Ready = false;
+    CHECK(Agent.handle(*Request.packet) ==
+          AgentDecision::RejectedInputUnavailable);
+    CHECK(!Agent.RemoteFocused());
+    CHECK(Agent.InputUnavailable());
+
+    Injector.Ready = true;
+    CHECK(Agent.handle(*Request.packet) == AgentDecision::Accepted);
+    CHECK(Agent.RemoteFocused());
+    CHECK(!Agent.InputUnavailable());
+    Header.epoch = Agent.focus_state().epoch();
+    Header.sequence = 1;
+    const auto Motion = decode_packet(
+        encode_packet(Header, PointerMotionMessage{4, 2}), true);
+    CHECK(Motion.packet.has_value());
+    Injector.InjectSucceeds = false;
+    CHECK(Agent.handle(*Motion.packet) ==
+          AgentDecision::RejectedInputUnavailable);
+    CHECK(!Agent.RemoteFocused());
+    CHECK(Agent.InputUnavailable());
+    CHECK(Injector.release_calls >= 2);
+}
+
 #ifdef DESKLINK_BUILD_VOICE
 void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     using namespace desklink;
@@ -6737,6 +6824,7 @@ int main() {
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
     PeerSessionImmediatelyReacquiresAfterLostRelease();
+    PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable();
     PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();
     PeerSessionResolvesSimultaneousFocusToLocal();
     PeerSessionRequiresTheRemoteDirectionalGrant();
@@ -6758,6 +6846,7 @@ int main() {
     DesiredModeControlIsCapabilityGatedAndFailsLocal();
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
+    UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();
     out_of_order_pointer_rejected();

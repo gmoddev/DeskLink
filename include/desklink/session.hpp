@@ -350,6 +350,7 @@ private:
     mutable std::recursive_mutex Mutex_;
     std::condition_variable_any CapabilityChanged_;
     bool CapabilityConflict_{};
+    bool InputUnavailableClosePending_{};
     bool Started_{};
 };
 
