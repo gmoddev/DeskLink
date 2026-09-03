@@ -108,6 +108,12 @@ desklink::DiscoveryEndpoint MakeDiscoveryEndpoint(
 class RecordingInjector final : public desklink::IInputInjector {
 public:
     bool ReadyForInput() const noexcept override { return Ready; }
+    bool InputDesktopAvailable() noexcept override {
+        return DesktopAvailable;
+    }
+    bool InputDesktopInterruptionObserved() const noexcept override {
+        return InterruptionObserved;
+    }
     bool inject_key(const desklink::KeyEventMessage& event) override {
         keys.push_back(event); return InjectSucceeds;
     }
@@ -152,6 +158,8 @@ public:
     bool InjectSucceeds{true};
     bool ReleaseSucceeds{true};
     bool ParkSucceeds{true};
+    bool DesktopAvailable{true};
+    bool InterruptionObserved{};
     int release_calls{};
     int park_calls{};
 };
@@ -791,6 +799,7 @@ void ControlProtocolRoundTripAndValidation() {
     State.RemoteFocused = true;
     State.CaptureActive = true;
     State.RoamingObserverActive = true;
+    State.InputDesktopInterruptionObserved = true;
     const auto ResponseFrame = EncodeControlResponse(
         ControlResponse{9, ControlStatus::Ok, State});
     CHECK(ResponseFrame.has_value());
@@ -818,6 +827,8 @@ void ControlProtocolRoundTripAndValidation() {
               CommunicationsPlaybackAndVirtualMicrophone);
     CHECK(Response.Decoded->State->VirtualMicrophoneState ==
           ControlVirtualMicrophoneState::Live);
+    CHECK(Response.Decoded->State->InputDesktopAvailable);
+    CHECK(Response.Decoded->State->InputDesktopInterruptionObserved);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -966,6 +977,15 @@ void ControlProtocolRoundTripAndValidation() {
     InvalidRuntimeState.FocusedMachine = {};
     InvalidRuntimeState.RuntimeFailure = BrokerRuntimeFailure::Protocol;
     CHECK(IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RuntimeProcessExitCode = 66;
+    InvalidRuntimeState.RuntimeProcessExitCodeAvailable = true;
+    CHECK(IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RuntimeProcessExitCodeAvailable = false;
+    CHECK(!IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RuntimeProcessExitCode = 0;
+    InvalidRuntimeState.RuntimeProcessExitCodeAvailable = true;
+    CHECK(IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RuntimeProcessExitCodeAvailable = false;
     InvalidRuntimeState.RuntimePhase = BrokerRuntimePhase::RetryWaiting;
     CHECK(!IsValidControlState(InvalidRuntimeState));
     InvalidRuntimeState.RuntimeFailure =
@@ -3632,6 +3652,45 @@ void DesiredModeControlIsCapabilityGatedAndFailsLocal() {
     Agent.SetLocalDesiredMode(DeskMode::Roam);
     CHECK(Agent.handle(*FocusPacket.packet) == AgentDecision::Accepted);
     CHECK(Agent.RemoteFocused());
+}
+
+void SecureDesktopTemporarilyRejectsInputWithoutMalformedFailure() {
+    using namespace desklink;
+
+    ManualClock Clock;
+    RecordingInjector Injector;
+    Injector.DesktopAvailable = false;
+    Injector.InterruptionObserved = true;
+    AgentCoordinator Agent(Clock, Injector);
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Agent.set_peer_capabilities(Capabilities);
+
+    EnvelopeHeader Header;
+    auto Focus = decode_packet(
+        encode_packet(Header, FocusRequestMessage{750, 1}), false);
+    CHECK(Focus.packet.has_value());
+    CHECK(Agent.handle(*Focus.packet) == AgentDecision::RejectedLease);
+    CHECK(!Agent.RemoteFocused());
+    CHECK(Injector.InputDesktopInterruptionObserved());
+
+    Injector.DesktopAvailable = true;
+    CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+    const auto Epoch = Agent.focus_state().epoch();
+    Header.epoch = Epoch;
+    Header.sequence = 1;
+    auto Key = decode_packet(
+        encode_packet(Header, KeyEventMessage{0x1D, false, true}), false);
+    CHECK(Key.packet.has_value());
+
+    Injector.DesktopAvailable = false;
+    CHECK(Agent.handle(*Key.packet) == AgentDecision::RejectedLease);
+    CHECK(Injector.keys.empty());
+    CHECK(Agent.RemoteFocused());
+
+    Injector.DesktopAvailable = true;
+    CHECK(Agent.handle(*Key.packet) == AgentDecision::Accepted);
+    CHECK(Injector.keys.size() == 1);
 }
 
 void stale_epoch_rejected_after_refocus() {
@@ -6962,6 +7021,7 @@ int main() {
     rejects_wrong_lane_and_oversize();
     capability_and_lease_gate_input();
     DesiredModeControlIsCapabilityGatedAndFailsLocal();
+    SecureDesktopTemporarilyRejectsInputWithoutMalformedFailure();
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
     UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();

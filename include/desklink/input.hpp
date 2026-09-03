@@ -15,6 +15,12 @@ public:
     // desktop or foreground process into which this process cannot inject.
     // The default keeps non-Windows/test injectors source compatible.
     [[nodiscard]] virtual bool ReadyForInput() const noexcept { return true; }
+    // Desktop availability is reported separately from foreground-integrity
+    // admission so a secure-desktop transition can fail Local without
+    // misclassifying or closing the authenticated peer transport.
+    [[nodiscard]] virtual bool InputDesktopAvailable() noexcept { return true; }
+    [[nodiscard]] virtual bool InputDesktopInterruptionObserved()
+        const noexcept { return false; }
     virtual bool inject_key(const KeyEventMessage& event) = 0;
     virtual bool inject_button(const MouseButtonMessage& event) = 0;
     virtual bool inject_pointer(const PointerPositionMessage& event) = 0;

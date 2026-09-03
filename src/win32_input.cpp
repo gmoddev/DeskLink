@@ -7,12 +7,15 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 namespace desklink {
 namespace {
+
+constexpr std::uint64_t kInputDesktopCheckIntervalMilliseconds = 50;
 
 bool send_one(INPUT input) {
     return SendInput(1, &input, static_cast<int>(sizeof(INPUT))) == 1;
@@ -78,6 +81,23 @@ DWORD xbutton_data(MouseButtonId button) {
 
 } // namespace
 
+bool IsWin32DefaultInputDesktop() noexcept {
+    const auto Desktop = OpenInputDesktop(
+        0, FALSE, DESKTOP_READOBJECTS);
+    if (!Desktop) return false;
+
+    std::array<wchar_t, 64> Name{};
+    DWORD Required{};
+    const bool Read = GetUserObjectInformationW(
+        Desktop, UOI_NAME, Name.data(),
+        static_cast<DWORD>(Name.size() * sizeof(wchar_t)), &Required) != FALSE;
+    const bool IsDefault = Read && Required != 0 &&
+        CompareStringOrdinal(
+            Name.data(), -1, L"Default", -1, TRUE) == CSTR_EQUAL;
+    CloseDesktop(Desktop);
+    return IsDefault;
+}
+
 bool ParkWin32Pointer() noexcept {
     POINT Cursor{};
     if (!GetCursorPos(&Cursor)) return false;
@@ -106,6 +126,28 @@ bool ParkWin32Pointer() noexcept {
 
 Win32InputInjector::Win32InputInjector() {
     (void)DisplayTopology_.Refresh();
+    InputDesktopAvailable_ = IsWin32DefaultInputDesktop();
+    InputDesktopInterruptionObserved_ = !InputDesktopAvailable_;
+    NextInputDesktopCheck_ = GetTickCount64() +
+        kInputDesktopCheckIntervalMilliseconds;
+}
+
+bool Win32InputInjector::InputDesktopAvailable() noexcept {
+    const auto Now = GetTickCount64();
+    if (Now >= NextInputDesktopCheck_) {
+        NextInputDesktopCheck_ = Now +
+            kInputDesktopCheckIntervalMilliseconds;
+        InputDesktopAvailable_ = IsWin32DefaultInputDesktop();
+        if (!InputDesktopAvailable_) {
+            InputDesktopInterruptionObserved_ = true;
+        }
+    }
+    return InputDesktopAvailable_;
+}
+
+bool Win32InputInjector::InputDesktopInterruptionObserved()
+    const noexcept {
+    return InputDesktopInterruptionObserved_;
 }
 
 bool Win32InputInjector::ReadyForInput() const noexcept {

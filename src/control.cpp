@@ -1079,6 +1079,7 @@ void EncodeState(Writer& Output, const ControlState& State) {
     Output.U16(State.VoiceGainPermyriad);
     Output.U16(State.RetryAttempt);
     Output.U32(State.RetryDelayMilliseconds);
+    Output.U32(State.RuntimeProcessExitCode);
     Output.U8(static_cast<std::uint8_t>(State.RuntimePhase));
     Output.U8(static_cast<std::uint8_t>(State.RuntimeFailure));
     Output.U8(static_cast<std::uint8_t>(State.RoamingState));
@@ -1099,6 +1100,9 @@ void EncodeState(Writer& Output, const ControlState& State) {
     std::uint8_t VoiceFlags = 0;
     if (State.VoiceInputUnavailable) VoiceFlags |= 0x01u;
     if (State.VoicePermissionMissing) VoiceFlags |= 0x02u;
+    if (State.InputDesktopAvailable) VoiceFlags |= 0x04u;
+    if (State.InputDesktopInterruptionObserved) VoiceFlags |= 0x08u;
+    if (State.RuntimeProcessExitCodeAvailable) VoiceFlags |= 0x10u;
     Output.U8(VoiceFlags);
 }
 
@@ -1121,6 +1125,7 @@ std::optional<ControlState> DecodeState(Reader& Input) {
         !Input.U16(State.VoiceGainPermyriad) ||
         !Input.U16(State.RetryAttempt) ||
         !Input.U32(State.RetryDelayMilliseconds) ||
+        !Input.U32(State.RuntimeProcessExitCode) ||
         !Input.U8(RawRuntimePhase) || !Input.U8(RawRuntimeFailure) ||
         !Input.U8(RawRoamingState) || !Input.U8(RawPeerDirection) ||
         !Input.U8(RawVoiceDestination) ||
@@ -1151,7 +1156,10 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.VoiceTransmitting = (Flags & 0x80u) != 0;
     State.VoiceInputUnavailable = (VoiceFlags & 0x01u) != 0;
     State.VoicePermissionMissing = (VoiceFlags & 0x02u) != 0;
-    if ((VoiceFlags & 0xfcu) != 0 || !IsValidControlState(State)) {
+    State.InputDesktopAvailable = (VoiceFlags & 0x04u) != 0;
+    State.InputDesktopInterruptionObserved = (VoiceFlags & 0x08u) != 0;
+    State.RuntimeProcessExitCodeAvailable = (VoiceFlags & 0x10u) != 0;
+    if ((VoiceFlags & 0xe0u) != 0 || !IsValidControlState(State)) {
         return std::nullopt;
     }
     return State;
@@ -1400,7 +1408,8 @@ bool IsValidControlState(const ControlState& State) noexcept {
         return false;
     }
     if (State.CaptureActive && (!State.RemoteFocused ||
-                                State.Role != ControlRole::Host)) {
+                                State.Role != ControlRole::Host ||
+                                !State.InputDesktopAvailable)) {
         return false;
     }
     if (State.RemoteFocused && !IsNonzeroMachine(State.FocusedMachine)) {
@@ -1426,6 +1435,14 @@ bool IsValidControlState(const ControlState& State) noexcept {
     }
     if (!State.VoiceEnabled &&
         (State.VoicePttReady || State.VoiceTransmitting)) {
+        return false;
+    }
+    if (!State.RuntimeProcessExitCodeAvailable &&
+        State.RuntimeProcessExitCode != 0) {
+        return false;
+    }
+    if (State.RuntimeProcessExitCodeAvailable &&
+        State.RuntimePhase != BrokerRuntimePhase::ActionRequired) {
         return false;
     }
     return true;

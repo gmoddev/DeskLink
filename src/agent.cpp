@@ -40,6 +40,9 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
 
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
+        if (!injector_.InputDesktopAvailable()) {
+            return AgentDecision::RejectedLease;
+        }
         if (!injector_.ReadyForInput()) return RejectInputUnavailable();
         const auto& request = std::get<FocusRequestMessage>(packet.message);
         if (focus_.focus() == FocusLocation::Remote && !ReleaseOwnedState()) {
@@ -78,6 +81,12 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         type == MessageType::InputStateSnapshot ||
         type == MessageType::MouseWheel) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
+        // Secure desktop ownership is an expected, temporary Windows safety
+        // boundary. Reject input without classifying the authenticated packet
+        // as malformed or tearing down its transport.
+        if (!injector_.InputDesktopAvailable()) {
+            return AgentDecision::RejectedLease;
+        }
         if (InputCleanupPending_) return AgentDecision::RejectedLease;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         if (!focus_.accepts_remote_input(packet.header.epoch)) return AgentDecision::RejectedLease;
