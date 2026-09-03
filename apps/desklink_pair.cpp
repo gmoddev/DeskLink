@@ -1951,164 +1951,6 @@ struct HostRuntime {
         return Receiver.Muted();
     }
 
-    [[nodiscard]] bool SetVoiceTransmit(bool Active) noexcept {
-        std::scoped_lock Lock(ModuleLifecycleMutex);
-        if (!Active) {
-            StopVoiceTransmitLocked();
-            return true;
-        }
-        return StartVoiceTransmitLocked();
-    }
-
-    void SetVoiceMuted(bool Muted) noexcept {
-        std::scoped_lock Lock(ModuleLifecycleMutex);
-        VoiceMuted_.store(Muted);
-        if (Muted) StopVoiceTransmitLocked();
-    }
-
-    [[nodiscard]] bool StartVoiceTransmitLocked() noexcept {
-        if (VoiceCapture && VoiceCapture->Running()) return true;
-        if (VoiceMuted_.load() || !SendVoiceRequested ||
-            !Session.CanSendVoice()) {
-            return false;
-        }
-        StopVoiceTransmitLocked();
-        try {
-            VoiceEncoder_ = std::make_unique<desklink::VoiceEncoder>();
-            if (!VoiceEncoder_->Ready()) {
-                VoiceEncoder_.reset();
-                return false;
-            }
-            const auto StreamId = NextVoiceStreamId_++;
-            if (NextVoiceStreamId_ == 0) ++NextVoiceStreamId_;
-            desklink::Win32WasapiMicrophoneHandlers Handlers;
-            Handlers.Frame = [this, StreamId](desklink::VoicePcmFrame Pcm) {
-                if (!VoiceTransmitting_.load() || !VoiceEncoder_ ||
-                    !Session.CanSendVoice()) return false;
-                auto Encoded = VoiceEncoder_->Encode(Pcm.Samples);
-                if (!Encoded) {
-                    ++VoiceCodecFailures_;
-                    return false;
-                }
-                desklink::VoiceFrameMessage Frame;
-                Frame.StreamId = StreamId;
-                Frame.CaptureTimestampUs = Pcm.CaptureTimestampUs;
-                Frame.Encoded = std::move(*Encoded);
-                if (!Session.SendVoiceFrame(std::move(Frame))) return false;
-                ++VoiceEncodedFrames_;
-                return true;
-            };
-            Handlers.Failed = [this](desklink::Win32WasapiFailureKind,
-                                     std::string Message) {
-                std::cerr << "[Voice:Capture] "
-                          << (Message.empty() ? "microphone stopped" : Message)
-                          << "; transmission stopped and requires fresh PTT\n";
-                VoiceInputUnavailable_.store(true);
-                VoiceCaptureFailed.store(true);
-            };
-            VoiceCapture = std::make_unique<
-                desklink::Win32WasapiMicrophoneCapture>(
-                    VoiceInputEndpointId_, std::move(Handlers));
-            VoiceCaptureFailed.store(false);
-            VoiceInputUnavailable_.store(false);
-            VoiceTransmitting_.store(true);
-            if (VoiceEchoGuard_) VoiceReceiver.SetMuted(true);
-            if (!VoiceCapture->Start()) {
-                StopVoiceTransmitLocked();
-                VoiceInputUnavailable_.store(true);
-                return false;
-            }
-            ++VoicePttActivations_;
-            std::cout << "[Voice:Privacy] microphone is being sent to authenticated peer\n";
-            return true;
-        } catch (...) {
-            StopVoiceTransmitLocked();
-            VoiceInputUnavailable_.store(true);
-            return false;
-        }
-    }
-
-    void StopVoiceTransmitLocked() noexcept {
-        const bool WasTransmitting = VoiceTransmitting_.exchange(false);
-        if (VoiceCapture) VoiceCapture->Stop();
-        VoiceCapture.reset();
-        VoiceEncoder_.reset();
-        VoiceReceiver.SetMuted(false);
-        if (WasTransmitting) {
-            std::cout << "[Voice:Privacy] microphone transmission stopped\n";
-        }
-    }
-
-    [[nodiscard]] bool StartReceivingVoiceLocked() noexcept {
-        if (VoiceRenderPump.joinable()) return true;
-        if (!Session.CanReceiveVoice()) return false;
-        VoiceReceiver.Reset();
-        (void)VoiceReceiver.SetGainPermyriad(VoiceGainPermyriad_);
-        VoiceRenderStop.store(false);
-        bool Started = false;
-        try {
-            Started = VoiceRenderer.Start();
-            VoiceRenderPump = std::thread([this] {
-                while (!VoiceRenderStop.load()) {
-                    if (VoiceRenderRecovery.exchange(false) ||
-                        !VoiceRenderer.Running()) {
-                        VoiceRenderer.Stop();
-                        VoiceReceiver.Reset();
-                        if (!VoiceRenderStop.load()) {
-                            (void)VoiceRenderer.Start();
-                        }
-                    }
-                    (void)VoiceReceiver.PumpAvailable();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                }
-            });
-        } catch (...) {
-            VoiceRenderer.Stop();
-            return false;
-        }
-        if (!Started) VoiceRenderRecovery.store(true);
-        return true;
-    }
-
-    void StopReceivingVoiceLocked() noexcept {
-        VoiceRenderStop.store(true);
-        if (VoiceRenderPump.joinable() &&
-            VoiceRenderPump.get_id() != std::this_thread::get_id()) {
-            VoiceRenderPump.join();
-        }
-        VoiceRenderer.Stop();
-        VoiceReceiver.Reset();
-    }
-
-    void StopVoice() noexcept {
-        std::scoped_lock Lock(ModuleLifecycleMutex);
-        StopVoiceTransmitLocked();
-        StopReceivingVoiceLocked();
-    }
-
-    [[nodiscard]] bool VoiceEnabled() const noexcept {
-        return SendVoiceRequested || ReceiveVoiceRequested;
-    }
-    [[nodiscard]] bool VoiceMuted() const noexcept {
-        return VoiceMuted_.load();
-    }
-    [[nodiscard]] bool VoiceTransmitting() const noexcept {
-        return VoiceTransmitting_.load();
-    }
-    [[nodiscard]] bool VoicePttReady() const noexcept {
-        return SendVoiceRequested && !VoiceMuted_.load() &&
-            Session.CanSendVoice();
-    }
-    [[nodiscard]] bool VoicePermissionMissing() const noexcept {
-        return SendVoiceRequested && !Session.CanSendVoice();
-    }
-    [[nodiscard]] bool VoiceInputUnavailable() const noexcept {
-        return VoiceInputUnavailable_.load();
-    }
-    [[nodiscard]] std::uint16_t VoiceGainPermyriad() const noexcept {
-        return VoiceGainPermyriad_;
-    }
-
     void RequestAudioRecovery(
         desklink::Win32WasapiFailureKind Kind,
         std::string Message) noexcept {
@@ -2240,8 +2082,6 @@ struct HostRuntime {
     desklink::HostCoordinator Coordinator;
     desklink::Win32WasapiRenderer Renderer;
     desklink::AudioReceiver Receiver;
-    desklink::Win32WasapiVoiceRenderer VoiceRenderer;
-    desklink::VoiceReceiver VoiceReceiver;
     desklink::HostSession Session;
     std::atomic_bool AudioStop{};
     std::atomic_uint64_t AudioRecoveryGeneration{};
@@ -2697,6 +2537,165 @@ struct PeerRuntime {
         return Receiver.Muted();
     }
 
+    [[nodiscard]] bool SetVoiceTransmit(bool Active) noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        if (!Active) {
+            StopVoiceTransmitLocked();
+            return true;
+        }
+        return StartVoiceTransmitLocked();
+    }
+
+    void SetVoiceMuted(bool Muted) noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        VoiceMuted_.store(Muted);
+        if (Muted) StopVoiceTransmitLocked();
+    }
+
+    [[nodiscard]] bool StartVoiceTransmitLocked() noexcept {
+        if (VoiceCapture && VoiceCapture->Running()) return true;
+        if (VoiceMuted_.load() || !SendVoiceRequested ||
+            !Session.CanSendVoice()) {
+            return false;
+        }
+        StopVoiceTransmitLocked();
+        try {
+            VoiceEncoder_ = std::make_unique<desklink::VoiceEncoder>();
+            if (!VoiceEncoder_->Ready()) {
+                VoiceEncoder_.reset();
+                return false;
+            }
+            const auto StreamId = NextVoiceStreamId_++;
+            if (NextVoiceStreamId_ == 0) ++NextVoiceStreamId_;
+            desklink::Win32WasapiMicrophoneHandlers Handlers;
+            Handlers.Frame = [this, StreamId](desklink::VoicePcmFrame Pcm) {
+                if (!VoiceTransmitting_.load() || !VoiceEncoder_ ||
+                    !Session.CanSendVoice()) return false;
+                auto Encoded = VoiceEncoder_->Encode(Pcm.Samples);
+                if (!Encoded) {
+                    ++VoiceCodecFailures_;
+                    return false;
+                }
+                desklink::VoiceFrameMessage Frame;
+                Frame.StreamId = StreamId;
+                Frame.CaptureTimestampUs = Pcm.CaptureTimestampUs;
+                Frame.Encoded = std::move(*Encoded);
+                if (!Session.SendVoiceFrame(std::move(Frame))) return false;
+                ++VoiceEncodedFrames_;
+                return true;
+            };
+            Handlers.Failed = [this](desklink::Win32WasapiFailureKind,
+                                     std::string Message) {
+                std::cerr << "[Voice:Capture] "
+                          << (Message.empty() ? "microphone stopped" : Message)
+                          << "; transmission stopped and requires fresh PTT\n";
+                VoiceInputUnavailable_.store(true);
+                VoiceCaptureFailed.store(true);
+            };
+            VoiceCapture = std::make_unique<
+                desklink::Win32WasapiMicrophoneCapture>(
+                    VoiceInputEndpointId_, std::move(Handlers));
+            VoiceCaptureFailed.store(false);
+            VoiceInputUnavailable_.store(false);
+            VoiceTransmitting_.store(true);
+            if (VoiceEchoGuard_) VoiceReceiver.SetMuted(true);
+            if (!VoiceCapture->Start()) {
+                StopVoiceTransmitLocked();
+                VoiceInputUnavailable_.store(true);
+                return false;
+            }
+            ++VoicePttActivations_;
+            std::cout
+                << "[Voice:Privacy] microphone is being sent to authenticated peer\n";
+            return true;
+        } catch (...) {
+            StopVoiceTransmitLocked();
+            VoiceInputUnavailable_.store(true);
+            return false;
+        }
+    }
+
+    void StopVoiceTransmitLocked() noexcept {
+        const bool WasTransmitting = VoiceTransmitting_.exchange(false);
+        if (VoiceCapture) VoiceCapture->Stop();
+        VoiceCapture.reset();
+        VoiceEncoder_.reset();
+        VoiceReceiver.SetMuted(false);
+        if (WasTransmitting) {
+            std::cout << "[Voice:Privacy] microphone transmission stopped\n";
+        }
+    }
+
+    [[nodiscard]] bool StartReceivingVoiceLocked() noexcept {
+        if (VoiceRenderPump.joinable()) return true;
+        if (!Session.CanReceiveVoice()) return false;
+        VoiceReceiver.Reset();
+        (void)VoiceReceiver.SetGainPermyriad(VoiceGainPermyriad_);
+        VoiceRenderStop.store(false);
+        bool Started = false;
+        try {
+            Started = VoiceRenderer.Start();
+            VoiceRenderPump = std::thread([this] {
+                while (!VoiceRenderStop.load()) {
+                    if (VoiceRenderRecovery.exchange(false) ||
+                        !VoiceRenderer.Running()) {
+                        VoiceRenderer.Stop();
+                        VoiceReceiver.Reset();
+                        if (!VoiceRenderStop.load()) {
+                            (void)VoiceRenderer.Start();
+                        }
+                    }
+                    (void)VoiceReceiver.PumpAvailable();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            });
+        } catch (...) {
+            VoiceRenderer.Stop();
+            return false;
+        }
+        if (!Started) VoiceRenderRecovery.store(true);
+        return true;
+    }
+
+    void StopReceivingVoiceLocked() noexcept {
+        VoiceRenderStop.store(true);
+        if (VoiceRenderPump.joinable() &&
+            VoiceRenderPump.get_id() != std::this_thread::get_id()) {
+            VoiceRenderPump.join();
+        }
+        VoiceRenderer.Stop();
+        VoiceReceiver.Reset();
+    }
+
+    void StopVoice() noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        StopVoiceTransmitLocked();
+        StopReceivingVoiceLocked();
+    }
+
+    [[nodiscard]] bool VoiceEnabled() const noexcept {
+        return SendVoiceRequested || ReceiveVoiceRequested;
+    }
+    [[nodiscard]] bool VoiceMuted() const noexcept {
+        return VoiceMuted_.load();
+    }
+    [[nodiscard]] bool VoiceTransmitting() const noexcept {
+        return VoiceTransmitting_.load();
+    }
+    [[nodiscard]] bool VoicePttReady() const noexcept {
+        return SendVoiceRequested && !VoiceMuted_.load() &&
+            Session.CanSendVoice();
+    }
+    [[nodiscard]] bool VoicePermissionMissing() const noexcept {
+        return SendVoiceRequested && !Session.CanSendVoice();
+    }
+    [[nodiscard]] bool VoiceInputUnavailable() const noexcept {
+        return VoiceInputUnavailable_.load();
+    }
+    [[nodiscard]] std::uint16_t VoiceGainPermyriad() const noexcept {
+        return VoiceGainPermyriad_;
+    }
+
     void RequestRenderRecovery(
         desklink::Win32WasapiFailureKind Kind,
         std::string Message) noexcept {
@@ -3004,6 +3003,8 @@ struct PeerRuntime {
     AudioLatencyDiagnostics LatencyDiagnostics;
     desklink::Win32WasapiRenderer Renderer;
     desklink::AudioReceiver Receiver;
+    desklink::Win32WasapiVoiceRenderer VoiceRenderer;
+    desklink::VoiceReceiver VoiceReceiver;
     desklink::Win32ClipboardSynchronizer Clipboard;
     desklink::PeerSession Session;
     bool ClipboardRequested{};
