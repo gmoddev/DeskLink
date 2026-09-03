@@ -682,6 +682,12 @@
                                 <TextBlock x:Name="DiagnosticRuntimePhase" Text="Starting" />
                                 <TextBlock Text="Last failure" FontWeight="SemiBold" Margin="0,8,0,0" />
                                 <TextBlock x:Name="DiagnosticRuntimeFailure" Text="None" TextWrapping="Wrap" />
+                                <TextBlock Text="Managed process exit" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock x:Name="DiagnosticRuntimeExitCode" Text="Not recorded" TextWrapping="Wrap" />
+                                <TextBlock Text="Windows input desktop" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock x:Name="DiagnosticInputDesktop" Text="Default desktop available" TextWrapping="Wrap" />
+                                <TextBlock Text="Last input safety event" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock x:Name="DiagnosticInputSafetyEvent" Text="None observed" TextWrapping="Wrap" />
                                 <TextBlock Text="Automatic retry" FontWeight="SemiBold" Margin="0,8,0,0" />
                                 <TextBlock x:Name="DiagnosticRetryStatus" Text="Not scheduled" TextWrapping="Wrap" />
                                 <TextBlock Text="Recommended action" FontWeight="SemiBold" Margin="0,8,0,0" />

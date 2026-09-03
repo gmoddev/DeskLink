@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 10;
+inline constexpr std::uint16_t kControlProtocolVersion = 11;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -275,6 +275,7 @@ struct ControlState {
     std::uint16_t AudioGainPermyriad{10'000};
     std::uint16_t RetryAttempt{};
     std::uint32_t RetryDelayMilliseconds{};
+    std::uint32_t RuntimeProcessExitCode{};
     BrokerRuntimePhase RuntimePhase{BrokerRuntimePhase::Stopped};
     BrokerRuntimeFailure RuntimeFailure{BrokerRuntimeFailure::None};
     ControlRoamingState RoamingState{ControlRoamingState::Unavailable};
@@ -285,6 +286,9 @@ struct ControlState {
     bool CaptureActive{};
     bool AudioMuted{};
     bool RoamingObserverActive{};
+    bool InputDesktopAvailable{true};
+    bool InputDesktopInterruptionObserved{};
+    bool RuntimeProcessExitCodeAvailable{};
 };
 
 struct ControlMachineTopology {
