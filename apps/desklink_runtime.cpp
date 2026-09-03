@@ -580,6 +580,10 @@ public:
         Changed_.notify_all();
     }
 
+    void ReconcileExitedChild() noexcept {
+        (void)ConsumeExitedChild();
+    }
+
     [[nodiscard]] desklink::BrokerRuntimeSnapshot Snapshot() const noexcept {
         std::scoped_lock Lock(Mutex_);
         return Reconnect_.Snapshot();
@@ -960,43 +964,39 @@ private:
         }
     }
 
-    [[nodiscard]] bool ObserveChildExit() {
-        HANDLE Process{};
-        {
-            std::scoped_lock Lock(Mutex_);
-            Process = Process_.Get();
-        }
-        if (!Process) return false;
+    [[nodiscard]] bool ConsumeExitedChild() noexcept {
+        bool WaitFailed{};
         DWORD ExitCode{};
-        if (!GetExitCodeProcess(Process, &ExitCode)) {
-            StopChildAfterControlFailure(
-                desklink::BrokerRuntimeFailure::Unknown);
-            return true;
-        }
-        if (ExitCode == STILL_ACTIVE) {
-            {
-                std::scoped_lock Lock(Mutex_);
-                if (Stopping_) return false;
-                if (Transitioning_ || Blocked_) return true;
-            }
-            PollChildState();
-            return true;
-        }
-
         bool Intentional{};
         bool WasBlocked{};
         {
             std::scoped_lock Lock(Mutex_);
-            Process_.Reset();
-            Intentional = std::exchange(IntentionalStop_, false);
-            WasBlocked = Blocked_;
-            if (ExitCode == 0 && (Intentional || WasBlocked)) {
-                // An orderly child exit proves its fail-local cleanup finished.
-                // Clear a previous cleanup block so the managed session can be
-                // recreated from persisted configuration.
-                Blocked_ = false;
-                Reconnect_.ResetForConfiguration(Clock_.now());
+            if (!Process_) return false;
+            const auto Wait = WaitForSingleObject(Process_.Get(), 0);
+            if (Wait == WAIT_TIMEOUT) {
+                return false;
+            } else if (Wait == WAIT_OBJECT_0) {
+                if (!GetExitCodeProcess(Process_.Get(), &ExitCode)) {
+                    ExitCode = desklink::kBrokerManagedActionRequiredProcessExit;
+                }
+                Process_.Reset();
+                Intentional = std::exchange(IntentionalStop_, false);
+                WasBlocked = Blocked_;
+                if (ExitCode == 0 && (Intentional || WasBlocked)) {
+                    // An orderly child exit proves its fail-local cleanup
+                    // finished. Clear a previous cleanup block so the managed
+                    // session can be recreated from persisted configuration.
+                    Blocked_ = false;
+                    Reconnect_.ResetForConfiguration(Clock_.now());
+                }
+            } else {
+                WaitFailed = true;
             }
+        }
+        if (WaitFailed) {
+            StopChildAfterControlFailure(
+                desklink::BrokerRuntimeFailure::Unknown);
+            return true;
         }
         std::cout << "[Broker:Process] managed transport exited; code="
                   << ExitCode << '\n';
@@ -1005,6 +1005,18 @@ private:
                 desklink::ClassifyBrokerManagedProcessExit(ExitCode));
         }
         Changed_.notify_all();
+        return true;
+    }
+
+    [[nodiscard]] bool ObserveChildExit() {
+        if (ConsumeExitedChild()) return true;
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (!Process_) return false;
+            if (Stopping_) return false;
+            if (Transitioning_ || Blocked_) return true;
+        }
+        PollChildState();
         return true;
     }
 
@@ -2318,6 +2330,11 @@ int wmain(int Count, wchar_t** Values) {
             }
             return 1;
         }
+        // Keep process-exit reconciliation independent from child control-pipe
+        // polling. A transport that disappears while a state request is in
+        // flight must still leave Connected and enter its typed retry or
+        // action-required state within one broker tick.
+        Supervisor.ReconcileExitedChild();
         if (!ProductShellPresent()) PermissionCandidates.RejectAll();
         if (Server.Running()) continue;
         Server.Stop();
