@@ -287,6 +287,25 @@ fresh connection and session nonce after rejection. Existing tests continue to
 prove that pre-validation MsQuic stream traffic is unavailable. Phase 2 does
 not request focus, enable capture, or switch an edge.
 
+### Windows secure-desktop recovery validation
+
+Portable coordinator tests make an otherwise authorized injector temporarily
+unavailable, prove that focus and input are rejected as lease-unavailable (not
+malformed), prove that no event reaches the injector, and then admit the same
+valid input after availability returns. Control-codec tests round-trip the
+current input-desktop bit, the sticky interruption bit, and the exact managed
+process exit code while rejecting inconsistent exit metadata.
+
+The Windows capture and WinUI targets compile with the `Default`-desktop
+watcher enabled. Final hands-on validation must start from an authenticated
+roaming session, open and cancel a standard UAC consent prompt on each PC in
+turn, and verify all of the following: suppression clears immediately; no
+input reaches the peer or elevated surface; the managed transport PID and
+session remain alive; Diagnostics records the interruption; returning to the
+normal desktop re-arms roaming; and a fresh edge crossing works without pairing
+or reconnecting. This interactive UAC check is not simulated or silently
+approved by CI.
+
 ### Phase 3 configurator validation
 
 Portable tests build EDID-sized and DPI-estimated display cards, retain saved

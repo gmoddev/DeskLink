@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "desklink/win32_capture.hpp"
+#include "desklink/win32_input.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -30,6 +31,8 @@ constexpr UINT kQueueOverflowMessage = WM_APP + 0x46u;
 constexpr UINT kKeyboardCaptureFailureMessage = WM_APP + 0x47u;
 constexpr UINT kMouseWheelCaptureFailureMessage = WM_APP + 0x48u;
 constexpr UINT kReturnLocalMessage = WM_APP + 0x49u;
+constexpr UINT_PTR kInputDesktopTimer = 1;
+constexpr UINT kInputDesktopPollMilliseconds = 50;
 constexpr std::size_t kMaximumQueuedEvents = 1024;
 constexpr wchar_t kCaptureWindowClass[] = L"DeskLink.RawInputCapture.v1";
 
@@ -105,6 +108,8 @@ struct Win32InputCapture::State {
     bool StartComplete{};
     bool StartSucceeded{};
     bool StopWorker{};
+    std::atomic_bool InputDesktopAvailable{true};
+    std::optional<bool> LastInputDesktopAvailability;
 
     void ClearQueue() {
         std::scoped_lock Lock(QueueMutex);
@@ -127,6 +132,23 @@ struct Win32InputCapture::State {
         Gate.SetRemoteRouting(false);
         ClearQueue();
         if (Handlers.ReturnLocal) Handlers.ReturnLocal();
+    }
+
+    void ObserveInputDesktop() {
+        const bool Available = IsWin32DefaultInputDesktop();
+        if (LastInputDesktopAvailability &&
+            *LastInputDesktopAvailability == Available) {
+            return;
+        }
+        LastInputDesktopAvailability = Available;
+        InputDesktopAvailable.store(Available, std::memory_order_release);
+        if (!Available) {
+            Gate.SetRemoteRouting(false);
+            ClearQueue();
+        }
+        if (Handlers.InputDesktopChanged) {
+            Handlers.InputDesktopChanged(Available);
+        }
     }
 
     bool Enqueue(CapturedEvent Event) {
@@ -392,6 +414,10 @@ LRESULT CALLBACK CaptureWindowProc(HWND Window,
         State->HandleRawInput(reinterpret_cast<HRAWINPUT>(LParam));
         return DefWindowProcW(Window, Message, WParam, LParam);
     }
+    if (Message == WM_TIMER && WParam == kInputDesktopTimer && State) {
+        State->ObserveInputDesktop();
+        return 0;
+    }
     return DefWindowProcW(Window, Message, WParam, LParam);
 }
 
@@ -541,6 +567,8 @@ bool Win32InputCapture::Start() {
     State_->MotionScaler.Reset();
     State_->StartComplete = false;
     State_->StartSucceeded = false;
+    State_->InputDesktopAvailable.store(true, std::memory_order_release);
+    State_->LastInputDesktopAvailability.reset();
     State_->WorkerThread = std::thread([State = State_.get()] {
         for (;;) {
             CapturedEvent Event;
@@ -552,6 +580,10 @@ bool Win32InputCapture::Start() {
                 if (State->StopWorker && State->Queue.empty()) return;
                 Event = std::move(State->Queue.front());
                 State->Queue.pop_front();
+            }
+            if (!State->InputDesktopAvailable.load(
+                    std::memory_order_acquire)) {
+                continue;
             }
             try {
                 std::visit([&](auto&& Value) {
@@ -615,6 +647,12 @@ bool Win32InputCapture::Start() {
                 WH_MOUSE_LL, MouseHook, Instance, 0);
             Success = State->KeyboardHook && State->MouseHook;
         }
+        if (Success) {
+            Success = SetTimer(
+                State->Window, kInputDesktopTimer,
+                kInputDesktopPollMilliseconds, nullptr) != 0;
+        }
+        if (Success) State->ObserveInputDesktop();
         POINT Cursor{};
         if (Success && GetCursorPos(&Cursor)) {
             const auto Left = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -660,6 +698,7 @@ bool Win32InputCapture::Start() {
             }
         }
         State->Gate.SetRemoteRouting(false);
+        if (State->Window) KillTimer(State->Window, kInputDesktopTimer);
         if (State->KeyboardHook) UnhookWindowsHookEx(State->KeyboardHook);
         if (State->MouseHook) UnhookWindowsHookEx(State->MouseHook);
         if (State->Window) DestroyWindow(State->Window);
@@ -677,7 +716,9 @@ bool Win32InputCapture::Start() {
 }
 
 void Win32InputCapture::SetRemoteRouting(bool Enabled) noexcept {
-    State_->Gate.SetRemoteRouting(Enabled);
+    State_->Gate.SetRemoteRouting(
+        Enabled && State_->InputDesktopAvailable.load(
+            std::memory_order_acquire));
     if (!Enabled) State_->ClearQueue();
 }
 
