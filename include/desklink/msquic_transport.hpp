@@ -8,6 +8,7 @@
 #endif
 #include <msquic.h>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -52,6 +53,8 @@ public:
     void set_close_handler(CloseHandler Handler) override;
     [[nodiscard]] TransportPeerInfo peer_info() const override;
     void close() noexcept override;
+    [[nodiscard]] bool WaitForShutdownComplete(
+        std::chrono::milliseconds Timeout) const noexcept;
 
 private:
     explicit MsQuicTransportEndpoint(std::shared_ptr<State> SharedState);

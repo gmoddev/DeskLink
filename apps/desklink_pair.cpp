@@ -916,6 +916,42 @@ std::string_view ControlRoleName(desklink::ControlRole Role) noexcept {
     return "invalid";
 }
 
+std::string_view BrokerRuntimePhaseName(
+    desklink::BrokerRuntimePhase Phase) noexcept {
+    switch (Phase) {
+        case desklink::BrokerRuntimePhase::Stopped: return "stopped";
+        case desklink::BrokerRuntimePhase::Paused: return "paused";
+        case desklink::BrokerRuntimePhase::Listening: return "listening";
+        case desklink::BrokerRuntimePhase::Discovering: return "discovering";
+        case desklink::BrokerRuntimePhase::Connecting: return "connecting";
+        case desklink::BrokerRuntimePhase::ConnectedLocal:
+            return "connected-local";
+        case desklink::BrokerRuntimePhase::RetryWaiting: return "retry-waiting";
+        case desklink::BrokerRuntimePhase::ActionRequired:
+            return "action-required";
+    }
+    return "invalid";
+}
+
+std::string_view BrokerRuntimeFailureName(
+    desklink::BrokerRuntimeFailure Failure) noexcept {
+    switch (Failure) {
+        case desklink::BrokerRuntimeFailure::None: return "none";
+        case desklink::BrokerRuntimeFailure::OrdinaryUnavailable:
+            return "ordinary-unavailable";
+        case desklink::BrokerRuntimeFailure::Security: return "security";
+        case desklink::BrokerRuntimeFailure::Identity: return "identity";
+        case desklink::BrokerRuntimeFailure::Credential: return "credential";
+        case desklink::BrokerRuntimeFailure::Signing: return "signing";
+        case desklink::BrokerRuntimeFailure::Authentication:
+            return "authentication";
+        case desklink::BrokerRuntimeFailure::Capability: return "capability";
+        case desklink::BrokerRuntimeFailure::Protocol: return "protocol";
+        case desklink::BrokerRuntimeFailure::Unknown: return "unknown";
+    }
+    return "invalid";
+}
+
 desklink::ControlRoamingState ToControlRoamingState(
     desklink::RoamingRuntimeState State) noexcept {
     return static_cast<desklink::ControlRoamingState>(
@@ -1036,6 +1072,12 @@ int RunControl(const CommandLine& Command) {
     std::cout << "[Control:State] role=" << ControlRoleName(State.Role)
               << " mode=" << DeskModeName(State.DesiredMode)
               << " peers=" << State.ConnectedPeerCount
+              << " runtime_phase="
+              << BrokerRuntimePhaseName(State.RuntimePhase)
+              << " runtime_failure="
+              << BrokerRuntimeFailureName(State.RuntimeFailure)
+              << " retry_attempt=" << State.RetryAttempt
+              << " retry_delay_ms=" << State.RetryDelayMilliseconds
               << " remote_focused=" << (State.RemoteFocused ? "true" : "false")
               << " capture_active=" << (State.CaptureActive ? "true" : "false")
               << " roaming_state="
@@ -2487,6 +2529,14 @@ struct PeerRuntime {
                       << Statistics.ClockDriftDiscontinuities << '\n';
         }
         Receiver.Reset();
+    }
+
+    void StopSession() noexcept {
+        Session.Stop();
+        if (!Endpoint->WaitForShutdownComplete(std::chrono::seconds(2))) {
+            std::cerr
+                << "[Transport:Shutdown] graceful admitted-session close timed out; bootstrap cleanup remains fail-closed\n";
+        }
     }
 
     void RequestCaptureRecovery(
@@ -4559,7 +4609,7 @@ int RunTrusted(const CommandLine& Command,
         Runtime->StartClipboard();
         if (!Runtime->Session.Start()) {
             Runtime->StopClipboard();
-            Runtime->Session.Stop();
+            Runtime->StopSession();
             ReleaseReservation();
             if (Command.Mode == Operation::Focus) {
                 std::scoped_lock Lock(Result->Mutex);
@@ -4595,7 +4645,7 @@ int RunTrusted(const CommandLine& Command,
                 Runtime->StopClipboard();
                 Runtime->StopSendingAudio();
                 Runtime->StopReceivingAudio();
-                Runtime->Session.Stop();
+                Runtime->StopSession();
                 ReleaseReservation();
                 {
                     std::scoped_lock Lock(Result->Mutex);
@@ -4639,7 +4689,7 @@ int RunTrusted(const CommandLine& Command,
             Runtime->StopClipboard();
             Runtime->StopSendingAudio();
             Runtime->StopReceivingAudio();
-            Runtime->Session.Stop();
+            Runtime->StopSession();
             std::cerr
                 << "[Session:Control] authenticated peer ownership convergence rejected the later session\n";
             return;
@@ -4754,7 +4804,7 @@ int RunTrusted(const CommandLine& Command,
             Runtime->StopClipboard();
             Runtime->StopSendingAudio();
             Runtime->StopReceivingAudio();
-            Runtime->Session.Stop();
+            Runtime->StopSession();
         }
         Advertiser.Stop();
         {
@@ -4832,7 +4882,7 @@ int RunTrusted(const CommandLine& Command,
                 ActiveHost->StopClipboard();
                 ActiveHost->StopSendingAudio();
                 ActiveHost->StopReceivingAudio();
-                ActiveHost->Session.Stop();
+                ActiveHost->StopSession();
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 return Command.BrokerManaged
@@ -4984,7 +5034,7 @@ int RunTrusted(const CommandLine& Command,
         ActiveHost->StopClipboard();
         ActiveHost->StopSendingAudio();
         ActiveHost->StopReceivingAudio();
-        ActiveHost->Session.Stop();
+        ActiveHost->StopSession();
         {
             std::scoped_lock Lock(Result->Mutex);
             if (!Result->Failure.empty()) {

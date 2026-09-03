@@ -961,19 +961,41 @@ private:
     }
 
     [[nodiscard]] bool ObserveChildExit() {
-        HANDLE Process{};
+        bool ProcessActive{};
+        bool WaitFailed{};
+        DWORD ExitCode{};
+        bool Intentional{};
+        bool WasBlocked{};
         {
             std::scoped_lock Lock(Mutex_);
-            Process = Process_.Get();
+            if (!Process_) return false;
+            const auto Wait = WaitForSingleObject(Process_.Get(), 0);
+            if (Wait == WAIT_TIMEOUT) {
+                ProcessActive = true;
+            } else if (Wait == WAIT_OBJECT_0) {
+                if (!GetExitCodeProcess(Process_.Get(), &ExitCode)) {
+                    ExitCode = desklink::kBrokerManagedActionRequiredProcessExit;
+                }
+                Process_.Reset();
+                Intentional = std::exchange(IntentionalStop_, false);
+                WasBlocked = Blocked_;
+                if (ExitCode == 0 && (Intentional || WasBlocked)) {
+                    // An orderly child exit proves its fail-local cleanup
+                    // finished. Clear a previous cleanup block so the managed
+                    // session can be recreated from persisted configuration.
+                    Blocked_ = false;
+                    Reconnect_.ResetForConfiguration(Clock_.now());
+                }
+            } else {
+                WaitFailed = true;
+            }
         }
-        if (!Process) return false;
-        DWORD ExitCode{};
-        if (!GetExitCodeProcess(Process, &ExitCode)) {
+        if (WaitFailed) {
             StopChildAfterControlFailure(
                 desklink::BrokerRuntimeFailure::Unknown);
             return true;
         }
-        if (ExitCode == STILL_ACTIVE) {
+        if (ProcessActive) {
             {
                 std::scoped_lock Lock(Mutex_);
                 if (Stopping_) return false;
@@ -981,22 +1003,6 @@ private:
             }
             PollChildState();
             return true;
-        }
-
-        bool Intentional{};
-        bool WasBlocked{};
-        {
-            std::scoped_lock Lock(Mutex_);
-            Process_.Reset();
-            Intentional = std::exchange(IntentionalStop_, false);
-            WasBlocked = Blocked_;
-            if (ExitCode == 0 && (Intentional || WasBlocked)) {
-                // An orderly child exit proves its fail-local cleanup finished.
-                // Clear a previous cleanup block so the managed session can be
-                // recreated from persisted configuration.
-                Blocked_ = false;
-                Reconnect_.ResetForConfiguration(Clock_.now());
-            }
         }
         std::cout << "[Broker:Process] managed transport exited; code="
                   << ExitCode << '\n';

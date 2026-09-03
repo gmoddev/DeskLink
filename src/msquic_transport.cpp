@@ -7,6 +7,7 @@
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -69,6 +70,7 @@ struct MsQuicTransportEndpoint::State {
     ByteBuffer ReliableBuffer;
     std::shared_ptr<State> SelfHold;
     std::mutex Mutex;
+    std::condition_variable ShutdownChanged;
     bool PeerValidated{};
     bool DatagramEnabled{};
     std::uint16_t MaximumDatagramLength{};
@@ -375,6 +377,7 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
             std::scoped_lock Lock(SharedState->Mutex);
             SharedState->Connection = nullptr;
         }
+        SharedState->ShutdownChanged.notify_all();
         SharedState->Api->ConnectionClose(Connection);
         {
             std::scoped_lock Lock(SharedState->Mutex);
@@ -582,6 +585,18 @@ TransportPeerInfo MsQuicTransportEndpoint::peer_info() const {
 
 void MsQuicTransportEndpoint::close() noexcept {
     ShutdownConnection(State_, std::nullopt);
+}
+
+bool MsQuicTransportEndpoint::WaitForShutdownComplete(
+    std::chrono::milliseconds Timeout) const noexcept {
+    try {
+        std::unique_lock Lock(State_->Mutex);
+        return State_->ShutdownChanged.wait_for(Lock, Timeout, [&] {
+            return State_->Connection == nullptr;
+        });
+    } catch (...) {
+        return false;
+    }
 }
 
 std::optional<TransportPeerInfo> VerifyMsQuicPeerCertificate(

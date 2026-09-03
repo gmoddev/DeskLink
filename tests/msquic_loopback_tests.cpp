@@ -588,6 +588,8 @@ void RunLoopback(const std::wstring& FirstKeyName,
         CloseChanged.notify_all();
     });
     FirstEndpoint->close();
+    CHECK(FirstEndpoint->WaitForShutdownComplete(
+        std::chrono::seconds(5)));
     {
         std::unique_lock Lock(CloseMutex);
         CHECK(CloseChanged.wait_for(
@@ -597,6 +599,8 @@ void RunLoopback(const std::wstring& FirstKeyName,
         CHECK(CloseReason == TransportCloseReason::Unavailable);
     }
     SecondEndpoint->close();
+    CHECK(SecondEndpoint->WaitForShutdownComplete(
+        std::chrono::seconds(5)));
     FirstEndpoint.reset();
     SecondEndpoint.reset();
     {
