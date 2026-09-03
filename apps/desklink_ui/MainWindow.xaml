@@ -23,7 +23,8 @@
                                     Icon="Map" Tag="Displays" AccessKey="D" />
                 <NavigationViewItem Content="Advanced" Icon="Setting"
                                     Tag="Advanced" AccessKey="V" />
-                <NavigationViewItem Content="Diagnostics" Icon="View"
+                <NavigationViewItem x:Name="DiagnosticsNavigation"
+                                    Content="Diagnostics" Icon="View"
                                     Tag="Diagnostics" AccessKey="G" />
             </NavigationView.MenuItems>
 
@@ -99,7 +100,12 @@
                                  IsClosable="False" Severity="Error"
                                  AutomationProperties.LiveSetting="Assertive"
                                  Title="Action required"
-                                 Message="Automatic retry stopped. Input remains Local until you review the connection." />
+                                 Message="Automatic retry stopped. Input remains Local until you review the connection.">
+                            <InfoBar.ActionButton>
+                                <Button Content="View diagnostics"
+                                        Click="OnOpenDiagnostics" />
+                            </InfoBar.ActionButton>
+                        </InfoBar>
                         <Border Padding="20" CornerRadius="8"
                                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -674,12 +680,33 @@
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Runtime phase" FontWeight="SemiBold" />
                                 <TextBlock x:Name="DiagnosticRuntimePhase" Text="Starting" />
+                                <TextBlock Text="Last failure" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock x:Name="DiagnosticRuntimeFailure" Text="None" TextWrapping="Wrap" />
+                                <TextBlock Text="Automatic retry" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock x:Name="DiagnosticRetryStatus" Text="Not scheduled" TextWrapping="Wrap" />
+                                <TextBlock Text="Recommended action" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                <TextBlock x:Name="DiagnosticRecommendedAction"
+                                           Text="Wait for the runtime status check to finish."
+                                           TextWrapping="Wrap" />
                                 <TextBlock Text="Transport" FontWeight="SemiBold" Margin="0,8,0,0" />
-                                <TextBlock Text="MsQuic 2.6.0 · Schannel · PeerValidated" />
+                                <TextBlock Text="MsQuic 2.6.0 · OS-selected TLS provider · PeerValidated required"
+                                           TextWrapping="Wrap" />
                                 <TextBlock Text="Identity" FontWeight="SemiBold" Margin="0,8,0,0" />
                                 <TextBlock Text="Existing non-exportable CNG device identity" />
+                                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+                                    <Button Content="Run connection check"
+                                            Click="OnRunConnectionCheck" />
+                                    <Button x:Name="DiagnosticRetryButton"
+                                            Content="Retry now"
+                                            Click="OnRetryConnection"
+                                            Visibility="Collapsed" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
+                        <InfoBar x:Name="DiagnosticResultBar" IsOpen="False"
+                                 IsClosable="True" Severity="Informational"
+                                 AutomationProperties.LiveSetting="Polite"
+                                 Title="Connection check" />
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

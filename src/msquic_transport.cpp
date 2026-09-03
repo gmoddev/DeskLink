@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -39,6 +40,22 @@ std::uint32_t ReadPayloadSize(ByteSpan Bytes) noexcept {
 }
 
 } // namespace
+
+TransportCloseReason ClassifyMsQuicPostValidationShutdown(
+    QUIC_STATUS Status) noexcept {
+    switch (Status) {
+        case QUIC_STATUS_CONNECTION_TIMEOUT:
+        case QUIC_STATUS_CONNECTION_IDLE:
+        case QUIC_STATUS_UNREACHABLE:
+        case QUIC_STATUS_CONNECTION_REFUSED:
+        case QUIC_STATUS_ABORTED:
+        case QUIC_STATUS_USER_CANCELED:
+        case QUIC_STATUS_CLOSE_NOTIFY:
+            return TransportCloseReason::Unavailable;
+        default:
+            return TransportCloseReason::ProtocolFailure;
+    }
+}
 
 struct MsQuicTransportEndpoint::State {
     const QUIC_API_TABLE* Api{};
@@ -330,15 +347,25 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
                 QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT) {
                 const auto Status =
                     Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status;
-                if (Status != QUIC_STATUS_CONNECTION_TIMEOUT &&
-                    Status != QUIC_STATUS_CONNECTION_IDLE &&
-                    Status != QUIC_STATUS_UNREACHABLE &&
-                    Status != QUIC_STATUS_CONNECTION_REFUSED) {
-                    Reason = TransportCloseReason::ProtocolFailure;
-                }
+                Reason = ClassifyMsQuicPostValidationShutdown(Status);
+                std::clog
+                    << "[Transport:MsQuic] validated connection closed by transport; status="
+                    << static_cast<std::int64_t>(Status)
+                    << " classification="
+                    << (Reason == TransportCloseReason::Unavailable
+                            ? "availability"
+                            : "protocol")
+                    << '\n';
             } else if (
                 Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode != 0) {
                 Reason = TransportCloseReason::ProtocolFailure;
+                std::clog
+                    << "[Transport:MsQuic] validated connection closed by peer; error_code="
+                    << Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode
+                    << " classification=protocol\n";
+            } else {
+                std::clog
+                    << "[Transport:MsQuic] validated connection closed by peer; error_code=0 classification=availability\n";
             }
             ShutdownConnection(SharedState, Reason, false);
         }

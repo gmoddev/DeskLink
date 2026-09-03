@@ -18,6 +18,7 @@ inline constexpr auto kBrokerReconnectMaximumDelay =
     std::chrono::seconds{30};
 inline constexpr std::uint32_t kBrokerManagedRetryableProcessExit = 64;
 inline constexpr std::uint32_t kBrokerManagedActionRequiredProcessExit = 65;
+inline constexpr std::uint32_t kBrokerManagedProtocolProcessExit = 66;
 
 enum class BrokerRuntimePhase : std::uint8_t {
     Stopped = 0,
@@ -70,13 +71,19 @@ struct BrokerRuntimeSnapshot {
     std::uint16_t Attempt, std::uint64_t JitterSeed) noexcept;
 
 // Exit 64 is reserved for a child that positively classified an ordinary
-// availability failure. Every other non-success exit is terminal until the
-// user resumes or changes configuration.
+// availability failure. Typed terminal exits preserve enough bounded context
+// for the product shell to explain why retry stopped without exposing session
+// data. Every unknown non-success exit remains terminal.
 [[nodiscard]] constexpr BrokerRuntimeFailure
 ClassifyBrokerManagedProcessExit(std::uint32_t ExitCode) noexcept {
-    return ExitCode == kBrokerManagedRetryableProcessExit
-        ? BrokerRuntimeFailure::OrdinaryUnavailable
-        : BrokerRuntimeFailure::Unknown;
+    switch (ExitCode) {
+        case kBrokerManagedRetryableProcessExit:
+            return BrokerRuntimeFailure::OrdinaryUnavailable;
+        case kBrokerManagedProtocolProcessExit:
+            return BrokerRuntimeFailure::Protocol;
+        default:
+            return BrokerRuntimeFailure::Unknown;
+    }
 }
 
 // Pure lifecycle controller for one broker-owned transport process. Only

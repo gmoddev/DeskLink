@@ -33,6 +33,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnOpenDisplays(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnOpenDiagnostics(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
     void OnRefreshNearby(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -135,6 +138,12 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnRemoveProfileRule(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnRunConnectionCheck(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnRetryConnection(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
 
     void InitializeWindowLifecycle();
     void RequestExit();
@@ -189,6 +198,7 @@ private:
     void FocusPreferredPeer();
     void UpdateFocusRequestPresentation(
         std::chrono::steady_clock::time_point Now);
+    void RunConnectionCheck();
     void ReturnLocal();
     void SetInputRoamingDesired(bool Desired);
     void SetClipboardDesired(bool Desired);

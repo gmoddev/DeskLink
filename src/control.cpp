@@ -1014,6 +1014,7 @@ void EncodeState(Writer& Output, const ControlState& State) {
     Output.U16(State.ConnectedPeerCount);
     Output.U16(State.AudioGainPermyriad);
     Output.U16(State.RetryAttempt);
+    Output.U32(State.RetryDelayMilliseconds);
     Output.U8(static_cast<std::uint8_t>(State.RuntimePhase));
     Output.U8(static_cast<std::uint8_t>(State.RuntimeFailure));
     Output.U8(static_cast<std::uint8_t>(State.RoamingState));
@@ -1041,6 +1042,7 @@ std::optional<ControlState> DecodeState(Reader& Input) {
         !Input.U16(State.ConnectedPeerCount) ||
         !Input.U16(State.AudioGainPermyriad) ||
         !Input.U16(State.RetryAttempt) ||
+        !Input.U32(State.RetryDelayMilliseconds) ||
         !Input.U8(RawRuntimePhase) || !Input.U8(RawRuntimeFailure) ||
         !Input.U8(RawRoamingState) || !Input.U8(RawPeerDirection) ||
         !Input.U16(State.ReadyRoamingRouteCount) ||
@@ -1271,17 +1273,22 @@ bool IsValidControlState(const ControlState& State) noexcept {
     }
     if (State.RuntimePhase == BrokerRuntimePhase::RetryWaiting) {
         if (!IsRetryableBrokerRuntimeFailure(State.RuntimeFailure) ||
-            State.RetryAttempt == 0) {
+            State.RetryAttempt == 0 ||
+            State.RetryDelayMilliseconds >
+                static_cast<std::uint32_t>(
+                    kBrokerReconnectMaximumDelay.count() * 1'000)) {
             return false;
         }
     } else if (State.RuntimePhase == BrokerRuntimePhase::ActionRequired) {
         if (State.RuntimeFailure == BrokerRuntimeFailure::None ||
             IsRetryableBrokerRuntimeFailure(State.RuntimeFailure) ||
-            State.RetryAttempt != 0) {
+            State.RetryAttempt != 0 ||
+            State.RetryDelayMilliseconds != 0) {
             return false;
         }
     } else if (State.RuntimeFailure != BrokerRuntimeFailure::None ||
-               State.RetryAttempt != 0) {
+               State.RetryAttempt != 0 ||
+               State.RetryDelayMilliseconds != 0) {
         return false;
     }
     if (State.CaptureActive && (!State.RemoteFocused ||

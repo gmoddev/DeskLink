@@ -940,7 +940,15 @@ void ControlProtocolRoundTripAndValidation() {
     InvalidRuntimeState.RuntimeFailure =
         BrokerRuntimeFailure::OrdinaryUnavailable;
     InvalidRuntimeState.RetryAttempt = 1;
+    InvalidRuntimeState.RetryDelayMilliseconds = 800;
     CHECK(IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RetryDelayMilliseconds = 30'001;
+    CHECK(!IsValidControlState(InvalidRuntimeState));
+    InvalidRuntimeState.RetryDelayMilliseconds = 800;
+    InvalidRuntimeState.RuntimePhase = BrokerRuntimePhase::ActionRequired;
+    InvalidRuntimeState.RuntimeFailure = BrokerRuntimeFailure::Protocol;
+    InvalidRuntimeState.RetryAttempt = 0;
+    CHECK(!IsValidControlState(InvalidRuntimeState));
 
     auto WrongType = *EncodeControlRequest(Requests[0]);
     WrongType[7] = static_cast<std::uint8_t>(ControlFrameType::Response);
@@ -1091,6 +1099,9 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(ClassifyBrokerManagedProcessExit(
               kBrokerManagedActionRequiredProcessExit) ==
           BrokerRuntimeFailure::Unknown);
+    CHECK(ClassifyBrokerManagedProcessExit(
+              kBrokerManagedProtocolProcessExit) ==
+          BrokerRuntimeFailure::Protocol);
     CHECK(ClassifyBrokerManagedProcessExit(1) ==
           BrokerRuntimeFailure::Unknown);
 
