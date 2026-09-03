@@ -23,6 +23,12 @@ struct MsQuicDatagramState {
     std::uint16_t MaximumSendLength{};
 };
 
+// This classifier is used only after the certificate and pinned peer have
+// already passed validation. Authentication/TLS failures occur at the
+// bootstrap boundary and never reach this retryable post-admission path.
+[[nodiscard]] TransportCloseReason ClassifyMsQuicPostValidationShutdown(
+    QUIC_STATUS Status) noexcept;
+
 class MsQuicTransportEndpoint final : public ITransportEndpoint {
 public:
     struct State;

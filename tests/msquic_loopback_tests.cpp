@@ -930,6 +930,33 @@ void RunOpenSslPeerValidationRejectionTests(const std::wstring& Suffix) {
 } // namespace
 
 int main(int ArgumentCount, char** Arguments) {
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_CONNECTION_TIMEOUT) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_CONNECTION_IDLE) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_UNREACHABLE) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_CONNECTION_REFUSED) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_ABORTED) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_USER_CANCELED) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_CLOSE_NOTIFY) ==
+          desklink::TransportCloseReason::Unavailable);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_PROTOCOL_ERROR) ==
+          desklink::TransportCloseReason::ProtocolFailure);
+    CHECK(desklink::ClassifyMsQuicPostValidationShutdown(
+              QUIC_STATUS_TLS_ERROR) ==
+          desklink::TransportCloseReason::ProtocolFailure);
     const auto Backend = ArgumentCount == 2 &&
                          std::string_view(Arguments[1]) == "--openssl"
         ? desklink::TlsBackend::OpenSsl

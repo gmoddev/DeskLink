@@ -350,6 +350,115 @@ desklink::ProductShellState StateFromControl(
     return desklink::ProductShellState::Offline;
 }
 
+const wchar_t* RuntimePhaseName(
+    desklink::BrokerRuntimePhase Phase) noexcept {
+    switch (Phase) {
+        case desklink::BrokerRuntimePhase::Stopped:
+            return L"Stopped";
+        case desklink::BrokerRuntimePhase::Paused:
+            return L"Paused";
+        case desklink::BrokerRuntimePhase::Listening:
+            return L"Listening for an authenticated peer";
+        case desklink::BrokerRuntimePhase::Discovering:
+            return L"Looking for the paired PC";
+        case desklink::BrokerRuntimePhase::Connecting:
+            return L"Performing the secure connection handshake";
+        case desklink::BrokerRuntimePhase::ConnectedLocal:
+            return L"Connected; input is Local";
+        case desklink::BrokerRuntimePhase::RetryWaiting:
+            return L"Waiting to retry an ordinary availability failure";
+        case desklink::BrokerRuntimePhase::ActionRequired:
+            return L"Automatic retry stopped; input is Local";
+    }
+    return L"Unknown";
+}
+
+const wchar_t* RuntimeFailureName(
+    desklink::BrokerRuntimeFailure Failure) noexcept {
+    switch (Failure) {
+        case desklink::BrokerRuntimeFailure::None:
+            return L"None";
+        case desklink::BrokerRuntimeFailure::OrdinaryUnavailable:
+            return L"The paired PC or network is temporarily unavailable";
+        case desklink::BrokerRuntimeFailure::Security:
+            return L"Security validation failed";
+        case desklink::BrokerRuntimeFailure::Identity:
+            return L"The paired identity could not be verified";
+        case desklink::BrokerRuntimeFailure::Credential:
+            return L"The local device credential is unavailable";
+        case desklink::BrokerRuntimeFailure::Signing:
+            return L"The local device identity could not sign the handshake";
+        case desklink::BrokerRuntimeFailure::Authentication:
+            return L"Peer authentication failed";
+        case desklink::BrokerRuntimeFailure::Capability:
+            return L"The negotiated permissions are incompatible";
+        case desklink::BrokerRuntimeFailure::Protocol:
+            return L"The authenticated transport failed a protocol check";
+        case desklink::BrokerRuntimeFailure::Unknown:
+            return L"The managed connection process stopped unexpectedly";
+    }
+    return L"Unknown";
+}
+
+std::wstring RuntimeConnectionDetail(
+    const desklink::ControlState& State) {
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::RetryWaiting) {
+        const auto Seconds =
+            (State.RetryDelayMilliseconds + 999u) / 1'000u;
+        std::wostringstream Output;
+        Output << L"Retry attempt " << State.RetryAttempt << L" starts in "
+               << Seconds << (Seconds == 1 ? L" second." : L" seconds.");
+        return Output.str();
+    }
+    return RuntimePhaseName(State.RuntimePhase);
+}
+
+std::wstring RuntimeRetryStatus(const desklink::ControlState& State) {
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::RetryWaiting) {
+        return RuntimeConnectionDetail(State);
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::ActionRequired) {
+        return L"Stopped until you select Retry now or change the connection settings.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::ConnectedLocal) {
+        return L"Not needed; the authenticated session is connected.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::Paused) {
+        return L"Disabled while DeskLink is paused.";
+    }
+    return L"No retry is currently scheduled.";
+}
+
+std::wstring RuntimeRecommendedAction(const desklink::ControlState& State) {
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::ActionRequired) {
+        if (State.RuntimeFailure == desklink::BrokerRuntimeFailure::Security ||
+            State.RuntimeFailure == desklink::BrokerRuntimeFailure::Identity ||
+            State.RuntimeFailure == desklink::BrokerRuntimeFailure::Credential ||
+            State.RuntimeFailure == desklink::BrokerRuntimeFailure::Signing ||
+            State.RuntimeFailure == desklink::BrokerRuntimeFailure::Authentication) {
+            return L"Verify the paired PC and its identity before retrying. DeskLink will not bypass this failure.";
+        }
+        return L"Confirm the paired PC is running, then select Retry now. If this category returns, keep it for the bug report.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::RetryWaiting) {
+        return L"No action is required. DeskLink will retry automatically; input remains on this PC.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::Listening) {
+        return L"Start DeskLink on the paired main PC. This PC is listening securely.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::Discovering ||
+        State.RuntimePhase == desklink::BrokerRuntimePhase::Connecting) {
+        return L"Wait for the bounded connection attempt to finish.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::ConnectedLocal) {
+        return L"No action is required.";
+    }
+    if (State.RuntimePhase == desklink::BrokerRuntimePhase::Paused) {
+        return L"Resume DeskLink when you want automatic connections again.";
+    }
+    return L"Check that a paired PC and automatic connection role are configured.";
+}
+
 } // namespace
 
 namespace winrt::DeskLink::Product::implementation {
@@ -740,6 +849,14 @@ void MainWindow::OnOpenDisplays(
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
     Navigation().SelectedItem(DisplaysNavigation());
     NavigateTo(L"Displays");
+}
+
+void MainWindow::OnOpenDiagnostics(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    Navigation().SelectedItem(DiagnosticsNavigation());
+    NavigateTo(L"Diagnostics");
+    RunConnectionCheck();
 }
 
 desklink::CapabilitySet MainWindow::SelectedPairingCapabilities() {
@@ -3158,12 +3275,100 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
         ? Microsoft::UI::Xaml::Visibility::Visible
         : Microsoft::UI::Xaml::Visibility::Collapsed);
     UpdateDeveloperInputStatus();
-    DiagnosticRuntimePhase().Text(Presentation.ConnectionDetail);
+    if (RuntimeStateLoaded_) {
+        const auto Detail = RuntimeConnectionDetail(RuntimeState_);
+        DiagnosticRuntimePhase().Text(Detail);
+        DiagnosticRuntimeFailure().Text(
+            RuntimeFailureName(RuntimeState_.RuntimeFailure));
+        DiagnosticRetryStatus().Text(RuntimeRetryStatus(RuntimeState_));
+        DiagnosticRecommendedAction().Text(
+            RuntimeRecommendedAction(RuntimeState_));
+        const bool CanRetry = RuntimeState_.RuntimePhase ==
+            desklink::BrokerRuntimePhase::ActionRequired;
+        DiagnosticRetryButton().Visibility(CanRetry
+            ? Microsoft::UI::Xaml::Visibility::Visible
+            : Microsoft::UI::Xaml::Visibility::Collapsed);
+        if (State == desklink::ProductShellState::Connecting ||
+            State == desklink::ProductShellState::ActionRequired) {
+            InputSummary().Text(Detail);
+        }
+        if (State == desklink::ProductShellState::ActionRequired) {
+            ActionRequiredBar().Message(
+                std::wstring(RuntimeFailureName(RuntimeState_.RuntimeFailure)) +
+                L". Input remains Local. Review Diagnostics or select Retry now.");
+        }
+    } else {
+        DiagnosticRuntimePhase().Text(Presentation.ConnectionDetail);
+        DiagnosticRuntimeFailure().Text(L"Runtime state unavailable");
+        DiagnosticRetryStatus().Text(L"Unknown");
+        DiagnosticRecommendedAction().Text(
+            L"Start or repair the DeskLink runtime, then run the check again.");
+        DiagnosticRetryButton().Visibility(
+            Microsoft::UI::Xaml::Visibility::Collapsed);
+    }
     ReturnLocalButton().Visibility(Presentation.ShowReturnLocal
         ? Microsoft::UI::Xaml::Visibility::Visible
         : Microsoft::UI::Xaml::Visibility::Collapsed);
     ActionRequiredBar().IsOpen(Presentation.ShowActionRequired);
     UpdateHome();
+}
+
+void MainWindow::OnRunConnectionCheck(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    RunConnectionCheck();
+}
+
+void MainWindow::RunConnectionCheck() {
+    PollBroker();
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    DiagnosticResultBar().Title(L"Connection check complete");
+    if (!BrokerAvailable_ || !RuntimeStateLoaded_) {
+        DiagnosticResultBar().Severity(InfoBarSeverity::Error);
+        DiagnosticResultBar().Message(
+            L"The DeskLink broker did not answer. Input remains on this PC. Restart or repair DeskLink.");
+    } else {
+        const auto Failure = RuntimeFailureName(RuntimeState_.RuntimeFailure);
+        const auto Action = RuntimeRecommendedAction(RuntimeState_);
+        std::wstring Message = RuntimeConnectionDetail(RuntimeState_);
+        Message += L" Last failure: ";
+        Message += Failure;
+        Message += L". ";
+        Message += Action;
+        DiagnosticResultBar().Message(Message);
+        DiagnosticResultBar().Severity(
+            RuntimeState_.RuntimePhase ==
+                    desklink::BrokerRuntimePhase::ActionRequired
+                ? InfoBarSeverity::Error
+                : RuntimeState_.RuntimePhase ==
+                          desklink::BrokerRuntimePhase::ConnectedLocal
+                    ? InfoBarSeverity::Success
+                    : InfoBarSeverity::Warning);
+    }
+    DiagnosticResultBar().IsOpen(true);
+}
+
+void MainWindow::OnRetryConnection(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    const auto Response = Send(
+        desklink::ResumeDeskLinkControlRequest{},
+        std::chrono::milliseconds{5'500});
+    DiagnosticResultBar().Title(Response &&
+            Response->Status == desklink::ControlStatus::Ok
+        ? L"Retry started"
+        : L"Retry could not start");
+    DiagnosticResultBar().Severity(Response &&
+            Response->Status == desklink::ControlStatus::Ok
+        ? InfoBarSeverity::Informational
+        : InfoBarSeverity::Error);
+    DiagnosticResultBar().Message(Response &&
+            Response->Status == desklink::ControlStatus::Ok
+        ? L"DeskLink returned input Local and started a fresh authenticated connection attempt."
+        : L"The broker could not safely restart the connection. Input remains Local; restart or repair DeskLink.");
+    DiagnosticResultBar().IsOpen(true);
+    PollBroker();
 }
 
 bool MainWindow::CreateLifecycleWindow() {

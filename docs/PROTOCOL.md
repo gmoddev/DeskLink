@@ -517,8 +517,10 @@ Request command numbers are:
 
 Responses contain a bounded status and an optional typed state record. A state
 record includes local/focused machine IDs, role, desired mode, peer count,
-current per-peer audio gain/mute, focus/capture state, retry attempt, typed
-runtime phase, and typed failure class. Cross-field validation
+current per-peer audio gain/mute, focus/capture state, retry attempt, bounded
+milliseconds until that attempt, typed runtime phase, and typed failure class.
+The retry delay is nonzero only while the runtime is in `RetryWaiting` and is
+capped at the broker's 30-second maximum. Cross-field validation
 rejects impossible combinations such as active capture without Host remote
 focus. Each connection exchanges exactly one request/response and completes
 with a fixed acknowledgement byte so the server does not disconnect before the

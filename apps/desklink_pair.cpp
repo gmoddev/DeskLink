@@ -1311,8 +1311,20 @@ struct TrustedResult {
     bool Ready{};
     bool Emergency{};
     bool RetryableFailure{};
+    desklink::BrokerRuntimeFailure FailureKind{
+        desklink::BrokerRuntimeFailure::None};
     std::string Failure;
 };
+
+std::uint32_t ManagedFailureExitCode(const TrustedResult& Result) noexcept {
+    if (Result.RetryableFailure) {
+        return desklink::kBrokerManagedRetryableProcessExit;
+    }
+    if (Result.FailureKind == desklink::BrokerRuntimeFailure::Protocol) {
+        return desklink::kBrokerManagedProtocolProcessExit;
+    }
+    return desklink::kBrokerManagedActionRequiredProcessExit;
+}
 
 #ifdef DESKLINK_ENABLE_VALIDATION_FAULTS
 class ValidationInputInjector final : public desklink::IInputInjector {
@@ -4416,6 +4428,9 @@ int RunTrusted(const CommandLine& Command,
             if (Result->Failure.empty()) {
                 Result->RetryableFailure = Failure.Disposition ==
                     desklink::MsQuicFailureDisposition::RetryableAvailability;
+                Result->FailureKind = Result->RetryableFailure
+                    ? desklink::BrokerRuntimeFailure::OrdinaryUnavailable
+                    : desklink::BrokerRuntimeFailure::Unknown;
                 Result->Failure = std::move(Failure.Message);
             }
         }
@@ -4516,6 +4531,9 @@ int RunTrusted(const CommandLine& Command,
                 if (Result->Failure.empty()) {
                     Result->RetryableFailure =
                         Reason == desklink::TransportCloseReason::Unavailable;
+                    Result->FailureKind = Result->RetryableFailure
+                        ? desklink::BrokerRuntimeFailure::OrdinaryUnavailable
+                        : desklink::BrokerRuntimeFailure::Protocol;
                     Result->Failure = Result->RetryableFailure
                         ? "trusted peer transport became unavailable"
                         : "trusted peer transport failed protocol checks";
@@ -4744,10 +4762,7 @@ int RunTrusted(const CommandLine& Command,
             if (!Result->Failure.empty()) {
                 std::cerr << "[Session:Control] " << Result->Failure << '\n';
                 ExitCode = Command.BrokerManaged
-                    ? static_cast<int>(
-                          Result->RetryableFailure
-                              ? desklink::kBrokerManagedRetryableProcessExit
-                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    ? static_cast<int>(ManagedFailureExitCode(*Result))
                     : 1;
             }
         }
@@ -4774,10 +4789,7 @@ int RunTrusted(const CommandLine& Command,
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 return Command.BrokerManaged
-                    ? static_cast<int>(
-                          Result->RetryableFailure
-                              ? desklink::kBrokerManagedRetryableProcessExit
-                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    ? static_cast<int>(ManagedFailureExitCode(*Result))
                     : 1;
             }
         }
@@ -4824,10 +4836,7 @@ int RunTrusted(const CommandLine& Command,
                 Bootstrap->Close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 return Command.BrokerManaged
-                    ? static_cast<int>(
-                          Result->RetryableFailure
-                              ? desklink::kBrokerManagedRetryableProcessExit
-                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    ? static_cast<int>(ManagedFailureExitCode(*Result))
                     : 1;
             }
         }
@@ -4981,10 +4990,7 @@ int RunTrusted(const CommandLine& Command,
             if (!Result->Failure.empty()) {
                 std::cerr << "[Input:Lifecycle] " << Result->Failure << '\n';
                 ExitCode = Command.BrokerManaged
-                    ? static_cast<int>(
-                          Result->RetryableFailure
-                              ? desklink::kBrokerManagedRetryableProcessExit
-                              : desklink::kBrokerManagedActionRequiredProcessExit)
+                    ? static_cast<int>(ManagedFailureExitCode(*Result))
                     : 1;
             }
         }

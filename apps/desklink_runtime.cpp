@@ -590,6 +590,16 @@ public:
         State.RuntimePhase = Runtime.Phase;
         State.RuntimeFailure = Runtime.Failure;
         State.RetryAttempt = Runtime.RetryAttempt;
+        if (Runtime.Phase == desklink::BrokerRuntimePhase::RetryWaiting) {
+            const auto Remaining = Runtime.RetryAt > Clock_.now()
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                      Runtime.RetryAt - Clock_.now())
+                : std::chrono::milliseconds::zero();
+            State.RetryDelayMilliseconds = static_cast<std::uint32_t>(
+                std::min<std::int64_t>(
+                    Remaining.count(),
+                    desklink::kBrokerReconnectMaximumDelay.count() * 1'000));
+        }
         const auto Preferences = PreferencesStore_.Current();
         if (State.Role == desklink::ControlRole::Idle && Preferences) {
             if (Preferences->Role == desklink::DeskRole::Main) {

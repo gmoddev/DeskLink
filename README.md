@@ -119,7 +119,8 @@ room propagation, or microphone capture latency. See
   preferences, trust, discovery, and managed-pairing commands
 - Persistent current-user runtime broker with role-driven companion listening,
   exact preferred-peer auto-connect, pause/resume, typed fail-closed reconnect
-  classification, and network/process reconciliation that always starts Local
+  classification, retry countdown, and network/process reconciliation that
+  always starts Local
 - Native broker suspend/resume notifications that stop the managed transport
   Local and require a fresh TLS connection and session nonce after wake, while
   preserving an explicit user pause and any action-required security failure
@@ -133,7 +134,9 @@ room propagation, or microphone capture latency. See
 - Self-contained C++/WinRT product shell with guided role selection,
   Home, Add a PC, untrusted Nearby/manual pairing, Devices & permissions,
   Arrange displays, feature intent, profiles, Advanced, and Diagnostics
-  surfaces backed by the current-user broker;
+  surfaces backed by the current-user broker; Diagnostics reports the live
+  phase, bounded failure category, retry timing, and recommended action and
+  provides an explicit fail-local **Retry now** control;
   pairing-code approval remains local and shell exit rejects any pending offer
 - Explicit current-user update coordinator with prevalidated same-signer
   candidate/rollback installers, ordered fail-local shutdown, bounded Setup,

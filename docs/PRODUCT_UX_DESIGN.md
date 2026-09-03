@@ -169,6 +169,10 @@ The redesign must preserve all existing transport and input gates:
   backoff. It must stop and show **Action required** after certificate, pin,
   identity, credential, signing, authentication, capability, or protocol
   failure.
+- Connecting state must name its current phase. Retry state shows the attempt
+  and live bounded countdown; terminal state shows the typed failure category,
+  a recommended action, and an explicit **Retry now** control. It must never
+  remain as an unexplained indefinite "Connecting" label.
 - Reconnect always uses a fresh nonce and begins Local. It never restores focus
   or suppression automatically.
 - Capture remains disabled until a validated session, current topology, Ready
@@ -515,7 +519,9 @@ Move these out of Home:
 - exact executable profile editing.
 
 Diagnostics remain memory-bounded and never contain input, clipboard, or audio
-content.
+content. The shipped connection check reads only the broker's typed state and
+reports runtime phase, failure category, retry timing, and a safe next action.
+It neither probes arbitrary endpoints nor relaxes authentication.
 
 ## 11. Devices and permissions
 
