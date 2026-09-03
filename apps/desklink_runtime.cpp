@@ -580,6 +580,10 @@ public:
         Changed_.notify_all();
     }
 
+    void ReconcileExitedChild() noexcept {
+        (void)ConsumeExitedChild();
+    }
+
     [[nodiscard]] desklink::BrokerRuntimeSnapshot Snapshot() const noexcept {
         std::scoped_lock Lock(Mutex_);
         return Reconnect_.Snapshot();
@@ -960,8 +964,7 @@ private:
         }
     }
 
-    [[nodiscard]] bool ObserveChildExit() {
-        bool ProcessActive{};
+    [[nodiscard]] bool ConsumeExitedChild() noexcept {
         bool WaitFailed{};
         DWORD ExitCode{};
         bool Intentional{};
@@ -971,7 +974,7 @@ private:
             if (!Process_) return false;
             const auto Wait = WaitForSingleObject(Process_.Get(), 0);
             if (Wait == WAIT_TIMEOUT) {
-                ProcessActive = true;
+                return false;
             } else if (Wait == WAIT_OBJECT_0) {
                 if (!GetExitCodeProcess(Process_.Get(), &ExitCode)) {
                     ExitCode = desklink::kBrokerManagedActionRequiredProcessExit;
@@ -995,15 +998,6 @@ private:
                 desklink::BrokerRuntimeFailure::Unknown);
             return true;
         }
-        if (ProcessActive) {
-            {
-                std::scoped_lock Lock(Mutex_);
-                if (Stopping_) return false;
-                if (Transitioning_ || Blocked_) return true;
-            }
-            PollChildState();
-            return true;
-        }
         std::cout << "[Broker:Process] managed transport exited; code="
                   << ExitCode << '\n';
         if (!Intentional && !(WasBlocked && ExitCode == 0)) {
@@ -1011,6 +1005,18 @@ private:
                 desklink::ClassifyBrokerManagedProcessExit(ExitCode));
         }
         Changed_.notify_all();
+        return true;
+    }
+
+    [[nodiscard]] bool ObserveChildExit() {
+        if (ConsumeExitedChild()) return true;
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (!Process_) return false;
+            if (Stopping_) return false;
+            if (Transitioning_ || Blocked_) return true;
+        }
+        PollChildState();
         return true;
     }
 
@@ -2324,6 +2330,11 @@ int wmain(int Count, wchar_t** Values) {
             }
             return 1;
         }
+        // Keep process-exit reconciliation independent from child control-pipe
+        // polling. A transport that disappears while a state request is in
+        // flight must still leave Connected and enter its typed retry or
+        // action-required state within one broker tick.
+        Supervisor.ReconcileExitedChild();
         if (!ProductShellPresent()) PermissionCandidates.RejectAll();
         if (Server.Running()) continue;
         Server.Stop();
