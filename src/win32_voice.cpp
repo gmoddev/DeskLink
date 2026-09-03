@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <audioclient.h>
 #include <avrt.h>
+#include <propkeydef.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <propvarutil.h>
@@ -379,8 +380,10 @@ struct Win32WasapiMicrophoneCapture::State {
         if (Initialized) {
             ApplyCommunicationsCategory(AudioClient.Get());
             const auto Id = DeviceId(Device.Get());
-            auto* Notification = new (std::nothrow) EndpointNotifications(
-                EndpointEvent, eCapture, !EndpointId.has_value());
+            auto* Notification = Id
+                ? new (std::nothrow) EndpointNotifications(
+                    EndpointEvent, eCapture, !EndpointId.has_value())
+                : nullptr;
             if (Notification && Id) Notification->SetDeviceId(*Id);
             Initialized = Id && Notification &&
                 Notifications.Start(Enumerator.Get(), Notification) &&
@@ -600,8 +603,10 @@ struct Win32WasapiVoiceRenderer::State {
         if (Initialized) {
             ApplyCommunicationsCategory(AudioClient.Get());
             const auto Id = DeviceId(Device.Get());
-            auto* Notification = new (std::nothrow) EndpointNotifications(
-                EndpointEvent, eRender, true);
+            auto* Notification = Id
+                ? new (std::nothrow) EndpointNotifications(
+                    EndpointEvent, eRender, true)
+                : nullptr;
             if (Notification && Id) Notification->SetDeviceId(*Id);
             Initialized = Id && Notification &&
                 Notifications.Start(Enumerator.Get(), Notification) &&

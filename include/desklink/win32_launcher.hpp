@@ -58,6 +58,8 @@ struct LauncherRequest {
     bool GrantInput{};
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
+    bool GrantVoiceSend{};
+    bool GrantVoiceReceive{};
     bool GrantTopology{};
     bool GrantClipboardRead{};
     bool GrantClipboardWrite{};
