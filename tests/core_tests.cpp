@@ -469,7 +469,7 @@ public:
     bool RefreshPeerCapabilities(
         const desklink::MachineId& Machine) noexcept override {
         RefreshCalls.push_back(Machine);
-        return Succeeds;
+        return Succeeds && RefreshSucceeds;
     }
 
     bool ReturnLocalAndStopPeer(
@@ -479,6 +479,7 @@ public:
     }
 
     bool Succeeds{true};
+    bool RefreshSucceeds{true};
     std::vector<desklink::MachineId> ReturnLocalCalls;
     std::vector<desklink::MachineId> RefreshCalls;
     std::vector<desklink::MachineId> StopCalls;
@@ -1199,6 +1200,24 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(ReauthorizationSafety.RefreshCalls.size() == 1);
     CHECK(ReauthorizationSafety.StopCalls.empty());
     CHECK(Store.GetPeer(Alpha.machine_id)->Capabilities == AlphaDesired);
+
+    InMemoryTrustStore RefreshFailureStore;
+    const auto RefreshFailurePeer = MakeIdentity(75, "Refresh failure PC");
+    SaveTrustedPeer(RefreshFailureStore, RefreshFailurePeer, {});
+    RecordingRuntimeSafetyController RefreshFailureSafety;
+    RefreshFailureSafety.RefreshSucceeds = false;
+    RuntimeTrustAuthority RefreshFailureAuthority(
+        RefreshFailureStore, RefreshFailureSafety);
+    CapabilitySet RefreshFailureDesired;
+    RefreshFailureDesired.grant(Capability::ClipboardRead);
+    CHECK(RefreshFailureAuthority.ApplyReauthorizedPermissionChange(
+              RefreshFailurePeer, {}, RefreshFailureDesired) ==
+          TrustMutationStatus::CleanupFailed);
+    CHECK(RefreshFailureSafety.ReturnLocalCalls.size() == 1);
+    CHECK(RefreshFailureSafety.RefreshCalls.size() == 1);
+    CHECK(RefreshFailureSafety.StopCalls.empty());
+    CHECK(RefreshFailureStore.GetPeer(RefreshFailurePeer.machine_id)
+              ->Capabilities == RefreshFailureDesired);
 
     CapabilitySet Reduced;
     Reduced.grant(Capability::InputInject);

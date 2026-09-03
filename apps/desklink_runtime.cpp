@@ -1937,10 +1937,15 @@ int wmain(int Count, wchar_t** Values) {
                     (Change->DesiredCapabilities.bits() &
                      ~Existing->Capabilities.bits()) != 0;
                 if (!AddsAuthority) {
-                    const auto Status = TrustAuthority.RequestPermissionChange(
+                    auto Status = TrustAuthority.RequestPermissionChange(
                         Change->Machine, Change->DesiredCapabilities);
                     if (Status == desklink::TrustMutationStatus::CleanupFailed) {
-                        (void)Supervisor.ConfigurationChanged();
+                        // The trust record is already committed and the child
+                        // is fail-local. A supervised restart is a successful
+                        // fallback application, not an action-required fault.
+                        if (Supervisor.ConfigurationChanged()) {
+                            Status = desklink::TrustMutationStatus::Applied;
+                        }
                     }
                     return desklink::ControlResponse{
                         Request.RequestId, MapMutationStatus(Status)};
@@ -1961,9 +1966,14 @@ int wmain(int Count, wchar_t** Values) {
                     Existing->Capabilities.bits() &
                     Change->DesiredCapabilities.bits()};
                 if (Reduced.bits() != Existing->Capabilities.bits()) {
-                    const auto Reduction =
+                    auto Reduction =
                         TrustAuthority.RequestPermissionChange(
                             Change->Machine, Reduced);
+                    if (Reduction ==
+                            desklink::TrustMutationStatus::CleanupFailed &&
+                        Supervisor.ConfigurationChanged()) {
+                        Reduction = desklink::TrustMutationStatus::Applied;
+                    }
                     if (Reduction != desklink::TrustMutationStatus::Applied &&
                         Reduction != desklink::TrustMutationStatus::NoChange) {
                         return desklink::ControlResponse{
@@ -2090,13 +2100,15 @@ int wmain(int Count, wchar_t** Values) {
                     return desklink::ControlResponse{
                         Request.RequestId, desklink::ControlStatus::NotReady};
                 }
-                const auto Status =
+                auto Status =
                     TrustAuthority.ApplyReauthorizedPermissionChange(
                         Approved->Identity,
                         Approved->CurrentCapabilities,
                         Approved->DesiredCapabilities);
                 if (Status == desklink::TrustMutationStatus::CleanupFailed) {
-                    (void)Supervisor.ConfigurationChanged();
+                    if (Supervisor.ConfigurationChanged()) {
+                        Status = desklink::TrustMutationStatus::Applied;
+                    }
                 }
                 return desklink::ControlResponse{
                     Request.RequestId, MapMutationStatus(Status)};
