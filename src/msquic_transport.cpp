@@ -376,7 +376,8 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
     HQUIC ReliableStream,
     TransportPeerInfo Peer,
     MsQuicPeerValidation PeerValidation,
-    ByteBuffer InitialReliableBytes) {
+    ByteBuffer InitialReliableBytes,
+    MsQuicDatagramState InitialDatagramState) {
     if (!Api || !Connection ||
         PeerValidation != MsQuicPeerValidation::PeerValidated ||
         !Peer.authenticated || !Peer.encrypted ||
@@ -392,9 +393,34 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
     SharedState->Peer = std::move(Peer);
     SharedState->PeerValidated = true;
     SharedState->ReliableBuffer = std::move(InitialReliableBytes);
+    SharedState->DatagramEnabled =
+        InitialDatagramState.SendEnabled &&
+        InitialDatagramState.MaximumSendLength != 0;
+    SharedState->MaximumDatagramLength =
+        SharedState->DatagramEnabled
+        ? InitialDatagramState.MaximumSendLength
+        : 0;
     SharedState->SelfHold = SharedState;
     Api->SetCallbackHandler(
         Connection, reinterpret_cast<void*>(ConnectionCallback), SharedState.get());
+    BOOLEAN SendEnabled = FALSE;
+    std::uint32_t SendEnabledSize = sizeof(SendEnabled);
+    if (QUIC_SUCCEEDED(Api->GetParam(
+            Connection, QUIC_PARAM_CONN_DATAGRAM_SEND_ENABLED,
+            &SendEnabledSize, &SendEnabled)) &&
+        SendEnabledSize == sizeof(SendEnabled)) {
+        std::scoped_lock Lock(SharedState->Mutex);
+        SharedState->DatagramEnabled = SendEnabled != FALSE;
+        if (!SharedState->DatagramEnabled) {
+            SharedState->MaximumDatagramLength = 0;
+        } else if (SharedState->MaximumDatagramLength == 0) {
+            // DATAGRAM_STATE_CHANGED may precede authenticated endpoint
+            // adoption. MsQuic still enforces the actual path limit when the
+            // bounded packet is submitted.
+            SharedState->MaximumDatagramLength =
+                static_cast<std::uint16_t>(kMaxEncodedDatagramSize);
+        }
+    }
     if (ReliableStream) {
         Api->SetCallbackHandler(
             ReliableStream, reinterpret_cast<void*>(StreamCallback), SharedState.get());

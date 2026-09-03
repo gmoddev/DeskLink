@@ -8,6 +8,7 @@
 #endif
 #include <msquic.h>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -15,6 +16,11 @@ namespace desklink {
 
 enum class MsQuicPeerValidation {
     PeerValidated,
+};
+
+struct MsQuicDatagramState {
+    bool SendEnabled{};
+    std::uint16_t MaximumSendLength{};
 };
 
 class MsQuicTransportEndpoint final : public ITransportEndpoint {
@@ -27,7 +33,8 @@ public:
         HQUIC ReliableStream,
         TransportPeerInfo Peer,
         MsQuicPeerValidation PeerValidation,
-        ByteBuffer InitialReliableBytes = {});
+        ByteBuffer InitialReliableBytes = {},
+        MsQuicDatagramState InitialDatagramState = {});
 
     ~MsQuicTransportEndpoint() override;
 

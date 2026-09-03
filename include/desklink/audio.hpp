@@ -26,6 +26,7 @@ inline constexpr std::size_t kDeskLinkAudioBytesPerBlock =
 inline constexpr std::uint64_t kDeskLinkAudioBlockDurationUs = 5'000;
 inline constexpr std::size_t kDeskLinkAudioDefaultTargetFrames = 4;
 inline constexpr std::size_t kDeskLinkAudioMaximumAdaptiveTargetFrames = 12;
+inline constexpr std::size_t kDeskLinkAudioMaximumPumpBatch = 20;
 inline constexpr std::int32_t kDeskLinkAudioMaximumClockDriftPpm = 1'000;
 inline constexpr std::size_t kDeskLinkAudioDriftObservationSamples = 400;
 inline constexpr std::int32_t kDeskLinkAudioDriftAdjustmentPpm = 50;
@@ -238,6 +239,9 @@ public:
                               AudioFrameMessage Frame,
                               std::uint64_t ArrivalTimestampUs) noexcept;
     [[nodiscard]] AudioPumpResult Pump() noexcept;
+    [[nodiscard]] AudioPumpResult PumpAvailable(
+        std::size_t MaximumBlocks =
+            kDeskLinkAudioMaximumPumpBatch) noexcept;
     [[nodiscard]] bool SetGainPermyriad(std::uint16_t Gain) noexcept;
     [[nodiscard]] bool ToggleMuted() noexcept;
     void SetMuted(bool Muted) noexcept;

@@ -307,6 +307,16 @@ packets above 8192 frames fail the audio module rather than causing unbounded
 work. Published blocks are always exactly 960 PCM bytes. The production sender
 starts only with `--send-audio` after `PeerValidated` and the peer's
 `AudioReceive` grant; datagram rejection stops capture without stopping input.
+MsQuic datagram readiness observed during certificate/session bootstrap is
+carried into the admitted transport endpoint, and the endpoint rechecks the
+current send-enabled parameter after callback handoff. This prevents a valid
+audio session from permanently losing datagrams merely because MsQuic emitted
+`DATAGRAM_STATE_CHANGED` before application admission; authentication and
+session-admission gates remain unchanged.
+The receiver drains at most the existing 20-block queue per pump wake so
+Windows timer coalescing and bursty QUIC callback delivery cannot make valid
+blocks late merely because a nominal five-millisecond sleep woke later. The
+renderer queue remains bounded independently.
 
 ---
 

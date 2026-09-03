@@ -3940,6 +3940,26 @@ void AudioReceiverIsBoundedAndFailsClosed() {
     CHECK(Stats.TargetRaises == 1);
     CHECK(Stats.RebufferEvents == 1);
 
+    std::size_t BatchedRenderCount{};
+    AudioReceiver Batched(
+        [&](AudioFrameMessage) {
+            ++BatchedRenderCount;
+            return true;
+        },
+        4, kDeskLinkAudioMaximumPumpBatch);
+    for (std::uint64_t Sequence = 1;
+         Sequence <= kDeskLinkAudioMaximumPumpBatch; ++Sequence) {
+        CHECK(Batched.Push(Sequence, MakeFrame(
+            static_cast<std::uint8_t>(Sequence))));
+    }
+    CHECK(Batched.PumpAvailable() == AudioPumpResult::Submitted);
+    CHECK(BatchedRenderCount == kDeskLinkAudioMaximumPumpBatch);
+    CHECK(Batched.Stats().SequenceRejected == 0);
+    CHECK(Batched.Push(
+        kDeskLinkAudioMaximumPumpBatch + 1,
+        MakeFrame(21)));
+    CHECK(Batched.PumpAvailable(0) == AudioPumpResult::Buffering);
+
     AudioReceiver Rejecting(
         [](AudioFrameMessage) { return false; }, 1, 2);
     CHECK(Rejecting.Push(1, MakeFrame(1)));
