@@ -112,6 +112,7 @@ Source: "{#StagePath}\msvcp140_codecvt_ids.dll"; DestDir: "{app}"; Flags: ignore
 Source: "{#StagePath}\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagePath}\OPUS-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
 #ifdef ExperimentalWindows10
 Source: "{#StagePath}\WINDOWS10_BETA_NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
