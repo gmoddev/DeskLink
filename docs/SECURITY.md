@@ -631,7 +631,7 @@ store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
 
-The separately named Windows 10 Development Alpha is an unsigned prerelease,
+The separately named DeskLink Beta is an unsigned prerelease,
 not that production installer. Its build mode cannot be combined with release
 signing, requires the exact reviewed OpenSSL MsQuic/libcrypto/libssl hashes,
 and lowers only the product-shell/Setup OS floor to Windows 10 22H2. It carries

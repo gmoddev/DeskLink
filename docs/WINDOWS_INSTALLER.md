@@ -13,8 +13,8 @@ short-lived bootstrap for the native broker; updates restart
 remains for one migration release as the explicitly labeled **DeskLink
 diagnostics (Alpha)** fallback.
 
-A separate `-ExperimentalWindows10 -DevelopmentUnsigned` build mode creates a
-Development Alpha installer for Windows 10 22H2 build 19045. It includes both
+A separate `-ExperimentalWindows10 -DevelopmentUnsigned` build mode creates an
+unsigned Beta installer for Windows 10 22H2 build 19045. It includes both
 provider graphs and the Windows 10-targeted product shell. It cannot be signed
 through the production packaging path, does not alter Firewall policy, and is
 not a supported or production artifact.
@@ -55,9 +55,9 @@ CI creates an explicitly named `*-unsigned.exe` development installer. It is
 for automated install/repair/upgrade/uninstall validation only and must never
 be published as a production release.
 
-The Windows 10 Development Alpha is the only unsigned package intended for a
+The cross-version DeskLink Beta is the only unsigned package intended for a
 GitHub prerelease. Its name, release title, Setup information page, and bundled
-notice must all say Development Alpha/unsigned. Packaging requires the exact
+notice must all say Beta/unsigned. Packaging requires the exact
 reviewed OpenSSL MsQuic, libcrypto, and libssl hashes in addition to Schannel.
 The broker chooses by OS before loading and never falls back.
 
@@ -97,10 +97,10 @@ switches:
 .\scripts\Stage-Windows10DevelopmentAlpha.ps1 `
   -CMakeBuildPath out\windows10-compat\desklink `
   -WinUiBuildPath out\windows10-compat\desklink\product-ui\Release `
-  -StagePath windows10-alpha-stage
+  -StagePath windows10-beta-stage
 .\scripts\Build-WindowsInstaller.ps1 `
-  -StagePath windows10-alpha-stage `
-  -OutputPath DeskLink-0.1.0-alpha.1-windows-x64-unsigned.exe `
+  -StagePath windows10-beta-stage `
+  -OutputPath DeskLink-0.1.0-beta.1-windows-x64-unsigned.exe `
   -IsccPath '<verified Inno Setup 7.1.0>\ISCC.exe' `
   -AppVersion 0.1.0 -DevelopmentUnsigned -ExperimentalWindows10
 ```

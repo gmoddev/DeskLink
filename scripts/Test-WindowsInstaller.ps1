@@ -86,7 +86,7 @@ function Assert-InstalledPayload() {
             'runtime\openssl\msquic.dll',
             'runtime\openssl\libcrypto-3-x64.dll',
             'runtime\openssl\libssl-3-x64.dll',
-            'WINDOWS10_DEVELOPMENT_ALPHA.md'
+            'WINDOWS10_BETA_NOTICE.md'
         )
     }
     foreach ($RelativePath in $ExpectedFiles) {

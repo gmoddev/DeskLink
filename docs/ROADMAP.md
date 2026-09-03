@@ -409,7 +409,7 @@ independent gates:
    with held key/button state also passes lease cleanup. A scoped four-second
    network interruption fails local on focus-lease renewal; a fresh reconnect
    rotates the nonce and rejects live prior-session and stale-epoch packets.
-6. **Development Alpha implemented:** the current product shell and broker are
+6. **Beta 1 qualification implemented:** the current product shell and broker are
    packaged for Windows 10 22H2 with both reviewed runtime graphs. Broker-owned
    operations use the fail-closed OS `auto` policy; Alpha/direct requests stay
    Schannel-pinned. The unsigned prerelease is a distribution/qualification

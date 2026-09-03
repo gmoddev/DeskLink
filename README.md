@@ -4,16 +4,35 @@ DeskLink is a local distributed desk-control platform intended to provide secure
 
 This repository is a **reference foundation implementation**, not a finished production release. It deliberately implements and tests protocol/state/security invariants before and alongside privileged or timing-sensitive Windows adapters.
 
-## Development Alpha packages
+## Beta packages
 
-GitHub prereleases may contain an explicitly unsigned **Development Alpha**
+GitHub prereleases may contain an explicitly unsigned **DeskLink Beta**
 installer. The cross-version package uses the current `desklink.exe` product
 shell, selects stock Schannel on Windows 11/Server 2022+, and selects the
 hash-pinned OpenSSL/CNG compatibility runtime on Windows 10 22H2. Provider
 selection is fail-closed and never retries after credential, signing,
 certificate, authentication, or transport failure. Windows 10 and every
 unsigned package remain experimental/unsupported; see
-[`docs/WINDOWS10_DEVELOPMENT_ALPHA.md`](docs/WINDOWS10_DEVELOPMENT_ALPHA.md).
+[`docs/WINDOWS10_BETA_NOTICE.md`](docs/WINDOWS10_BETA_NOTICE.md).
+
+## Measured audio latency
+
+The `v0.1.0-beta.1` qualification run used Windows 10 22H2 with the reviewed
+MsQuic/OpenSSL/CNG runtime as the audio source and Windows 11 with stock
+MsQuic/Schannel as the receiver. Across 4,412 accepted and submitted five-ms
+audio blocks, DeskLink recorded zero concealments and zero rejections.
+
+| Software boundary | Median | p95 | p99 | Maximum |
+|---|---:|---:|---:|---:|
+| Emit to authenticated datagram arrival | 0.151 ms | 0.254 ms | 0.282 ms | 4.737 ms |
+| Emit to WASAPI submission | 7.152 ms | 14.914 ms | 16.018 ms | 17.276 ms |
+
+The authenticated four-timestamp calibration used 32 samples; its best network
+round trip was 0.242 ms with estimated ±0.121 ms clock uncertainty. These are
+software-path measurements ending immediately before WASAPI submission. They
+do not include Windows/device buffering after submission, DAC or speaker delay,
+room propagation, or microphone capture latency. See
+[`docs/VALIDATION.md`](docs/VALIDATION.md#authenticated-audio-latency-diagnostics).
 
 ## Implemented
 

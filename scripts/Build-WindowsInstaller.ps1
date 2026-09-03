@@ -136,11 +136,14 @@ $RequiredFiles = @(
     'ALPHA_WRAPPER.md'
 )
 if ($ExperimentalWindows10) {
+    if ($OutputName -notmatch '(?i)beta') {
+        throw 'An experimental Windows 10 beta installer must include "beta" in its file name.'
+    }
     $RequiredFiles += @(
         'runtime\openssl\msquic.dll',
         'runtime\openssl\libcrypto-3-x64.dll',
         'runtime\openssl\libssl-3-x64.dll',
-        'WINDOWS10_DEVELOPMENT_ALPHA.md'
+        'WINDOWS10_BETA_NOTICE.md'
     )
 }
 $ExpectedRelativeFiles = [Collections.Generic.HashSet[string]]::new(
