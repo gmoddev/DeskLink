@@ -30,14 +30,14 @@ $VsWhere = Join-Path ${env:ProgramFiles(x86)} `
 if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) {
     throw 'Visual Studio vswhere.exe was not found.'
 }
-$VisualStudioInstances = @((& $VsWhere -products '*' `
+$VisualStudioInstances = (& $VsWhere -products '*' `
     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -format json) | ConvertFrom-Json)
+    -format json) | ConvertFrom-Json
 $VisualStudioInstance = $VisualStudioInstances |
-    Where-Object { ([version] $_.installationVersion).Major -ge 17 } |
+    Where-Object { ([version] ($_.installationVersion)).Major -ge 17 } |
     Sort-Object { [version] $_.installationVersion } -Descending |
     ForEach-Object {
-        $ToolsVersion = "{0}.0" -f ([version] $_.installationVersion).Major
+        $ToolsVersion = "{0}.0" -f ([version] ($_.installationVersion)).Major
         $XamlTargets = Join-Path $_.installationPath (
             "MSBuild\Microsoft\WindowsXaml\v$ToolsVersion\Microsoft.Windows.UI.Xaml.Cpp.targets")
         if (Test-Path -LiteralPath $XamlTargets -PathType Leaf) {
