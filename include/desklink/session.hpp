@@ -280,6 +280,8 @@ public:
     [[nodiscard]] bool CanSendVoice() const noexcept;
     [[nodiscard]] bool CanReceiveVoice() const noexcept;
     [[nodiscard]] bool SendVoiceFrame(VoiceFrameMessage Frame);
+    void SetVoiceAuthorizationChangedHandler(
+        std::function<void()> Handler) noexcept;
 #endif
     [[nodiscard]] bool SendClockSyncProbe(std::uint64_t ProbeId);
     [[nodiscard]] bool CanSendClipboard() const noexcept;

@@ -67,6 +67,8 @@ enum class ControlCommand : std::uint16_t {
     RefreshTrustedPeerCapabilities = 29,
     ApplyManagedPreferences = 30,
     IdentifyPeerDisplays = 31,
+    SetVoiceTransmit = 32,
+    SetVoiceMuted = 33,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -119,6 +121,9 @@ struct SetAudioGainControlRequest {
 };
 
 struct ToggleAudioMuteControlRequest {};
+
+struct SetVoiceTransmitControlRequest { bool Active{}; };
+struct SetVoiceMutedControlRequest { bool Muted{}; };
 
 struct GetDisplayTopologiesControlRequest {};
 
@@ -234,6 +239,8 @@ using ControlRequestPayload = std::variant<
     FocusMachineControlRequest,
     SetAudioGainControlRequest,
     ToggleAudioMuteControlRequest,
+    SetVoiceTransmitControlRequest,
+    SetVoiceMutedControlRequest,
     GetDisplayTopologiesControlRequest,
     IdentifyPeerDisplaysControlRequest,
     PrepareForUpdateControlRequest,
@@ -273,6 +280,7 @@ struct ControlState {
     DeskMode DesiredMode{DeskMode::Roam};
     std::uint16_t ConnectedPeerCount{};
     std::uint16_t AudioGainPermyriad{10'000};
+    std::uint16_t VoiceGainPermyriad{10'000};
     std::uint16_t RetryAttempt{};
     std::uint32_t RetryDelayMilliseconds{};
     BrokerRuntimePhase RuntimePhase{BrokerRuntimePhase::Stopped};
@@ -285,6 +293,12 @@ struct ControlState {
     bool CaptureActive{};
     bool AudioMuted{};
     bool RoamingObserverActive{};
+    bool VoiceEnabled{};
+    bool VoiceMuted{};
+    bool VoicePttReady{};
+    bool VoiceTransmitting{};
+    bool VoiceInputUnavailable{};
+    bool VoicePermissionMissing{};
 };
 
 struct ControlMachineTopology {

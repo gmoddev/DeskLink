@@ -1020,6 +1020,12 @@ bool PeerSession::SendVoiceFrame(VoiceFrameMessage Frame) {
     ++Stats_.VoiceSent;
     return true;
 }
+
+void PeerSession::SetVoiceAuthorizationChangedHandler(
+    std::function<void()> Handler) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    Handlers_.VoiceAuthorizationChanged = std::move(Handler);
+}
 #endif
 
 bool PeerSession::SendClockSyncProbe(std::uint64_t ProbeId) {

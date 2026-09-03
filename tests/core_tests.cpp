@@ -27,6 +27,9 @@
 #endif
 #ifdef _WIN32
 #include "desklink/win32_audio.hpp"
+#ifdef DESKLINK_BUILD_VOICE
+#include "desklink/win32_voice.hpp"
+#endif
 #include "desklink/win32_application_settings.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_clipboard.hpp"
@@ -6015,8 +6018,8 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
         std::fstream Output(
             ReservedPath, std::ios::binary | std::ios::in | std::ios::out);
         CHECK(Output.good());
-        Output.seekp(34);
-        Output.put('\1');
+        Output.seekp(35);
+        Output.put(static_cast<char>(0x80));
     }
     Win32ProductPreferencesStore Reserved(ReservedPath);
     CHECK(!Reserved.Load());

@@ -32,6 +32,8 @@ struct LauncherPairingGrants {
     bool GrantInput{};
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
+    bool GrantVoiceSend{};
+    bool GrantVoiceReceive{};
     bool GrantTopology{};
     bool GrantClipboardRead{};
     bool GrantClipboardWrite{};
@@ -62,6 +64,9 @@ struct LauncherRequest {
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    bool SendVoice{};
+    bool ReceiveVoice{};
+    std::optional<std::string> VoiceInputEndpointId;
     bool SyncClipboard{};
     bool BrokerManaged{};
     std::optional<std::uint64_t> BrokerPairingOperationId;

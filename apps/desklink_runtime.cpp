@@ -768,6 +768,17 @@ private:
                 desklink::AudioRoutePreference::LocalToPeer ||
             Preferences.AudioRoute ==
                 desklink::AudioRoutePreference::Bidirectional;
+        Request.SendVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::LocalToPeer ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.ReceiveVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::PeerToLocal ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.VoiceInputEndpointId = Preferences.VoiceInputEndpointId;
         return Launch(Request, Preferences);
     }
 
@@ -853,6 +864,17 @@ private:
                 desklink::AudioRoutePreference::PeerToLocal ||
             Preferences.AudioRoute ==
                 desklink::AudioRoutePreference::Bidirectional;
+        Request.SendVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::LocalToPeer ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.ReceiveVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::PeerToLocal ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.VoiceInputEndpointId = Preferences.VoiceInputEndpointId;
         return Launch(Request, Preferences);
     }
 
@@ -1457,6 +1479,10 @@ private:
             desklink::Capability::AudioSend);
         Request.GrantAudioReceive = Capabilities.contains(
             desklink::Capability::AudioReceive);
+        Request.GrantVoiceSend = Capabilities.contains(
+            desklink::Capability::VoiceSend);
+        Request.GrantVoiceReceive = Capabilities.contains(
+            desklink::Capability::VoiceReceive);
         Request.GrantTopology = Capabilities.contains(
             desklink::Capability::DisplayTopologyExchange);
         Request.GrantClipboardRead = Capabilities.contains(

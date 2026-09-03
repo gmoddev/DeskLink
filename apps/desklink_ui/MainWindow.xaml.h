@@ -117,6 +117,30 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnToggleAudioMute(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnPeerVoiceIntentToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnLocalVoiceIntentToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnVoiceInputChanged(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
+    void OnApplyVoiceGain(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnToggleVoiceMute(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnVoiceEchoGuardToggled(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnVoicePttPressed(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& Args);
+    void OnVoicePttReleased(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& Args);
     void OnGamingBehaviorToggled(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -204,6 +228,9 @@ private:
     void SetClipboardDesired(bool Desired);
     void SetPeerAudioDesired(bool Desired);
     void SetLocalAudioDesired(bool Desired);
+    void SetPeerVoiceDesired(bool Desired);
+    void SetLocalVoiceDesired(bool Desired);
+    void LoadVoiceInputDevices();
     void ShowPairingStatus(
         winrt::hstring const& Message,
         Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);
@@ -238,6 +265,7 @@ private:
     desklink::ControlState RuntimeState_;
     std::vector<desklink::ControlNearbyPeer> NearbyPeers_;
     std::vector<desklink::ControlTrustedDevice> TrustedDevices_;
+    std::vector<desklink::VoiceInputDevice> VoiceInputDevices_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore> RoamingSettings_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore>
         DeveloperRoamingSettings_;

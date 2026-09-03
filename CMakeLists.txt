@@ -298,6 +298,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_discovery.cpp
         src/win32_foreground.cpp
         src/win32_audio.cpp
+        src/win32_voice.cpp
         src/win32_input.cpp
         src/win32_capture.cpp
         src/win32_clipboard.cpp
@@ -306,7 +307,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_device_certificate.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt setupapi shcore)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt propsys setupapi shcore)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     else()

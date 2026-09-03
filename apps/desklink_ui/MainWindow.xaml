@@ -145,6 +145,57 @@
                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                                 BorderThickness="1">
                             <StackPanel Spacing="12">
+                                <TextBlock Text="Voice &amp; microphone"
+                                           Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <TextBlock x:Name="VoiceStatusText"
+                                           Text="Voice is off. Microphone capture is closed."
+                                           TextWrapping="Wrap" />
+                                <ToggleSwitch x:Name="PeerVoiceDesiredToggle"
+                                              Header="Play paired PC voice on this PC"
+                                              OffContent="Off" OnContent="On"
+                                              Toggled="OnPeerVoiceIntentToggled" />
+                                <ToggleSwitch x:Name="LocalVoiceDesiredToggle"
+                                              Header="Share this PC's microphone with paired PC"
+                                              OffContent="Off" OnContent="On"
+                                              Toggled="OnLocalVoiceIntentToggled" />
+                                <ComboBox x:Name="VoiceInputDeviceBox"
+                                          Header="Microphone input"
+                                          SelectionChanged="OnVoiceInputChanged"
+                                          MinWidth="360" />
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <NumberBox x:Name="VoiceGainBox"
+                                               Header="Incoming voice volume (%)"
+                                               Value="100" Minimum="0" Maximum="100"
+                                               SpinButtonPlacementMode="Compact"
+                                               Width="210" />
+                                    <Button Content="Apply volume"
+                                            Click="OnApplyVoiceGain"
+                                            VerticalAlignment="Bottom" />
+                                    <Button x:Name="VoiceMuteButton"
+                                            Content="Mute microphone"
+                                            Click="OnToggleVoiceMute"
+                                            VerticalAlignment="Bottom" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="VoiceEchoGuardToggle"
+                                              Header="Echo guard (mutes incoming DeskLink voice while transmitting)"
+                                              IsOn="True"
+                                              Toggled="OnVoiceEchoGuardToggled" />
+                                <Button x:Name="VoicePttButton"
+                                        Content="Hold to talk"
+                                        HorizontalAlignment="Left"
+                                        PointerPressed="OnVoicePttPressed"
+                                        PointerReleased="OnVoicePttReleased"
+                                        PointerCanceled="OnVoicePttReleased"
+                                        PointerCaptureLost="OnVoicePttReleased" />
+                                <TextBlock Text="PTT is local authority. Reconnect, permission loss, mute, release, or microphone loss always stops capture. Echo guard is half-duplex feedback protection, not acoustic echo cancellation."
+                                           Opacity="0.72" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="20" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <StackPanel Spacing="12">
                                 <TextBlock x:Name="InputTitle" Text="Keyboard &amp; mouse"
                                            Style="{StaticResource SubtitleTextBlockStyle}" />
                                 <TextBlock x:Name="InputSummary" Text="Input is on this PC"
@@ -347,6 +398,10 @@
                                           Content="Allow the other PC to play audio into this PC" />
                                 <CheckBox x:Name="GrantAudioReceiveCheck"
                                           Content="Allow the other PC to receive audio captured on this PC" />
+                                <CheckBox x:Name="GrantVoiceSendCheck"
+                                          Content="Allow the other PC to send microphone audio to this PC" />
+                                <CheckBox x:Name="GrantVoiceReceiveCheck"
+                                          Content="Allow the other PC to receive this PC's microphone audio" />
                                 <TextBlock Text="All sensitive permissions default off. The other PC approves its permissions separately."
                                            Opacity="0.72" TextWrapping="Wrap" />
                             </StackPanel>
