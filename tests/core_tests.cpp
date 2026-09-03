@@ -682,7 +682,7 @@ void ControlProtocolRoundTripAndValidation() {
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
     ControlPairingToken PairingToken{};
     PairingToken[0] = 0x41;
-    const std::array<ControlRequest, 31> Requests{
+    const std::array<ControlRequest, 33> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -731,6 +731,8 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{30, ApplyManagedPreferencesControlRequest{
             Preferences}},
         ControlRequest{31, IdentifyPeerDisplaysControlRequest{4}},
+        ControlRequest{32, SetVoiceTransmitControlRequest{true}},
+        ControlRequest{33, SetVoiceMutedControlRequest{true}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -769,6 +771,10 @@ void ControlProtocolRoundTripAndValidation() {
     State.DesiredMode = DeskMode::Roam;
     State.ConnectedPeerCount = 1;
     State.AudioGainPermyriad = 8'000;
+    State.VoiceGainPermyriad = 6'500;
+    State.VoiceEnabled = true;
+    State.VoicePttReady = true;
+    State.VoiceTransmitting = true;
     State.RuntimePhase = BrokerRuntimePhase::ConnectedLocal;
     State.RoamingState = ControlRoamingState::Remote;
     State.PeerDirection = ControlPeerDirectionState::OutgoingActive;
@@ -794,6 +800,10 @@ void ControlProtocolRoundTripAndValidation() {
           ControlPeerDirectionState::OutgoingActive);
     CHECK(Response.Decoded->State->ReadyRoamingRouteCount == 1);
     CHECK(Response.Decoded->State->RoamingObserverActive);
+    CHECK(Response.Decoded->State->VoiceGainPermyriad == 6'500);
+    CHECK(Response.Decoded->State->VoiceEnabled);
+    CHECK(Response.Decoded->State->VoicePttReady);
+    CHECK(Response.Decoded->State->VoiceTransmitting);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -5035,6 +5045,10 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     Preferences.ClipboardDesired = true;
     Preferences.AudioRoute = AudioRoutePreference::Bidirectional;
     Preferences.AudioGainPermyriad = 7'500;
+    Preferences.VoiceRoute = VoiceRoutePreference::Bidirectional;
+    Preferences.VoiceInputEndpointId = "communications-microphone";
+    Preferences.VoiceGainPermyriad = 6'500;
+    Preferences.VoiceEchoGuard = true;
     Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
     Preferences.ProfileRules.push_back(
@@ -5044,6 +5058,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!CanEnableClipboardIntent(LocalFeatureGrants));
     CHECK(!CanEnablePeerAudioIntent(LocalFeatureGrants));
     CHECK(!CanEnableLocalAudioIntent(LocalFeatureGrants));
+    CHECK(!CanEnablePeerVoiceIntent(LocalFeatureGrants));
+    CHECK(!CanEnableLocalVoiceIntent(LocalFeatureGrants));
     LocalFeatureGrants.grant(Capability::ClipboardRead);
     LocalFeatureGrants.grant(Capability::ClipboardWrite);
     CHECK(CanEnableClipboardIntent(LocalFeatureGrants));
@@ -5052,6 +5068,11 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!CanEnableLocalAudioIntent(LocalFeatureGrants));
     LocalFeatureGrants.grant(Capability::AudioReceive);
     CHECK(CanEnableLocalAudioIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::VoiceSend);
+    CHECK(CanEnablePeerVoiceIntent(LocalFeatureGrants));
+    CHECK(!CanEnableLocalVoiceIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::VoiceReceive);
+    CHECK(CanEnableLocalVoiceIntent(LocalFeatureGrants));
 
     RuntimePlannerContext Ready;
     Ready.PreferredPeerTrusted = true;
@@ -5062,7 +5083,9 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
              Capability::ClipboardRead,
              Capability::ClipboardWrite,
              Capability::AudioSend,
-             Capability::AudioReceive}) {
+             Capability::AudioReceive,
+             Capability::VoiceSend,
+             Capability::VoiceReceive}) {
         Ready.LocalGrantsToPeer.grant(CapabilityValue);
         Ready.PeerGrantsToLocal.grant(CapabilityValue);
     }
@@ -5077,8 +5100,11 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(Main.EnableClipboard);
     CHECK(Main.SendAudio);
     CHECK(Main.ReceiveAudio);
+    CHECK(Main.SendVoice);
+    CHECK(Main.ReceiveVoice);
     CHECK(Main.InitialMode == DeskMode::LockPc1);
     CHECK(Main.AudioGainPermyriad == 7'500);
+    CHECK(Main.VoiceGainPermyriad == 6'500);
     CHECK(Main.Blockers == 0);
 
     Preferences.Role = DeskRole::Companion;
@@ -5098,7 +5124,9 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
            static_cast<std::uint64_t>(Capability::ClipboardRead) |
            static_cast<std::uint64_t>(Capability::ClipboardWrite) |
            static_cast<std::uint64_t>(Capability::AudioSend) |
-           static_cast<std::uint64_t>(Capability::AudioReceive)));
+           static_cast<std::uint64_t>(Capability::AudioReceive) |
+           static_cast<std::uint64_t>(Capability::VoiceSend) |
+           static_cast<std::uint64_t>(Capability::VoiceReceive)));
     CHECK(Ready.PeerGrantsToLocal.contains(Capability::InputInject));
 
     Preferences.Role = DeskRole::Unconfigured;
@@ -5147,6 +5175,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!Authenticating.EnableClipboard);
     CHECK(!Authenticating.SendAudio);
     CHECK(!Authenticating.ReceiveAudio);
+    CHECK(!Authenticating.SendVoice);
+    CHECK(!Authenticating.ReceiveVoice);
     CHECK(HasRuntimePlanBlocker(
         Authenticating, RuntimePlanBlocker::PeerNotValidated));
 
@@ -5160,6 +5190,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!Denied.EnableClipboard);
     CHECK(!Denied.SendAudio);
     CHECK(!Denied.ReceiveAudio);
+    CHECK(!Denied.SendVoice);
+    CHECK(!Denied.ReceiveVoice);
     CHECK(HasRuntimePlanBlocker(
         Denied, RuntimePlanBlocker::InputCapabilityMissing));
     CHECK(HasRuntimePlanBlocker(
@@ -5170,6 +5202,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
         Denied, RuntimePlanBlocker::ClipboardCapabilityMissing));
     CHECK(HasRuntimePlanBlocker(
         Denied, RuntimePlanBlocker::AudioCapabilityMissing));
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::VoiceCapabilityMissing));
 
     auto Malformed = Preferences;
     Malformed.Role = static_cast<DeskRole>(0xffu);
@@ -5203,6 +5237,16 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.AudioGainPermyriad = 10'001;
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceGainPermyriad = 10'001;
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceRoute = static_cast<VoiceRoutePreference>(0xffu);
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceInputEndpointId = std::string(
+        kMaximumVoiceEndpointIdBytes + 1, 'a');
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.ReturnLocalHotkey = Malformed.FocusPeerHotkey;
@@ -5982,6 +6026,10 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Settings.ClipboardDesired = true;
     Settings.AudioRoute = AudioRoutePreference::PeerToLocal;
     Settings.AudioGainPermyriad = 7'500;
+    Settings.VoiceRoute = VoiceRoutePreference::Bidirectional;
+    Settings.VoiceInputEndpointId = "test-microphone-endpoint";
+    Settings.VoiceGainPermyriad = 6'500;
+    Settings.VoiceEchoGuard = false;
     Settings.Gaming = GamingBehavior::FollowProfileRules;
     Settings.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Settings.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
@@ -6051,7 +6099,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedPreferences->CloseToTray);
     CHECK(MigratedPreferences->RunAtLogin);
     CHECK(MigratedPreferences->FirstRunComplete);
-    CHECK(std::filesystem::file_size(LegacyPath) == 36);
+    CHECK(std::filesystem::file_size(LegacyPath) == 40);
 
     const auto Version2Path = Directory / "version-2.bin";
     std::array<std::uint8_t, 64> Version2{};
@@ -6078,7 +6126,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedVersion2.Load());
     CHECK(MigratedVersion2.Current()->Role == DeskRole::Main);
     CHECK(MigratedVersion2.Current()->AudioGainPermyriad == 10'000);
-    CHECK(std::filesystem::file_size(Version2Path) == 36);
+    CHECK(std::filesystem::file_size(Version2Path) == 40);
 
     const auto Version3Path = Directory / "version-3.bin";
     std::array<std::uint8_t, 36> Version3{};
@@ -6103,7 +6151,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedVersion3.Load());
     CHECK(MigratedVersion3.Current()->Role == DeskRole::Main);
     CHECK(!MigratedVersion3.Current()->PreferredPeerEndpoint);
-    CHECK(std::filesystem::file_size(Version3Path) == 36);
+    CHECK(std::filesystem::file_size(Version3Path) == 40);
     {
         std::ifstream Input(Version3Path, std::ios::binary);
         std::array<std::uint8_t, 6> Header{};
