@@ -692,6 +692,28 @@ fault injection at each transaction phase.
 
 ---
 
+## Authenticated audio latency diagnostics
+
+The non-installed `desklink_pair_validation` target accepts
+`--validation-audio-latency` only for `serve --send-audio` and
+`focus --receive-audio`. Both peers must opt in. The focus peer sends 32
+authenticated reliable clock probes and retains the lowest-round-trip NTP-style
+sample. In this mode only, the sender replaces each captured block timestamp at
+the immediate `SendAudioFrame` boundary. The receiver records non-silent blocks
+at authenticated datagram arrival and immediately before WASAPI submission.
+
+At shutdown the receiver reports sample count, median, p95, p99, and maximum
+for emit-to-arrival and emit-to-submit, plus the selected clock offset, best
+round trip, and half-round-trip uncertainty. This measures DeskLink's software
+transport and buffering path. It does not measure WASAPI device buffering,
+DAC/speaker delay, room propagation, or microphone capture; an acoustic
+loopback rig is still required for true sound-to-sound latency.
+
+The clock exchange and timestamp observations are disabled in the installed
+binary. They run only after authenticated session admission, accept no
+unauthorized audio, never log PCM, and have no authority over validation,
+capabilities, focus, playout, leases, or reconnect decisions.
+
 ## Limitations of this validation
 
 This validation does not yet prove:

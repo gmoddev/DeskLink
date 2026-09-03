@@ -702,6 +702,16 @@ separate production-admission and release-integration review. See
 
 ---
 
+### Development-only clock and audio timing telemetry
+
+The separate validation executable can enable an authenticated reliable
+four-timestamp clock exchange for two-PC audio measurements. Production never
+enables it. Peer-provided timestamps are telemetry only and cannot influence
+certificate validation, `PeerValidated`, session admission, capabilities,
+focus, input, audio authorization, jitter behavior, or leases. Audio arrival is
+observed only after the normal authenticated nonce and capability gates. The
+diagnostic stores bounded integer latency samples and never stores or logs PCM.
+
 ## 14. Security invariants to keep in tests
 
 The following must remain regression-tested:

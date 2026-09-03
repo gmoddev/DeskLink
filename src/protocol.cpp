@@ -239,6 +239,16 @@ ByteBuffer encode_payload(const Message& message) {
             w.raw(ByteSpan{
                 reinterpret_cast<const std::uint8_t*>(value.Text.data()),
                 value.Text.size()});
+        } else if constexpr (
+            std::is_same_v<T, ClockSyncRequestMessage>) {
+            w.u64(value.ProbeId);
+            w.u64(value.OriginSendTimestampUs);
+        } else if constexpr (
+            std::is_same_v<T, ClockSyncResponseMessage>) {
+            w.u64(value.ProbeId);
+            w.u64(value.OriginSendTimestampUs);
+            w.u64(value.RemoteReceiveTimestampUs);
+            w.u64(value.RemoteSendTimestampUs);
         } else if constexpr (std::is_same_v<T, HeartbeatMessage>) {
         }
     }, message);
@@ -404,6 +414,29 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             if (!r.raw_vector(expected, m.pcm) || r.remaining() != 0) return std::nullopt;
             return m;
         }
+        case MessageType::ClockSyncRequest: {
+            ClockSyncRequestMessage Message;
+            if (!r.u64(Message.ProbeId) ||
+                !r.u64(Message.OriginSendTimestampUs) ||
+                Message.ProbeId == 0 || r.remaining() != 0) {
+                return std::nullopt;
+            }
+            return Message;
+        }
+        case MessageType::ClockSyncResponse: {
+            ClockSyncResponseMessage Message;
+            if (!r.u64(Message.ProbeId) ||
+                !r.u64(Message.OriginSendTimestampUs) ||
+                !r.u64(Message.RemoteReceiveTimestampUs) ||
+                !r.u64(Message.RemoteSendTimestampUs) ||
+                Message.ProbeId == 0 ||
+                Message.RemoteSendTimestampUs <
+                    Message.RemoteReceiveTimestampUs ||
+                r.remaining() != 0) {
+                return std::nullopt;
+            }
+            return Message;
+        }
         case MessageType::DisplayTopologySnapshot: {
             DisplayTopologySnapshotMessage Message;
             std::uint16_t DisplayCount{};
@@ -522,6 +555,8 @@ bool known_type(std::uint16_t raw) {
         case MessageType::DisplayIdentifyRequest:
         case MessageType::ClipboardHello:
         case MessageType::ClipboardText:
+        case MessageType::ClockSyncRequest:
+        case MessageType::ClockSyncResponse:
         case MessageType::Heartbeat:
             return true;
         default:
@@ -564,6 +599,12 @@ MessageType message_type(const Message& message) noexcept {
         }
         else if constexpr (std::is_same_v<T, ClipboardTextMessage>) {
             return MessageType::ClipboardText;
+        }
+        else if constexpr (std::is_same_v<T, ClockSyncRequestMessage>) {
+            return MessageType::ClockSyncRequest;
+        }
+        else if constexpr (std::is_same_v<T, ClockSyncResponseMessage>) {
+            return MessageType::ClockSyncResponse;
         }
         else return MessageType::Heartbeat;
     }, message);
