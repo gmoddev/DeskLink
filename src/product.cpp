@@ -18,6 +18,13 @@ namespace {
            Route == AudioRoutePreference::Bidirectional;
 }
 
+[[nodiscard]] bool IsValidVoiceRoute(VoiceRoutePreference Route) noexcept {
+    return Route == VoiceRoutePreference::Off ||
+           Route == VoiceRoutePreference::PeerToLocal ||
+           Route == VoiceRoutePreference::LocalToPeer ||
+           Route == VoiceRoutePreference::Bidirectional;
+}
+
 [[nodiscard]] bool IsValidGamingBehavior(GamingBehavior Behavior) noexcept {
     return Behavior == GamingBehavior::KeepLocal ||
            Behavior == GamingBehavior::FollowProfileRules;
@@ -61,10 +68,16 @@ bool IsValidProductPreferences(
     const ProductPreferences& Preferences) noexcept {
     if (!IsValidDeskRole(Preferences.Role) ||
         !IsValidAudioRoute(Preferences.AudioRoute) ||
+        !IsValidVoiceRoute(Preferences.VoiceRoute) ||
         !IsValidGamingBehavior(Preferences.Gaming) ||
         !IsValidProductHotkey(Preferences.FocusPeerHotkey) ||
         !IsValidProductHotkey(Preferences.ReturnLocalHotkey) ||
         Preferences.AudioGainPermyriad > 10'000 ||
+        Preferences.VoiceGainPermyriad > 10'000 ||
+        (Preferences.VoiceInputEndpointId &&
+         (Preferences.VoiceInputEndpointId->empty() ||
+          Preferences.VoiceInputEndpointId->size() >
+              kMaximumVoiceEndpointIdBytes)) ||
         Preferences.ProfileRules.size() > kMaximumForegroundProfileRules ||
         (Preferences.PreferredPeerMachine &&
          IsZeroMachine(*Preferences.PreferredPeerMachine)) ||
@@ -141,6 +154,14 @@ bool CanEnableLocalAudioIntent(CapabilitySet LocalGrantsToPeer) noexcept {
     return LocalGrantsToPeer.contains(Capability::AudioReceive);
 }
 
+bool CanEnablePeerVoiceIntent(CapabilitySet LocalGrantsToPeer) noexcept {
+    return LocalGrantsToPeer.contains(Capability::VoiceSend);
+}
+
+bool CanEnableLocalVoiceIntent(CapabilitySet LocalGrantsToPeer) noexcept {
+    return LocalGrantsToPeer.contains(Capability::VoiceReceive);
+}
+
 bool ApplyProductCrossingPreset(
     RoamingConfiguration& Configuration,
     ProductCrossingPreset Preset) noexcept {
@@ -180,6 +201,7 @@ DesiredDeskConfiguration PlanDesiredDeskConfiguration(
     Result.PreferencesValid = true;
     Result.PreferredPeerMachine = Preferences.PreferredPeerMachine;
     Result.AudioGainPermyriad = Preferences.AudioGainPermyriad;
+    Result.VoiceGainPermyriad = Preferences.VoiceGainPermyriad;
 
     if (Preferences.Role == DeskRole::Unconfigured) {
         AddBlocker(Result, RuntimePlanBlocker::RoleUnconfigured);
@@ -210,7 +232,10 @@ DesiredDeskConfiguration PlanDesiredDeskConfiguration(
     const bool WantsPeerFeature = Preferences.InputRoamingDesired ||
         Preferences.ClipboardDesired ||
         Preferences.AudioRoute != AudioRoutePreference::Off;
-    if (!WantsPeerFeature) return Result;
+    const bool WantsAnyVoice =
+        Preferences.VoiceRoute != VoiceRoutePreference::Off;
+    const bool WantsAnyPeerFeature = WantsPeerFeature || WantsAnyVoice;
+    if (!WantsAnyPeerFeature) return Result;
     if (!Preferences.PreferredPeerMachine) {
         AddBlocker(Result, RuntimePlanBlocker::PreferredPeerMissing);
         return Result;
@@ -271,6 +296,27 @@ DesiredDeskConfiguration PlanDesiredDeskConfiguration(
     if ((WantsReceiveAudio && !Result.ReceiveAudio) ||
         (WantsSendAudio && !Result.SendAudio)) {
         AddBlocker(Result, RuntimePlanBlocker::AudioCapabilityMissing);
+    }
+
+    const bool WantsReceiveVoice =
+        Preferences.VoiceRoute == VoiceRoutePreference::PeerToLocal ||
+        Preferences.VoiceRoute == VoiceRoutePreference::Bidirectional;
+    const bool WantsSendVoice =
+        Preferences.VoiceRoute == VoiceRoutePreference::LocalToPeer ||
+        Preferences.VoiceRoute == VoiceRoutePreference::Bidirectional;
+    if (WantsReceiveVoice) {
+        Result.ReceiveVoice = Context.LocalGrantsToPeer.contains(
+            Capability::VoiceSend) &&
+            Context.PeerGrantsToLocal.contains(Capability::VoiceReceive);
+    }
+    if (WantsSendVoice) {
+        Result.SendVoice = Context.LocalGrantsToPeer.contains(
+            Capability::VoiceReceive) &&
+            Context.PeerGrantsToLocal.contains(Capability::VoiceSend);
+    }
+    if ((WantsReceiveVoice && !Result.ReceiveVoice) ||
+        (WantsSendVoice && !Result.SendVoice)) {
+        AddBlocker(Result, RuntimePlanBlocker::VoiceCapabilityMissing);
     }
     return Result;
 }

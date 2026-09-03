@@ -21,9 +21,11 @@ constexpr std::array<std::uint8_t, 4> kPreferencesMagic{'D', 'L', 'P', 'P'};
 constexpr std::uint16_t kLegacyVersion = 1;
 constexpr std::uint16_t kPreferencesV2Version = 2;
 constexpr std::uint16_t kPreferencesV3Version = 3;
+constexpr std::uint16_t kPreferencesV4Version = 4;
 constexpr std::size_t kLegacySize = 12;
 constexpr std::size_t kPreferencesV2Size = 64;
 constexpr std::size_t kPreferencesHeaderSize = 36;
+constexpr std::size_t kPreferencesV5HeaderSize = 40;
 constexpr std::size_t kMaximumPreferencesSize = 16u * 1024u;
 constexpr std::uint16_t kKnownPreferenceFlags = 0x00ffu;
 constexpr wchar_t kRunKey[] =
@@ -46,7 +48,7 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
 [[nodiscard]] std::optional<ByteBuffer> Encode(
     const ProductPreferences& Preferences) {
     if (!IsValidProductPreferences(Preferences)) return std::nullopt;
-    ByteBuffer Result(kPreferencesHeaderSize);
+    ByteBuffer Result(kPreferencesV5HeaderSize);
     std::copy(
         kPreferencesMagic.begin(), kPreferencesMagic.end(), Result.begin());
     WriteU16(Result, 4, kProductPreferencesSchemaVersion);
@@ -73,6 +75,10 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
     }
     Result[32] = static_cast<std::uint8_t>(Preferences.ProfileRules.size());
     Result[33] = Preferences.PreferredPeerEndpoint ? 1u : 0u;
+    Result[34] = static_cast<std::uint8_t>(Preferences.VoiceRoute);
+    Result[35] = Preferences.VoiceEchoGuard ? 1u : 0u;
+    WriteU16(Result, 36, Preferences.VoiceGainPermyriad);
+    Result[38] = Preferences.VoiceInputEndpointId ? 1u : 0u;
     for (const auto& Rule : Preferences.ProfileRules) {
         Result.push_back(static_cast<std::uint8_t>(Rule.Mode));
         Result.push_back(Rule.FullscreenOnly ? 1u : 0u);
@@ -89,6 +95,12 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         Result.insert(Result.end(), Endpoint.Host.begin(), Endpoint.Host.end());
         Result.push_back(static_cast<std::uint8_t>(Endpoint.Port >> 8u));
         Result.push_back(static_cast<std::uint8_t>(Endpoint.Port));
+    }
+    if (Preferences.VoiceInputEndpointId) {
+        const auto& EndpointId = *Preferences.VoiceInputEndpointId;
+        Result.push_back(static_cast<std::uint8_t>(EndpointId.size() >> 8u));
+        Result.push_back(static_cast<std::uint8_t>(EndpointId.size()));
+        Result.insert(Result.end(), EndpointId.begin(), EndpointId.end());
     }
     if (Result.size() > kMaximumPreferencesSize) return std::nullopt;
     return Result;
@@ -134,20 +146,26 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         : std::nullopt;
 }
 
-[[nodiscard]] std::optional<ProductPreferences> DecodePreferencesV3OrV4(
+[[nodiscard]] std::optional<ProductPreferences> DecodePreferencesV3OrLater(
     std::span<const std::uint8_t> Bytes,
     std::uint16_t ExpectedVersion) {
-    const bool Version4 = ExpectedVersion == kProductPreferencesSchemaVersion;
-    if ((!Version4 && ExpectedVersion != kPreferencesV3Version) ||
-        Bytes.size() < kPreferencesHeaderSize ||
+    const bool Version4 = ExpectedVersion == kPreferencesV4Version;
+    const bool Version5 = ExpectedVersion == kProductPreferencesSchemaVersion;
+    const auto HeaderSize = Version5
+        ? kPreferencesV5HeaderSize : kPreferencesHeaderSize;
+    if ((!Version4 && !Version5 &&
+         ExpectedVersion != kPreferencesV3Version) ||
+        Bytes.size() < HeaderSize ||
         Bytes.size() > kMaximumPreferencesSize ||
         !std::equal(
             kPreferencesMagic.begin(), kPreferencesMagic.end(),
             Bytes.begin()) ||
         ReadU16(Bytes, 4) != ExpectedVersion || Bytes[9] != 0 ||
-        (!Version4 && Bytes[33] != 0) || (Version4 && Bytes[33] > 1) ||
-        Bytes[34] != 0 ||
-        Bytes[35] != 0) {
+        (!Version4 && !Version5 && Bytes[33] != 0) ||
+        ((Version4 || Version5) && Bytes[33] > 1) ||
+        (!Version5 && (Bytes[34] != 0 || Bytes[35] != 0)) ||
+        (Version5 && ((Bytes[35] & 0xfeu) != 0 || Bytes[38] > 1 ||
+                      Bytes[39] != 0))) {
         return std::nullopt;
     }
     const auto Flags = ReadU16(Bytes, 10);
@@ -169,6 +187,11 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
     Result.ClipboardDesired = (Flags & 0x0040u) != 0;
     Result.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
     Result.AudioGainPermyriad = ReadU16(Bytes, 12);
+    if (Version5) {
+        Result.VoiceRoute = static_cast<VoiceRoutePreference>(Bytes[34]);
+        Result.VoiceEchoGuard = (Bytes[35] & 0x01u) != 0;
+        Result.VoiceGainPermyriad = ReadU16(Bytes, 36);
+    }
     Result.FocusPeerHotkey = static_cast<ProductHotkey>(Bytes[14]);
     Result.ReturnLocalHotkey = static_cast<ProductHotkey>(Bytes[15]);
     MachineId Preferred{};
@@ -179,7 +202,7 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         Result.PreferredPeerMachine = Preferred;
     }
 
-    std::size_t Offset = kPreferencesHeaderSize;
+    std::size_t Offset = HeaderSize;
     Result.ProfileRules.reserve(Bytes[32]);
     for (std::uint8_t Index = 0; Index < Bytes[32]; ++Index) {
         if (Offset + 4u > Bytes.size()) return std::nullopt;
@@ -199,7 +222,7 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         Offset += NameSize;
         Result.ProfileRules.push_back(std::move(Rule));
     }
-    if (Version4 && Bytes[33] != 0) {
+    if ((Version4 || Version5) && Bytes[33] != 0) {
         if (Offset + 4u > Bytes.size()) return std::nullopt;
         const auto HostSize = ReadU16(Bytes, Offset);
         Offset += 2u;
@@ -214,6 +237,20 @@ void WriteU16(std::span<std::uint8_t> Bytes, std::size_t Offset,
         Endpoint.Port = ReadU16(Bytes, Offset);
         Offset += 2u;
         Result.PreferredPeerEndpoint = std::move(Endpoint);
+    }
+    if (Version5 && Bytes[38] != 0) {
+        if (Offset + 2u > Bytes.size()) return std::nullopt;
+        const auto EndpointIdSize = ReadU16(Bytes, Offset);
+        Offset += 2u;
+        if (EndpointIdSize == 0 ||
+            EndpointIdSize > kMaximumVoiceEndpointIdBytes ||
+            Offset + EndpointIdSize > Bytes.size()) {
+            return std::nullopt;
+        }
+        Result.VoiceInputEndpointId = std::string(
+            reinterpret_cast<const char*>(Bytes.data() + Offset),
+            EndpointIdSize);
+        Offset += EndpointIdSize;
     }
     if (Offset != Bytes.size() || !IsValidProductPreferences(Result)) {
         return std::nullopt;
@@ -316,16 +353,21 @@ bool Win32ProductPreferencesStore::Load() {
         std::equal(
             kPreferencesMagic.begin(), kPreferencesMagic.end(), Bytes.begin()) &&
         ReadU16(View, 4) == kPreferencesV3Version;
+    const bool Version4 = ByteCount >= kPreferencesHeaderSize &&
+        std::equal(
+            kPreferencesMagic.begin(), kPreferencesMagic.end(), Bytes.begin()) &&
+        ReadU16(View, 4) == kPreferencesV4Version;
     const auto Parsed = Legacy
         ? DecodeLegacy(View)
         : Version2 ? DecodePreferencesV2(View)
-        : Version3 ? DecodePreferencesV3OrV4(View, kPreferencesV3Version)
-                   : DecodePreferencesV3OrV4(
+        : Version3 ? DecodePreferencesV3OrLater(View, kPreferencesV3Version)
+        : Version4 ? DecodePreferencesV3OrLater(View, kPreferencesV4Version)
+                   : DecodePreferencesV3OrLater(
                          View, kProductPreferencesSchemaVersion);
-    const auto Migrated = Parsed && (Legacy || Version2 || Version3)
+    const auto Migrated = Parsed && (Legacy || Version2 || Version3 || Version4)
         ? Encode(*Parsed)
         : std::nullopt;
-    if (!Parsed || ((Legacy || Version2 || Version3) &&
+    if (!Parsed || ((Legacy || Version2 || Version3 || Version4) &&
                     (!Migrated || !WriteAtomic(Path_, *Migrated)))) {
         return false;
     }

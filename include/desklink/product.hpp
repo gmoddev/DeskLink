@@ -13,8 +13,9 @@
 
 namespace desklink {
 
-inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 4;
+inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 5;
 inline constexpr std::size_t kMaximumPreferredPeerHostBytes = 253;
+inline constexpr std::size_t kMaximumVoiceEndpointIdBytes = 2'048;
 
 enum class DeskRole : std::uint8_t {
     Unconfigured = 0,
@@ -24,6 +25,13 @@ enum class DeskRole : std::uint8_t {
 };
 
 enum class AudioRoutePreference : std::uint8_t {
+    Off = 0,
+    PeerToLocal = 1,
+    LocalToPeer = 2,
+    Bidirectional = 3,
+};
+
+enum class VoiceRoutePreference : std::uint8_t {
     Off = 0,
     PeerToLocal = 1,
     LocalToPeer = 2,
@@ -70,6 +78,10 @@ struct ProductPreferences {
     bool ClipboardDesired{};
     AudioRoutePreference AudioRoute{AudioRoutePreference::Off};
     std::uint16_t AudioGainPermyriad{10'000};
+    VoiceRoutePreference VoiceRoute{VoiceRoutePreference::Off};
+    std::optional<std::string> VoiceInputEndpointId;
+    std::uint16_t VoiceGainPermyriad{10'000};
+    bool VoiceEchoGuard{true};
     GamingBehavior Gaming{GamingBehavior::KeepLocal};
     ProductHotkey FocusPeerHotkey{ProductHotkey::Off};
     ProductHotkey ReturnLocalHotkey{ProductHotkey::Off};
@@ -92,6 +104,10 @@ struct ProductPreferences {
     CapabilitySet LocalGrantsToPeer) noexcept;
 [[nodiscard]] bool CanEnableLocalAudioIntent(
     CapabilitySet LocalGrantsToPeer) noexcept;
+[[nodiscard]] bool CanEnablePeerVoiceIntent(
+    CapabilitySet LocalGrantsToPeer) noexcept;
+[[nodiscard]] bool CanEnableLocalVoiceIntent(
+    CapabilitySet LocalGrantsToPeer) noexcept;
 
 enum class RuntimePlanBlocker : std::uint32_t {
     None = 0,
@@ -106,6 +122,7 @@ enum class RuntimePlanBlocker : std::uint32_t {
     RoamingRouteUnavailable = 1u << 8u,
     ClipboardCapabilityMissing = 1u << 9u,
     AudioCapabilityMissing = 1u << 10u,
+    VoiceCapabilityMissing = 1u << 11u,
 };
 
 struct RuntimePlannerContext {
@@ -120,6 +137,7 @@ struct DesiredDeskConfiguration {
     std::optional<MachineId> PreferredPeerMachine;
     DeskMode InitialMode{DeskMode::LockPc1};
     std::uint16_t AudioGainPermyriad{10'000};
+    std::uint16_t VoiceGainPermyriad{10'000};
     std::uint32_t Blockers{};
     bool PreferencesValid{};
     bool StartRuntime{};
@@ -129,6 +147,8 @@ struct DesiredDeskConfiguration {
     bool EnableClipboard{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    bool SendVoice{};
+    bool ReceiveVoice{};
 
     [[nodiscard]] bool operator==(
         const DesiredDeskConfiguration&) const noexcept = default;

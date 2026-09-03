@@ -542,7 +542,11 @@ PeerSession::PeerSession(
     AudioReceiver* Receiver,
     DisplayTopologyExchangeOptions TopologyOptions,
     ClipboardSessionOptions ClipboardOptions,
-    LatencyDiagnosticOptions LatencyOptions) noexcept
+    LatencyDiagnosticOptions LatencyOptions
+#ifdef DESKLINK_BUILD_VOICE
+    , VoiceReceiver* VoiceReceiver
+#endif
+    ) noexcept
     : Transport_(std::move(Transport)),
       OutgoingCoordinator_(OutgoingCoordinator),
       IncomingCoordinator_(IncomingCoordinator),
@@ -550,6 +554,9 @@ PeerSession::PeerSession(
       SessionNonce_(SessionNonce),
       Handlers_(std::move(Handlers)),
       AudioReceiver_(Receiver),
+#ifdef DESKLINK_BUILD_VOICE
+      VoiceReceiver_(VoiceReceiver),
+#endif
       TopologyOptions_(TopologyOptions),
       TopologyExchange_(TopologyOptions.Clock),
       ClipboardOptions_(std::move(ClipboardOptions)),
@@ -622,6 +629,9 @@ void PeerSession::Stop() noexcept {
         std::scoped_lock Lock(Mutex_);
         FailLocalDirectionsLocked();
         if (AudioReceiver_) AudioReceiver_->Reset();
+#ifdef DESKLINK_BUILD_VOICE
+        if (VoiceReceiver_) VoiceReceiver_->Reset();
+#endif
         LocalCapabilities_ = {};
         RemoteCapabilities_.reset();
         TopologyExchange_.Stop();
@@ -632,6 +642,9 @@ void PeerSession::Stop() noexcept {
         PeerMachine_ = {};
         ReliableSequence_ = 1;
         AudioDatagramSequence_ = 1;
+#ifdef DESKLINK_BUILD_VOICE
+        VoiceDatagramSequence_ = 1;
+#endif
         TopologySequence_ = 1;
         CapabilityConflict_ = false;
         LocalCapabilityRevision_ = 1;
@@ -724,6 +737,11 @@ bool PeerSession::RefreshLocalCapabilities(
     if (NotifyDirectionChanged && Handlers_.DirectionChanged) {
         Handlers_.DirectionChanged();
     }
+#ifdef DESKLINK_BUILD_VOICE
+    if (Handlers_.VoiceAuthorizationChanged) {
+        Handlers_.VoiceAuthorizationChanged();
+    }
+#endif
     return Acknowledged;
 }
 
@@ -963,6 +981,47 @@ bool PeerSession::SendAudioFrame(AudioFrameMessage Frame) {
     return true;
 }
 
+#ifdef DESKLINK_BUILD_VOICE
+bool PeerSession::CanSendVoice() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ && RemoteCapabilities_ &&
+        AcknowledgedLocalCapabilityRevision_ == LocalCapabilityRevision_ &&
+        LocalCapabilities_.contains(Capability::VoiceReceive) &&
+        RemoteCapabilities_->contains(Capability::VoiceSend);
+}
+
+bool PeerSession::CanReceiveVoice() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Started_ && !CapabilityConflict_ && RemoteCapabilities_ &&
+        AcknowledgedLocalCapabilityRevision_ == LocalCapabilityRevision_ &&
+        VoiceReceiver_ != nullptr &&
+        LocalCapabilities_.contains(Capability::VoiceSend) &&
+        RemoteCapabilities_->contains(Capability::VoiceReceive);
+}
+
+bool PeerSession::SendVoiceFrame(VoiceFrameMessage Frame) {
+    std::scoped_lock Lock(Mutex_);
+    if (!Started_ || CapabilityConflict_ || !RemoteCapabilities_ ||
+        AcknowledgedLocalCapabilityRevision_ != LocalCapabilityRevision_ ||
+        !LocalCapabilities_.contains(Capability::VoiceReceive) ||
+        !RemoteCapabilities_->contains(Capability::VoiceSend) ||
+        !IsValidVoiceFrameMessage(Frame)) {
+        ++Stats_.VoiceSendRejected;
+        return false;
+    }
+    EnvelopeHeader Header;
+    Header.session_nonce = SessionNonce_;
+    Header.sequence = VoiceDatagramSequence_++;
+    if (VoiceDatagramSequence_ == 0) ++VoiceDatagramSequence_;
+    if (!Transport_->send_datagram(encode_packet(Header, Frame))) {
+        ++Stats_.VoiceSendRejected;
+        return false;
+    }
+    ++Stats_.VoiceSent;
+    return true;
+}
+#endif
+
 bool PeerSession::SendClockSyncProbe(std::uint64_t ProbeId) {
     std::scoped_lock Lock(Mutex_);
     if (!Started_ || !LatencyOptions_.Enabled ||
@@ -1190,6 +1249,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
     bool NotifyFocusReady = false;
     bool NotifyDirectionChanged = false;
     bool NotifyCollision = false;
+#ifdef DESKLINK_BUILD_VOICE
+    bool NotifyVoiceAuthorization = false;
+#endif
     std::function<void()> DirectionCollisionHandler;
     std::function<void()> DirectionChangedHandler;
     std::function<void()> OutgoingFocusReadyHandler;
@@ -1303,6 +1365,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                     FailLocalDirectionsLocked();
                     NotifyDirectionChanged = true;
                     CapabilityChanged_.notify_all();
+#ifdef DESKLINK_BUILD_VOICE
+                    NotifyVoiceAuthorization = true;
+#endif
                 }
             } else {
                 const bool ChangedGrant = !SameGrant && !FirstGrant;
@@ -1321,6 +1386,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                     NotifyDirectionChanged = true;
                 }
                 (void)PublishClipboardHelloLocked();
+#ifdef DESKLINK_BUILD_VOICE
+                NotifyVoiceAuthorization = true;
+#endif
             }
         } else if (Type == MessageType::CapabilityGrantAck) {
             ++Stats_.CapabilityGrantAcksReceived;
@@ -1340,6 +1408,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 }
             } else if (Ack.revision == LocalCapabilityRevision_) {
                 AcknowledgedLocalCapabilityRevision_ = Ack.revision;
+#ifdef DESKLINK_BUILD_VOICE
+                NotifyVoiceAuthorization = true;
+#endif
             } else {
                 ++Stats_.CapabilityGrantAcksRejected;
             }
@@ -1536,6 +1607,12 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
     if (OutgoingFocusReadyHandler) {
         OutgoingFocusReadyHandler();
     }
+#ifdef DESKLINK_BUILD_VOICE
+    if (NotifyVoiceAuthorization &&
+        Handlers_.VoiceAuthorizationChanged) {
+        Handlers_.VoiceAuthorizationChanged();
+    }
+#endif
 }
 
 void PeerSession::OnDatagram(ByteBuffer Packet) {
@@ -1552,12 +1629,22 @@ void PeerSession::OnDatagram(ByteBuffer Packet) {
             if (PeekedType == MessageType::AudioFrame) {
                 ++Stats_.AudioRejected;
             }
+#ifdef DESKLINK_BUILD_VOICE
+            if (PeekedType == MessageType::VoiceFrame) {
+                ++Stats_.VoiceRejected;
+            }
+#endif
             return;
         }
         if (!ValidateSession(*Decoded.packet)) {
             if (Decoded.packet->header.type == MessageType::AudioFrame) {
                 ++Stats_.AudioRejected;
             }
+#ifdef DESKLINK_BUILD_VOICE
+            if (Decoded.packet->header.type == MessageType::VoiceFrame) {
+                ++Stats_.VoiceRejected;
+            }
+#endif
             return;
         }
         const auto Type = Decoded.packet->header.type;
@@ -1594,6 +1681,27 @@ void PeerSession::OnDatagram(ByteBuffer Packet) {
             ++Stats_.AudioAccepted;
             return;
         }
+#ifdef DESKLINK_BUILD_VOICE
+        if (Type == MessageType::VoiceFrame) {
+            ++Stats_.VoiceReceived;
+            auto Frame = std::get<VoiceFrameMessage>(
+                std::move(Decoded.packet->message));
+            if (!RemoteCapabilities_ ||
+                AcknowledgedLocalCapabilityRevision_ !=
+                    LocalCapabilityRevision_ ||
+                !LocalCapabilities_.contains(Capability::VoiceSend) ||
+                !RemoteCapabilities_->contains(Capability::VoiceReceive) ||
+                VoiceReceiver_ == nullptr ||
+                !VoiceReceiver_->Push(
+                    Decoded.packet->header.sequence, std::move(Frame))) {
+                ++Stats_.authorization_rejected;
+                ++Stats_.VoiceRejected;
+                return;
+            }
+            ++Stats_.VoiceAccepted;
+            return;
+        }
+#endif
         if (Type == MessageType::PointerPositionFeedback) {
             if (DirectionArbiter_.State() !=
                     PeerDirectionState::OutgoingActive ||

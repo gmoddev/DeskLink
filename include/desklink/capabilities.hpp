@@ -19,9 +19,11 @@ enum class Capability : std::uint64_t {
     FileSend       = 1ull << 10,
     FileReceive    = 1ull << 11,
     DisplayTopologyExchange = 1ull << 12,
+    VoiceSend      = 1ull << 13,
+    VoiceReceive   = 1ull << 14,
 };
 
-inline constexpr std::uint64_t kKnownCapabilityBits = (1ull << 13u) - 1u;
+inline constexpr std::uint64_t kKnownCapabilityBits = (1ull << 15u) - 1u;
 
 class CapabilitySet {
 public:

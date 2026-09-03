@@ -722,6 +722,18 @@ void EncodePreferences(Writer& Output,
                 Rule.ExecutableName.data()),
             Rule.ExecutableName.size()});
     }
+    Output.U8(static_cast<std::uint8_t>(Preferences.VoiceRoute));
+    Output.U16(Preferences.VoiceGainPermyriad);
+    Output.U8(Preferences.VoiceEchoGuard ? 1u : 0u);
+    const auto EndpointSize = Preferences.VoiceInputEndpointId
+        ? Preferences.VoiceInputEndpointId->size() : 0u;
+    Output.U16(static_cast<std::uint16_t>(EndpointSize));
+    if (Preferences.VoiceInputEndpointId) {
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Preferences.VoiceInputEndpointId->data()),
+            Preferences.VoiceInputEndpointId->size()});
+    }
 }
 
 std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
@@ -797,6 +809,26 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
                 reinterpret_cast<const char*>(Name.data()), Name.size()),
             static_cast<DeskMode>(RawMode),
             (RuleFlags & 0x01u) != 0});
+    }
+    std::uint8_t RawVoiceRoute{};
+    std::uint8_t RawEchoGuard{};
+    std::uint16_t VoiceEndpointSize{};
+    if (!Input.U8(RawVoiceRoute) ||
+        !Input.U16(Preferences.VoiceGainPermyriad) ||
+        !Input.U8(RawEchoGuard) || RawEchoGuard > 1 ||
+        !Input.U16(VoiceEndpointSize) ||
+        VoiceEndpointSize > kMaximumVoiceEndpointIdBytes ||
+        Input.Remaining() < VoiceEndpointSize) {
+        return std::nullopt;
+    }
+    Preferences.VoiceRoute =
+        static_cast<VoiceRoutePreference>(RawVoiceRoute);
+    Preferences.VoiceEchoGuard = RawEchoGuard != 0;
+    if (VoiceEndpointSize != 0) {
+        ByteBuffer Endpoint(VoiceEndpointSize);
+        if (!Input.Raw(Endpoint)) return std::nullopt;
+        Preferences.VoiceInputEndpointId = std::string(
+            reinterpret_cast<const char*>(Endpoint.data()), Endpoint.size());
     }
     return IsValidProductPreferences(Preferences)
         ? std::optional<ProductPreferences>(Preferences)

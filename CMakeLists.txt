@@ -20,6 +20,7 @@ option(DESKLINK_BUILD_PHYSICAL_VALIDATION
     "Build the non-production physical failure-injection control" OFF)
 option(DESKLINK_BUILD_PRODUCT_UI
     "Build the pinned self-contained WinUI 3 product shell" OFF)
+option(DESKLINK_BUILD_VOICE "Build pinned Opus voice forwarding" ON)
 set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.6.0 distribution")
 set(DESKLINK_MSQUIC_SCHANNEL_ROOT "${DESKLINK_MSQUIC_ROOT}" CACHE PATH
     "Path to the pinned MsQuic 2.6.0 Schannel distribution")
@@ -75,7 +76,23 @@ add_library(desklink_core
 
 target_include_directories(desklink_core PUBLIC include)
 
-target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=4)
+target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=5)
+
+if(DESKLINK_BUILD_VOICE)
+    include(FetchContent)
+    set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(desklink_opus
+        URL https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+        URL_HASH SHA256=6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(desklink_opus)
+    target_sources(desklink_core PRIVATE src/voice.cpp)
+    target_link_libraries(desklink_core PUBLIC opus)
+    target_compile_definitions(desklink_core PUBLIC DESKLINK_BUILD_VOICE=1)
+endif()
 
 if(MSVC)
     target_compile_options(desklink_core PRIVATE /W4 /permissive-)

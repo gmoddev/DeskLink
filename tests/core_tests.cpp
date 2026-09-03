@@ -22,6 +22,9 @@
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
 #include "desklink/update.hpp"
+#ifdef DESKLINK_BUILD_VOICE
+#include "desklink/voice.hpp"
+#endif
 #ifdef _WIN32
 #include "desklink/win32_audio.hpp"
 #include "desklink/win32_application_settings.hpp"
@@ -45,6 +48,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -6373,6 +6377,187 @@ void ProductMonitorLayoutSaveIsOrderedAndFailsLocal() {
     CHECK((Events == std::vector<std::string>{"local"}));
 }
 
+#ifdef DESKLINK_BUILD_VOICE
+void VoiceProtocolCodecJitterAndBoundsAreStrict() {
+    using namespace desklink;
+
+    CHECK(kProtocolVersion == 5);
+    CHECK((kKnownCapabilityBits &
+        static_cast<std::uint64_t>(Capability::VoiceSend)) != 0);
+    CHECK((kKnownCapabilityBits &
+        static_cast<std::uint64_t>(Capability::VoiceReceive)) != 0);
+
+    VoiceEncoder Encoder;
+    VoiceDecoder Decoder;
+    CHECK(Encoder.Ready());
+    CHECK(Decoder.Ready());
+    std::array<std::int16_t, kVoiceSamplesPerChannel> Samples{};
+    for (std::size_t Index = 0; Index < Samples.size(); ++Index) {
+        Samples[Index] = static_cast<std::int16_t>(
+            8'000.0 * std::sin(2.0 * 3.141592653589793 *
+                440.0 * static_cast<double>(Index) /
+                static_cast<double>(kVoiceSampleRate)));
+    }
+    const auto Encoded = Encoder.Encode(Samples);
+    CHECK(Encoded.has_value());
+    CHECK(!Encoded->empty());
+    CHECK(Encoded->size() <= kVoiceMaximumEncodedBytes);
+    const auto Decoded = Decoder.Decode(*Encoded, false, 123'000);
+    CHECK(Decoded.has_value());
+    CHECK(Decoded->Samples.size() == kVoiceSamplesPerChannel);
+    CHECK(!Decoder.Decode(ByteBuffer{0xff, 0xff, 0xff}, false, 0));
+
+    VoiceFrameMessage Frame;
+    Frame.StreamId = 7;
+    Frame.CaptureTimestampUs = 123'000;
+    Frame.Encoded = *Encoded;
+    EnvelopeHeader Header;
+    Header.session_nonce = 99;
+    Header.sequence = 1;
+    const auto Packet = encode_packet(Header, Frame);
+    const auto RoundTrip = decode_packet(Packet, true);
+    CHECK(RoundTrip.packet.has_value());
+    CHECK(RoundTrip.packet->header.type == MessageType::VoiceFrame);
+    const auto& RoundTripFrame = std::get<VoiceFrameMessage>(
+        RoundTrip.packet->message);
+    CHECK(RoundTripFrame.StreamId == 7);
+    CHECK(RoundTripFrame.Encoded == Frame.Encoded);
+    CHECK(!decode_packet(Packet, false).packet.has_value());
+
+    for (const auto Invalid : {
+             VoiceFrameMessage{0, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, 44'100,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 480, kVoiceChannels, VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, 2,
+                 VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 static_cast<VoiceCodec>(0xff), 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 VoiceCodec::Opus, 0, {}}}) {
+        CHECK(!IsValidVoiceFrameMessage(Invalid));
+    }
+    Frame.Encoded.assign(kVoiceMaximumEncodedBytes + 1u, 0x11);
+    CHECK(!IsValidVoiceFrameMessage(Frame));
+
+    std::vector<VoicePcmFrame> Rendered;
+    VoiceReceiver Receiver(
+        [&](VoicePcmFrame Pcm) {
+            Rendered.push_back(std::move(Pcm));
+            return true;
+        });
+    Frame.Encoded = *Encoded;
+    Frame.StreamId = 9;
+    Frame.CaptureTimestampUs = 20'000;
+    CHECK(Receiver.Push(1, Frame));
+    Frame.CaptureTimestampUs = 60'000;
+    CHECK(Receiver.Push(3, Frame));
+    CHECK(Receiver.Pump() == VoicePumpResult::Submitted);
+    CHECK(Receiver.Pump() == VoicePumpResult::Submitted);
+    CHECK(Rendered.size() == 2);
+    CHECK(Rendered.back().Concealed);
+    CHECK(Receiver.Stats().FecRecovered + Receiver.Stats().PlcGenerated == 1);
+    CHECK(!Receiver.Push(1, Frame));
+    CHECK(Receiver.Stats().SequenceRejected >= 1);
+
+    Receiver.Reset();
+    Frame.StreamId = 10;
+    for (std::uint64_t Sequence = 1;
+         Sequence <= kVoiceMaximumQueuedPackets + 5u; ++Sequence) {
+        Frame.CaptureTimestampUs = Sequence * 20'000;
+        CHECK(Receiver.Push(Sequence, Frame));
+    }
+    CHECK(Receiver.Stats().DroppedForBound >= 1);
+    Frame.StreamId = 11;
+    CHECK(Receiver.Push(100, Frame));
+    Frame.StreamId = 10;
+    CHECK(!Receiver.Push(99, Frame));
+    CHECK(Receiver.Stats().StreamRejected >= 1);
+}
+
+void PeerVoiceRequiresComplementaryAcknowledgedGrants() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x5151'7171u;
+    const auto IdentityA = MakeIdentity(151, "Voice A");
+    const auto IdentityB = MakeIdentity(152, "Voice B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::VoiceSend);
+    Capabilities.grant(Capability::VoiceReceive);
+    Capabilities.grant(Capability::AudioSend);
+    Capabilities.grant(Capability::AudioReceive);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::vector<VoicePcmFrame> RenderedA;
+    std::vector<VoicePcmFrame> RenderedB;
+    VoiceReceiver ReceiverA([&](VoicePcmFrame Frame) {
+        RenderedA.push_back(std::move(Frame));
+        return true;
+    }, 1);
+    VoiceReceiver ReceiverB([&](VoicePcmFrame Frame) {
+        RenderedB.push_back(std::move(Frame));
+        return true;
+    }, 1);
+    std::uint64_t AuthorizationChangesA{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.VoiceAuthorizationChanged = [&] {
+        ++AuthorizationChangesA;
+    };
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA), nullptr, {}, {}, {}, &ReceiverA);
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        {}, nullptr, {}, {}, {}, &ReceiverB);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.CanSendVoice());
+    CHECK(SessionA.CanReceiveVoice());
+    CHECK(SessionB.CanSendVoice());
+    CHECK(SessionB.CanReceiveVoice());
+
+    VoiceEncoder Encoder;
+    std::array<std::int16_t, kVoiceSamplesPerChannel> Samples{};
+    const auto Encoded = Encoder.Encode(Samples);
+    CHECK(Encoded.has_value());
+    VoiceFrameMessage Frame;
+    Frame.StreamId = 1;
+    Frame.CaptureTimestampUs = 20'000;
+    Frame.Encoded = *Encoded;
+    CHECK(SessionA.SendVoiceFrame(Frame));
+    CHECK(SessionB.Stats().VoiceAccepted == 1);
+    CHECK(ReceiverB.Pump() == VoicePumpResult::Submitted);
+    CHECK(RenderedB.size() == 1);
+
+    CapabilitySet Revoked = Capabilities;
+    Revoked.revoke(Capability::VoiceReceive);
+    SaveTrustedPeer(TrustA, IdentityB, Revoked);
+    CHECK(SessionA.RefreshLocalCapabilities());
+    CHECK(!SessionA.CanSendVoice());
+    CHECK(SessionA.CanSendAudio());
+    CHECK(!SessionA.SendVoiceFrame(Frame));
+    CHECK(AuthorizationChangesA >= 1);
+}
+#endif
+
 void in_memory_transport_preserves_security_metadata() {
     using namespace desklink;
     TransportPeerInfo a_sees_b;
@@ -6414,6 +6599,10 @@ void in_memory_transport_preserves_security_metadata() {
 } // namespace
 
 int main() {
+#ifdef DESKLINK_BUILD_VOICE
+    VoiceProtocolCodecJitterAndBoundsAreStrict();
+    PeerVoiceRequiresComplementaryAcknowledgedGrants();
+#endif
     CallbackGateClosesAndDrainsAdmittedCallbacks();
     AudioFrameAssemblerProducesExactBoundedBlocks();
     AudioReceiverIsBoundedAndFailsClosed();
