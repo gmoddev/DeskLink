@@ -99,10 +99,17 @@ if (-not (Test-Path -LiteralPath $StageRoot)) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $StageSample) -Force |
         Out-Null
     Copy-Item -LiteralPath $SourceSample -Destination $StageSample -Recurse
+    # Git otherwise treats an in-worktree staging directory as a subdirectory of
+    # the parent checkout and silently ignores patch paths outside that prefix.
+    & git -c 'init.templateDir=' init --quiet `
+        --initial-branch=desklink-stage $StageRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not isolate the staged driver source before patching.'
+    }
     Push-Location $StageRoot
     try {
         $BasePatchArguments = @(
-            'apply', '--check', '--recount', '--whitespace=error-all',
+            'apply', '--check', '--no-index', '--recount', '--whitespace=error-all',
             '--exclude=audio/simpleaudiosample/Source/Filters/speakerwavtable.h',
             '--exclude=audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx',
             $PatchPaths[0])
@@ -111,7 +118,7 @@ if (-not (Test-Path -LiteralPath $StageRoot)) {
             throw 'DeskLink virtual microphone patch no longer applies cleanly.'
         }
         $BasePatchArguments = @(
-            'apply', '--recount', '--whitespace=error-all',
+            'apply', '--no-index', '--recount', '--whitespace=error-all',
             '--exclude=audio/simpleaudiosample/Source/Filters/speakerwavtable.h',
             '--exclude=audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx',
             $PatchPaths[0])
@@ -120,11 +127,11 @@ if (-not (Test-Path -LiteralPath $StageRoot)) {
             throw 'DeskLink virtual microphone patch could not be applied.'
         }
         foreach ($PatchPath in $PatchPaths[1..($PatchPaths.Count - 1)]) {
-            & git apply --check --unidiff-zero --whitespace=error-all $PatchPath
+            & git apply --check --no-index --unidiff-zero --whitespace=error-all $PatchPath
             if ($LASTEXITCODE -ne 0) {
                 throw "DeskLink patch no longer applies: $PatchPath"
             }
-            & git apply --unidiff-zero --whitespace=error-all $PatchPath
+            & git apply --no-index --unidiff-zero --whitespace=error-all $PatchPath
             if ($LASTEXITCODE -ne 0) {
                 throw "DeskLink patch could not be applied: $PatchPath"
             }
