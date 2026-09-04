@@ -58,6 +58,78 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1
         run: ctest --test-dir build-sanitizers --output-on-failure
 
+  VirtualMicrophoneDriver:
+    name: Optional virtual microphone driver
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout DeskLink
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout pinned Microsoft driver samples
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: microsoft/Windows-driver-samples
+          ref: 197ba2156a60e2b76fcd4820bae594223e91a1e9
+          path: external/windows-driver-samples
+
+      - name: Install matching Microsoft WDK and Visual Studio integration
+        shell: pwsh
+        run: |
+          $WdkSetup = Join-Path $env:RUNNER_TEMP 'wdk-26100.6584.exe'
+          Invoke-WebRequest `
+            -Uri 'https://download.microsoft.com/download/41fb59c2-1723-45f9-a270-96b73ad58233/KIT_BUNDLE_WDK_MEDIACREATION/wdksetup.exe' `
+            -OutFile $WdkSetup
+          $Signature = Get-AuthenticodeSignature -LiteralPath $WdkSetup
+          if ($Signature.Status -ne 'Valid' -or
+              -not $Signature.SignerCertificate -or
+              $Signature.SignerCertificate.GetNameInfo(
+                [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                $false) -ne 'Microsoft Corporation') {
+            throw 'The WDK bootstrapper lacks the expected Microsoft signature.'
+          }
+          $Wdk = Start-Process -FilePath $WdkSetup -ArgumentList @(
+            '/quiet', '/norestart', '/features', '+'
+          ) -Wait -PassThru
+          if ($Wdk.ExitCode -notin 0, 3010) {
+            throw "WDK installation failed with exit code $($Wdk.ExitCode)."
+          }
+          $VsWhere = Join-Path ${env:ProgramFiles(x86)} `
+            'Microsoft Visual Studio\Installer\vswhere.exe'
+          $VsRoot = (& $VsWhere -latest -products '*' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath).Trim()
+          $VsInstaller = Join-Path ${env:ProgramFiles(x86)} `
+            'Microsoft Visual Studio\Installer\setup.exe'
+          $Vs = Start-Process -FilePath $VsInstaller -ArgumentList @(
+            'modify', '--installPath', $VsRoot,
+            '--add', 'Component.Microsoft.Windows.DriverKit',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre',
+            '--quiet', '--norestart'
+          ) -Wait -PassThru
+          if ($Vs.ExitCode -notin 0, 3010) {
+            throw "Visual Studio WDK integration failed with exit code $($Vs.ExitCode)."
+          }
+
+      - name: Install pinned WDK build package
+        run: >-
+          nuget install Microsoft.Windows.WDK.x64
+          -Version 10.0.26100.6584
+          -OutputDirectory external
+          -NonInteractive
+
+      - name: Build and verify unsigned development package
+        shell: pwsh
+        run: |
+          cmake -S . -B build-virtual-microphone `
+            -DDESKLINK_BUILD_VIRTUAL_MICROPHONE_DRIVER=ON `
+            -DDESKLINK_WINDOWS_DRIVER_SAMPLES_ROOT="$env:GITHUB_WORKSPACE/external/windows-driver-samples" `
+            -DDESKLINK_VIRTUAL_MICROPHONE_WDK_ROOT="$env:GITHUB_WORKSPACE/external/Microsoft.Windows.WDK.x64.10.0.26100.6584"
+          cmake --build build-virtual-microphone --config Release `
+            --target desklink_virtual_microphone_driver --parallel 2
+          ./scripts/Test-VirtualMicrophonePackage.ps1 `
+            -PackagePath build-virtual-microphone/virtual-microphone/Release/DeskLinkVirtualMicrophone
+
   MsQuicAdapter:
     name: MsQuic 2.6.0 adapter
     runs-on: windows-latest

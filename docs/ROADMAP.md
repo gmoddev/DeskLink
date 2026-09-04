@@ -267,6 +267,28 @@ is production-qualified. Image clipboard and file transfer remain excluded.
 Global PTT and full acoustic echo cancellation are explicitly deferred. Voice
 must not be described as production-qualified before physical validation.
 
+### 5.1 Virtual microphone application routing — implementation complete; certification open
+
+- preferences schema 6 adds the local-only received-voice destination and
+  migrates every existing install to communications playback;
+- one decoded 48 kHz mono PCM16 playout block fans out through
+  `VoiceOutputRouter` to communications monitoring, the virtual feed, or both,
+  with independent sink failure and monitor-only gain/echo policy;
+- the optional x64 WaveRT driver is a narrow pinned derivative of Microsoft's
+  Simple Audio Sample, exposing `DeskLink Microphone Feed` and the genuine
+  `DeskLink Remote Microphone` capture endpoint through stable properties;
+- its fixed 40 ms target/60 ms maximum nonpaged ring drops oldest audio,
+  returns silence on underrun, and flushes on feed/capture lifecycle boundaries;
+- a stable-property filter prevents the virtual capture endpoint from becoming
+  an outgoing DeskLink microphone, and no new network message or grant exists;
+- the fixed UAC helper and application installer admit only an externally
+  supplied Microsoft production-signed package; normal builds and all other
+  DeskLink features remain driver-independent; and
+- automated core, native, package, Inf2Cat, safety, and generic Core Audio
+  validation are implemented. Physical zero-microphone, two-PC, Discord, and
+  lifecycle qualification remain blocked on Microsoft production driver
+  signing and must not be bypassed with test mode or reduced security.
+
 ### 6. Installation and daily-use productization
 
 - **Product UX PRs 1-3 complete:** safer default-off pairing grants, the
@@ -310,8 +332,9 @@ must not be described as production-qualified before physical validation.
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, the capture hook owns Return-to-this-PC while remote,
   crossing changes reuse Local-before-atomic-save, and required
-  but uninspectable foreground state remains Local. Preferences schema 5
-  migrates both previous formats;
+  but uninspectable foreground state remains Local. Preferences schema 6
+  retains those migrations and adds a local-only received-voice destination
+  that defaults older installs to communications playback;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu
   and post-install entry point. Its `--background` mode is a short-lived
   sign-in bootstrap, while updates restart the native broker directly. Every

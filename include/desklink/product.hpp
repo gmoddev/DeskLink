@@ -13,7 +13,7 @@
 
 namespace desklink {
 
-inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 5;
+inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 6;
 inline constexpr std::size_t kMaximumPreferredPeerHostBytes = 253;
 inline constexpr std::size_t kMaximumVoiceEndpointIdBytes = 2'048;
 
@@ -36,6 +36,14 @@ enum class VoiceRoutePreference : std::uint8_t {
     PeerToLocal = 1,
     LocalToPeer = 2,
     Bidirectional = 3,
+};
+
+// Local-only destination for already-authorized, decoded peer voice. This is
+// deliberately not a network capability or remotely mutable setting.
+enum class VoiceReceiveDestination : std::uint8_t {
+    CommunicationsPlayback = 0,
+    VirtualMicrophone = 1,
+    CommunicationsPlaybackAndVirtualMicrophone = 2,
 };
 
 enum class GamingBehavior : std::uint8_t {
@@ -79,6 +87,8 @@ struct ProductPreferences {
     AudioRoutePreference AudioRoute{AudioRoutePreference::Off};
     std::uint16_t AudioGainPermyriad{10'000};
     VoiceRoutePreference VoiceRoute{VoiceRoutePreference::Off};
+    VoiceReceiveDestination VoiceDestination{
+        VoiceReceiveDestination::CommunicationsPlayback};
     std::optional<std::string> VoiceInputEndpointId;
     std::uint16_t VoiceGainPermyriad{10'000};
     bool VoiceEchoGuard{true};
@@ -138,6 +148,8 @@ struct DesiredDeskConfiguration {
     DeskMode InitialMode{DeskMode::LockPc1};
     std::uint16_t AudioGainPermyriad{10'000};
     std::uint16_t VoiceGainPermyriad{10'000};
+    VoiceReceiveDestination VoiceDestination{
+        VoiceReceiveDestination::CommunicationsPlayback};
     std::uint32_t Blockers{};
     bool PreferencesValid{};
     bool StartRuntime{};

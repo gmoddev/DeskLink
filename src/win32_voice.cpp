@@ -33,6 +33,11 @@ namespace {
 constexpr REFERENCE_TIME kVoiceBufferDuration = 400'000; // 40 ms.
 constexpr std::size_t kMaximumCaptureChunkFrames = 8'192;
 constexpr std::size_t kMaximumVoiceRenderQueueFrames = 12;
+constexpr std::size_t kMaximumVirtualMicrophoneQueueFrames = 3; // 60 ms.
+constexpr PROPERTYKEY kDeskLinkEndpointKindProperty{
+    {0xd21f0a7c, 0x80da, 0x4e7e,
+     {0xa9, 0x06, 0x81, 0xdf, 0x3e, 0x2e, 0xa4, 0xb9}},
+    2};
 
 template <typename Interface>
 class ComPtr final {
@@ -272,7 +277,117 @@ bool ActivateAudioClient(IMMDevice* Device,
         reinterpret_cast<void**>(Client.Put())));
 }
 
+std::optional<DeskLinkVirtualAudioEndpointKind> DeskLinkEndpointKind(
+    IMMDevice* Device) noexcept {
+    if (!Device) return std::nullopt;
+    ComPtr<IPropertyStore> Properties;
+    if (FAILED(Device->OpenPropertyStore(STGM_READ, Properties.Put()))) {
+        return std::nullopt;
+    }
+    PROPVARIANT Value;
+    PropVariantInit(&Value);
+    const auto Result = Properties->GetValue(
+        kDeskLinkEndpointKindProperty, &Value);
+    std::optional<DeskLinkVirtualAudioEndpointKind> Kind;
+    if (SUCCEEDED(Result) && Value.vt == VT_UI4 &&
+        Value.ulVal <= static_cast<std::uint32_t>(
+            DeskLinkVirtualAudioEndpointKind::RemoteMicrophone)) {
+        Kind = static_cast<DeskLinkVirtualAudioEndpointKind>(Value.ulVal);
+    }
+    PropVariantClear(&Value);
+    return Kind;
+}
+
+bool OpenDeskLinkEndpoint(
+    IMMDeviceEnumerator* Enumerator, EDataFlow Flow,
+    DeskLinkVirtualAudioEndpointKind ExpectedKind,
+    ComPtr<IMMDevice>& Device) noexcept {
+    if (!Enumerator) return false;
+    ComPtr<IMMDeviceCollection> Devices;
+    if (FAILED(Enumerator->EnumAudioEndpoints(
+            Flow, DEVICE_STATE_ACTIVE, Devices.Put()))) {
+        return false;
+    }
+    UINT Count{};
+    if (FAILED(Devices->GetCount(&Count))) return false;
+    Count = std::min(Count, UINT{128});
+    bool Found{};
+    for (UINT Index = 0; Index < Count; ++Index) {
+        ComPtr<IMMDevice> Candidate;
+        if (FAILED(Devices->Item(Index, Candidate.Put())) ||
+            DeskLinkEndpointKind(Candidate.Get()) != ExpectedKind) {
+            continue;
+        }
+        if (Found) return false;
+        auto* Raw = Candidate.Get();
+        Raw->AddRef();
+        *Device.Put() = Raw;
+        Found = true;
+    }
+    return Found;
+}
+
+struct DeskLinkEndpointCounts {
+    std::uint32_t Feed{};
+    std::uint32_t Capture{};
+    std::uint32_t ActiveFeed{};
+    std::uint32_t ActiveCapture{};
+};
+
+DeskLinkEndpointCounts CountDeskLinkEndpoints(
+    IMMDeviceEnumerator* Enumerator) noexcept {
+    DeskLinkEndpointCounts Result;
+    if (!Enumerator) return Result;
+    for (const auto Flow : {eRender, eCapture}) {
+        ComPtr<IMMDeviceCollection> Devices;
+        if (FAILED(Enumerator->EnumAudioEndpoints(
+                Flow, DEVICE_STATEMASK_ALL, Devices.Put()))) {
+            continue;
+        }
+        UINT Count{};
+        if (FAILED(Devices->GetCount(&Count))) continue;
+        Count = std::min(Count, UINT{128});
+        for (UINT Index = 0; Index < Count; ++Index) {
+            ComPtr<IMMDevice> Device;
+            DWORD State{};
+            if (FAILED(Devices->Item(Index, Device.Put())) ||
+                FAILED(Device->GetState(&State))) {
+                continue;
+            }
+            const auto Kind = DeskLinkEndpointKind(Device.Get());
+            if (Flow == eRender &&
+                Kind == DeskLinkVirtualAudioEndpointKind::MicrophoneFeed) {
+                ++Result.Feed;
+                if ((State & DEVICE_STATE_ACTIVE) != 0) ++Result.ActiveFeed;
+            } else if (Flow == eCapture &&
+                Kind == DeskLinkVirtualAudioEndpointKind::RemoteMicrophone) {
+                ++Result.Capture;
+                if ((State & DEVICE_STATE_ACTIVE) != 0) ++Result.ActiveCapture;
+            }
+        }
+    }
+    return Result;
+}
+
 } // namespace
+
+Win32VirtualMicrophoneComponentState
+GetWin32VirtualMicrophoneComponentState() {
+    ComApartment Apartment;
+    ComPtr<IMMDeviceEnumerator> Enumerator;
+    if (!Apartment.Ready() || !OpenEnumerator(Enumerator)) {
+        return Win32VirtualMicrophoneComponentState::NeedsRepair;
+    }
+    const auto Counts = CountDeskLinkEndpoints(Enumerator.Get());
+    if (Counts.Feed == 0 && Counts.Capture == 0) {
+        return Win32VirtualMicrophoneComponentState::NotInstalled;
+    }
+    if (Counts.Feed == 1 && Counts.Capture == 1 &&
+        Counts.ActiveFeed == 1 && Counts.ActiveCapture == 1) {
+        return Win32VirtualMicrophoneComponentState::Ready;
+    }
+    return Win32VirtualMicrophoneComponentState::NeedsRepair;
+}
 
 std::vector<VoiceInputDevice> EnumerateWin32VoiceInputDevices() {
     std::vector<VoiceInputDevice> Result;
@@ -298,6 +413,11 @@ std::vector<VoiceInputDevice> EnumerateWin32VoiceInputDevices() {
         ComPtr<IPropertyStore> Properties;
         if (FAILED(Devices->Item(Index, Device.Put())) ||
             FAILED(Device->OpenPropertyStore(STGM_READ, Properties.Put()))) {
+            continue;
+        }
+        if (IsDeskLinkVirtualMicrophoneSource(
+                DeskLinkEndpointKind(Device.Get()).value_or(
+                    DeskLinkVirtualAudioEndpointKind::None))) {
             continue;
         }
         const auto WideId = DeviceId(Device.Get());
@@ -376,6 +496,9 @@ struct Win32WasapiMicrophoneCapture::State {
             AUDCLNT_STREAMFLAGS_NOPERSIST;
         bool Initialized = Apartment.Ready() && OpenEnumerator(Enumerator) &&
             OpenVoiceDevice(Enumerator.Get(), eCapture, EndpointId, Device) &&
+            !IsDeskLinkVirtualMicrophoneSource(
+                DeskLinkEndpointKind(Device.Get()).value_or(
+                    DeskLinkVirtualAudioEndpointKind::None)) &&
             ActivateAudioClient(Device.Get(), AudioClient);
         if (Initialized) {
             ApplyCommunicationsCategory(AudioClient.Get());
@@ -701,6 +824,12 @@ bool Win32WasapiVoiceRenderer::Submit(VoicePcmFrame Frame) {
     return true;
 }
 
+void Win32WasapiVoiceRenderer::Reset() noexcept {
+    std::scoped_lock Lock(State_->QueueMutex);
+    State_->Queue.clear();
+    State_->SampleOffset = 0;
+}
+
 void Win32WasapiVoiceRenderer::Stop() noexcept {
     if (State_->StopEvent) SetEvent(State_->StopEvent);
     if (State_->Thread.joinable() &&
@@ -729,6 +858,239 @@ std::size_t Win32WasapiVoiceRenderer::QueuedFrames() const noexcept {
     return State_->Queue.size();
 }
 std::uint64_t Win32WasapiVoiceRenderer::Underruns() const noexcept {
+    return State_->UnderrunCount.load();
+}
+
+struct Win32VirtualMicrophoneFeed::State {
+    explicit State(Win32WasapiVoiceRenderHandlers OwnedHandlers)
+        : Handlers(std::move(OwnedHandlers)) {}
+    Win32WasapiVoiceRenderHandlers Handlers;
+    std::thread Thread;
+    std::mutex StartMutex;
+    std::condition_variable Started;
+    HANDLE StopEvent{};
+    HANDLE EndpointEvent{};
+    HANDLE AudioEvent{};
+    bool StartComplete{};
+    bool StartSucceeded{};
+    std::atomic_bool IsRunning{};
+    mutable std::mutex QueueMutex;
+    std::deque<VoicePcmFrame> Queue;
+    std::size_t SampleOffset{};
+    std::atomic_uint64_t StaleDropCount{};
+    std::atomic_uint64_t UnderrunCount{};
+
+    void FinishStart(bool Success) noexcept {
+        {
+            std::scoped_lock Lock(StartMutex);
+            StartComplete = true;
+            StartSucceeded = Success;
+        }
+        IsRunning.store(Success);
+        Started.notify_all();
+    }
+
+    bool Fill(std::int16_t* Destination, std::size_t Samples) noexcept {
+        std::fill_n(Destination, Samples, std::int16_t{0});
+        std::scoped_lock Lock(QueueMutex);
+        std::size_t Written{};
+        while (Written < Samples && !Queue.empty()) {
+            auto& Frame = Queue.front();
+            const auto Available = Frame.Samples.size() - SampleOffset;
+            const auto Count = std::min(Available, Samples - Written);
+            std::copy_n(Frame.Samples.data() + SampleOffset, Count,
+                        Destination + Written);
+            Written += Count;
+            SampleOffset += Count;
+            if (SampleOffset == Frame.Samples.size()) {
+                Queue.pop_front();
+                SampleOffset = 0;
+            }
+        }
+        return Written != 0;
+    }
+
+    void Run() noexcept {
+        ComApartment Apartment;
+        MmcssRegistration Mmcss;
+        ComPtr<IMMDeviceEnumerator> Enumerator;
+        ComPtr<IMMDevice> Device;
+        ComPtr<IAudioClient> AudioClient;
+        ComPtr<IAudioRenderClient> RenderClient;
+        NotificationRegistration Notifications;
+        auto Format = VoiceWaveFormat();
+        const DWORD Flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
+            AUDCLNT_STREAMFLAGS_NOPERSIST;
+        UINT32 BufferFrames{};
+        BYTE* Initial{};
+        bool Initialized = Apartment.Ready() && OpenEnumerator(Enumerator) &&
+            OpenDeskLinkEndpoint(
+                Enumerator.Get(), eRender,
+                DeskLinkVirtualAudioEndpointKind::MicrophoneFeed, Device) &&
+            ActivateAudioClient(Device.Get(), AudioClient);
+        if (Initialized) {
+            ApplyCommunicationsCategory(AudioClient.Get());
+            const auto Id = DeviceId(Device.Get());
+            auto* Notification = Id
+                ? new (std::nothrow) EndpointNotifications(
+                    EndpointEvent, eRender, false)
+                : nullptr;
+            if (Notification && Id) Notification->SetDeviceId(*Id);
+            Initialized = Id && Notification &&
+                Notifications.Start(Enumerator.Get(), Notification) &&
+                SUCCEEDED(AudioClient->Initialize(
+                    AUDCLNT_SHAREMODE_SHARED, Flags,
+                    kVoiceBufferDuration, 0, &Format, nullptr)) &&
+                SUCCEEDED(AudioClient->SetEventHandle(AudioEvent)) &&
+                SUCCEEDED(AudioClient->GetBufferSize(&BufferFrames)) &&
+                BufferFrames != 0 &&
+                SUCCEEDED(AudioClient->GetService(
+                    __uuidof(IAudioRenderClient),
+                    reinterpret_cast<void**>(RenderClient.Put()))) &&
+                SUCCEEDED(RenderClient->GetBuffer(BufferFrames, &Initial));
+        }
+        if (Initialized) {
+            Initialized = SUCCEEDED(RenderClient->ReleaseBuffer(
+                BufferFrames, AUDCLNT_BUFFERFLAGS_SILENT)) &&
+                SUCCEEDED(AudioClient->Start());
+        }
+        FinishStart(Initialized);
+        if (!Initialized) {
+            PublishFailure(Handlers.Failed,
+                Win32WasapiFailureKind::EndpointUnavailable,
+                "DeskLink virtual microphone feed is unavailable");
+            return;
+        }
+
+        HANDLE Handles[]{StopEvent, EndpointEvent, AudioEvent};
+        bool Failed{};
+        while (!Failed) {
+            const auto Wait = WaitForMultipleObjects(3, Handles, FALSE, INFINITE);
+            if (Wait == WAIT_OBJECT_0) break;
+            if (Wait == WAIT_OBJECT_0 + 1) {
+                PublishFailure(Handlers.Failed,
+                    Win32WasapiFailureKind::EndpointChanged,
+                    "DeskLink virtual microphone endpoint changed");
+                break;
+            }
+            if (Wait != WAIT_OBJECT_0 + 2) break;
+            UINT32 Padding{};
+            if (FAILED(AudioClient->GetCurrentPadding(&Padding)) ||
+                Padding > BufferFrames) break;
+            const auto Available = BufferFrames - Padding;
+            if (!Available) continue;
+            BYTE* Buffer{};
+            if (FAILED(RenderClient->GetBuffer(Available, &Buffer))) break;
+            const auto HasAudio = Fill(
+                reinterpret_cast<std::int16_t*>(Buffer), Available);
+            if (!HasAudio) ++UnderrunCount;
+            if (FAILED(RenderClient->ReleaseBuffer(
+                    Available,
+                    HasAudio ? 0 : AUDCLNT_BUFFERFLAGS_SILENT))) {
+                Failed = true;
+            }
+        }
+        (void)AudioClient->Stop();
+        (void)AudioClient->Reset();
+        IsRunning.store(false);
+        {
+            std::scoped_lock Lock(QueueMutex);
+            Queue.clear();
+            SampleOffset = 0;
+        }
+        if (Failed) {
+            PublishFailure(Handlers.Failed,
+                Win32WasapiFailureKind::EndpointUnavailable,
+                "DeskLink virtual microphone feed failed");
+        }
+    }
+};
+
+Win32VirtualMicrophoneFeed::Win32VirtualMicrophoneFeed(
+    Win32WasapiVoiceRenderHandlers Handlers)
+    : State_(std::make_unique<State>(std::move(Handlers))) {}
+
+Win32VirtualMicrophoneFeed::~Win32VirtualMicrophoneFeed() { Stop(); }
+
+bool Win32VirtualMicrophoneFeed::Start() {
+    if (State_->Thread.joinable()) Stop();
+    State_->StopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    State_->EndpointEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    State_->AudioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!State_->StopEvent || !State_->EndpointEvent || !State_->AudioEvent) {
+        Stop();
+        return false;
+    }
+    {
+        std::scoped_lock Lock(State_->StartMutex);
+        State_->StartComplete = false;
+        State_->StartSucceeded = false;
+    }
+    State_->StaleDropCount.store(0);
+    State_->UnderrunCount.store(0);
+    State_->Thread = std::thread([State = State_.get()] { State->Run(); });
+    std::unique_lock Lock(State_->StartMutex);
+    State_->Started.wait(Lock, [&] { return State_->StartComplete; });
+    if (State_->StartSucceeded) return true;
+    Lock.unlock();
+    Stop();
+    return false;
+}
+
+bool Win32VirtualMicrophoneFeed::Submit(VoicePcmFrame Frame) {
+    if (!State_->IsRunning.load()) return false;
+    std::scoped_lock Lock(State_->QueueMutex);
+    while (State_->Queue.size() >= kMaximumVirtualMicrophoneQueueFrames) {
+        State_->Queue.pop_front();
+        State_->SampleOffset = 0;
+        ++State_->StaleDropCount;
+    }
+    State_->Queue.push_back(std::move(Frame));
+    return true;
+}
+
+void Win32VirtualMicrophoneFeed::Reset() noexcept {
+    // Closing the render client is the driver-level authorization boundary:
+    // its pin leaves RUN and the bridge must flush immediately to silence.
+    Stop();
+}
+
+void Win32VirtualMicrophoneFeed::Stop() noexcept {
+    if (State_->StopEvent) SetEvent(State_->StopEvent);
+    if (State_->Thread.joinable() &&
+        State_->Thread.get_id() != std::this_thread::get_id()) {
+        State_->Thread.join();
+    }
+    State_->IsRunning.store(false);
+    {
+        std::scoped_lock Lock(State_->QueueMutex);
+        State_->Queue.clear();
+        State_->SampleOffset = 0;
+    }
+    if (State_->AudioEvent) CloseHandle(State_->AudioEvent);
+    if (State_->EndpointEvent) CloseHandle(State_->EndpointEvent);
+    if (State_->StopEvent) CloseHandle(State_->StopEvent);
+    State_->AudioEvent = nullptr;
+    State_->EndpointEvent = nullptr;
+    State_->StopEvent = nullptr;
+}
+
+bool Win32VirtualMicrophoneFeed::Running() const noexcept {
+    return State_->IsRunning.load();
+}
+
+std::size_t Win32VirtualMicrophoneFeed::QueuedFrames() const noexcept {
+    std::scoped_lock Lock(State_->QueueMutex);
+    return State_->Queue.size();
+}
+
+std::uint64_t Win32VirtualMicrophoneFeed::StaleFramesDropped() const noexcept {
+    return State_->StaleDropCount.load();
+}
+
+std::uint64_t Win32VirtualMicrophoneFeed::Underruns() const noexcept {
     return State_->UnderrunCount.load();
 }
 

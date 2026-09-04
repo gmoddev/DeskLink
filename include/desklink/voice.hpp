@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desklink/protocol.hpp"
+#include "desklink/product.hpp"
 
 #include <array>
 #include <cstddef>
@@ -26,6 +27,58 @@ struct VoicePcmFrame {
     std::array<std::int16_t, kVoiceSamplesPerChannel> Samples{};
     std::uint64_t CaptureTimestampUs{};
     bool Concealed{};
+};
+
+struct VoiceOutputSinkHandlers {
+    std::function<bool(VoicePcmFrame)> Submit;
+    std::function<void()> Reset;
+};
+
+struct VoiceOutputRouterStats {
+    std::uint64_t BlocksReceived{};
+    std::uint64_t MonitorSubmitted{};
+    std::uint64_t MonitorRejected{};
+    std::uint64_t VirtualMicrophoneSubmitted{};
+    std::uint64_t VirtualMicrophoneRejected{};
+    std::uint64_t SourceMutedBlocks{};
+    std::uint64_t Resets{};
+};
+
+// Fans one authoritative decoded PCM stream out to local sinks. Network
+// admission, jitter, FEC, PLC, and Opus decoding remain exclusively upstream.
+class VoiceOutputRouter final {
+public:
+    VoiceOutputRouter(VoiceOutputSinkHandlers Monitor,
+                      VoiceOutputSinkHandlers VirtualMicrophone);
+
+    [[nodiscard]] bool Submit(VoicePcmFrame Frame) noexcept;
+    [[nodiscard]] bool SetDestination(
+        VoiceReceiveDestination Destination) noexcept;
+    [[nodiscard]] bool SetMonitorGainPermyriad(std::uint16_t Gain) noexcept;
+    void SetMonitorMuted(bool Muted) noexcept;
+    void SetSourceMuted(bool Muted) noexcept;
+    void Reset() noexcept;
+
+    [[nodiscard]] VoiceReceiveDestination Destination() const noexcept;
+    [[nodiscard]] std::uint16_t MonitorGainPermyriad() const noexcept;
+    [[nodiscard]] bool MonitorMuted() const noexcept;
+    [[nodiscard]] bool SourceMuted() const noexcept;
+    [[nodiscard]] VoiceOutputRouterStats Stats() const noexcept;
+
+private:
+    void ApplyMonitorGainLocked(VoicePcmFrame& Frame) noexcept;
+    void ResetSinksLocked() noexcept;
+
+    VoiceOutputSinkHandlers Monitor_;
+    VoiceOutputSinkHandlers VirtualMicrophone_;
+    mutable std::mutex Mutex_;
+    VoiceReceiveDestination Destination_{
+        VoiceReceiveDestination::CommunicationsPlayback};
+    std::uint16_t MonitorGainPermyriad_{kVoiceMaximumGainPermyriad};
+    std::uint16_t AppliedMonitorGainPermyriad_{kVoiceMaximumGainPermyriad};
+    bool MonitorMuted_{};
+    bool SourceMuted_{};
+    VoiceOutputRouterStats Stats_;
 };
 
 class VoiceEncoder final {
@@ -109,10 +162,6 @@ public:
     [[nodiscard]] VoicePumpResult Pump();
     [[nodiscard]] std::size_t PumpAvailable(
         std::size_t MaximumFrames = kVoiceMaximumQueuedPackets);
-    [[nodiscard]] bool SetGainPermyriad(std::uint16_t Gain) noexcept;
-    void SetMuted(bool Muted) noexcept;
-    [[nodiscard]] bool Muted() const noexcept;
-    [[nodiscard]] std::uint16_t GainPermyriad() const noexcept;
     void Reset() noexcept;
     [[nodiscard]] VoiceReceiverStats Stats() const noexcept;
 
@@ -120,7 +169,6 @@ private:
     void ResetStreamLocked(std::uint32_t StreamId,
                            std::uint64_t Sequence) noexcept;
     void ObserveJitterLocked(bool Unstable) noexcept;
-    void ApplyGainLocked(VoicePcmFrame& Frame) noexcept;
 
     RenderHandler Renderer_;
     VoiceDecoder Decoder_;
@@ -133,9 +181,6 @@ private:
     std::size_t TargetPackets_{};
     std::size_t MaximumPackets_{};
     std::size_t StablePacketCount_{};
-    std::uint16_t GainPermyriad_{kVoiceMaximumGainPermyriad};
-    std::uint16_t AppliedGainPermyriad_{kVoiceMaximumGainPermyriad};
-    bool Muted_{};
     bool Started_{};
     VoiceReceiverStats Stats_;
 };

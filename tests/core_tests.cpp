@@ -676,6 +676,8 @@ void ControlProtocolRoundTripAndValidation() {
     Preferences.InputRoamingDesired = true;
     Preferences.AudioRoute = AudioRoutePreference::PeerToLocal;
     Preferences.AudioGainPermyriad = 7'500;
+    Preferences.VoiceDestination =
+        VoiceReceiveDestination::VirtualMicrophone;
     Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
     Preferences.ProfileRules.push_back(
@@ -779,6 +781,9 @@ void ControlProtocolRoundTripAndValidation() {
     State.VoiceEnabled = true;
     State.VoicePttReady = true;
     State.VoiceTransmitting = true;
+    State.VoiceDestination = VoiceReceiveDestination::
+        CommunicationsPlaybackAndVirtualMicrophone;
+    State.VirtualMicrophoneState = ControlVirtualMicrophoneState::Live;
     State.RuntimePhase = BrokerRuntimePhase::ConnectedLocal;
     State.RoamingState = ControlRoamingState::Remote;
     State.PeerDirection = ControlPeerDirectionState::OutgoingActive;
@@ -808,6 +813,11 @@ void ControlProtocolRoundTripAndValidation() {
     CHECK(Response.Decoded->State->VoiceEnabled);
     CHECK(Response.Decoded->State->VoicePttReady);
     CHECK(Response.Decoded->State->VoiceTransmitting);
+    CHECK(Response.Decoded->State->VoiceDestination ==
+          VoiceReceiveDestination::
+              CommunicationsPlaybackAndVirtualMicrophone);
+    CHECK(Response.Decoded->State->VirtualMicrophoneState ==
+          ControlVirtualMicrophoneState::Live);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -6049,6 +6059,8 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Settings.AudioRoute = AudioRoutePreference::PeerToLocal;
     Settings.AudioGainPermyriad = 7'500;
     Settings.VoiceRoute = VoiceRoutePreference::Bidirectional;
+    Settings.VoiceDestination = VoiceReceiveDestination::
+        CommunicationsPlaybackAndVirtualMicrophone;
     Settings.VoiceInputEndpointId = "test-microphone-endpoint";
     Settings.VoiceGainPermyriad = 6'500;
     Settings.VoiceEchoGuard = false;
@@ -6068,6 +6080,29 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Win32ProductPreferencesStore Second(Path);
     CHECK(Second.Load());
     CHECK(Second.Current() == Settings);
+
+    const auto Version5Path = Directory / "version-5.bin";
+    CHECK(std::filesystem::copy_file(Path, Version5Path));
+    {
+        std::fstream Output(
+            Version5Path, std::ios::binary | std::ios::in | std::ios::out);
+        CHECK(Output.good());
+        Output.seekp(5);
+        Output.put(static_cast<char>(5));
+        Output.seekp(39);
+        Output.put(static_cast<char>(0));
+    }
+    Win32ProductPreferencesStore MigratedVersion5(Version5Path);
+    CHECK(MigratedVersion5.Load());
+    CHECK(MigratedVersion5.Current()->VoiceRoute ==
+          VoiceRoutePreference::Bidirectional);
+    CHECK(MigratedVersion5.Current()->VoiceDestination ==
+          VoiceReceiveDestination::CommunicationsPlayback);
+    CHECK(std::filesystem::file_size(Version5Path) == 40 +
+          Settings.ProfileRules[0].ExecutableName.size() + 4 +
+          Settings.ProfileRules[1].ExecutableName.size() + 4 +
+          Settings.PreferredPeerEndpoint->Host.size() + 4 +
+          Settings.VoiceInputEndpointId->size() + 2);
 
     const auto InvalidRolePath = Directory / "invalid-role.bin";
     CHECK(std::filesystem::copy_file(Path, InvalidRolePath));
@@ -6173,6 +6208,8 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedVersion3.Load());
     CHECK(MigratedVersion3.Current()->Role == DeskRole::Main);
     CHECK(!MigratedVersion3.Current()->PreferredPeerEndpoint);
+    CHECK(MigratedVersion3.Current()->VoiceDestination ==
+          VoiceReceiveDestination::CommunicationsPlayback);
     CHECK(std::filesystem::file_size(Version3Path) == 40);
     {
         std::ifstream Input(Version3Path, std::ios::binary);
@@ -6450,6 +6487,18 @@ void ProductMonitorLayoutSaveIsOrderedAndFailsLocal() {
     CHECK((Events == std::vector<std::string>{"local"}));
 }
 
+#ifdef _WIN32
+void WindowsVirtualMicrophoneIdentityIsStableAndLoopSafe() {
+    using namespace desklink;
+    CHECK(!IsDeskLinkVirtualMicrophoneSource(
+        DeskLinkVirtualAudioEndpointKind::None));
+    CHECK(!IsDeskLinkVirtualMicrophoneSource(
+        DeskLinkVirtualAudioEndpointKind::MicrophoneFeed));
+    CHECK(IsDeskLinkVirtualMicrophoneSource(
+        DeskLinkVirtualAudioEndpointKind::RemoteMicrophone));
+}
+#endif
+
 void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
     using namespace desklink;
     constexpr std::uint64_t Nonce = 0x71'82'95u;
@@ -6661,16 +6710,76 @@ void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     CHECK(Adaptive.Stats().PeakJitterTarget ==
           kVoiceMaximumJitterPackets);
 
-    VoiceReceiver Muted([&](VoicePcmFrame Pcm) {
-        Rendered.push_back(std::move(Pcm));
-        return true;
-    }, 1);
-    Muted.SetMuted(true);
-    Frame.StreamId = 13;
-    Frame.CaptureTimestampUs = 20'000;
-    CHECK(Muted.Push(1, Frame));
-    CHECK(Muted.Pump() == VoicePumpResult::Submitted);
-    CHECK(Rendered.back().Samples.back() == 0);
+}
+
+void VoiceOutputRouterFansOutCanonicalPcmAndIsolatesFailures() {
+    using namespace desklink;
+    std::vector<VoicePcmFrame> Monitor;
+    std::vector<VoicePcmFrame> VirtualMicrophone;
+    std::uint64_t MonitorResets{};
+    std::uint64_t VirtualMicrophoneResets{};
+    bool MonitorAccepts{true};
+    bool VirtualMicrophoneAccepts{true};
+    VoiceOutputRouter Router(
+        {[&](VoicePcmFrame Frame) {
+             Monitor.push_back(std::move(Frame));
+             return MonitorAccepts;
+         }, [&] { ++MonitorResets; }},
+        {[&](VoicePcmFrame Frame) {
+             VirtualMicrophone.push_back(std::move(Frame));
+             return VirtualMicrophoneAccepts;
+         }, [&] { ++VirtualMicrophoneResets; }});
+    VoicePcmFrame Frame;
+    Frame.Samples.fill(8'000);
+
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.size() == 1);
+    CHECK(VirtualMicrophone.empty());
+
+    CHECK(Router.SetDestination(VoiceReceiveDestination::VirtualMicrophone));
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.size() == 1);
+    CHECK(VirtualMicrophone.size() == 1);
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+
+    CHECK(Router.SetDestination(VoiceReceiveDestination::
+        CommunicationsPlaybackAndVirtualMicrophone));
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.back().Samples == Frame.Samples);
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+
+    MonitorAccepts = false;
+    CHECK(Router.Submit(Frame));
+    CHECK(Router.Stats().MonitorRejected == 1);
+    CHECK(Router.Stats().VirtualMicrophoneSubmitted == 3);
+    MonitorAccepts = true;
+    VirtualMicrophoneAccepts = false;
+    CHECK(Router.Submit(Frame));
+    CHECK(Router.Stats().VirtualMicrophoneRejected == 1);
+
+    VirtualMicrophoneAccepts = true;
+    CHECK(Router.SetMonitorGainPermyriad(5'000));
+    CHECK(Router.Submit(Frame));
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+    CHECK(Monitor.back().Samples.back() == 4'000);
+    Router.SetMonitorMuted(true);
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.back().Samples.back() == 0);
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+
+    const auto BlocksBeforeMute = Router.Stats().BlocksReceived;
+    const auto MonitorBeforeMute = Monitor.size();
+    const auto VirtualBeforeMute = VirtualMicrophone.size();
+    Router.SetSourceMuted(true);
+    CHECK(Router.Submit(Frame));
+    CHECK(Router.Stats().BlocksReceived == BlocksBeforeMute + 1);
+    CHECK(Monitor.size() == MonitorBeforeMute);
+    CHECK(VirtualMicrophone.size() == VirtualBeforeMute);
+    Router.Reset();
+    CHECK(MonitorResets >= 3);
+    CHECK(VirtualMicrophoneResets >= 2);
+    CHECK(!Router.SetDestination(
+        static_cast<VoiceReceiveDestination>(0xffu)));
 }
 
 void PeerVoiceRequiresComplementaryAcknowledgedGrants() {
@@ -6792,6 +6901,7 @@ void in_memory_transport_preserves_security_metadata() {
 int main() {
 #ifdef DESKLINK_BUILD_VOICE
     VoiceProtocolCodecJitterAndBoundsAreStrict();
+    VoiceOutputRouterFansOutCanonicalPcmAndIsolatesFailures();
     PeerVoiceRequiresComplementaryAcknowledgedGrants();
 #endif
     CallbackGateClosesAndDrainsAdmittedCallbacks();
@@ -6881,6 +6991,7 @@ int main() {
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();
     WindowsWasapiFailureKindsAreExplicit();
+    WindowsVirtualMicrophoneIdentityIsStableAndLoopSafe();
     WindowsWasapiSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
     WindowsRoamingSettingsAreAtomicAndStrict();

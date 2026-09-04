@@ -900,7 +900,8 @@ private:
         for (const auto* Name : {L"desklink.exe", L"desklink_alpha.exe",
                                  L"desklink_pair.exe",
                                  L"desklink_runtime.exe",
-                                 L"desklink_update.exe"}) {
+                                 L"desklink_update.exe",
+                                 L"desklink_virtual_microphone_installer.exe"}) {
             const auto Path = InstallRoot_ / Name;
             if (!IsFixedLocalFile(Path)) return false;
 #ifndef DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS

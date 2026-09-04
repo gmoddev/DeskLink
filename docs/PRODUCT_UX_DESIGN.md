@@ -881,9 +881,10 @@ allowlist; `Ctrl+Alt+Pause/Break` is reserved. A named focus request reaches the
 existing authenticated input lifecycle only when that exact peer and the Host
 input owner are active, so a shortcut cannot bypass normal admission.
 
-Application preferences schema 5 persists at most 32 exact executable rules,
-optional fullscreen matching, the two bounded shortcuts, and the simple global
-fullscreen keep-local choice. The broker passes these only to the explicit
+Application preferences schema 6 persists at most 32 exact executable rules,
+optional fullscreen matching, the two bounded shortcuts, the simple global
+fullscreen keep-local choice, and a local-only received-voice destination that
+migrates older installs to communications playback. The broker passes these only to the explicit
 input-roaming child. A Roam fallback arms edge observation without installing a
 manual override, preserving emergency, manual, exact-rule, global-fullscreen,
 then default precedence. Any required foreground observation that cannot be

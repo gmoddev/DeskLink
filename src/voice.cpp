@@ -9,6 +9,178 @@
 
 namespace desklink {
 
+VoiceOutputRouter::VoiceOutputRouter(
+    VoiceOutputSinkHandlers Monitor,
+    VoiceOutputSinkHandlers VirtualMicrophone)
+    : Monitor_(std::move(Monitor)),
+      VirtualMicrophone_(std::move(VirtualMicrophone)) {}
+
+bool VoiceOutputRouter::Submit(VoicePcmFrame Frame) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    ++Stats_.BlocksReceived;
+    if (SourceMuted_) {
+        ++Stats_.SourceMutedBlocks;
+        return true;
+    }
+
+    const bool RouteMonitor =
+        Destination_ == VoiceReceiveDestination::CommunicationsPlayback ||
+        Destination_ == VoiceReceiveDestination::
+            CommunicationsPlaybackAndVirtualMicrophone;
+    const bool RouteVirtualMicrophone =
+        Destination_ == VoiceReceiveDestination::VirtualMicrophone ||
+        Destination_ == VoiceReceiveDestination::
+            CommunicationsPlaybackAndVirtualMicrophone;
+    bool MonitorAccepted{};
+    bool VirtualMicrophoneAccepted{};
+    if (RouteMonitor) {
+        auto MonitorFrame = Frame;
+        ApplyMonitorGainLocked(MonitorFrame);
+        try {
+            MonitorAccepted = Monitor_.Submit &&
+                Monitor_.Submit(std::move(MonitorFrame));
+        } catch (...) {
+            MonitorAccepted = false;
+        }
+        if (MonitorAccepted) ++Stats_.MonitorSubmitted;
+        else ++Stats_.MonitorRejected;
+    }
+    if (RouteVirtualMicrophone) {
+        try {
+            VirtualMicrophoneAccepted = VirtualMicrophone_.Submit &&
+                VirtualMicrophone_.Submit(std::move(Frame));
+        } catch (...) {
+            VirtualMicrophoneAccepted = false;
+        }
+        if (VirtualMicrophoneAccepted) ++Stats_.VirtualMicrophoneSubmitted;
+        else ++Stats_.VirtualMicrophoneRejected;
+    }
+    return (RouteMonitor && MonitorAccepted) ||
+           (RouteVirtualMicrophone && VirtualMicrophoneAccepted);
+}
+
+bool VoiceOutputRouter::SetDestination(
+    VoiceReceiveDestination Destination) noexcept {
+    if (Destination != VoiceReceiveDestination::CommunicationsPlayback &&
+        Destination != VoiceReceiveDestination::VirtualMicrophone &&
+        Destination != VoiceReceiveDestination::
+            CommunicationsPlaybackAndVirtualMicrophone) {
+        return false;
+    }
+    std::scoped_lock Lock(Mutex_);
+    if (Destination_ == Destination) return true;
+    const auto HasMonitor = [](VoiceReceiveDestination Value) noexcept {
+        return Value == VoiceReceiveDestination::CommunicationsPlayback ||
+               Value == VoiceReceiveDestination::
+                   CommunicationsPlaybackAndVirtualMicrophone;
+    };
+    const auto HasVirtualMicrophone = [](
+        VoiceReceiveDestination Value) noexcept {
+        return Value == VoiceReceiveDestination::VirtualMicrophone ||
+               Value == VoiceReceiveDestination::
+                   CommunicationsPlaybackAndVirtualMicrophone;
+    };
+    const auto ResetSink = [](const std::function<void()>& Handler) noexcept {
+        if (!Handler) return;
+        try { Handler(); } catch (...) {}
+    };
+    if (HasMonitor(Destination_) && !HasMonitor(Destination)) {
+        ResetSink(Monitor_.Reset);
+    }
+    if (HasVirtualMicrophone(Destination_) &&
+        !HasVirtualMicrophone(Destination)) {
+        ResetSink(VirtualMicrophone_.Reset);
+    }
+    Destination_ = Destination;
+    AppliedMonitorGainPermyriad_ = MonitorMuted_
+        ? 0 : MonitorGainPermyriad_;
+    ++Stats_.Resets;
+    return true;
+}
+
+bool VoiceOutputRouter::SetMonitorGainPermyriad(std::uint16_t Gain) noexcept {
+    if (Gain > kVoiceMaximumGainPermyriad) return false;
+    std::scoped_lock Lock(Mutex_);
+    MonitorGainPermyriad_ = Gain;
+    return true;
+}
+
+void VoiceOutputRouter::SetMonitorMuted(bool Muted) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    MonitorMuted_ = Muted;
+}
+
+void VoiceOutputRouter::SetSourceMuted(bool Muted) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (SourceMuted_ == Muted) return;
+    SourceMuted_ = Muted;
+    ResetSinksLocked();
+}
+
+void VoiceOutputRouter::Reset() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    ResetSinksLocked();
+}
+
+VoiceReceiveDestination VoiceOutputRouter::Destination() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Destination_;
+}
+
+std::uint16_t VoiceOutputRouter::MonitorGainPermyriad() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return MonitorGainPermyriad_;
+}
+
+bool VoiceOutputRouter::MonitorMuted() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return MonitorMuted_;
+}
+
+bool VoiceOutputRouter::SourceMuted() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return SourceMuted_;
+}
+
+VoiceOutputRouterStats VoiceOutputRouter::Stats() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Stats_;
+}
+
+void VoiceOutputRouter::ApplyMonitorGainLocked(
+    VoicePcmFrame& Frame) noexcept {
+    const auto Target = static_cast<std::uint16_t>(
+        MonitorMuted_ ? 0 : MonitorGainPermyriad_);
+    const auto Start = static_cast<std::int32_t>(
+        AppliedMonitorGainPermyriad_);
+    const auto Delta = static_cast<std::int32_t>(Target) - Start;
+    for (std::size_t Index = 0; Index < Frame.Samples.size(); ++Index) {
+        const auto Gain = Start + static_cast<std::int32_t>(
+            (static_cast<std::int64_t>(Delta) *
+             static_cast<std::int64_t>(Index + 1u)) /
+            static_cast<std::int64_t>(Frame.Samples.size()));
+        const auto Scaled = (static_cast<std::int64_t>(Frame.Samples[Index]) *
+            Gain) / kVoiceMaximumGainPermyriad;
+        Frame.Samples[Index] = static_cast<std::int16_t>(std::clamp(
+            Scaled,
+            static_cast<std::int64_t>(std::numeric_limits<std::int16_t>::min()),
+            static_cast<std::int64_t>(std::numeric_limits<std::int16_t>::max())));
+    }
+    AppliedMonitorGainPermyriad_ = Target;
+}
+
+void VoiceOutputRouter::ResetSinksLocked() noexcept {
+    const auto ResetSink = [](const std::function<void()>& Handler) noexcept {
+        if (!Handler) return;
+        try { Handler(); } catch (...) {}
+    };
+    ResetSink(Monitor_.Reset);
+    ResetSink(VirtualMicrophone_.Reset);
+    AppliedMonitorGainPermyriad_ = MonitorMuted_
+        ? 0 : MonitorGainPermyriad_;
+    ++Stats_.Resets;
+}
+
 struct VoiceEncoder::State {
     OpusEncoder* Encoder{};
 };
@@ -143,7 +315,6 @@ void VoiceReceiver::ResetStreamLocked(
     NextSequence_ = Sequence;
     Started_ = false;
     StablePacketCount_ = 0;
-    AppliedGainPermyriad_ = Muted_ ? 0 : GainPermyriad_;
     (void)Decoder_.Reset();
     ++Stats_.StreamResets;
 }
@@ -241,7 +412,6 @@ VoicePumpResult VoiceReceiver::Pump() {
             ++Stats_.DecodeRejected;
             return VoicePumpResult::DecodeRejected;
         }
-        ApplyGainLocked(*Output);
     }
 
     bool Accepted = false;
@@ -271,28 +441,6 @@ std::size_t VoiceReceiver::PumpAvailable(std::size_t MaximumFrames) {
         if (Result == VoicePumpResult::Buffering) break;
     }
     return Submitted;
-}
-
-bool VoiceReceiver::SetGainPermyriad(std::uint16_t Gain) noexcept {
-    if (Gain > kVoiceMaximumGainPermyriad) return false;
-    std::scoped_lock Lock(Mutex_);
-    GainPermyriad_ = Gain;
-    return true;
-}
-
-void VoiceReceiver::SetMuted(bool Muted) noexcept {
-    std::scoped_lock Lock(Mutex_);
-    Muted_ = Muted;
-}
-
-bool VoiceReceiver::Muted() const noexcept {
-    std::scoped_lock Lock(Mutex_);
-    return Muted_;
-}
-
-std::uint16_t VoiceReceiver::GainPermyriad() const noexcept {
-    std::scoped_lock Lock(Mutex_);
-    return GainPermyriad_;
 }
 
 void VoiceReceiver::Reset() noexcept {
@@ -332,25 +480,6 @@ void VoiceReceiver::ObserveJitterLocked(bool Unstable) noexcept {
     Stats_.CurrentJitterTarget = TargetPackets_;
     Stats_.PeakJitterTarget = std::max<std::uint64_t>(
         Stats_.PeakJitterTarget, TargetPackets_);
-}
-
-void VoiceReceiver::ApplyGainLocked(VoicePcmFrame& Frame) noexcept {
-    const auto Target = static_cast<std::uint16_t>(Muted_ ? 0 : GainPermyriad_);
-    const auto Start = static_cast<std::int32_t>(AppliedGainPermyriad_);
-    const auto Delta = static_cast<std::int32_t>(Target) - Start;
-    for (std::size_t Index = 0; Index < Frame.Samples.size(); ++Index) {
-        const auto Gain = Start + static_cast<std::int32_t>(
-            (static_cast<std::int64_t>(Delta) *
-             static_cast<std::int64_t>(Index + 1u)) /
-            static_cast<std::int64_t>(Frame.Samples.size()));
-        const auto Scaled = (static_cast<std::int64_t>(Frame.Samples[Index]) *
-            Gain) / kVoiceMaximumGainPermyriad;
-        Frame.Samples[Index] = static_cast<std::int16_t>(std::clamp(
-            Scaled,
-            static_cast<std::int64_t>(std::numeric_limits<std::int16_t>::min()),
-            static_cast<std::int64_t>(std::numeric_limits<std::int16_t>::max())));
-    }
-    AppliedGainPermyriad_ = Target;
 }
 
 } // namespace desklink

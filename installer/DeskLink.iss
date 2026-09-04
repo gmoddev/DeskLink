@@ -89,12 +89,14 @@ SignedUninstaller=no
   Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_virtual_microphone_installer.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
 #else
   Source: "{#StagePath}\ui\desklink.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_pair.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion
+  Source: "{#StagePath}\desklink_virtual_microphone_installer.exe"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 Source: "{#StagePath}\ui\*"; Excludes: "desklink.exe"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagePath}\runtime\schannel\msquic.dll"; DestDir: "{app}\runtime\schannel"; Flags: ignoreversion
@@ -114,6 +116,9 @@ Source: "{#StagePath}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\OPUS-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef VirtualMicrophonePackage
+Source: "{#StagePath}\driver\DeskLinkVirtualMicrophone\*"; DestDir: "{app}\driver\DeskLinkVirtualMicrophone"; Flags: ignoreversion
+#endif
 #ifdef ExperimentalWindows10
 Source: "{#StagePath}\WINDOWS10_BETA_NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
 #endif
@@ -213,8 +218,27 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
+  begin
+    if RegKeyExists(
+        HKLM64,
+        'SYSTEM\CurrentControlSet\Services\DeskLinkVirtualMicrophone') then
+    begin
+      if not ShellExec(
+          'runas',
+          ExpandConstant('{app}\desklink_virtual_microphone_installer.exe'),
+          'uninstall', ExpandConstant('{app}'), SW_SHOWNORMAL,
+          ewWaitUntilTerminated, ResultCode) then
+        Log('DeskLink Virtual Microphone removal was not started; application uninstall will continue.')
+      else if (ResultCode <> 0) and (ResultCode <> 3010) then
+        Log('DeskLink Virtual Microphone removal returned ' +
+          IntToStr(ResultCode) +
+          '; application uninstall will continue.');
+    end;
     RegDeleteValue(HKCU,
       'Software\Microsoft\Windows\CurrentVersion\Run', 'DeskLink');
+  end;
 end;

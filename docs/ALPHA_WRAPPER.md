@@ -157,6 +157,8 @@ The ZIP contains:
 - `desklink_pair.exe`
 - `desklink_runtime.exe`
 - `desklink_update.exe`
+- `desklink_virtual_microphone_installer.exe` (fixed optional-component helper;
+  no driver package is present in ordinary builds)
 - `runtime/schannel/msquic.dll`
 - the MSVC runtime support DLLs required by these Release binaries
 - this alpha guide

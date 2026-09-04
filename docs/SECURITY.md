@@ -304,6 +304,24 @@ module-local and cannot alter identity, TLS, session admission, focus, input,
 clipboard, or system-audio authority. See
 [`VOICE_FORWARDING.md`](VOICE_FORWARDING.md).
 
+After all existing voice admission, jitter, FEC/PLC, and Opus decoding, a
+local-only output router may send the one canonical PCM block to the
+communications monitor, the optional virtual microphone, or both. The
+destination is not protocol state and the peer cannot select or observe it.
+Monitor gain and echo guard never change virtual-microphone amplitude. Loss of
+authenticated stream authority resets both sinks; failure of one local sink
+does not stop the other.
+
+The virtual feed opens only an endpoint with the DeskLink-owned stable property
+and feed role. It never falls back to a friendly name or default device. The
+same property marks the capture role, which is rejected from outgoing
+microphone enumeration and again at capture open, preventing DeskLink from
+feeding its own received stream back to the peer. PCM remains memory-only and
+uses a fixed 60 ms maximum driver ring. Overrun drops oldest audio, underrun is
+silence, and feed/capture stop or start flushes every pending sample. Closing
+the user-mode feed handle therefore naturally makes an already-open application
+capture stream silent after a crash.
+
 Every audio datagram is decoded on the datagram lane, bound to the fresh
 session nonce, fixed to the canonical frame shape, restricted to one nonzero
 stream ID per receiver, and admitted to a bounded sequence-aware jitter buffer
@@ -657,6 +675,17 @@ separate code-signing identity selected from the current-user certificate
 store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
+
+The optional virtual-microphone package is the only machine-wide/elevated
+extension. It is absent by default. The fixed sibling helper accepts no path or
+package argument, validates exactly the DeskLink INF/SYS/catalog/manifest set,
+verifies catalog membership and the Microsoft Windows Hardware Compatibility
+Publisher signature, and operates only on the stable DeskLink root-device ID.
+Production packaging independently rejects a driver package without that
+signature. Development output is labelled unsigned and is never admitted to
+this installer path. DeskLink does not disable Secure Boot or signature
+enforcement, enable test-signing, install a test root, select a default audio
+device, or install an arbitrary INF.
 
 The separately named DeskLink Beta is an unsigned prerelease,
 not that production installer. Its build mode cannot be combined with release

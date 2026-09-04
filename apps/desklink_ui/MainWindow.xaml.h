@@ -126,6 +126,15 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnVoiceInputChanged(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
+    void OnVoiceReceiveDestinationChanged(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
+    void OnInstallVirtualMicrophone(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnOpenSoundInputSettings(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
     void OnApplyVoiceGain(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -230,6 +239,8 @@ private:
     void SetLocalAudioDesired(bool Desired);
     void SetPeerVoiceDesired(bool Desired);
     void SetLocalVoiceDesired(bool Desired);
+    void SetVoiceReceiveDestination(
+        desklink::VoiceReceiveDestination Destination);
     void LoadVoiceInputDevices();
     void ShowPairingStatus(
         winrt::hstring const& Message,

@@ -2255,9 +2255,10 @@ struct PeerRuntime {
                 bool ReceiveAudio,
                 bool SendVoice,
                 bool ReceiveVoice,
-                std::optional<std::string> VoiceInputEndpointId,
-                std::uint16_t VoiceGainPermyriad,
-                bool VoiceEchoGuard,
+                 std::optional<std::string> VoiceInputEndpointId,
+                 std::uint16_t VoiceGainPermyriad,
+                 desklink::VoiceReceiveDestination VoiceDestination,
+                 bool VoiceEchoGuard,
                 bool SyncClipboard,
                 bool ValidationAudioLatency,
                 bool InitiateLatencyCalibration)
@@ -2293,10 +2294,37 @@ struct PeerRuntime {
                   std::cerr << "[Voice:Render] "
                             << (Message.empty() ? "renderer stopped" : Message)
                             << "; voice playout will recover independently\n";
-                  VoiceRenderRecovery.store(true);
+                   VoiceRenderRecovery.store(true);
+               }}),
+          VirtualMicrophoneFeed(desklink::Win32WasapiVoiceRenderHandlers{
+              [this](desklink::Win32WasapiFailureKind,
+                     std::string Message) {
+                  std::cerr << "[Voice:VirtualMic] "
+                            << (Message.empty() ? "feed stopped" : Message)
+                            << "; monitor and session remain active\n";
+                  VirtualMicrophoneUnavailable_.store(true);
+                  VirtualMicrophoneRecovery.store(true);
               }}),
+          VoiceRouter(
+              {[this](desklink::VoicePcmFrame Frame) {
+                   return VoiceRenderer.Submit(std::move(Frame));
+               }, [this] { VoiceRenderer.Reset(); }},
+              {[this](desklink::VoicePcmFrame Frame) {
+                   const auto Accepted =
+                       VirtualMicrophoneFeed.Submit(std::move(Frame));
+                   if (Accepted) {
+                       VirtualMicrophoneLive_.store(true);
+                       VirtualMicrophoneLastFrameMilliseconds_.store(
+                           static_cast<std::uint64_t>(
+                               std::chrono::duration_cast<
+                                   std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now()
+                                           .time_since_epoch()).count()));
+                   }
+                   return Accepted;
+               }, [this] { VirtualMicrophoneFeed.Reset(); }}),
           VoiceReceiver([this](desklink::VoicePcmFrame Frame) {
-              return VoiceRenderer.Submit(std::move(Frame));
+              return VoiceRouter.Submit(std::move(Frame));
           }),
           Clipboard(desklink::Win32ClipboardHandlers{
               [this](std::string Text) {
@@ -2341,6 +2369,7 @@ struct PeerRuntime {
           ReceiveVoiceRequested(ReceiveVoice),
           VoiceInputEndpointId_(std::move(VoiceInputEndpointId)),
           VoiceGainPermyriad_(VoiceGainPermyriad),
+          VoiceDestination_(VoiceDestination),
           VoiceEchoGuard_(VoiceEchoGuard),
           InitiateLatencyCalibration_(InitiateLatencyCalibration) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
@@ -2349,6 +2378,8 @@ struct PeerRuntime {
         (void)ObserveCleanup;
         (void)ObserveRejections;
 #endif
+        (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
+        (void)VoiceRouter.SetDestination(VoiceDestination_);
     }
 
     ~PeerRuntime() {
@@ -2476,12 +2507,19 @@ struct PeerRuntime {
         bool ReceiveVoiceDesired,
         std::optional<std::string> VoiceInputEndpointId,
         std::uint16_t VoiceGainPermyriad,
+        desklink::VoiceReceiveDestination VoiceDestination,
         bool VoiceEchoGuard) noexcept {
         if (AudioGainPermyriad >
             desklink::kDeskLinkAudioMaximumGainPermyriad) {
             return false;
         }
         if (VoiceGainPermyriad > desklink::kVoiceMaximumGainPermyriad ||
+            (VoiceDestination !=
+                 desklink::VoiceReceiveDestination::CommunicationsPlayback &&
+             VoiceDestination !=
+                 desklink::VoiceReceiveDestination::VirtualMicrophone &&
+             VoiceDestination != desklink::VoiceReceiveDestination::
+                 CommunicationsPlaybackAndVirtualMicrophone) ||
             (VoiceInputEndpointId &&
              (VoiceInputEndpointId->empty() ||
               VoiceInputEndpointId->size() >
@@ -2496,8 +2534,11 @@ struct PeerRuntime {
         ReceiveVoiceRequested = ReceiveVoiceDesired;
         VoiceInputEndpointId_ = std::move(VoiceInputEndpointId);
         VoiceGainPermyriad_ = VoiceGainPermyriad;
+        VoiceDestination_ = VoiceDestination;
         VoiceEchoGuard_ = VoiceEchoGuard;
-        (void)VoiceReceiver.SetGainPermyriad(VoiceGainPermyriad_);
+        (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
+        if (VoiceRenderPump.joinable()) ConfigureVoiceOutputsLocked();
+        else (void)VoiceRouter.SetDestination(VoiceDestination_);
         if (VoiceInputChanged || !SendVoiceRequested ||
             !Session.CanSendVoice()) {
             StopVoiceTransmitLocked();
@@ -2605,7 +2646,7 @@ struct PeerRuntime {
             VoiceCaptureFailed.store(false);
             VoiceInputUnavailable_.store(false);
             VoiceTransmitting_.store(true);
-            if (VoiceEchoGuard_) VoiceReceiver.SetMuted(true);
+            if (VoiceEchoGuard_) VoiceRouter.SetMonitorMuted(true);
             if (!VoiceCapture->Start()) {
                 StopVoiceTransmitLocked();
                 VoiceInputUnavailable_.store(true);
@@ -2627,52 +2668,85 @@ struct PeerRuntime {
         if (VoiceCapture) VoiceCapture->Stop();
         VoiceCapture.reset();
         VoiceEncoder_.reset();
-        VoiceReceiver.SetMuted(false);
+        VoiceRouter.SetMonitorMuted(false);
         if (WasTransmitting) {
             std::cout << "[Voice:Privacy] microphone transmission stopped\n";
         }
     }
 
     void RunVoiceRenderPump() noexcept {
-        bool RendererReady = VoiceRenderer.Running();
-        auto Delay = kAudioRecoveryInitialDelay;
-        auto RetryAt = std::chrono::steady_clock::now() + Delay;
+        auto MonitorDelay = kAudioRecoveryInitialDelay;
+        auto VirtualMicrophoneDelay = kAudioRecoveryInitialDelay;
+        auto MonitorRetryAt = std::chrono::steady_clock::now();
+        auto VirtualMicrophoneRetryAt = std::chrono::steady_clock::now();
         while (!VoiceRenderStop.load()) {
             const auto Now = std::chrono::steady_clock::now();
-            if (RendererReady &&
-                (VoiceRenderRecovery.exchange(false) ||
-                 !VoiceRenderer.Running())) {
+            const auto Destination = VoiceRouter.Destination();
+            const bool MonitorRequired = Destination ==
+                    desklink::VoiceReceiveDestination::CommunicationsPlayback ||
+                Destination == desklink::VoiceReceiveDestination::
+                    CommunicationsPlaybackAndVirtualMicrophone;
+            const bool VirtualMicrophoneRequired = Destination ==
+                    desklink::VoiceReceiveDestination::VirtualMicrophone ||
+                Destination == desklink::VoiceReceiveDestination::
+                    CommunicationsPlaybackAndVirtualMicrophone;
+
+            if (!MonitorRequired && VoiceRenderer.Running()) {
                 VoiceRenderer.Stop();
-                VoiceReceiver.Reset();
-                RendererReady = false;
-                Delay = kAudioRecoveryInitialDelay;
-                RetryAt = Now + Delay;
             }
-            if (!RendererReady) {
-                (void)VoiceRenderRecovery.exchange(false);
-                if (Now >= RetryAt) {
-                    bool Restarted = false;
-                    try {
-                        VoiceRenderer.Stop();
-                        VoiceReceiver.Reset();
-                        Restarted = !VoiceRenderStop.load() &&
-                            VoiceRenderer.Start();
-                    } catch (...) {
-                        Restarted = false;
-                    }
-                    if (Restarted) {
-                        RendererReady = true;
-                        Delay = kAudioRecoveryInitialDelay;
-                        ++VoiceRenderRestartCount;
-                        std::cout
-                            << "[Voice:Render] communications endpoint recovered; session and input remained active\n";
-                    } else {
-                        Delay = NextAudioRecoveryDelay(Delay);
-                        RetryAt = std::chrono::steady_clock::now() + Delay;
-                    }
+            if (!VirtualMicrophoneRequired &&
+                VirtualMicrophoneFeed.Running()) {
+                VirtualMicrophoneFeed.Stop();
+                VirtualMicrophoneLive_.store(false);
+                VirtualMicrophoneLastFrameMilliseconds_.store(0);
+            }
+
+            const bool MonitorFailed = VoiceRenderRecovery.exchange(false) ||
+                (MonitorRequired && !VoiceRenderer.Running());
+            if (MonitorRequired && MonitorFailed && Now >= MonitorRetryAt) {
+                bool Restarted{};
+                try {
+                    VoiceRenderer.Stop();
+                    Restarted = !VoiceRenderStop.load() && VoiceRenderer.Start();
+                } catch (...) { Restarted = false; }
+                if (Restarted) {
+                    MonitorDelay = kAudioRecoveryInitialDelay;
+                    ++VoiceRenderRestartCount;
+                    std::cout
+                        << "[Voice:Render] communications endpoint recovered; virtual microphone and session remained active\n";
+                } else {
+                    MonitorDelay = NextAudioRecoveryDelay(MonitorDelay);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                continue;
+                MonitorRetryAt = std::chrono::steady_clock::now() +
+                    MonitorDelay;
+            }
+
+            const bool VirtualMicrophoneFailed =
+                VirtualMicrophoneRecovery.exchange(false) ||
+                (VirtualMicrophoneRequired &&
+                 !VirtualMicrophoneFeed.Running());
+            if (VirtualMicrophoneRequired && VirtualMicrophoneFailed &&
+                Now >= VirtualMicrophoneRetryAt) {
+                bool Restarted{};
+                try {
+                    VirtualMicrophoneFeed.Stop();
+                    Restarted = !VoiceRenderStop.load() &&
+                        VirtualMicrophoneFeed.Start();
+                } catch (...) { Restarted = false; }
+                VirtualMicrophoneUnavailable_.store(!Restarted);
+                VirtualMicrophoneLive_.store(false);
+                VirtualMicrophoneLastFrameMilliseconds_.store(0);
+                if (Restarted) {
+                    VirtualMicrophoneDelay = kAudioRecoveryInitialDelay;
+                    ++VirtualMicrophoneRestartCount;
+                    std::cout
+                        << "[Voice:VirtualMic] feed ready; monitor and session remained active\n";
+                } else {
+                    VirtualMicrophoneDelay =
+                        NextAudioRecoveryDelay(VirtualMicrophoneDelay);
+                }
+                VirtualMicrophoneRetryAt = std::chrono::steady_clock::now() +
+                    VirtualMicrophoneDelay;
             }
             (void)VoiceReceiver.PumpAvailable();
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -2683,18 +2757,19 @@ struct PeerRuntime {
         if (VoiceRenderPump.joinable()) return true;
         if (!Session.CanReceiveVoice()) return false;
         VoiceReceiver.Reset();
-        (void)VoiceReceiver.SetGainPermyriad(VoiceGainPermyriad_);
+        VoiceRouter.Reset();
+        (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
+        (void)VoiceRouter.SetDestination(VoiceDestination_);
         VoiceRenderStop.store(false);
-        bool Started = false;
         try {
-            Started = VoiceRenderer.Start();
+            ConfigureVoiceOutputsLocked();
             VoiceRenderPump = std::thread(
                 [this] { RunVoiceRenderPump(); });
         } catch (...) {
             VoiceRenderer.Stop();
+            VirtualMicrophoneFeed.Stop();
             return false;
         }
-        if (!Started) VoiceRenderRecovery.store(true);
         return true;
     }
 
@@ -2704,9 +2779,43 @@ struct PeerRuntime {
             VoiceRenderPump.get_id() != std::this_thread::get_id()) {
             VoiceRenderPump.join();
         }
-        VoiceRenderer.Stop();
         VoiceReceiver.Reset();
+        VoiceRouter.Reset();
+        VoiceRenderer.Stop();
+        VirtualMicrophoneFeed.Stop();
         VoiceRenderRecovery.store(false);
+        VirtualMicrophoneRecovery.store(false);
+        VirtualMicrophoneLive_.store(false);
+        VirtualMicrophoneLastFrameMilliseconds_.store(0);
+    }
+
+    void ConfigureVoiceOutputsLocked() noexcept {
+        const bool MonitorRequired = VoiceDestination_ ==
+                desklink::VoiceReceiveDestination::CommunicationsPlayback ||
+            VoiceDestination_ == desklink::VoiceReceiveDestination::
+                CommunicationsPlaybackAndVirtualMicrophone;
+        const bool VirtualMicrophoneRequired = VoiceDestination_ ==
+                desklink::VoiceReceiveDestination::VirtualMicrophone ||
+            VoiceDestination_ == desklink::VoiceReceiveDestination::
+                CommunicationsPlaybackAndVirtualMicrophone;
+        if (MonitorRequired && !VoiceRenderer.Running() &&
+            !VoiceRenderStop.load()) {
+            if (!VoiceRenderer.Start()) VoiceRenderRecovery.store(true);
+        }
+        if (VirtualMicrophoneRequired && !VirtualMicrophoneFeed.Running() &&
+            !VoiceRenderStop.load()) {
+            const bool Started = VirtualMicrophoneFeed.Start();
+            VirtualMicrophoneUnavailable_.store(!Started);
+            if (!Started) VirtualMicrophoneRecovery.store(true);
+        }
+        (void)VoiceRouter.SetDestination(VoiceDestination_);
+        if (!MonitorRequired) VoiceRenderer.Stop();
+        if (!VirtualMicrophoneRequired) {
+            VirtualMicrophoneFeed.Stop();
+            VirtualMicrophoneLive_.store(false);
+            VirtualMicrophoneLastFrameMilliseconds_.store(0);
+            VirtualMicrophoneUnavailable_.store(false);
+        }
     }
 
     void StopVoice() noexcept {
@@ -2740,6 +2849,46 @@ struct PeerRuntime {
     [[nodiscard]] std::uint16_t VoiceGainPermyriad() const noexcept {
         std::scoped_lock Lock(ModuleLifecycleMutex);
         return VoiceGainPermyriad_;
+    }
+    [[nodiscard]] desklink::VoiceReceiveDestination
+    VoiceDestination() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        return VoiceDestination_;
+    }
+    [[nodiscard]] desklink::ControlVirtualMicrophoneState
+    VirtualMicrophoneState() const noexcept {
+        const auto Component =
+            desklink::GetWin32VirtualMicrophoneComponentState();
+        if (Component == desklink::
+                Win32VirtualMicrophoneComponentState::NotInstalled) {
+            return desklink::ControlVirtualMicrophoneState::NotInstalled;
+        }
+        if (Component == desklink::
+                Win32VirtualMicrophoneComponentState::NeedsRepair) {
+            return desklink::ControlVirtualMicrophoneState::NeedsRepair;
+        }
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        const bool Routed = VoiceDestination_ ==
+                desklink::VoiceReceiveDestination::VirtualMicrophone ||
+            VoiceDestination_ == desklink::VoiceReceiveDestination::
+                CommunicationsPlaybackAndVirtualMicrophone;
+        if (!Routed) {
+            return desklink::ControlVirtualMicrophoneState::Installed;
+        }
+        if (!VirtualMicrophoneFeed.Running() ||
+            VirtualMicrophoneUnavailable_.load()) {
+            return desklink::ControlVirtualMicrophoneState::Unavailable;
+        }
+        const auto Last = VirtualMicrophoneLastFrameMilliseconds_.load();
+        if (Last == 0) {
+            return desklink::ControlVirtualMicrophoneState::FeedReady;
+        }
+        const auto Now = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        return Now >= Last && Now - Last <= 250
+            ? desklink::ControlVirtualMicrophoneState::Live
+            : desklink::ControlVirtualMicrophoneState::Silent;
     }
 
     void RequestRenderRecovery(
@@ -3050,6 +3199,8 @@ struct PeerRuntime {
     desklink::Win32WasapiRenderer Renderer;
     desklink::AudioReceiver Receiver;
     desklink::Win32WasapiVoiceRenderer VoiceRenderer;
+    desklink::Win32VirtualMicrophoneFeed VirtualMicrophoneFeed;
+    desklink::VoiceOutputRouter VoiceRouter;
     desklink::VoiceReceiver VoiceReceiver;
     desklink::Win32ClipboardSynchronizer Clipboard;
     desklink::PeerSession Session;
@@ -3061,6 +3212,8 @@ struct PeerRuntime {
     bool ReceiveVoiceRequested{};
     std::optional<std::string> VoiceInputEndpointId_;
     std::uint16_t VoiceGainPermyriad_{10'000};
+    desklink::VoiceReceiveDestination VoiceDestination_{
+        desklink::VoiceReceiveDestination::CommunicationsPlayback};
     bool VoiceEchoGuard_{true};
     std::atomic_bool VoiceMuted_{};
     std::atomic_bool VoiceTransmitting_{};
@@ -3068,6 +3221,11 @@ struct PeerRuntime {
     std::atomic_bool VoiceCaptureFailed{};
     std::atomic_bool VoiceRenderRecovery{};
     std::atomic_uint64_t VoiceRenderRestartCount{};
+    std::atomic_bool VirtualMicrophoneRecovery{};
+    std::atomic_bool VirtualMicrophoneUnavailable_{};
+    std::atomic_bool VirtualMicrophoneLive_{};
+    std::atomic_uint64_t VirtualMicrophoneLastFrameMilliseconds_{};
+    std::atomic_uint64_t VirtualMicrophoneRestartCount{};
     std::uint32_t NextVoiceStreamId_{1};
     std::uint64_t VoicePttActivations_{};
     std::uint64_t VoiceEncodedFrames_{};
@@ -4548,6 +4706,22 @@ int RunTrusted(const CommandLine& Command,
                     Request.Payload)) {
                 desklink::ControlState State;
                 State.LocalMachine = LocalIdentity.machine_id;
+                switch (desklink::GetWin32VirtualMicrophoneComponentState()) {
+                    case desklink::Win32VirtualMicrophoneComponentState::
+                            NotInstalled:
+                        State.VirtualMicrophoneState = desklink::
+                            ControlVirtualMicrophoneState::NotInstalled;
+                        break;
+                    case desklink::Win32VirtualMicrophoneComponentState::Ready:
+                        State.VirtualMicrophoneState = desklink::
+                            ControlVirtualMicrophoneState::Installed;
+                        break;
+                    case desklink::Win32VirtualMicrophoneComponentState::
+                            NeedsRepair:
+                        State.VirtualMicrophoneState = desklink::
+                            ControlVirtualMicrophoneState::NeedsRepair;
+                        break;
+                }
                 State.Role = Command.Mode == Operation::Serve
                     ? desklink::ControlRole::Agent
                     : desklink::ControlRole::Host;
@@ -4600,6 +4774,10 @@ int RunTrusted(const CommandLine& Command,
                 State.AudioMuted = SelectedPeer->AudioMuted();
                     State.VoiceGainPermyriad =
                         SelectedPeer->VoiceGainPermyriad();
+                    State.VoiceDestination =
+                        SelectedPeer->VoiceDestination();
+                    State.VirtualMicrophoneState =
+                        SelectedPeer->VirtualMicrophoneState();
                     State.VoiceEnabled = SelectedPeer->VoiceEnabled();
                     State.VoiceMuted = SelectedPeer->VoiceMuted();
                     State.VoicePttReady = SelectedPeer->VoicePttReady();
@@ -4739,6 +4917,7 @@ int RunTrusted(const CommandLine& Command,
                     SendVoice, ReceiveVoice,
                     ApplyPreferences->Preferences.VoiceInputEndpointId,
                     ApplyPreferences->Preferences.VoiceGainPermyriad,
+                    ApplyPreferences->Preferences.VoiceDestination,
                     ApplyPreferences->Preferences.VoiceEchoGuard);
                 if (Applied && ActiveInput) {
                     Applied = ActiveInput->ApplyManagedPreferences(
@@ -5018,6 +5197,7 @@ int RunTrusted(const CommandLine& Command,
             Command.ReceiveVoice,
             Command.VoiceInputEndpointId,
             10'000,
+            desklink::VoiceReceiveDestination::CommunicationsPlayback,
             true,
             Command.SyncClipboard,
             Command.ValidationAudioLatency,

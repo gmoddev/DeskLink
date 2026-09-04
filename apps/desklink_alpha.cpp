@@ -144,6 +144,7 @@ bool ValidateInstalledPayloadForUpdate() {
     for (const auto* Relative : {
              L"desklink_alpha.exe", L"desklink_pair.exe",
              L"desklink_runtime.exe", L"desklink_update.exe",
+             L"desklink_virtual_microphone_installer.exe",
              L"runtime\\schannel\\msquic.dll",
              L"LICENSE", L"ALPHA_WRAPPER.md"}) {
         const auto Attributes = GetFileAttributesW((Root / Relative).c_str());

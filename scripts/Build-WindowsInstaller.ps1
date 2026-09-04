@@ -16,6 +16,8 @@ param(
 
     [switch] $ExperimentalWindows10,
 
+    [string] $VirtualMicrophonePackagePath = '',
+
     [ValidatePattern('^[0-9A-Fa-f ]{40,59}$')]
     [string] $CertificateThumbprint = '',
 
@@ -123,6 +125,7 @@ $RequiredFiles = @(
     'desklink_pair.exe',
     'desklink_runtime.exe',
     'desklink_update.exe',
+    'desklink_virtual_microphone_installer.exe',
     'runtime\schannel\msquic.dll',
     'concrt140.dll',
     'msvcp140.dll',
@@ -156,6 +159,22 @@ foreach ($RelativePath in $RequiredFiles) {
         throw "The staging directory is missing required file: $RelativePath"
     }
     Assert-NoReparsePoint $FullPath "Staged file $RelativePath"
+}
+if (-not [string]::IsNullOrWhiteSpace($VirtualMicrophonePackagePath)) {
+    $VirtualMicrophonePackagePath =
+        (Resolve-Path -LiteralPath $VirtualMicrophonePackagePath).Path
+    & (Join-Path $RepositoryRoot 'scripts\Test-VirtualMicrophonePackage.ps1') `
+        -PackagePath $VirtualMicrophonePackagePath `
+        -RequireMicrosoftProductionSignature
+    Assert-LastExitCode 'Validating the optional virtual microphone package'
+    foreach ($DriverFile in @(
+            'DeskLinkVirtualMicrophone.inf',
+            'DeskLinkVirtualMicrophone.sys',
+            'DeskLinkVirtualMicrophone.cat',
+            'manifest.json')) {
+        $RelativePath = Join-Path 'driver\DeskLinkVirtualMicrophone' $DriverFile
+        [void] $ExpectedRelativeFiles.Add($RelativePath)
+    }
 }
 $WinUiRoot = Join-Path $StagePath 'ui'
 $WinUiFiles = @(Assert-DeskLinkWinUiRuntimePayload $WinUiRoot)
@@ -216,8 +235,15 @@ try {
         $Destination = Join-Path $TemporaryStage $RelativePath
         $DestinationDirectory = Split-Path -Parent $Destination
         New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $StagePath $RelativePath) `
-            -Destination $Destination
+        if ($RelativePath.StartsWith(
+                'driver\DeskLinkVirtualMicrophone\',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -LiteralPath (Join-Path $VirtualMicrophonePackagePath `
+                (Split-Path -Leaf $RelativePath)) -Destination $Destination
+        } else {
+            Copy-Item -LiteralPath (Join-Path $StagePath $RelativePath) `
+                -Destination $Destination
+        }
     }
 
     $VersionInfoVersion = "$AppVersion.0"
@@ -262,6 +288,9 @@ try {
     if ($ExperimentalWindows10) {
         $Arguments += '/DExperimentalWindows10=1'
     }
+    if (-not [string]::IsNullOrWhiteSpace($VirtualMicrophonePackagePath)) {
+        $Arguments += '/DVirtualMicrophonePackage=1'
+    }
     $Arguments += $InstallerScript
     & $IsccPath @Arguments
     Assert-LastExitCode 'Compiling the DeskLink installer'
@@ -279,7 +308,8 @@ try {
         Assert-AuthenticodeSignature $BuiltInstaller $Certificate.Thumbprint -RequireTimestamp
         foreach ($Executable in 'ui\desklink.exe', 'desklink_runtime.exe',
                 'desklink_pair.exe', 'desklink_update.exe',
-                'desklink_alpha.exe') {
+                'desklink_alpha.exe',
+                'desklink_virtual_microphone_installer.exe') {
             Assert-AuthenticodeSignature `
                 (Join-Path $TemporaryStage $Executable) $Certificate.Thumbprint -RequireTimestamp
         }

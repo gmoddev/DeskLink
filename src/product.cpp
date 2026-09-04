@@ -25,6 +25,14 @@ namespace {
            Route == VoiceRoutePreference::Bidirectional;
 }
 
+[[nodiscard]] bool IsValidVoiceReceiveDestination(
+    VoiceReceiveDestination Destination) noexcept {
+    return Destination == VoiceReceiveDestination::CommunicationsPlayback ||
+           Destination == VoiceReceiveDestination::VirtualMicrophone ||
+           Destination == VoiceReceiveDestination::
+               CommunicationsPlaybackAndVirtualMicrophone;
+}
+
 [[nodiscard]] bool IsValidGamingBehavior(GamingBehavior Behavior) noexcept {
     return Behavior == GamingBehavior::KeepLocal ||
            Behavior == GamingBehavior::FollowProfileRules;
@@ -69,6 +77,7 @@ bool IsValidProductPreferences(
     if (!IsValidDeskRole(Preferences.Role) ||
         !IsValidAudioRoute(Preferences.AudioRoute) ||
         !IsValidVoiceRoute(Preferences.VoiceRoute) ||
+        !IsValidVoiceReceiveDestination(Preferences.VoiceDestination) ||
         !IsValidGamingBehavior(Preferences.Gaming) ||
         !IsValidProductHotkey(Preferences.FocusPeerHotkey) ||
         !IsValidProductHotkey(Preferences.ReturnLocalHotkey) ||
@@ -202,6 +211,7 @@ DesiredDeskConfiguration PlanDesiredDeskConfiguration(
     Result.PreferredPeerMachine = Preferences.PreferredPeerMachine;
     Result.AudioGainPermyriad = Preferences.AudioGainPermyriad;
     Result.VoiceGainPermyriad = Preferences.VoiceGainPermyriad;
+    Result.VoiceDestination = Preferences.VoiceDestination;
 
     if (Preferences.Role == DeskRole::Unconfigured) {
         AddBlocker(Result, RuntimePlanBlocker::RoleUnconfigured);

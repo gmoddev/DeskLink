@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 11;
+inline constexpr std::uint16_t kControlProtocolVersion = 12;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -104,6 +104,16 @@ enum class ControlPeerDirectionState : std::uint8_t {
     OutgoingPending = 2,
     OutgoingActive = 3,
     IncomingActive = 4,
+};
+
+enum class ControlVirtualMicrophoneState : std::uint8_t {
+    NotInstalled = 0,
+    Installed = 1,
+    FeedReady = 2,
+    Live = 3,
+    Silent = 4,
+    Unavailable = 5,
+    NeedsRepair = 6,
 };
 
 struct GetStateControlRequest {};
@@ -288,6 +298,10 @@ struct ControlState {
     ControlRoamingState RoamingState{ControlRoamingState::Unavailable};
     ControlPeerDirectionState PeerDirection{
         ControlPeerDirectionState::Unavailable};
+    VoiceReceiveDestination VoiceDestination{
+        VoiceReceiveDestination::CommunicationsPlayback};
+    ControlVirtualMicrophoneState VirtualMicrophoneState{
+        ControlVirtualMicrophoneState::NotInstalled};
     std::uint16_t ReadyRoamingRouteCount{};
     bool RemoteFocused{};
     bool CaptureActive{};

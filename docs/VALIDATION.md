@@ -723,6 +723,37 @@ grants, live revocation, and preference/control migration. Native validation
 also builds the complete MsQuic runtime and locked WinUI shell and runs the
 source gate proving that the microphone backend does not use loopback capture.
 
+The virtual-microphone application-routing slice adds automated coverage for
+all three local destinations, one-decode fanout, independent sink failure,
+monitor-only gain/echo guard, source-wide reset/mute, preference-schema-6
+migration, control serialization, stable-property endpoint filtering, and
+lower-level rejection of DeskLink's capture endpoint as an outgoing source.
+
+The optional driver build is isolated from normal CMake. Its CI path checks out
+Microsoft Windows-driver-samples at the pinned commit, installs the exact
+26100.6584 WDK inputs, applies the reviewed Simple Audio Sample patch, builds
+the x64 WaveRT package, and requires Inf2Cat signability with no errors or
+warnings. A package validator hashes the exact INF/SYS/catalog/manifest set and
+distinguishes deliberately unsigned development output from a Microsoft
+production-signed release package. Static safety checks reject allocation,
+network, codec, trust, and IOCTL expansion in the bridge and require bounded
+oldest-drop/silence/flush semantics.
+
+The independent `desklink_virtual_microphone_validation.exe` opens
+`DeskLink Remote Microphone` as an ordinary Core Audio capture client using its
+stable property, not its friendly name. It validates idle silence, a 997 Hz
+DeskLink feed, stop-to-silence within 60 ms, restart with no stale samples, and
+feeder-process termination to silence. `--require-no-physical-microphones`
+additionally refuses the test unless the DeskLink endpoint is the only active
+capture endpoint.
+
+The validator currently fails closed at endpoint discovery because the
+development driver package is intentionally unsigned and was not installed.
+Running the endpoint, zero-physical-microphone, two-PC, and Discord matrices is
+blocked on obtaining a Microsoft production-signed driver catalog. Test mode,
+Secure Boot changes, and signature-enforcement bypasses are not acceptable
+substitutes.
+
 Physical two-PC privacy, endpoint, loss/reorder, feedback, reconnect, and
 bidirectional PTT qualification is still required before voice is described as
 production-qualified. The exact matrix and latency goals are in
@@ -741,6 +772,8 @@ This validation does not yet prove:
 - physical two-PC text-clipboard privacy, contention, owner-exit, loop, and reconnect behavior
 - physical two-PC microphone/PTT privacy, endpoint selection, packet-loss,
   feedback, and reconnect behavior
+- Microsoft-signed virtual-microphone installation, zero-physical-microphone
+  capture, crash/revoke/disconnect silence, and Discord/OBS application capture
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

@@ -151,9 +151,28 @@
                                            Text="Voice is off. Microphone capture is closed."
                                            TextWrapping="Wrap" />
                                 <ToggleSwitch x:Name="PeerVoiceDesiredToggle"
-                                              Header="Play paired PC voice on this PC"
+                                              Header="Receive paired PC microphone"
                                               OffContent="Off" OnContent="On"
                                               Toggled="OnPeerVoiceIntentToggled" />
+                                <ComboBox x:Name="VoiceReceiveDestinationBox"
+                                          Header="Use paired PC's microphone as"
+                                          SelectionChanged="OnVoiceReceiveDestinationChanged"
+                                          MinWidth="360">
+                                    <ComboBoxItem Content="Listen on this PC" />
+                                    <ComboBoxItem Content="Microphone for apps" />
+                                    <ComboBoxItem Content="Both" />
+                                </ComboBox>
+                                <TextBlock x:Name="VirtualMicrophoneStatusText"
+                                           Text="DeskLink Virtual Microphone: checking status"
+                                           TextWrapping="Wrap" Opacity="0.78" />
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <Button x:Name="InstallVirtualMicrophoneButton"
+                                            Content="Install virtual microphone"
+                                            Click="OnInstallVirtualMicrophone" />
+                                    <Button x:Name="OpenSoundInputSettingsButton"
+                                            Content="Open sound settings"
+                                            Click="OnOpenSoundInputSettings" />
+                                </StackPanel>
                                 <ToggleSwitch x:Name="LocalVoiceDesiredToggle"
                                               Header="Share this PC's microphone with paired PC"
                                               OffContent="Off" OnContent="On"
@@ -164,7 +183,7 @@
                                           MinWidth="360" />
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <NumberBox x:Name="VoiceGainBox"
-                                               Header="Incoming voice volume (%)"
+                                               Header="Voice monitor volume (%)"
                                                Value="100" Minimum="0" Maximum="100"
                                                SpinButtonPlacementMode="Compact"
                                                Width="210" />
@@ -177,7 +196,7 @@
                                             VerticalAlignment="Bottom" />
                                 </StackPanel>
                                 <ToggleSwitch x:Name="VoiceEchoGuardToggle"
-                                              Header="Echo guard (mutes incoming DeskLink voice while transmitting)"
+                                              Header="Echo guard (mutes only local monitoring while transmitting)"
                                               IsOn="True"
                                               Toggled="OnVoiceEchoGuardToggled" />
                                 <Button x:Name="VoicePttButton"

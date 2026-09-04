@@ -57,6 +57,7 @@ bool ValidateInstalledProductShell(
     for (const auto* Relative : {
              L"desklink.exe", L"desklink_alpha.exe", L"desklink_pair.exe",
              L"desklink_runtime.exe", L"desklink_update.exe",
+             L"desklink_virtual_microphone_installer.exe",
              L"runtime\\schannel\\msquic.dll", L"App.xbf",
              L"MainWindow.xbf", L"Microsoft.WindowsAppRuntime.dll",
              L"Microsoft.ui.xaml.dll", L"WindowsAppSDK-LICENSE.txt"}) {

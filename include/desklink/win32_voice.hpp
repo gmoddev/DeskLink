@@ -24,6 +24,26 @@ struct VoiceInputDevice {
         const VoiceInputDevice&) const noexcept = default;
 };
 
+enum class DeskLinkVirtualAudioEndpointKind : std::uint32_t {
+    None = 0,
+    MicrophoneFeed = 1,
+    RemoteMicrophone = 2,
+};
+
+enum class Win32VirtualMicrophoneComponentState : std::uint8_t {
+    NotInstalled = 0,
+    Ready = 1,
+    NeedsRepair = 2,
+};
+
+[[nodiscard]] constexpr bool IsDeskLinkVirtualMicrophoneSource(
+    DeskLinkVirtualAudioEndpointKind Kind) noexcept {
+    return Kind == DeskLinkVirtualAudioEndpointKind::RemoteMicrophone;
+}
+
+[[nodiscard]] Win32VirtualMicrophoneComponentState
+GetWin32VirtualMicrophoneComponentState();
+
 [[nodiscard]] std::vector<VoiceInputDevice>
 EnumerateWin32VoiceInputDevices();
 
@@ -74,9 +94,38 @@ public:
 
     [[nodiscard]] bool Start();
     [[nodiscard]] bool Submit(VoicePcmFrame Frame);
+    void Reset() noexcept;
     void Stop() noexcept;
     [[nodiscard]] bool Running() const noexcept;
     [[nodiscard]] std::size_t QueuedFrames() const noexcept;
+    [[nodiscard]] std::uint64_t Underruns() const noexcept;
+
+private:
+    std::unique_ptr<State> State_;
+};
+
+// Writes already-authorized, canonical 48 kHz mono PCM16 to the private
+// DeskLink driver feed endpoint. Discovery is property-based and never falls
+// back to an arbitrary render endpoint.
+class Win32VirtualMicrophoneFeed final {
+public:
+    struct State;
+
+    explicit Win32VirtualMicrophoneFeed(
+        Win32WasapiVoiceRenderHandlers Handlers = {});
+    ~Win32VirtualMicrophoneFeed();
+
+    Win32VirtualMicrophoneFeed(const Win32VirtualMicrophoneFeed&) = delete;
+    Win32VirtualMicrophoneFeed& operator=(
+        const Win32VirtualMicrophoneFeed&) = delete;
+
+    [[nodiscard]] bool Start();
+    [[nodiscard]] bool Submit(VoicePcmFrame Frame);
+    void Reset() noexcept;
+    void Stop() noexcept;
+    [[nodiscard]] bool Running() const noexcept;
+    [[nodiscard]] std::size_t QueuedFrames() const noexcept;
+    [[nodiscard]] std::uint64_t StaleFramesDropped() const noexcept;
     [[nodiscard]] std::uint64_t Underruns() const noexcept;
 
 private:

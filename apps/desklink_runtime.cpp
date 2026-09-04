@@ -23,6 +23,7 @@
 #include "desklink/win32_pairing.hpp"
 #include "desklink/win32_product_lifecycle.hpp"
 #include "desklink/win32_roaming_settings.hpp"
+#include "desklink/win32_voice.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1680,6 +1681,20 @@ desklink::ControlState LocalState(const desklink::MachineId& LocalMachine) {
     State.LocalMachine = LocalMachine;
     State.Role = desklink::ControlRole::Idle;
     State.DesiredMode = desklink::DeskMode::LockPc1;
+    switch (desklink::GetWin32VirtualMicrophoneComponentState()) {
+        case desklink::Win32VirtualMicrophoneComponentState::NotInstalled:
+            State.VirtualMicrophoneState =
+                desklink::ControlVirtualMicrophoneState::NotInstalled;
+            break;
+        case desklink::Win32VirtualMicrophoneComponentState::Ready:
+            State.VirtualMicrophoneState =
+                desklink::ControlVirtualMicrophoneState::Installed;
+            break;
+        case desklink::Win32VirtualMicrophoneComponentState::NeedsRepair:
+            State.VirtualMicrophoneState =
+                desklink::ControlVirtualMicrophoneState::NeedsRepair;
+            break;
+    }
     return State;
 }
 
@@ -1708,6 +1723,7 @@ bool ValidateInstalledBrokerForUpdate() {
     for (const auto* Relative : {
              L"desklink.exe", L"desklink_alpha.exe", L"desklink_pair.exe",
              L"desklink_runtime.exe", L"desklink_update.exe",
+             L"desklink_virtual_microphone_installer.exe",
              L"runtime\\schannel\\msquic.dll"}) {
         if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
     }
