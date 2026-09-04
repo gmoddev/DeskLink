@@ -19,7 +19,7 @@ inline constexpr std::size_t kMaxEncodedDatagramSize = 1200;
 inline constexpr std::size_t kMaxDatagramPayload =
     kMaxEncodedDatagramSize - kEnvelopeSize;
 inline constexpr std::uint32_t kWireMagic = 0x444C4E4Bu; // "DLNK"
-inline constexpr std::uint16_t kProtocolVersion = 4;
+inline constexpr std::uint16_t kProtocolVersion = 5;
 
 struct PeerIdentity {
     MachineId machine_id{};

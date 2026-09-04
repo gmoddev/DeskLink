@@ -467,6 +467,42 @@ than four source blocks and still emits exact canonical blocks. Target/timing
 discontinuity, reconnect, and endpoint recovery clear the correction; peer
 timestamps never directly choose a ratio. Gain/mute remains separate work.
 
+### 9.1 Microphone voice architecture
+
+Voice is a separate capability module, not a mode of system-audio loopback.
+Protocol 5 carries a datagram-only Opus `VoiceFrame` with its own sequence and
+per-PTT stream ID. The sender opens an `eCapture` communications endpoint only
+after reciprocal acknowledged `VoiceSend`/`VoiceReceive` grants, local route
+intent, clear hard mute, and a local PTT press. The receiver repeats nonce,
+grant, stream, sequence, codec, shape, and size admission before bounded
+40-120 ms FEC/PLC playout. Opus is decoded once to canonical 48 kHz mono PCM16,
+then a local `VoiceOutputRouter` dispatches that exact block to communications
+playback, the optional virtual-microphone feed, or both. Sink failure is
+independent; only loss of upstream authenticated voice authority resets both.
+
+The virtual microphone is an isolated optional WaveRT driver derived from
+Microsoft's Simple Audio Sample architecture. User mode writes through normal
+event-driven shared-mode WASAPI to `DeskLink Microphone Feed`; a fixed nonpaged
+driver ring bridges to `DeskLink Remote Microphone`, a genuine Core Audio
+capture endpoint. The ring targets 40 ms, is capped at 60 ms, drops the oldest
+PCM on overrun, and emits silence on underrun. Render/capture lifecycle changes
+flush the ring, so disconnect, revoke, route disable, process exit, and a newly
+opened capture stream cannot expose stale speech.
+
+Both endpoints carry one DeskLink property-set GUID with distinct feed/capture
+role values. Discovery uses that property rather than friendly names or
+defaults. The capture role is rejected by both outgoing source enumeration and
+the lower-level capture opener to prevent a virtual-microphone network loop.
+No peer message selects or reports the local destination.
+
+PTT release, mute, permission loss, disconnect, configuration change, endpoint
+loss, or shutdown closes capture and requires a fresh local activation. The
+peer has no protocol command that can activate or unmute the microphone.
+Echo guard defaults on and ramps incoming DeskLink voice to mute during local
+transmission. It is half-duplex feedback protection, not acoustic echo
+cancellation. The full boundary and physical qualification matrix are in
+[`VOICE_FORWARDING.md`](VOICE_FORWARDING.md).
+
 ---
 
 ## 10. Local control API
@@ -490,6 +526,8 @@ SetDesiredMode       implemented
 FocusMachine         implemented for the exact active authenticated peer
 SetAudioGain         implemented on an active Host peer receiver
 ToggleAudioMute      implemented on an active Host peer receiver
+SetVoiceTransmit     implemented as local PTT authority on an admitted peer
+SetVoiceMuted        implemented as local hard microphone mute
 GetDisplayTopologies implemented read-only
 GetProductPreferences implemented read-only
 SetProductPreferences implemented validated current-user policy
@@ -528,9 +566,12 @@ lease, `PeerValidated`, `FocusReady`, and initial-snapshot admission. It is
 deliberately separate from `Roam`, which waits for a validated configured
 physical-edge crossing.
 
-Application preferences schema 4 stores only two allowlisted local hotkey
+Application preferences schema 6 stores only two allowlisted local hotkey
 choices, bounded exact foreground rules, and an optional explicit endpoint for
-the preferred trusted machine. The broker tries authenticated mDNS resolution
+the preferred trusted machine, plus a separate voice route, exact optional
+microphone endpoint, incoming gain, echo guard, and a local received-voice
+destination that migrates to communications playback. The broker tries
+authenticated mDNS resolution
 first and consults that endpoint only when no matching machine record exists.
 The endpoint is a routing hint, not an identity: every launch still supplies
 the stored expected machine ID and transport certificate pin. Ambiguous or
@@ -638,6 +679,15 @@ application files under `%LOCALAPPDATA%\Programs\DeskLink`, creates a Start
 menu entry and HKCU uninstall registration, and owns no network/session state.
 It does not introduce a broker, service, driver, elevation boundary, Firewall
 rule, or transport listener.
+
+The optional virtual microphone is a separate, explicit machine-wide
+component. A fixed `requireAdministrator` helper accepts only `install` or
+`uninstall`, validates the exact sibling package and stable
+`ROOT\DeskLinkVirtualMicrophone` identity, and refuses anything without a
+Microsoft production driver signature. The ordinary UI cannot supply an INF
+path. Driver removal failure is reported but does not corrupt the current-user
+application uninstall. No path changes Secure Boot, test-signing, signature
+enforcement, Firewall policy, or Windows default audio devices.
 
 Both application entry points hold named lifecycle mutexes. Setup and Uninstall
 check those mutexes and stop before changing files, so packaging cannot bypass

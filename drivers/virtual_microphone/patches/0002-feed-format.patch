@@ -1,0 +1,24 @@
+diff --git a/audio/simpleaudiosample/Source/Filters/speakerwavtable.h b/audio/simpleaudiosample/Source/Filters/speakerwavtable.h
+--- a/audio/simpleaudiosample/Source/Filters/speakerwavtable.h
++++ b/audio/simpleaudiosample/Source/Filters/speakerwavtable.h
+@@ -17 +17 @@
+-// To keep the code simple assume device supports only 48KHz, 16-bit, stereo (PCM and NON-PCM)
++// DeskLink's internal feed accepts exactly canonical 48 kHz mono PCM16.
+@@ -19 +19 @@
+-#define SPEAKER_DEVICE_MAX_CHANNELS                 2       // Max Channels.
++#define SPEAKER_DEVICE_MAX_CHANNELS                 1       // Max Channels.
+@@ -21 +21 @@
+-#define SPEAKER_HOST_MAX_CHANNELS                   2       // Max Channels.
++#define SPEAKER_HOST_MAX_CHANNELS                   1       // Max Channels.
+@@ -50 +50 @@
+-                2,
++                1,
+@@ -52,2 +52,2 @@
+-                192000,
+-                4,
++                96000,
++                2,
+@@ -58 +58 @@
+-            KSAUDIO_SPEAKER_STEREO,
++            KSAUDIO_SPEAKER_MONO,
+

@@ -56,6 +56,15 @@ room propagation, or microphone capture latency. See
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
+- Protocol-v5, PTT-first microphone forwarding with separate reciprocal voice
+  grants, pinned Opus 1.6.1, exact 48 kHz mono/20 ms frames, a dedicated
+  datagram sequence, and bounded 40-120 ms FEC/PLC playout
+- Communications-role microphone selection and voice rendering, local hard
+  mute/incoming gain, and default-on half-duplex echo guard; full acoustic echo
+  cancellation and a global PTT binding remain deferred
+- Local received-voice routing to communications playback, a genuine optional
+  `DeskLink Remote Microphone` Core Audio capture endpoint, or both, with one
+  authoritative Opus decode/FEC/PLC path and independent sink recovery
 - Explicit, text-only clipboard synchronization with complementary per-peer
   read/write grants, a session-scoped module handshake, and loop suppression
 - Default-endpoint notification and bounded audio-only WASAPI recovery
@@ -152,6 +161,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Windows 10 OpenSSL/CNG production admission and release integration
 - Physical two-PC reciprocal edge-roaming signoff
 - Sustained physical two-PC audio timing and failure validation
+- Microsoft production signing/certification and physical zero-microphone and
+  Discord qualification for the optional virtual-microphone driver
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Production-signed Windows 11 installer/update qualification, physical
@@ -202,6 +213,28 @@ Compatibility builds may explicitly set
 `desklink_pair_validation.exe`. That separately named control is not built by
 default and is not a production artifact. It exposes only bounded Stage 5 fault
 probes; the normal `desklink_pair.exe` rejects those options.
+
+The optional virtual-microphone driver is isolated from ordinary builds. A
+driver build must explicitly supply the pinned Microsoft driver-samples tree
+and WDK package:
+
+```powershell
+cmake -S . -B build-virtual-microphone `
+  -DDESKLINK_BUILD_VIRTUAL_MICROPHONE_DRIVER=ON `
+  -DDESKLINK_WINDOWS_DRIVER_SAMPLES_ROOT='<windows-driver-samples>' `
+  -DDESKLINK_VIRTUAL_MICROPHONE_WDK_ROOT='<Microsoft.Windows.WDK.x64.10.0.26100.6584>'
+cmake --build build-virtual-microphone --config Release `
+  --target desklink_virtual_microphone_driver
+.\scripts\Test-VirtualMicrophonePackage.ps1 `
+  -PackagePath build-virtual-microphone\virtual-microphone\Release\DeskLinkVirtualMicrophone
+```
+
+Development output is deliberately unsigned and cannot enter the production
+installer. `Build-WindowsInstaller.ps1 -VirtualMicrophonePackagePath ...`
+requires a Microsoft production-signed catalog and fails closed otherwise.
+DeskLink never changes Secure Boot, test-signing, signature-enforcement, or
+system default-device policy. See
+[`drivers/virtual_microphone/README.md`](drivers/virtual_microphone/README.md).
 
 ### Native diagnostic wrapper
 
@@ -442,6 +475,27 @@ On the receiving Host, `control gain` applies a per-peer `0..10000` render
 gain and `control mute` toggles mute. Changes ramp across one five-millisecond
 block, persist through audio-only endpoint recovery, and never change the
 Windows endpoint or system mixer volume.
+
+Microphone voice is a separate PTT-only module. It requires distinct
+`VoiceSend`/`VoiceReceive` grants and explicit route intent on both PCs; system
+audio permissions cannot authorize it. The microphone remains closed until the
+local user holds PTT, and release, hard mute, permission loss, disconnect, or
+endpoint loss stops capture. Voice uses pinned Opus 1.6.1 at 48 kHz mono in
+20 ms datagrams with bounded 40-120 ms FEC/PLC playout. Echo guard defaults on
+and mutes incoming DeskLink voice while transmitting; it is half-duplex
+feedback protection, not acoustic echo cancellation. See
+[`docs/VOICE_FORWARDING.md`](docs/VOICE_FORWARDING.md).
+
+On the receiving PC, **Listen on this PC**, **Microphone for apps**, and
+**Both** are local-only destination choices. The virtual path submits the same
+canonical 48 kHz mono PCM16 playout blocks to `DeskLink Microphone Feed`; the
+optional WaveRT driver exposes them as `DeskLink Remote Microphone` for Discord,
+OBS, games, browsers, and recording tools. The feed is selected by a stable
+DeskLink endpoint property, never by friendly name, and the virtual capture
+endpoint is excluded from outgoing microphone selection to prevent a network
+feedback loop. When the driver is absent, only application-microphone routing
+is unavailable; roaming, clipboard, desktop audio, and normal voice monitoring
+continue to work.
 
 Text clipboard synchronization is separately opt-in and requires complementary
 grants. To synchronize both directions, pair each PC with both clipboard grants,

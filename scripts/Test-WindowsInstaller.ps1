@@ -61,6 +61,7 @@ function Assert-InstalledPayload() {
         'desklink_pair.exe',
         'desklink_runtime.exe',
         'desklink_update.exe',
+        'desklink_virtual_microphone_installer.exe',
         'runtime\schannel\msquic.dll',
         'concrt140.dll',
         'msvcp140.dll',
@@ -79,6 +80,7 @@ function Assert-InstalledPayload() {
         'WindowsAppSDK-Runtime-NOTICE.txt',
         'WindowsAppSDK-WinUI-NOTICE.txt',
         'LICENSE',
+        'OPUS-LICENSE.txt',
         'ALPHA_WRAPPER.md'
     )
     if ($ExperimentalWindows10) {

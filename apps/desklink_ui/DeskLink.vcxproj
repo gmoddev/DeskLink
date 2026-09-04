@@ -81,7 +81,7 @@
       <PreprocessorDefinitions Condition="'$(DeskLinkExperimentalWindows10)'=='true'">DESKLINK_EXPERIMENTAL_WINDOWS10=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>advapi32.lib;comctl32.lib;gdi32.lib;setupapi.lib;shcore.lib;shell32.lib;ole32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;avrt.lib;comctl32.lib;gdi32.lib;propsys.lib;setupapi.lib;shcore.lib;shell32.lib;ole32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
@@ -157,6 +157,10 @@
     </ClCompile>
     <ClCompile Include="..\..\src\win32_roaming_settings.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\src\win32_voice.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>DESKLINK_BUILD_VOICE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
   </ItemGroup>

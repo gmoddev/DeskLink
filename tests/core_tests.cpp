@@ -22,8 +22,14 @@
 #include "desklink/transport.hpp"
 #include "desklink/types.hpp"
 #include "desklink/update.hpp"
+#ifdef DESKLINK_BUILD_VOICE
+#include "desklink/voice.hpp"
+#endif
 #ifdef _WIN32
 #include "desklink/win32_audio.hpp"
+#ifdef DESKLINK_BUILD_VOICE
+#include "desklink/win32_voice.hpp"
+#endif
 #include "desklink/win32_application_settings.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_clipboard.hpp"
@@ -45,6 +51,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -100,21 +107,22 @@ desklink::DiscoveryEndpoint MakeDiscoveryEndpoint(
 
 class RecordingInjector final : public desklink::IInputInjector {
 public:
+    bool ReadyForInput() const noexcept override { return Ready; }
     bool inject_key(const desklink::KeyEventMessage& event) override {
-        keys.push_back(event); return true;
+        keys.push_back(event); return InjectSucceeds;
     }
     bool inject_button(const desklink::MouseButtonMessage& event) override {
         buttons.push_back(event); return true;
     }
     bool inject_pointer(const desklink::PointerPositionMessage& event) override {
-        pointers.push_back(event); return true;
+        pointers.push_back(event); return InjectSucceeds;
     }
     bool InjectPointerMotion(
         const desklink::PointerMotionMessage& Message) override {
-        motions.push_back(Message); return true;
+        motions.push_back(Message); return InjectSucceeds;
     }
     bool InjectWheel(const desklink::MouseWheelMessage& Message) override {
-        wheels.push_back(Message); return true;
+        wheels.push_back(Message); return InjectSucceeds;
     }
     bool ReconcileState(const desklink::InputStateSnapshotMessage& Snapshot) override {
         snapshots.push_back(Snapshot); return ReconcileSucceeds;
@@ -140,6 +148,8 @@ public:
     std::vector<desklink::InputStateSnapshotMessage> snapshots;
     std::optional<desklink::PointerPositionMessage> CurrentPointer;
     bool ReconcileSucceeds{true};
+    bool Ready{true};
+    bool InjectSucceeds{true};
     bool ReleaseSucceeds{true};
     bool ParkSucceeds{true};
     int release_calls{};
@@ -462,7 +472,7 @@ public:
     bool RefreshPeerCapabilities(
         const desklink::MachineId& Machine) noexcept override {
         RefreshCalls.push_back(Machine);
-        return Succeeds;
+        return Succeeds && RefreshSucceeds;
     }
 
     bool ReturnLocalAndStopPeer(
@@ -472,6 +482,7 @@ public:
     }
 
     bool Succeeds{true};
+    bool RefreshSucceeds{true};
     std::vector<desklink::MachineId> ReturnLocalCalls;
     std::vector<desklink::MachineId> RefreshCalls;
     std::vector<desklink::MachineId> StopCalls;
@@ -665,6 +676,8 @@ void ControlProtocolRoundTripAndValidation() {
     Preferences.InputRoamingDesired = true;
     Preferences.AudioRoute = AudioRoutePreference::PeerToLocal;
     Preferences.AudioGainPermyriad = 7'500;
+    Preferences.VoiceDestination =
+        VoiceReceiveDestination::VirtualMicrophone;
     Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
     Preferences.ProfileRules.push_back(
@@ -675,7 +688,7 @@ void ControlProtocolRoundTripAndValidation() {
     RequestedCapabilities.grant(Capability::DisplayTopologyExchange);
     ControlPairingToken PairingToken{};
     PairingToken[0] = 0x41;
-    const std::array<ControlRequest, 31> Requests{
+    const std::array<ControlRequest, 33> Requests{
         ControlRequest{1, GetStateControlRequest{}},
         ControlRequest{2, SetDesiredModeControlRequest{DeskMode::LockPc1}},
         ControlRequest{3, FocusMachineControlRequest{
@@ -724,6 +737,8 @@ void ControlProtocolRoundTripAndValidation() {
         ControlRequest{30, ApplyManagedPreferencesControlRequest{
             Preferences}},
         ControlRequest{31, IdentifyPeerDisplaysControlRequest{4}},
+        ControlRequest{32, SetVoiceTransmitControlRequest{true}},
+        ControlRequest{33, SetVoiceMutedControlRequest{true}},
     };
     for (const auto& Request : Requests) {
         const auto Frame = EncodeControlRequest(Request);
@@ -762,6 +777,13 @@ void ControlProtocolRoundTripAndValidation() {
     State.DesiredMode = DeskMode::Roam;
     State.ConnectedPeerCount = 1;
     State.AudioGainPermyriad = 8'000;
+    State.VoiceGainPermyriad = 6'500;
+    State.VoiceEnabled = true;
+    State.VoicePttReady = true;
+    State.VoiceTransmitting = true;
+    State.VoiceDestination = VoiceReceiveDestination::
+        CommunicationsPlaybackAndVirtualMicrophone;
+    State.VirtualMicrophoneState = ControlVirtualMicrophoneState::Live;
     State.RuntimePhase = BrokerRuntimePhase::ConnectedLocal;
     State.RoamingState = ControlRoamingState::Remote;
     State.PeerDirection = ControlPeerDirectionState::OutgoingActive;
@@ -787,6 +809,15 @@ void ControlProtocolRoundTripAndValidation() {
           ControlPeerDirectionState::OutgoingActive);
     CHECK(Response.Decoded->State->ReadyRoamingRouteCount == 1);
     CHECK(Response.Decoded->State->RoamingObserverActive);
+    CHECK(Response.Decoded->State->VoiceGainPermyriad == 6'500);
+    CHECK(Response.Decoded->State->VoiceEnabled);
+    CHECK(Response.Decoded->State->VoicePttReady);
+    CHECK(Response.Decoded->State->VoiceTransmitting);
+    CHECK(Response.Decoded->State->VoiceDestination ==
+          VoiceReceiveDestination::
+              CommunicationsPlaybackAndVirtualMicrophone);
+    CHECK(Response.Decoded->State->VirtualMicrophoneState ==
+          ControlVirtualMicrophoneState::Live);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -1182,6 +1213,24 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(ReauthorizationSafety.RefreshCalls.size() == 1);
     CHECK(ReauthorizationSafety.StopCalls.empty());
     CHECK(Store.GetPeer(Alpha.machine_id)->Capabilities == AlphaDesired);
+
+    InMemoryTrustStore RefreshFailureStore;
+    const auto RefreshFailurePeer = MakeIdentity(75, "Refresh failure PC");
+    SaveTrustedPeer(RefreshFailureStore, RefreshFailurePeer, {});
+    RecordingRuntimeSafetyController RefreshFailureSafety;
+    RefreshFailureSafety.RefreshSucceeds = false;
+    RuntimeTrustAuthority RefreshFailureAuthority(
+        RefreshFailureStore, RefreshFailureSafety);
+    CapabilitySet RefreshFailureDesired;
+    RefreshFailureDesired.grant(Capability::ClipboardRead);
+    CHECK(RefreshFailureAuthority.ApplyReauthorizedPermissionChange(
+              RefreshFailurePeer, {}, RefreshFailureDesired) ==
+          TrustMutationStatus::CleanupFailed);
+    CHECK(RefreshFailureSafety.ReturnLocalCalls.size() == 1);
+    CHECK(RefreshFailureSafety.RefreshCalls.size() == 1);
+    CHECK(RefreshFailureSafety.StopCalls.empty());
+    CHECK(RefreshFailureStore.GetPeer(RefreshFailurePeer.machine_id)
+              ->Capabilities == RefreshFailureDesired);
 
     CapabilitySet Reduced;
     Reduced.grant(Capability::InputInject);
@@ -5028,6 +5077,10 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     Preferences.ClipboardDesired = true;
     Preferences.AudioRoute = AudioRoutePreference::Bidirectional;
     Preferences.AudioGainPermyriad = 7'500;
+    Preferences.VoiceRoute = VoiceRoutePreference::Bidirectional;
+    Preferences.VoiceInputEndpointId = "communications-microphone";
+    Preferences.VoiceGainPermyriad = 6'500;
+    Preferences.VoiceEchoGuard = true;
     Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
     Preferences.ProfileRules.push_back(
@@ -5037,6 +5090,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!CanEnableClipboardIntent(LocalFeatureGrants));
     CHECK(!CanEnablePeerAudioIntent(LocalFeatureGrants));
     CHECK(!CanEnableLocalAudioIntent(LocalFeatureGrants));
+    CHECK(!CanEnablePeerVoiceIntent(LocalFeatureGrants));
+    CHECK(!CanEnableLocalVoiceIntent(LocalFeatureGrants));
     LocalFeatureGrants.grant(Capability::ClipboardRead);
     LocalFeatureGrants.grant(Capability::ClipboardWrite);
     CHECK(CanEnableClipboardIntent(LocalFeatureGrants));
@@ -5045,6 +5100,11 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!CanEnableLocalAudioIntent(LocalFeatureGrants));
     LocalFeatureGrants.grant(Capability::AudioReceive);
     CHECK(CanEnableLocalAudioIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::VoiceSend);
+    CHECK(CanEnablePeerVoiceIntent(LocalFeatureGrants));
+    CHECK(!CanEnableLocalVoiceIntent(LocalFeatureGrants));
+    LocalFeatureGrants.grant(Capability::VoiceReceive);
+    CHECK(CanEnableLocalVoiceIntent(LocalFeatureGrants));
 
     RuntimePlannerContext Ready;
     Ready.PreferredPeerTrusted = true;
@@ -5055,7 +5115,9 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
              Capability::ClipboardRead,
              Capability::ClipboardWrite,
              Capability::AudioSend,
-             Capability::AudioReceive}) {
+             Capability::AudioReceive,
+             Capability::VoiceSend,
+             Capability::VoiceReceive}) {
         Ready.LocalGrantsToPeer.grant(CapabilityValue);
         Ready.PeerGrantsToLocal.grant(CapabilityValue);
     }
@@ -5070,8 +5132,11 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(Main.EnableClipboard);
     CHECK(Main.SendAudio);
     CHECK(Main.ReceiveAudio);
+    CHECK(Main.SendVoice);
+    CHECK(Main.ReceiveVoice);
     CHECK(Main.InitialMode == DeskMode::LockPc1);
     CHECK(Main.AudioGainPermyriad == 7'500);
+    CHECK(Main.VoiceGainPermyriad == 6'500);
     CHECK(Main.Blockers == 0);
 
     Preferences.Role = DeskRole::Companion;
@@ -5091,7 +5156,9 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
            static_cast<std::uint64_t>(Capability::ClipboardRead) |
            static_cast<std::uint64_t>(Capability::ClipboardWrite) |
            static_cast<std::uint64_t>(Capability::AudioSend) |
-           static_cast<std::uint64_t>(Capability::AudioReceive)));
+           static_cast<std::uint64_t>(Capability::AudioReceive) |
+           static_cast<std::uint64_t>(Capability::VoiceSend) |
+           static_cast<std::uint64_t>(Capability::VoiceReceive)));
     CHECK(Ready.PeerGrantsToLocal.contains(Capability::InputInject));
 
     Preferences.Role = DeskRole::Unconfigured;
@@ -5140,6 +5207,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!Authenticating.EnableClipboard);
     CHECK(!Authenticating.SendAudio);
     CHECK(!Authenticating.ReceiveAudio);
+    CHECK(!Authenticating.SendVoice);
+    CHECK(!Authenticating.ReceiveVoice);
     CHECK(HasRuntimePlanBlocker(
         Authenticating, RuntimePlanBlocker::PeerNotValidated));
 
@@ -5153,6 +5222,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!Denied.EnableClipboard);
     CHECK(!Denied.SendAudio);
     CHECK(!Denied.ReceiveAudio);
+    CHECK(!Denied.SendVoice);
+    CHECK(!Denied.ReceiveVoice);
     CHECK(HasRuntimePlanBlocker(
         Denied, RuntimePlanBlocker::InputCapabilityMissing));
     CHECK(HasRuntimePlanBlocker(
@@ -5163,6 +5234,8 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
         Denied, RuntimePlanBlocker::ClipboardCapabilityMissing));
     CHECK(HasRuntimePlanBlocker(
         Denied, RuntimePlanBlocker::AudioCapabilityMissing));
+    CHECK(HasRuntimePlanBlocker(
+        Denied, RuntimePlanBlocker::VoiceCapabilityMissing));
 
     auto Malformed = Preferences;
     Malformed.Role = static_cast<DeskRole>(0xffu);
@@ -5196,6 +5269,16 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.AudioGainPermyriad = 10'001;
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceGainPermyriad = 10'001;
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceRoute = static_cast<VoiceRoutePreference>(0xffu);
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceInputEndpointId = std::string(
+        kMaximumVoiceEndpointIdBytes + 1, 'a');
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.ReturnLocalHotkey = Malformed.FocusPeerHotkey;
@@ -5975,6 +6058,12 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Settings.ClipboardDesired = true;
     Settings.AudioRoute = AudioRoutePreference::PeerToLocal;
     Settings.AudioGainPermyriad = 7'500;
+    Settings.VoiceRoute = VoiceRoutePreference::Bidirectional;
+    Settings.VoiceDestination = VoiceReceiveDestination::
+        CommunicationsPlaybackAndVirtualMicrophone;
+    Settings.VoiceInputEndpointId = "test-microphone-endpoint";
+    Settings.VoiceGainPermyriad = 6'500;
+    Settings.VoiceEchoGuard = false;
     Settings.Gaming = GamingBehavior::FollowProfileRules;
     Settings.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Settings.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
@@ -5991,6 +6080,29 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Win32ProductPreferencesStore Second(Path);
     CHECK(Second.Load());
     CHECK(Second.Current() == Settings);
+
+    const auto Version5Path = Directory / "version-5.bin";
+    CHECK(std::filesystem::copy_file(Path, Version5Path));
+    {
+        std::fstream Output(
+            Version5Path, std::ios::binary | std::ios::in | std::ios::out);
+        CHECK(Output.good());
+        Output.seekp(5);
+        Output.put(static_cast<char>(5));
+        Output.seekp(39);
+        Output.put(static_cast<char>(0));
+    }
+    Win32ProductPreferencesStore MigratedVersion5(Version5Path);
+    CHECK(MigratedVersion5.Load());
+    CHECK(MigratedVersion5.Current()->VoiceRoute ==
+          VoiceRoutePreference::Bidirectional);
+    CHECK(MigratedVersion5.Current()->VoiceDestination ==
+          VoiceReceiveDestination::CommunicationsPlayback);
+    CHECK(std::filesystem::file_size(Version5Path) == 40 +
+          Settings.ProfileRules[0].ExecutableName.size() + 4 +
+          Settings.ProfileRules[1].ExecutableName.size() + 4 +
+          Settings.PreferredPeerEndpoint->Host.size() + 4 +
+          Settings.VoiceInputEndpointId->size() + 2);
 
     const auto InvalidRolePath = Directory / "invalid-role.bin";
     CHECK(std::filesystem::copy_file(Path, InvalidRolePath));
@@ -6011,8 +6123,8 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
         std::fstream Output(
             ReservedPath, std::ios::binary | std::ios::in | std::ios::out);
         CHECK(Output.good());
-        Output.seekp(34);
-        Output.put('\1');
+        Output.seekp(35);
+        Output.put(static_cast<char>(0x80));
     }
     Win32ProductPreferencesStore Reserved(ReservedPath);
     CHECK(!Reserved.Load());
@@ -6044,7 +6156,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedPreferences->CloseToTray);
     CHECK(MigratedPreferences->RunAtLogin);
     CHECK(MigratedPreferences->FirstRunComplete);
-    CHECK(std::filesystem::file_size(LegacyPath) == 36);
+    CHECK(std::filesystem::file_size(LegacyPath) == 40);
 
     const auto Version2Path = Directory / "version-2.bin";
     std::array<std::uint8_t, 64> Version2{};
@@ -6071,7 +6183,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedVersion2.Load());
     CHECK(MigratedVersion2.Current()->Role == DeskRole::Main);
     CHECK(MigratedVersion2.Current()->AudioGainPermyriad == 10'000);
-    CHECK(std::filesystem::file_size(Version2Path) == 36);
+    CHECK(std::filesystem::file_size(Version2Path) == 40);
 
     const auto Version3Path = Directory / "version-3.bin";
     std::array<std::uint8_t, 36> Version3{};
@@ -6096,7 +6208,9 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(MigratedVersion3.Load());
     CHECK(MigratedVersion3.Current()->Role == DeskRole::Main);
     CHECK(!MigratedVersion3.Current()->PreferredPeerEndpoint);
-    CHECK(std::filesystem::file_size(Version3Path) == 36);
+    CHECK(MigratedVersion3.Current()->VoiceDestination ==
+          VoiceReceiveDestination::CommunicationsPlayback);
+    CHECK(std::filesystem::file_size(Version3Path) == 40);
     {
         std::ifstream Input(Version3Path, std::ios::binary);
         std::array<std::uint8_t, 6> Header{};
@@ -6373,6 +6487,377 @@ void ProductMonitorLayoutSaveIsOrderedAndFailsLocal() {
     CHECK((Events == std::vector<std::string>{"local"}));
 }
 
+#ifdef _WIN32
+void WindowsVirtualMicrophoneIdentityIsStableAndLoopSafe() {
+    using namespace desklink;
+    CHECK(!IsDeskLinkVirtualMicrophoneSource(
+        DeskLinkVirtualAudioEndpointKind::None));
+    CHECK(!IsDeskLinkVirtualMicrophoneSource(
+        DeskLinkVirtualAudioEndpointKind::MicrophoneFeed));
+    CHECK(IsDeskLinkVirtualMicrophoneSource(
+        DeskLinkVirtualAudioEndpointKind::RemoteMicrophone));
+}
+#endif
+
+void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x71'82'95u;
+    const auto IdentityA = MakeIdentity(105, "Unavailable A");
+    const auto IdentityB = MakeIdentity(106, "Unavailable B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t ClosedA{};
+    std::size_t ClosedB{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.TransportClosed = [&](TransportCloseReason Reason) {
+        CHECK(Reason == TransportCloseReason::Unavailable);
+        ++ClosedA;
+    };
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA));
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        PeerSessionHandlers{
+            {}, {}, {},
+            [&](TransportCloseReason Reason) {
+                CHECK(Reason == TransportCloseReason::Unavailable);
+                ++ClosedB;
+            }});
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionB.IncomingFocused());
+
+    InjectorB.InjectSucceeds = false;
+    CHECK(SessionA.SendPointerMotion(PointerMotionMessage{4, 2}));
+    CHECK(!SessionB.IncomingFocused());
+    SessionB.Tick();
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    CHECK(ClosedA == 1);
+    CHECK(ClosedB == 1);
+}
+
+void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
+    using namespace desklink;
+    ManualClock Clock;
+    RecordingInjector Injector;
+    AgentCoordinator Agent(Clock, Injector);
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Agent.set_peer_capabilities(Capabilities);
+
+    EnvelopeHeader Header;
+    const auto Request = decode_packet(
+        encode_packet(Header, FocusRequestMessage{750, 1}), false);
+    CHECK(Request.packet.has_value());
+    Injector.Ready = false;
+    CHECK(Agent.handle(*Request.packet) ==
+          AgentDecision::RejectedInputUnavailable);
+    CHECK(!Agent.RemoteFocused());
+    CHECK(Agent.InputUnavailable());
+
+    Injector.Ready = true;
+    CHECK(Agent.handle(*Request.packet) == AgentDecision::Accepted);
+    CHECK(Agent.RemoteFocused());
+    CHECK(!Agent.InputUnavailable());
+    Header.epoch = Agent.focus_state().epoch();
+    Header.sequence = 1;
+    const auto Motion = decode_packet(
+        encode_packet(Header, PointerMotionMessage{4, 2}), true);
+    CHECK(Motion.packet.has_value());
+    Injector.InjectSucceeds = false;
+    CHECK(Agent.handle(*Motion.packet) ==
+          AgentDecision::RejectedInputUnavailable);
+    CHECK(!Agent.RemoteFocused());
+    CHECK(Agent.InputUnavailable());
+    CHECK(Injector.release_calls >= 2);
+}
+
+#ifdef DESKLINK_BUILD_VOICE
+void VoiceProtocolCodecJitterAndBoundsAreStrict() {
+    using namespace desklink;
+
+    CHECK(kProtocolVersion == 5);
+    CHECK((kKnownCapabilityBits &
+        static_cast<std::uint64_t>(Capability::VoiceSend)) != 0);
+    CHECK((kKnownCapabilityBits &
+        static_cast<std::uint64_t>(Capability::VoiceReceive)) != 0);
+
+    VoiceEncoder Encoder;
+    VoiceDecoder Decoder;
+    CHECK(Encoder.Ready());
+    CHECK(Decoder.Ready());
+    std::array<std::int16_t, kVoiceSamplesPerChannel> Samples{};
+    for (std::size_t Index = 0; Index < Samples.size(); ++Index) {
+        Samples[Index] = static_cast<std::int16_t>(
+            8'000.0 * std::sin(2.0 * 3.141592653589793 *
+                440.0 * static_cast<double>(Index) /
+                static_cast<double>(kVoiceSampleRate)));
+    }
+    const auto Encoded = Encoder.Encode(Samples);
+    CHECK(Encoded.has_value());
+    CHECK(!Encoded->empty());
+    CHECK(Encoded->size() <= kVoiceMaximumEncodedBytes);
+    const auto Decoded = Decoder.Decode(*Encoded, false, 123'000);
+    CHECK(Decoded.has_value());
+    CHECK(Decoded->Samples.size() == kVoiceSamplesPerChannel);
+    CHECK(!Decoder.Decode(ByteBuffer{0xff, 0xff, 0xff}, false, 0));
+
+    VoiceFrameMessage Frame;
+    Frame.StreamId = 7;
+    Frame.CaptureTimestampUs = 123'000;
+    Frame.Encoded = *Encoded;
+    EnvelopeHeader Header;
+    Header.session_nonce = 99;
+    Header.sequence = 1;
+    const auto Packet = encode_packet(Header, Frame);
+    const auto RoundTrip = decode_packet(Packet, true);
+    CHECK(RoundTrip.packet.has_value());
+    CHECK(RoundTrip.packet->header.type == MessageType::VoiceFrame);
+    const auto& RoundTripFrame = std::get<VoiceFrameMessage>(
+        RoundTrip.packet->message);
+    CHECK(RoundTripFrame.StreamId == 7);
+    CHECK(RoundTripFrame.Encoded == Frame.Encoded);
+    CHECK(!decode_packet(Packet, false).packet.has_value());
+
+    for (const auto Invalid : {
+             VoiceFrameMessage{0, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, 44'100,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 480, kVoiceChannels, VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, 2,
+                 VoiceCodec::Opus, 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 static_cast<VoiceCodec>(0xff), 0, *Encoded},
+             VoiceFrameMessage{1, kVoiceSampleRate,
+                 kVoiceSamplesPerChannel, kVoiceChannels,
+                 VoiceCodec::Opus, 0, {}}}) {
+        CHECK(!IsValidVoiceFrameMessage(Invalid));
+    }
+    Frame.Encoded.assign(kVoiceMaximumEncodedBytes + 1u, 0x11);
+    CHECK(!IsValidVoiceFrameMessage(Frame));
+
+    std::vector<VoicePcmFrame> Rendered;
+    VoiceReceiver Receiver(
+        [&](VoicePcmFrame Pcm) {
+            Rendered.push_back(std::move(Pcm));
+            return true;
+        });
+    Frame.Encoded = *Encoded;
+    Frame.StreamId = 9;
+    Frame.CaptureTimestampUs = 20'000;
+    CHECK(Receiver.Push(1, Frame));
+    Frame.CaptureTimestampUs = 60'000;
+    CHECK(Receiver.Push(3, Frame));
+    Frame.CaptureTimestampUs = 80'000;
+    CHECK(Receiver.Push(4, Frame));
+    CHECK(Receiver.Pump() == VoicePumpResult::Submitted);
+    CHECK(Receiver.Pump() == VoicePumpResult::Submitted);
+    CHECK(Rendered.size() == 2);
+    CHECK(Rendered.back().Concealed);
+    CHECK(Receiver.Stats().FecRecovered + Receiver.Stats().PlcGenerated == 1);
+    CHECK(Receiver.Stats().CurrentJitterTarget == 3);
+    CHECK(Receiver.Stats().PeakJitterTarget == 3);
+    CHECK(!Receiver.Push(1, Frame));
+    CHECK(Receiver.Stats().SequenceRejected >= 1);
+
+    Receiver.Reset();
+    Frame.StreamId = 10;
+    for (std::uint64_t Sequence = 1;
+         Sequence <= kVoiceMaximumQueuedPackets + 5u; ++Sequence) {
+        Frame.CaptureTimestampUs = Sequence * 20'000;
+        CHECK(Receiver.Push(Sequence, Frame));
+    }
+    CHECK(Receiver.Stats().DroppedForBound >= 1);
+    Frame.StreamId = 11;
+    CHECK(Receiver.Push(100, Frame));
+    Frame.StreamId = 10;
+    CHECK(!Receiver.Push(99, Frame));
+    CHECK(Receiver.Stats().StreamRejected >= 1);
+
+    VoiceReceiver Adaptive([](VoicePcmFrame) { return true; });
+    Frame.StreamId = 12;
+    for (const auto Sequence : {1u, 3u, 5u, 7u, 9u, 11u}) {
+        Frame.CaptureTimestampUs = Sequence * 20'000u;
+        CHECK(Adaptive.Push(Sequence, Frame));
+    }
+    CHECK(Adaptive.Stats().CurrentJitterTarget ==
+          kVoiceMaximumJitterPackets);
+    CHECK(Adaptive.Stats().PeakJitterTarget ==
+          kVoiceMaximumJitterPackets);
+
+}
+
+void VoiceOutputRouterFansOutCanonicalPcmAndIsolatesFailures() {
+    using namespace desklink;
+    std::vector<VoicePcmFrame> Monitor;
+    std::vector<VoicePcmFrame> VirtualMicrophone;
+    std::uint64_t MonitorResets{};
+    std::uint64_t VirtualMicrophoneResets{};
+    bool MonitorAccepts{true};
+    bool VirtualMicrophoneAccepts{true};
+    VoiceOutputRouter Router(
+        {[&](VoicePcmFrame Frame) {
+             Monitor.push_back(std::move(Frame));
+             return MonitorAccepts;
+         }, [&] { ++MonitorResets; }},
+        {[&](VoicePcmFrame Frame) {
+             VirtualMicrophone.push_back(std::move(Frame));
+             return VirtualMicrophoneAccepts;
+         }, [&] { ++VirtualMicrophoneResets; }});
+    VoicePcmFrame Frame;
+    Frame.Samples.fill(8'000);
+
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.size() == 1);
+    CHECK(VirtualMicrophone.empty());
+
+    CHECK(Router.SetDestination(VoiceReceiveDestination::VirtualMicrophone));
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.size() == 1);
+    CHECK(VirtualMicrophone.size() == 1);
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+
+    CHECK(Router.SetDestination(VoiceReceiveDestination::
+        CommunicationsPlaybackAndVirtualMicrophone));
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.back().Samples == Frame.Samples);
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+
+    MonitorAccepts = false;
+    CHECK(Router.Submit(Frame));
+    CHECK(Router.Stats().MonitorRejected == 1);
+    CHECK(Router.Stats().VirtualMicrophoneSubmitted == 3);
+    MonitorAccepts = true;
+    VirtualMicrophoneAccepts = false;
+    CHECK(Router.Submit(Frame));
+    CHECK(Router.Stats().VirtualMicrophoneRejected == 1);
+
+    VirtualMicrophoneAccepts = true;
+    CHECK(Router.SetMonitorGainPermyriad(5'000));
+    CHECK(Router.Submit(Frame));
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+    CHECK(Monitor.back().Samples.back() == 4'000);
+    Router.SetMonitorMuted(true);
+    CHECK(Router.Submit(Frame));
+    CHECK(Monitor.back().Samples.back() == 0);
+    CHECK(VirtualMicrophone.back().Samples == Frame.Samples);
+
+    const auto BlocksBeforeMute = Router.Stats().BlocksReceived;
+    const auto MonitorBeforeMute = Monitor.size();
+    const auto VirtualBeforeMute = VirtualMicrophone.size();
+    Router.SetSourceMuted(true);
+    CHECK(Router.Submit(Frame));
+    CHECK(Router.Stats().BlocksReceived == BlocksBeforeMute + 1);
+    CHECK(Monitor.size() == MonitorBeforeMute);
+    CHECK(VirtualMicrophone.size() == VirtualBeforeMute);
+    Router.Reset();
+    CHECK(MonitorResets >= 3);
+    CHECK(VirtualMicrophoneResets >= 2);
+    CHECK(!Router.SetDestination(
+        static_cast<VoiceReceiveDestination>(0xffu)));
+}
+
+void PeerVoiceRequiresComplementaryAcknowledgedGrants() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x5151'7171u;
+    const auto IdentityA = MakeIdentity(151, "Voice A");
+    const auto IdentityB = MakeIdentity(152, "Voice B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::VoiceSend);
+    Capabilities.grant(Capability::VoiceReceive);
+    Capabilities.grant(Capability::AudioSend);
+    Capabilities.grant(Capability::AudioReceive);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::vector<VoicePcmFrame> RenderedA;
+    std::vector<VoicePcmFrame> RenderedB;
+    VoiceReceiver ReceiverA([&](VoicePcmFrame Frame) {
+        RenderedA.push_back(std::move(Frame));
+        return true;
+    }, 1);
+    VoiceReceiver ReceiverB([&](VoicePcmFrame Frame) {
+        RenderedB.push_back(std::move(Frame));
+        return true;
+    }, 1);
+    std::uint64_t AuthorizationChangesA{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.VoiceAuthorizationChanged = [&] {
+        ++AuthorizationChangesA;
+    };
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA), nullptr, {}, {}, {}, &ReceiverA);
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        {}, nullptr, {}, {}, {}, &ReceiverB);
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+    CHECK(SessionA.CanSendVoice());
+    CHECK(SessionA.CanReceiveVoice());
+    CHECK(SessionB.CanSendVoice());
+    CHECK(SessionB.CanReceiveVoice());
+
+    VoiceEncoder Encoder;
+    std::array<std::int16_t, kVoiceSamplesPerChannel> Samples{};
+    const auto Encoded = Encoder.Encode(Samples);
+    CHECK(Encoded.has_value());
+    VoiceFrameMessage Frame;
+    Frame.StreamId = 1;
+    Frame.CaptureTimestampUs = 20'000;
+    Frame.Encoded = *Encoded;
+    CHECK(SessionA.SendVoiceFrame(Frame));
+    CHECK(SessionB.Stats().VoiceAccepted == 1);
+    CHECK(ReceiverB.Pump() == VoicePumpResult::Submitted);
+    CHECK(RenderedB.size() == 1);
+
+    CapabilitySet Revoked = Capabilities;
+    Revoked.revoke(Capability::VoiceReceive);
+    SaveTrustedPeer(TrustA, IdentityB, Revoked);
+    CHECK(SessionA.RefreshLocalCapabilities());
+    CHECK(!SessionA.CanSendVoice());
+    CHECK(SessionA.CanSendAudio());
+    CHECK(!SessionA.SendVoiceFrame(Frame));
+    CHECK(AuthorizationChangesA >= 1);
+}
+#endif
+
 void in_memory_transport_preserves_security_metadata() {
     using namespace desklink;
     TransportPeerInfo a_sees_b;
@@ -6414,6 +6899,11 @@ void in_memory_transport_preserves_security_metadata() {
 } // namespace
 
 int main() {
+#ifdef DESKLINK_BUILD_VOICE
+    VoiceProtocolCodecJitterAndBoundsAreStrict();
+    VoiceOutputRouterFansOutCanonicalPcmAndIsolatesFailures();
+    PeerVoiceRequiresComplementaryAcknowledgedGrants();
+#endif
     CallbackGateClosesAndDrainsAdmittedCallbacks();
     AudioFrameAssemblerProducesExactBoundedBlocks();
     AudioReceiverIsBoundedAndFailsClosed();
@@ -6452,6 +6942,7 @@ int main() {
     PeerDirectionArbiterRejectsCollisionsAndStaleTokens();
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
     PeerSessionImmediatelyReacquiresAfterLostRelease();
+    PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable();
     PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();
     PeerSessionResolvesSimultaneousFocusToLocal();
     PeerSessionRequiresTheRemoteDirectionalGrant();
@@ -6473,6 +6964,7 @@ int main() {
     DesiredModeControlIsCapabilityGatedAndFailsLocal();
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
+    UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();
     out_of_order_pointer_rejected();
@@ -6499,6 +6991,7 @@ int main() {
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();
     WindowsWasapiFailureKindsAreExplicit();
+    WindowsVirtualMicrophoneIdentityIsStableAndLoopSafe();
     WindowsWasapiSmokeIfRequested();
     WindowsCryptoAndDpapiTrustStoreWork();
     WindowsRoamingSettingsAreAtomicAndStrict();

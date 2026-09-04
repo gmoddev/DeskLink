@@ -198,6 +198,15 @@ ByteBuffer encode_payload(const Message& message) {
             w.u8(value.bytes_per_sample);
             w.u64(value.capture_timestamp_us);
             w.raw(value.pcm);
+        } else if constexpr (std::is_same_v<T, VoiceFrameMessage>) {
+            w.u32(value.StreamId);
+            w.u32(value.SampleRate);
+            w.u16(value.SamplesPerChannel);
+            w.u8(value.Channels);
+            w.u8(static_cast<std::uint8_t>(value.Codec));
+            w.u64(value.CaptureTimestampUs);
+            w.u16(static_cast<std::uint16_t>(value.Encoded.size()));
+            w.raw(value.Encoded);
         } else if constexpr (
             std::is_same_v<T, DisplayTopologySnapshotMessage>) {
             w.raw(value.Machine);
@@ -414,6 +423,26 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
             if (!r.raw_vector(expected, m.pcm) || r.remaining() != 0) return std::nullopt;
             return m;
         }
+        case MessageType::VoiceFrame: {
+            VoiceFrameMessage Message;
+            std::uint8_t RawCodec{};
+            std::uint16_t EncodedSize{};
+            if (!r.u32(Message.StreamId) || !r.u32(Message.SampleRate) ||
+                !r.u16(Message.SamplesPerChannel) ||
+                !r.u8(Message.Channels) || !r.u8(RawCodec) ||
+                !r.u64(Message.CaptureTimestampUs) ||
+                !r.u16(EncodedSize) ||
+                EncodedSize == 0 ||
+                EncodedSize > kVoiceMaximumEncodedBytes ||
+                r.remaining() != EncodedSize ||
+                !r.raw_vector(EncodedSize, Message.Encoded) ||
+                r.remaining() != 0) {
+                return std::nullopt;
+            }
+            Message.Codec = static_cast<VoiceCodec>(RawCodec);
+            if (!IsValidVoiceFrameMessage(Message)) return std::nullopt;
+            return Message;
+        }
         case MessageType::ClockSyncRequest: {
             ClockSyncRequestMessage Message;
             if (!r.u64(Message.ProbeId) ||
@@ -551,6 +580,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::MouseWheel:
         case MessageType::SetAudioGain:
         case MessageType::AudioFrame:
+        case MessageType::VoiceFrame:
         case MessageType::DisplayTopologySnapshot:
         case MessageType::DisplayIdentifyRequest:
         case MessageType::ClipboardHello:
@@ -588,6 +618,7 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, MouseWheelMessage>) return MessageType::MouseWheel;
         else if constexpr (std::is_same_v<T, SetAudioGainMessage>) return MessageType::SetAudioGain;
         else if constexpr (std::is_same_v<T, AudioFrameMessage>) return MessageType::AudioFrame;
+        else if constexpr (std::is_same_v<T, VoiceFrameMessage>) return MessageType::VoiceFrame;
         else if constexpr (std::is_same_v<T, DisplayTopologySnapshotMessage>) {
             return MessageType::DisplayTopologySnapshot;
         }
@@ -614,7 +645,19 @@ bool is_datagram_message(MessageType type) noexcept {
     return type == MessageType::PointerPosition ||
            type == MessageType::PointerMotion ||
            type == MessageType::PointerPositionFeedback ||
-           type == MessageType::AudioFrame;
+           type == MessageType::AudioFrame ||
+           type == MessageType::VoiceFrame;
+}
+
+bool IsValidVoiceFrameMessage(
+    const VoiceFrameMessage& Message) noexcept {
+    return Message.StreamId != 0 &&
+           Message.SampleRate == kVoiceSampleRate &&
+           Message.SamplesPerChannel == kVoiceSamplesPerChannel &&
+           Message.Channels == kVoiceChannels &&
+           Message.Codec == VoiceCodec::Opus &&
+           !Message.Encoded.empty() &&
+           Message.Encoded.size() <= kVoiceMaximumEncodedBytes;
 }
 
 bool SetInputSnapshotKey(InputStateSnapshotMessage& Snapshot,

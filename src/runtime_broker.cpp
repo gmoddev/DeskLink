@@ -287,7 +287,11 @@ TrustMutationStatus RuntimeTrustAuthority::RequestPermissionChange(
         return TrustMutationStatus::StoreFailed;
     }
     if (!SafetyController_.RefreshPeerCapabilities(Machine)) {
-        (void)SafetyController_.ReturnLocalAndStopPeer(Machine);
+        // RefreshPeerCapabilities has already returned the active directions
+        // Local before attempting the ordered capability acknowledgement.
+        // The broker supervisor owns process lifetime and must perform any
+        // fallback restart so an expected stop cannot race its child watcher
+        // and become a latched "unexpected process exit" failure.
         return TrustMutationStatus::CleanupFailed;
     }
     return TrustMutationStatus::Applied;
@@ -328,8 +332,8 @@ TrustMutationStatus RuntimeTrustAuthority::ApplyReauthorizedPermissionChange(
     }
     if (!SafetyController_.RefreshPeerCapabilities(
             ExpectedIdentity.machine_id)) {
-        (void)SafetyController_.ReturnLocalAndStopPeer(
-            ExpectedIdentity.machine_id);
+        // Leave the fail-local child restart to the broker supervisor. Direct
+        // process ownership changes from this trust layer race supervision.
         return TrustMutationStatus::CleanupFailed;
     }
     return TrustMutationStatus::Applied;

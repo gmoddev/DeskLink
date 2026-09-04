@@ -206,6 +206,12 @@ ControlCommand GetCommand(const ControlRequestPayload& Payload) noexcept {
         } else if constexpr (std::is_same_v<ValueType,
                                               ToggleAudioMuteControlRequest>) {
             return ControlCommand::ToggleAudioMute;
+        } else if constexpr (std::is_same_v<ValueType,
+                                             SetVoiceTransmitControlRequest>) {
+            return ControlCommand::SetVoiceTransmit;
+        } else if constexpr (std::is_same_v<ValueType,
+                                             SetVoiceMutedControlRequest>) {
+            return ControlCommand::SetVoiceMuted;
         } else if constexpr (std::is_same_v<
                                  ValueType,
                                  GetDisplayTopologiesControlRequest>) {
@@ -330,6 +336,12 @@ ByteBuffer EncodeRequestPayload(const ControlRequest& Request) {
         } else if constexpr (std::is_same_v<ValueType,
                                             SetAudioGainControlRequest>) {
             Output.U16(Value.GainPermyriad);
+        } else if constexpr (std::is_same_v<ValueType,
+                                            SetVoiceTransmitControlRequest>) {
+            Output.U8(Value.Active ? 1u : 0u);
+        } else if constexpr (std::is_same_v<ValueType,
+                                            SetVoiceMutedControlRequest>) {
+            Output.U8(Value.Muted ? 1u : 0u);
         } else if constexpr (std::is_same_v<
                                  ValueType,
                                  SetProductPreferencesControlRequest>) {
@@ -452,6 +464,20 @@ std::optional<ControlRequestPayload> DecodeRequestPayload(ByteSpan Payload) {
         case ControlCommand::ToggleAudioMute:
             if (Input.Remaining() != 0) return std::nullopt;
             return ToggleAudioMuteControlRequest{};
+        case ControlCommand::SetVoiceTransmit: {
+            std::uint8_t Active{};
+            if (!Input.U8(Active) || Active > 1 || Input.Remaining() != 0) {
+                return std::nullopt;
+            }
+            return SetVoiceTransmitControlRequest{Active != 0};
+        }
+        case ControlCommand::SetVoiceMuted: {
+            std::uint8_t Muted{};
+            if (!Input.U8(Muted) || Muted > 1 || Input.Remaining() != 0) {
+                return std::nullopt;
+            }
+            return SetVoiceMutedControlRequest{Muted != 0};
+        }
         case ControlCommand::GetDisplayTopologies:
             if (Input.Remaining() != 0) return std::nullopt;
             return GetDisplayTopologiesControlRequest{};
@@ -722,6 +748,19 @@ void EncodePreferences(Writer& Output,
                 Rule.ExecutableName.data()),
             Rule.ExecutableName.size()});
     }
+    Output.U8(static_cast<std::uint8_t>(Preferences.VoiceRoute));
+    Output.U16(Preferences.VoiceGainPermyriad);
+    Output.U8(Preferences.VoiceEchoGuard ? 1u : 0u);
+    Output.U8(static_cast<std::uint8_t>(Preferences.VoiceDestination));
+    const auto EndpointSize = Preferences.VoiceInputEndpointId
+        ? Preferences.VoiceInputEndpointId->size() : 0u;
+    Output.U16(static_cast<std::uint16_t>(EndpointSize));
+    if (Preferences.VoiceInputEndpointId) {
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Preferences.VoiceInputEndpointId->data()),
+            Preferences.VoiceInputEndpointId->size()});
+    }
 }
 
 std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
@@ -797,6 +836,30 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
                 reinterpret_cast<const char*>(Name.data()), Name.size()),
             static_cast<DeskMode>(RawMode),
             (RuleFlags & 0x01u) != 0});
+    }
+    std::uint8_t RawVoiceRoute{};
+    std::uint8_t RawEchoGuard{};
+    std::uint8_t RawVoiceDestination{};
+    std::uint16_t VoiceEndpointSize{};
+    if (!Input.U8(RawVoiceRoute) ||
+        !Input.U16(Preferences.VoiceGainPermyriad) ||
+        !Input.U8(RawEchoGuard) || RawEchoGuard > 1 ||
+        !Input.U8(RawVoiceDestination) ||
+        !Input.U16(VoiceEndpointSize) ||
+        VoiceEndpointSize > kMaximumVoiceEndpointIdBytes ||
+        Input.Remaining() < VoiceEndpointSize) {
+        return std::nullopt;
+    }
+    Preferences.VoiceRoute =
+        static_cast<VoiceRoutePreference>(RawVoiceRoute);
+    Preferences.VoiceEchoGuard = RawEchoGuard != 0;
+    Preferences.VoiceDestination = static_cast<VoiceReceiveDestination>(
+        RawVoiceDestination);
+    if (VoiceEndpointSize != 0) {
+        ByteBuffer Endpoint(VoiceEndpointSize);
+        if (!Input.Raw(Endpoint)) return std::nullopt;
+        Preferences.VoiceInputEndpointId = std::string(
+            reinterpret_cast<const char*>(Endpoint.data()), Endpoint.size());
     }
     return IsValidProductPreferences(Preferences)
         ? std::optional<ProductPreferences>(Preferences)
@@ -1013,19 +1076,30 @@ void EncodeState(Writer& Output, const ControlState& State) {
     Output.U8(static_cast<std::uint8_t>(State.DesiredMode));
     Output.U16(State.ConnectedPeerCount);
     Output.U16(State.AudioGainPermyriad);
+    Output.U16(State.VoiceGainPermyriad);
     Output.U16(State.RetryAttempt);
     Output.U32(State.RetryDelayMilliseconds);
     Output.U8(static_cast<std::uint8_t>(State.RuntimePhase));
     Output.U8(static_cast<std::uint8_t>(State.RuntimeFailure));
     Output.U8(static_cast<std::uint8_t>(State.RoamingState));
     Output.U8(static_cast<std::uint8_t>(State.PeerDirection));
+    Output.U8(static_cast<std::uint8_t>(State.VoiceDestination));
+    Output.U8(static_cast<std::uint8_t>(State.VirtualMicrophoneState));
     Output.U16(State.ReadyRoamingRouteCount);
     std::uint8_t Flags = 0;
     if (State.RemoteFocused) Flags |= 0x01u;
     if (State.CaptureActive) Flags |= 0x02u;
     if (State.AudioMuted) Flags |= 0x04u;
     if (State.RoamingObserverActive) Flags |= 0x08u;
+    if (State.VoiceEnabled) Flags |= 0x10u;
+    if (State.VoiceMuted) Flags |= 0x20u;
+    if (State.VoicePttReady) Flags |= 0x40u;
+    if (State.VoiceTransmitting) Flags |= 0x80u;
     Output.U8(Flags);
+    std::uint8_t VoiceFlags = 0;
+    if (State.VoiceInputUnavailable) VoiceFlags |= 0x01u;
+    if (State.VoicePermissionMissing) VoiceFlags |= 0x02u;
+    Output.U8(VoiceFlags);
 }
 
 std::optional<ControlState> DecodeState(Reader& Input) {
@@ -1036,17 +1110,23 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     std::uint8_t RawRuntimeFailure{};
     std::uint8_t RawRoamingState{};
     std::uint8_t RawPeerDirection{};
+    std::uint8_t RawVoiceDestination{};
+    std::uint8_t RawVirtualMicrophoneState{};
     std::uint8_t Flags{};
+    std::uint8_t VoiceFlags{};
     if (!Input.Raw(State.LocalMachine) || !Input.Raw(State.FocusedMachine) ||
         !Input.U8(RawRole) || !Input.U8(RawMode) ||
         !Input.U16(State.ConnectedPeerCount) ||
         !Input.U16(State.AudioGainPermyriad) ||
+        !Input.U16(State.VoiceGainPermyriad) ||
         !Input.U16(State.RetryAttempt) ||
         !Input.U32(State.RetryDelayMilliseconds) ||
         !Input.U8(RawRuntimePhase) || !Input.U8(RawRuntimeFailure) ||
         !Input.U8(RawRoamingState) || !Input.U8(RawPeerDirection) ||
+        !Input.U8(RawVoiceDestination) ||
+        !Input.U8(RawVirtualMicrophoneState) ||
         !Input.U16(State.ReadyRoamingRouteCount) ||
-        !Input.U8(Flags)) {
+        !Input.U8(Flags) || !Input.U8(VoiceFlags)) {
         return std::nullopt;
     }
     State.Role = static_cast<ControlRole>(RawRole);
@@ -1056,11 +1136,24 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.RoamingState = static_cast<ControlRoamingState>(RawRoamingState);
     State.PeerDirection = static_cast<ControlPeerDirectionState>(
         RawPeerDirection);
+    State.VoiceDestination = static_cast<VoiceReceiveDestination>(
+        RawVoiceDestination);
+    State.VirtualMicrophoneState =
+        static_cast<ControlVirtualMicrophoneState>(
+            RawVirtualMicrophoneState);
     State.RemoteFocused = (Flags & 0x01u) != 0;
     State.CaptureActive = (Flags & 0x02u) != 0;
     State.AudioMuted = (Flags & 0x04u) != 0;
     State.RoamingObserverActive = (Flags & 0x08u) != 0;
-    if ((Flags & 0xf0u) != 0 || !IsValidControlState(State)) return std::nullopt;
+    State.VoiceEnabled = (Flags & 0x10u) != 0;
+    State.VoiceMuted = (Flags & 0x20u) != 0;
+    State.VoicePttReady = (Flags & 0x40u) != 0;
+    State.VoiceTransmitting = (Flags & 0x80u) != 0;
+    State.VoiceInputUnavailable = (VoiceFlags & 0x01u) != 0;
+    State.VoicePermissionMissing = (VoiceFlags & 0x02u) != 0;
+    if ((VoiceFlags & 0xfcu) != 0 || !IsValidControlState(State)) {
+        return std::nullopt;
+    }
     return State;
 }
 
@@ -1185,6 +1278,11 @@ bool IsValidControlRequest(const ControlRequest& Request) noexcept {
         } else if constexpr (std::is_same_v<ValueType,
                                             SetAudioGainControlRequest>) {
             return Value.GainPermyriad <= 10'000;
+        } else if constexpr (std::is_same_v<ValueType,
+                                             SetVoiceTransmitControlRequest> ||
+                             std::is_same_v<ValueType,
+                                             SetVoiceMutedControlRequest>) {
+            return true;
         } else if constexpr (std::is_same_v<
                                  ValueType,
                                  SetProductPreferencesControlRequest>) {
@@ -1265,6 +1363,16 @@ bool IsValidControlRequest(const ControlRequest& Request) noexcept {
 bool IsValidControlState(const ControlState& State) noexcept {
     if (!IsValidRole(State.Role) || !IsValidDeskMode(State.DesiredMode) ||
         State.AudioGainPermyriad > 10'000 ||
+        State.VoiceGainPermyriad > 10'000 ||
+        (State.VoiceDestination !=
+             VoiceReceiveDestination::CommunicationsPlayback &&
+         State.VoiceDestination !=
+             VoiceReceiveDestination::VirtualMicrophone &&
+         State.VoiceDestination != VoiceReceiveDestination::
+             CommunicationsPlaybackAndVirtualMicrophone) ||
+        static_cast<std::uint8_t>(State.VirtualMicrophoneState) >
+            static_cast<std::uint8_t>(
+                ControlVirtualMicrophoneState::NeedsRepair) ||
         !IsKnownRuntimePhase(State.RuntimePhase) ||
         !IsKnownRuntimeFailure(State.RuntimeFailure) ||
         !IsKnownRoamingState(State.RoamingState) ||
@@ -1308,6 +1416,16 @@ bool IsValidControlState(const ControlState& State) noexcept {
     }
     if (State.ReadyRoamingRouteCount != 0 &&
         State.RoamingState == ControlRoamingState::Unavailable) {
+        return false;
+    }
+    if (State.VoiceTransmitting &&
+        (!State.VoiceEnabled || !State.VoicePttReady ||
+         State.VoiceMuted || State.VoiceInputUnavailable ||
+         State.VoicePermissionMissing)) {
+        return false;
+    }
+    if (!State.VoiceEnabled &&
+        (State.VoicePttReady || State.VoiceTransmitting)) {
         return false;
     }
     return true;

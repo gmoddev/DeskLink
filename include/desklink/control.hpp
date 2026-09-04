@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 10;
+inline constexpr std::uint16_t kControlProtocolVersion = 12;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -67,6 +67,8 @@ enum class ControlCommand : std::uint16_t {
     RefreshTrustedPeerCapabilities = 29,
     ApplyManagedPreferences = 30,
     IdentifyPeerDisplays = 31,
+    SetVoiceTransmit = 32,
+    SetVoiceMuted = 33,
 };
 
 enum class ControlStatus : std::uint16_t {
@@ -104,6 +106,16 @@ enum class ControlPeerDirectionState : std::uint8_t {
     IncomingActive = 4,
 };
 
+enum class ControlVirtualMicrophoneState : std::uint8_t {
+    NotInstalled = 0,
+    Installed = 1,
+    FeedReady = 2,
+    Live = 3,
+    Silent = 4,
+    Unavailable = 5,
+    NeedsRepair = 6,
+};
+
 struct GetStateControlRequest {};
 
 struct SetDesiredModeControlRequest {
@@ -119,6 +131,9 @@ struct SetAudioGainControlRequest {
 };
 
 struct ToggleAudioMuteControlRequest {};
+
+struct SetVoiceTransmitControlRequest { bool Active{}; };
+struct SetVoiceMutedControlRequest { bool Muted{}; };
 
 struct GetDisplayTopologiesControlRequest {};
 
@@ -234,6 +249,8 @@ using ControlRequestPayload = std::variant<
     FocusMachineControlRequest,
     SetAudioGainControlRequest,
     ToggleAudioMuteControlRequest,
+    SetVoiceTransmitControlRequest,
+    SetVoiceMutedControlRequest,
     GetDisplayTopologiesControlRequest,
     IdentifyPeerDisplaysControlRequest,
     PrepareForUpdateControlRequest,
@@ -273,6 +290,7 @@ struct ControlState {
     DeskMode DesiredMode{DeskMode::Roam};
     std::uint16_t ConnectedPeerCount{};
     std::uint16_t AudioGainPermyriad{10'000};
+    std::uint16_t VoiceGainPermyriad{10'000};
     std::uint16_t RetryAttempt{};
     std::uint32_t RetryDelayMilliseconds{};
     BrokerRuntimePhase RuntimePhase{BrokerRuntimePhase::Stopped};
@@ -280,11 +298,21 @@ struct ControlState {
     ControlRoamingState RoamingState{ControlRoamingState::Unavailable};
     ControlPeerDirectionState PeerDirection{
         ControlPeerDirectionState::Unavailable};
+    VoiceReceiveDestination VoiceDestination{
+        VoiceReceiveDestination::CommunicationsPlayback};
+    ControlVirtualMicrophoneState VirtualMicrophoneState{
+        ControlVirtualMicrophoneState::NotInstalled};
     std::uint16_t ReadyRoamingRouteCount{};
     bool RemoteFocused{};
     bool CaptureActive{};
     bool AudioMuted{};
     bool RoamingObserverActive{};
+    bool VoiceEnabled{};
+    bool VoiceMuted{};
+    bool VoicePttReady{};
+    bool VoiceTransmitting{};
+    bool VoiceInputUnavailable{};
+    bool VoicePermissionMissing{};
 };
 
 struct ControlMachineTopology {

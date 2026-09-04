@@ -18,6 +18,7 @@ enum class AgentDecision {
     RejectedEpoch,
     RejectedSequence,
     RejectedMalformed,
+    RejectedInputUnavailable,
     Ignored,
 };
 
@@ -35,6 +36,9 @@ public:
     [[nodiscard]] bool InputCleanupPending() const noexcept {
         return InputCleanupPending_;
     }
+    [[nodiscard]] bool InputUnavailable() const noexcept {
+        return InputUnavailable_;
+    }
 
     [[nodiscard]] AgentDecision handle(const DecodedPacket& packet);
     [[nodiscard]] std::optional<PointerPositionMessage>
@@ -48,6 +52,7 @@ private:
     void SetRemoteDesiredMode(DeskMode Mode) noexcept;
     void ApplyDesiredMode() noexcept;
     [[nodiscard]] bool ReleaseOwnedState() noexcept;
+    [[nodiscard]] AgentDecision RejectInputUnavailable() noexcept;
 
     IInputInjector& injector_;
     CapabilitySet peer_capabilities_;
@@ -56,6 +61,7 @@ private:
     DeskMode RemoteDesiredMode_{DeskMode::Roam};
     std::uint64_t last_pointer_sequence_{};
     bool InputCleanupPending_{};
+    bool InputUnavailable_{};
 };
 
 } // namespace desklink

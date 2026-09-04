@@ -20,6 +20,13 @@ option(DESKLINK_BUILD_PHYSICAL_VALIDATION
     "Build the non-production physical failure-injection control" OFF)
 option(DESKLINK_BUILD_PRODUCT_UI
     "Build the pinned self-contained WinUI 3 product shell" OFF)
+option(DESKLINK_BUILD_VOICE "Build pinned Opus voice forwarding" ON)
+option(DESKLINK_BUILD_VIRTUAL_MICROPHONE_DRIVER
+    "Build the optional signed WaveRT virtual microphone component" OFF)
+set(DESKLINK_WINDOWS_DRIVER_SAMPLES_ROOT "" CACHE PATH
+    "Pinned microsoft/Windows-driver-samples checkout for the optional driver")
+set(DESKLINK_VIRTUAL_MICROPHONE_WDK_ROOT "" CACHE PATH
+    "Microsoft.Windows.WDK.x64 10.0.26100.6584 package root")
 set(DESKLINK_MSQUIC_ROOT "" CACHE PATH "Path to a pinned MsQuic 2.6.0 distribution")
 set(DESKLINK_MSQUIC_SCHANNEL_ROOT "${DESKLINK_MSQUIC_ROOT}" CACHE PATH
     "Path to the pinned MsQuic 2.6.0 Schannel distribution")
@@ -34,10 +41,26 @@ if(DESKLINK_BUILD_TESTS)
     enable_testing()
 endif()
 
+if(DESKLINK_BUILD_VIRTUAL_MICROPHONE_DRIVER)
+    add_subdirectory(drivers/virtual_microphone)
+endif()
+
 add_custom_target(desklink_private_key_export_check ALL
     COMMAND ${CMAKE_COMMAND}
         "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoPrivateKeyExport.cmake"
+    VERBATIM)
+
+add_custom_target(desklink_voice_capture_isolation_check ALL
+    COMMAND ${CMAKE_COMMAND}
+        "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVoiceCaptureIsolation.cmake"
+    VERBATIM)
+
+add_custom_target(desklink_virtual_microphone_safety_check ALL
+    COMMAND ${CMAKE_COMMAND}
+        "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVirtualMicrophoneSafety.cmake"
     VERBATIM)
 
 if(DESKLINK_BUILD_TESTS)
@@ -45,6 +68,14 @@ if(DESKLINK_BUILD_TESTS)
         COMMAND ${CMAKE_COMMAND}
             "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoPrivateKeyExport.cmake")
+    add_test(NAME desklink_voice_capture_isolation_check
+        COMMAND ${CMAKE_COMMAND}
+            "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVoiceCaptureIsolation.cmake")
+    add_test(NAME desklink_virtual_microphone_safety_check
+        COMMAND ${CMAKE_COMMAND}
+            "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVirtualMicrophoneSafety.cmake")
 endif()
 
 add_library(desklink_core
@@ -75,7 +106,23 @@ add_library(desklink_core
 
 target_include_directories(desklink_core PUBLIC include)
 
-target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=4)
+target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=5)
+
+if(DESKLINK_BUILD_VOICE)
+    include(FetchContent)
+    set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(desklink_opus
+        URL https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+        URL_HASH SHA256=6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(desklink_opus)
+    target_sources(desklink_core PRIVATE src/voice.cpp)
+    target_link_libraries(desklink_core PUBLIC opus)
+    target_compile_definitions(desklink_core PUBLIC DESKLINK_BUILD_VOICE=1)
+endif()
 
 if(MSVC)
     target_compile_options(desklink_core PRIVATE /W4 /permissive-)
@@ -281,6 +328,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_discovery.cpp
         src/win32_foreground.cpp
         src/win32_audio.cpp
+        src/win32_voice.cpp
         src/win32_input.cpp
         src/win32_capture.cpp
         src/win32_clipboard.cpp
@@ -289,7 +337,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_device_certificate.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt setupapi shcore)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt propsys setupapi shcore)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     else()
@@ -315,6 +363,18 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
 
     add_executable(desklink_update apps/desklink_update.cpp)
     DeskLinkConfigureUpdateTarget(desklink_update)
+    add_executable(desklink_virtual_microphone_installer WIN32
+        apps/desklink_virtual_microphone_installer.cpp)
+    target_link_libraries(desklink_virtual_microphone_installer PRIVATE
+        setupapi newdev wintrust crypt32 shell32)
+    target_compile_definitions(desklink_virtual_microphone_installer PRIVATE
+        UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(desklink_virtual_microphone_installer PRIVATE
+            /W4 /permissive-)
+        target_link_options(desklink_virtual_microphone_installer PRIVATE
+            "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    endif()
     add_executable(desklink_runtime apps/desklink_runtime.cpp)
     target_link_libraries(
         desklink_runtime PRIVATE desklink_windows shell32 iphlpapi powrprof)
@@ -338,6 +398,21 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         target_compile_definitions(desklink_update_validation PRIVATE
             DESKLINK_ENABLE_UNSIGNED_UPDATE_TESTS=1)
         DeskLinkConfigureUpdateTarget(desklink_update_validation)
+        if(DESKLINK_BUILD_VOICE)
+            add_executable(desklink_virtual_microphone_validation
+                apps/desklink_virtual_microphone_validation.cpp)
+            target_link_libraries(
+                desklink_virtual_microphone_validation PRIVATE
+                desklink_windows ole32)
+            target_compile_definitions(
+                desklink_virtual_microphone_validation PRIVATE
+                UNICODE _UNICODE)
+            if(MSVC)
+                target_compile_options(
+                    desklink_virtual_microphone_validation PRIVATE
+                    /W4 /permissive-)
+            endif()
+        endif()
     endif()
 endif()
 
@@ -369,7 +444,8 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     add_executable(desklink_alpha WIN32 apps/desklink_alpha.cpp)
     target_link_libraries(desklink_alpha PRIVATE desklink_windows comctl32 shell32 ole32)
     add_dependencies(
-        desklink_alpha desklink_pair desklink_runtime desklink_update)
+        desklink_alpha desklink_pair desklink_runtime desklink_update
+        desklink_virtual_microphone_installer)
     target_compile_definitions(desklink_alpha PRIVATE UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(desklink_alpha PRIVATE /W4 /permissive-)
@@ -384,10 +460,11 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
     DeskLinkStageSchannelRuntime(desklink_alpha)
 
     install(TARGETS desklink_alpha desklink_pair desklink_runtime desklink_update
+        desklink_virtual_microphone_installer
         RUNTIME DESTINATION . COMPONENT Alpha)
     install(FILES "${DESKLINK_MSQUIC_SCHANNEL_DLL}"
         DESTINATION runtime/schannel COMPONENT Alpha)
-    install(FILES LICENSE docs/ALPHA_WRAPPER.md
+    install(FILES LICENSE OPUS-LICENSE.txt docs/ALPHA_WRAPPER.md
         DESTINATION . COMPONENT Alpha)
 
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")

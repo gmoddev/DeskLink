@@ -30,6 +30,7 @@ enum class MessageType : std::uint16_t {
     PointerPositionFeedback = 26,
     SetAudioGain       = 30,
     AudioFrame         = 31,
+    VoiceFrame         = 32,
     Heartbeat          = 40,
     DisplayTopologySnapshot = 50,
     DisplayIdentifyRequest = 51,
@@ -157,6 +158,25 @@ struct AudioFrameMessage {
     ByteBuffer pcm;
 };
 
+enum class VoiceCodec : std::uint8_t {
+    Opus = 1,
+};
+
+inline constexpr std::uint32_t kVoiceSampleRate = 48'000;
+inline constexpr std::uint16_t kVoiceSamplesPerChannel = 960;
+inline constexpr std::uint8_t kVoiceChannels = 1;
+inline constexpr std::size_t kVoiceMaximumEncodedBytes = 512;
+
+struct VoiceFrameMessage {
+    std::uint32_t StreamId{};
+    std::uint32_t SampleRate{kVoiceSampleRate};
+    std::uint16_t SamplesPerChannel{kVoiceSamplesPerChannel};
+    std::uint8_t Channels{kVoiceChannels};
+    VoiceCodec Codec{VoiceCodec::Opus};
+    std::uint64_t CaptureTimestampUs{};
+    ByteBuffer Encoded;
+};
+
 // Authenticated, diagnostics-only NTP-style clock exchange. These timestamps
 // are telemetry and must never affect admission, playback, or focus state.
 struct ClockSyncRequestMessage {
@@ -205,6 +225,7 @@ using Message = std::variant<
     MouseWheelMessage,
     SetAudioGainMessage,
     AudioFrameMessage,
+    VoiceFrameMessage,
     HeartbeatMessage,
     DisplayTopologySnapshotMessage,
     DisplayIdentifyRequestMessage,
@@ -257,6 +278,8 @@ struct DecodeResult {
     const DisplayTopologySnapshotMessage& Message);
 [[nodiscard]] bool IsValidDisplayIdentifyRequestMessage(
     const DisplayIdentifyRequestMessage& Message) noexcept;
+[[nodiscard]] bool IsValidVoiceFrameMessage(
+    const VoiceFrameMessage& Message) noexcept;
 [[nodiscard]] std::optional<MessageType> PeekMessageType(
     ByteSpan Bytes) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);

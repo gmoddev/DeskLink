@@ -115,6 +115,8 @@ InputSend
 InputInject
 AudioSend
 AudioReceive
+VoiceSend
+VoiceReceive
 ClipboardRead
 ClipboardWrite
 SystemSleep
@@ -276,6 +278,49 @@ The backend never logs audio samples. Loopback capture requires an explicit
 grants the peer `AudioReceive`. Rendering requires `--receive-audio` after
 `PeerValidated` and a local trust record that grants the sender `AudioSend`.
 Both grants are independently confirmed during manual pairing and default off.
+
+### Voice privacy and authorization
+
+Microphone voice cannot reuse `AudioSend` or `AudioReceive`. Sending requires
+the local persisted `VoiceReceive` grant, the peer's authenticated
+`VoiceSend` report, and an exact acknowledgement of the current local grant
+revision. Receiving requires the complementary pair and repeats the check
+after protocol, lane, nonce, stream, sequence, codec, and payload validation.
+Voice is never admitted before `PeerValidated`.
+
+Only the local current-user control boundary may press PTT, set hard mute, or
+select the input endpoint. No QUIC message can perform those actions. Enabling
+a route does not open capture. PTT release, hard mute, grant loss, disconnect,
+endpoint loss, or shutdown closes capture and stale reconnect state never
+reopens it. The exact saved microphone never silently falls back to another
+device. Samples remain memory-only and diagnostics expose counters/state, not
+content.
+
+The voice source is an `eCapture` communications endpoint; a build check
+rejects loopback APIs in that backend. Rendering uses the communications role.
+Default-on echo guard mutes only incoming DeskLink voice while transmitting and
+does not claim acoustic echo cancellation. Voice device/codec loss remains
+module-local and cannot alter identity, TLS, session admission, focus, input,
+clipboard, or system-audio authority. See
+[`VOICE_FORWARDING.md`](VOICE_FORWARDING.md).
+
+After all existing voice admission, jitter, FEC/PLC, and Opus decoding, a
+local-only output router may send the one canonical PCM block to the
+communications monitor, the optional virtual microphone, or both. The
+destination is not protocol state and the peer cannot select or observe it.
+Monitor gain and echo guard never change virtual-microphone amplitude. Loss of
+authenticated stream authority resets both sinks; failure of one local sink
+does not stop the other.
+
+The virtual feed opens only an endpoint with the DeskLink-owned stable property
+and feed role. It never falls back to a friendly name or default device. The
+same property marks the capture role, which is rejected from outgoing
+microphone enumeration and again at capture open, preventing DeskLink from
+feeding its own received stream back to the peer. PCM remains memory-only and
+uses a fixed 60 ms maximum driver ring. Overrun drops oldest audio, underrun is
+silence, and feed/capture stop or start flushes every pending sample. Closing
+the user-mode feed handle therefore naturally makes an already-open application
+capture stream silent after a crash.
 
 Every audio datagram is decoded on the datagram lane, bound to the fresh
 session nonce, fixed to the canonical frame shape, restricted to one nonzero
@@ -630,6 +675,17 @@ separate code-signing identity selected from the current-user certificate
 store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
+
+The optional virtual-microphone package is the only machine-wide/elevated
+extension. It is absent by default. The fixed sibling helper accepts no path or
+package argument, validates exactly the DeskLink INF/SYS/catalog/manifest set,
+verifies catalog membership and the Microsoft Windows Hardware Compatibility
+Publisher signature, and operates only on the stable DeskLink root-device ID.
+Production packaging independently rejects a driver package without that
+signature. Development output is labelled unsigned and is never admitted to
+this installer path. DeskLink does not disable Secure Boot or signature
+enforcement, enable test-signing, install a test root, select a default audio
+device, or install an arbitrary INF.
 
 The separately named DeskLink Beta is an unsigned prerelease,
 not that production installer. Its build mode cannot be combined with release

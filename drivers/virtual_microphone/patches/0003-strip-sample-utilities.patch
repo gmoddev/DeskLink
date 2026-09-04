@@ -1,0 +1,478 @@
+diff --git a/audio/simpleaudiosample/Source/Inc/definitions.h b/audio/simpleaudiosample/Source/Inc/definitions.h
+--- a/audio/simpleaudiosample/Source/Inc/definitions.h
++++ b/audio/simpleaudiosample/Source/Inc/definitions.h
+@@ -165,9 +165,7 @@ typedef struct _PortClassDeviceContext              // 32       64      Byte off
+ //
+ // Global settings.
+ //
+-extern DWORD g_DoNotCreateDataFiles;
+ extern DWORD g_DisableBthScoBypass;
+-extern UNICODE_STRING g_RegistryPath;
+ 
+ //=============================================================================
+ // Function prototypes
+diff --git a/audio/simpleaudiosample/Source/Main/adapter.cpp b/audio/simpleaudiosample/Source/Main/adapter.cpp
+--- a/audio/simpleaudiosample/Source/Main/adapter.cpp
++++ b/audio/simpleaudiosample/Source/Main/adapter.cpp
+@@ -45,32 +45,10 @@ StartDevice
+ _Dispatch_type_(IRP_MJ_PNP)
+ DRIVER_DISPATCH PnpHandler;
+ 
+-//
+-// Rendering streams are not saved to a file by default. Use the registry value 
+-// DoNotCreateDataFiles (DWORD) = 0 to override this default.
+-//
+-DWORD g_DoNotCreateDataFiles = 1;  // default is off.
+-DWORD g_DisableToneGenerator = 0;  // default is to generate tones.
+-UNICODE_STRING g_RegistryPath;      // This is used to store the registry settings path for the driver
+-
+ //-----------------------------------------------------------------------------
+ // Functions
+ //-----------------------------------------------------------------------------
+ 
+-#pragma code_seg("PAGE")
+-void ReleaseRegistryStringBuffer()
+-{
+-    PAGED_CODE();
+-
+-    if (g_RegistryPath.Buffer != NULL)
+-    {
+-        ExFreePool(g_RegistryPath.Buffer);
+-        g_RegistryPath.Buffer = NULL;
+-        g_RegistryPath.Length = 0;
+-        g_RegistryPath.MaximumLength = 0;
+-    }
+-}
+-
+ //=============================================================================
+ #pragma code_seg("PAGE")
+ extern "C"
+@@ -98,8 +76,6 @@ Environment:
+ 
+     DPF(D_TERSE, ("[DriverUnload]"));
+ 
+-    ReleaseRegistryStringBuffer();
+-
+     if (DriverObject == NULL)
+     {
+         goto Done;
+@@ -124,132 +100,6 @@ Done:
+     return;
+ }
+ 
+-//=============================================================================
+-#pragma code_seg("INIT")
+-__drv_requiresIRQL(PASSIVE_LEVEL)
+-NTSTATUS
+-CopyRegistrySettingsPath(
+-    _In_ PUNICODE_STRING RegistryPath
+-)
+-/*++
+-
+-Routine Description:
+-
+-Copies the following registry path to a global variable.
+-
+-\REGISTRY\MACHINE\SYSTEM\ControlSetxxx\Services\<driver>\Parameters
+-
+-Arguments:
+-
+-RegistryPath - Registry path passed to DriverEntry
+-
+-Returns:
+-
+-NTSTATUS - SUCCESS if able to configure the framework
+-
+---*/
+-
+-{
+-    // Initializing the unicode string, so that if it is not allocated it will not be deallocated too.
+-    RtlInitUnicodeString(&g_RegistryPath, NULL);
+-
+-    g_RegistryPath.MaximumLength = RegistryPath->Length + sizeof(WCHAR);
+-
+-    g_RegistryPath.Buffer = (PWCH)ExAllocatePool2(POOL_FLAG_PAGED, g_RegistryPath.MaximumLength, MINADAPTER_POOLTAG);
+-
+-    if (g_RegistryPath.Buffer == NULL)
+-    {
+-        return STATUS_INSUFFICIENT_RESOURCES;
+-    }
+-
+-    RtlAppendUnicodeToString(&g_RegistryPath, RegistryPath->Buffer);
+-
+-    return STATUS_SUCCESS;
+-}
+-
+-//=============================================================================
+-#pragma code_seg("INIT")
+-__drv_requiresIRQL(PASSIVE_LEVEL)
+-NTSTATUS
+-GetRegistrySettings(
+-    _In_ PUNICODE_STRING RegistryPath
+-   )
+-/*++
+-
+-Routine Description:
+-
+-    Initialize Driver Framework settings from the driver
+-    specific registry settings under
+-
+-    \REGISTRY\MACHINE\SYSTEM\ControlSetxxx\Services\<driver>\Parameters
+-
+-Arguments:
+-
+-    RegistryPath - Registry path passed to DriverEntry
+-
+-Returns:
+-
+-    NTSTATUS - SUCCESS if able to configure the framework
+-
+---*/
+-
+-{
+-    NTSTATUS                    ntStatus;
+-    PDRIVER_OBJECT              DriverObject;
+-    HANDLE                      DriverKey;
+-    RTL_QUERY_REGISTRY_TABLE    paramTable[] = {
+-    // QueryRoutine     Flags                                               Name                     EntryContext             DefaultType                                                    DefaultData              DefaultLength
+-        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"DoNotCreateDataFiles", &g_DoNotCreateDataFiles, (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD, &g_DoNotCreateDataFiles, sizeof(ULONG)},
+-        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"DisableToneGenerator", &g_DisableToneGenerator, (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD, &g_DisableToneGenerator, sizeof(ULONG)},
+-        { NULL,   0,                                                        NULL,                    NULL,                    0,                                                             NULL,                    0}
+-    };
+-
+-    DPF(D_TERSE, ("[GetRegistrySettings]"));
+-
+-    PAGED_CODE();
+-    UNREFERENCED_PARAMETER(RegistryPath);
+-
+-    DriverObject = WdfDriverWdmGetDriverObject(WdfGetDriver());
+-    DriverKey = NULL;
+-    ntStatus = IoOpenDriverRegistryKey(DriverObject, 
+-                                 DriverRegKeyParameters,
+-                                 KEY_READ,
+-                                 0,
+-                                 &DriverKey);
+-
+-    if (!NT_SUCCESS(ntStatus))
+-    {
+-        return ntStatus;
+-    }
+-
+-    ntStatus = RtlQueryRegistryValues(RTL_REGISTRY_HANDLE,
+-                                  (PCWSTR) DriverKey,
+-                                  &paramTable[0],
+-                                  NULL,
+-                                  NULL);
+-
+-    if (!NT_SUCCESS(ntStatus)) 
+-    {
+-        DPF(D_VERBOSE, ("RtlQueryRegistryValues failed, using default values, 0x%x", ntStatus));
+-        //
+-        // Don't return error because we will operate with default values.
+-        //
+-    }
+-
+-    //
+-    // Dump settings.
+-    //
+-    DPF(D_VERBOSE, ("DoNotCreateDataFiles: %u", g_DoNotCreateDataFiles));
+-    DPF(D_VERBOSE, ("DisableToneGenerator: %u", g_DisableToneGenerator));
+-
+-    if (DriverKey)
+-    {
+-        ZwClose(DriverKey);
+-    }
+-
+-    return STATUS_SUCCESS;
+-}
+-
+ #pragma code_seg("INIT")
+ extern "C" DRIVER_INITIALIZE DriverEntry;
+ extern "C" NTSTATUS
+@@ -288,15 +138,6 @@ Return Value:
+ 
+     DeskLinkPcmBridgeInitialize();
+ 
+-    // Copy registry Path name in a global variable to be used by modules inside driver.
+-    // !! NOTE !! Inside this function we are initializing the registrypath, so we MUST NOT add any failing calls
+-    // before the following call.
+-    ntStatus = CopyRegistrySettingsPath(RegistryPathName);
+-    IF_FAILED_ACTION_JUMP(
+-        ntStatus,
+-        DPF(D_ERROR, ("Registry path copy error 0x%x", ntStatus)),
+-        Done);
+-    
+     WDF_DRIVER_CONFIG_INIT(&config, WDF_NO_EVENT_CALLBACK);
+     //
+     // Set WdfDriverInitNoDispatchOverride flag to tell the framework
+@@ -318,15 +159,6 @@ Return Value:
+         DPF(D_ERROR, ("WdfDriverCreate failed, 0x%x", ntStatus)),
+         Done);
+ 
+-    //
+-    // Get registry configuration.
+-    //
+-    ntStatus = GetRegistrySettings(RegistryPathName);
+-    IF_FAILED_ACTION_JUMP(
+-        ntStatus,
+-        DPF(D_ERROR, ("Registry Configuration error 0x%x", ntStatus)),
+-        Done);
+-
+     //
+     // Tell the class driver to initialize the driver.
+     //
+@@ -362,8 +194,6 @@ Done:
+         {
+             WdfDriverMiniportUnload(WdfGetDriver());
+         }
+-
+-        ReleaseRegistryStringBuffer();
+     }
+     
+     return ntStatus;
+diff --git a/audio/simpleaudiosample/Source/Main/common.cpp b/audio/simpleaudiosample/Source/Main/common.cpp
+--- a/audio/simpleaudiosample/Source/Main/common.cpp
++++ b/audio/simpleaudiosample/Source/Main/common.cpp
+@@ -16,15 +16,7 @@ Abstract:
+ #include <initguid.h>
+ #include "definitions.h"
+ #include "hw.h"
+-#include "savedata.h"
+ #include "endpoints.h"
+-
+-//-----------------------------------------------------------------------------
+-// CSaveData statics
+-//-----------------------------------------------------------------------------
+-
+-PSAVEWORKER_PARAM       CSaveData::m_pWorkItems = NULL;
+-PDEVICE_OBJECT          CSaveData::m_pDeviceObject = NULL;
+ //=============================================================================
+ // Classes
+ //=============================================================================
+@@ -376,8 +368,8 @@ Return Value:
+     NTSTATUS ntStatus;
+ 
+     //
+-    // This sample supports only one instance of this object.
+-    // (b/c of CSaveData's static members and Bluetooth HFP logic). 
++    // This sample supports only one instance of this object because of its
++    // Bluetooth HFP logic.
+     //
+     if (InterlockedCompareExchange(&CAdapterCommon::m_AdapterInstances, 1, 0) != 0)
+     {
+@@ -437,7 +429,6 @@ Return Value:
+         m_pHW = NULL;
+     }
+     
+-    CSaveData::DestroyWorkItems();
+     SAFE_RELEASE(m_pPortClsEtwHelper);
+     SAFE_RELEASE(m_pServiceGroupWave);
+  
+@@ -609,12 +600,6 @@ Return Value:
+     
+     m_pHW->MixerReset();
+ 
+-    //
+-    // Initialize SaveData class.
+-    //
+-    CSaveData::SetDeviceObject(DeviceObject);   //device object is needed by CSaveData
+-    ntStatus = CSaveData::InitializeWorkItems(DeviceObject);
+-    IF_FAILED_JUMP(ntStatus, Done);
+ Done:
+ 
+     return ntStatus;
+diff --git a/audio/simpleaudiosample/Source/Main/minwavertstream.cpp b/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
+--- a/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
++++ b/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
+@@ -109,60 +109,6 @@ Return Value:
+     DPF_ENTER(("[CMiniportWaveRTStream::~CMiniportWaveRTStream]"));
+ } // ~CMiniportWaveRTStream
+ 
+-//=============================================================================
+-#pragma code_seg("PAGE")
+-
+-NTSTATUS CMiniportWaveRTStream::ReadRegistrySettings()
+-{
+-    PAGED_CODE();
+-
+-    NTSTATUS                    ntStatus;
+-    PDRIVER_OBJECT              DriverObject;
+-    HANDLE                      DriverKey;
+-    RTL_QUERY_REGISTRY_TABLE    paramTable[] = {
+-        // QueryRoutine     Flags                                               Name                            EntryContext                            DefaultType                                                     DefaultData                                 DefaultLength
+-        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"HostCaptureToneFrequency",        &m_ulHostCaptureToneFrequency,          (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD,  &m_ulHostCaptureToneFrequency,              sizeof(DWORD) },
+-        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"HostCaptureToneAmplitude",        &m_dwHostCaptureToneAmplitude,          (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD,  &m_dwHostCaptureToneAmplitude,              sizeof(DWORD) },
+-        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"HostCaptureToneDCOffset",         &m_dwHostCaptureToneDCOffset,           (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD,  &m_dwHostCaptureToneDCOffset,               sizeof(DWORD) },
+-        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"HostCaptureToneInitialPhase",     &m_dwHostCaptureToneInitialPhase,       (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD,  &m_dwHostCaptureToneInitialPhase,           sizeof(DWORD) },
+-        { NULL,   0,                                                        NULL,                               NULL,                                   0,                                                              NULL,                                       0 }
+-    };
+-
+-    DriverObject = WdfDriverWdmGetDriverObject(WdfGetDriver());
+-    DriverKey = NULL;
+-    ntStatus = IoOpenDriverRegistryKey(DriverObject, 
+-                                 DriverRegKeyParameters,
+-                                 KEY_READ,
+-                                 0,
+-                                 &DriverKey);
+-
+-    if (!NT_SUCCESS(ntStatus))
+-    {
+-        return ntStatus;
+-    }
+-
+-    ntStatus = RtlQueryRegistryValues(RTL_REGISTRY_HANDLE,
+-                                  (PCWSTR) DriverKey,
+-                                  &paramTable[0],
+-                                  NULL,
+-                                  NULL);
+-
+-    if (!NT_SUCCESS(ntStatus)) 
+-    {
+-        DPF(D_VERBOSE, ("RtlQueryRegistryValues failed, using default values, 0x%x", ntStatus));
+-        //
+-        // Don't return error because we will operate with default values.
+-        //
+-    }
+-
+-    if (DriverKey)
+-    {
+-        ZwClose(DriverKey);
+-    }
+-
+-    return ntStatus;
+-}
+-
+ NTSTATUS
+ CMiniportWaveRTStream::Init
+ ( 
+@@ -240,11 +186,6 @@ Return Value:
+     m_bEoSReceived = FALSE;
+     m_bLastBufferRendered = FALSE;
+ 
+-    m_ulHostCaptureToneFrequency = IsEqualGUID(SignalProcessingMode, AUDIO_SIGNALPROCESSINGMODE_RAW) ? 1000 : 2000;
+-    m_dwHostCaptureToneAmplitude = 50;
+-    m_dwHostCaptureToneDCOffset = 0;
+-    m_dwHostCaptureToneInitialPhase = 0;
+-
+     m_pPortStream = PortStream_;
+     InitializeListHead(&m_NotificationList);
+     m_ulNotificationIntervalMs = 0;
+@@ -423,19 +369,6 @@ NTSTATUS CMiniportWaveRTStream::AllocateBufferWithNotification
+ 
+     RequestedSize_ -= RequestedSize_ % (m_pWfExt->Format.nBlockAlign);
+     
+-    if (!m_bCapture && (!g_DoNotCreateDataFiles))
+-    {
+-        NTSTATUS ntStatus;
+-        
+-        // Simple Audio Sample uses following buffer to hold data before writing to a file.
+-        // Allocating larger buffer will reduce File I/O operations.
+-        ntStatus = m_SaveData.SetMaxWriteSize(RequestedSize_ * 4);
+-        if (!NT_SUCCESS(ntStatus))
+-        {
+-            return ntStatus;
+-        }
+-    }
+-
+     PHYSICAL_ADDRESS highAddress;
+     highAddress.HighPart = 0;
+     highAddress.LowPart = MAXULONG;
+@@ -1151,11 +1084,6 @@ NTSTATUS CMiniportWaveRTStream::SetState
+ 
+             KeReleaseSpinLock(&m_PositionSpinLock, oldIrql);
+ 
+-            // Wait until all work items are completed.
+-            if (!m_bCapture && !g_DoNotCreateDataFiles)
+-            {
+-                m_SaveData.WaitAllWorkItems();
+-            }
+             break;
+ 
+         case KSSTATE_ACQUIRE:
+@@ -1240,11 +1168,6 @@ NTSTATUS CMiniportWaveRTStream::SetFormat
+ 
+     PAGED_CODE();
+ 
+-    //if (!m_fCapture && !g_DoNotCreateDataFiles)
+-    //{
+-    //    ntStatus = m_SaveData.SetDataFormat(Format);
+-    //}
+-
+     return STATUS_NOT_SUPPORTED;
+ }
+ 
+@@ -1449,11 +1372,10 @@ Return Value:
+         m_ulContentId = ulOldContentId;
+     }
+ 
+-    //
+-    // Simple Audio Sample writes each stream seperately to disk. If the rights for this
+-    // stream indicates that the stream is CopyProtected, stop writing to disk.
+-    //
+-    m_SaveData.Disable(drmRights->CopyProtect);
++    // Protected render content must never enter the virtual microphone bridge.
++    // A policy transition also flushes any samples queued under the old policy.
++    DeskLinkPcmBridgeSetCopyProtected(
++        drmRights->CopyProtect ? TRUE : FALSE);
+ 
+     //
+     // From MSDN:
+diff --git a/audio/simpleaudiosample/Source/Main/minwavertstream.h b/audio/simpleaudiosample/Source/Main/minwavertstream.h
+--- a/audio/simpleaudiosample/Source/Main/minwavertstream.h
++++ b/audio/simpleaudiosample/Source/Main/minwavertstream.h
+@@ -14,9 +14,6 @@ Abstract:
+ #ifndef _SIMPLEAUDIOSAMPLE_MINWAVERTSTREAM_H_
+ #define _SIMPLEAUDIOSAMPLE_MINWAVERTSTREAM_H_
+ 
+-#include "savedata.h"
+-#include "ToneGenerator.h"
+-
+ //
+ // Structure to store notifications events in a protected list
+ //
+@@ -111,24 +108,10 @@ protected:
+     PLONG                       m_plPeakMeter;
+     PWAVEFORMATEXTENSIBLE       m_pWfExt;
+     ULONG                       m_ulContentId;
+-    CSaveData                   m_SaveData;
+-    ToneGenerator               m_ToneGenerator;
+     GUID                        m_SignalProcessingMode;
+     BOOLEAN                     m_bEoSReceived;
+     BOOLEAN                     m_bLastBufferRendered;
+     KSPIN_LOCK                  m_PositionSpinLock;
+-    // Member variable as config params for tone generator
+-    ULONG                       m_ulHostCaptureToneFrequency;
+-    // If abs(m_dwHostCaptureToneAmplitude) + abs(m_dwHostCaptureToneDCValue) > 100
+-    // m_dwHostCaptureToneDCValue will be compensated to make the sum equal to 100
+-    DWORD                       m_dwHostCaptureToneAmplitude;   // must be between -100 to 100
+-    DWORD                       m_dwLoopbackCaptureToneAmplitude; // must be between -100 to 100
+-    DWORD                       m_dwHostCaptureToneDCOffset;   // must be between -100 to 100
+-    DWORD                       m_dwLoopbackCaptureToneDCOffset; // must be between -100 to 100
+-    DWORD                       m_dwHostCaptureToneInitialPhase;   // must be between -31416 to 31416
+-    DWORD                       m_dwLoopbackCaptureToneInitialPhase; // must be between -31416 to 31416
+-    // Member variable as config params for tone generator
+-
+ public:
+ 
+     //presentation
+@@ -188,8 +171,6 @@ private:
+         _Out_opt_  LARGE_INTEGER *  _pliQPCTime
+     );
+ 
+-    NTSTATUS ReadRegistrySettings();
+-    
+ };
+ typedef CMiniportWaveRTStream *PCMiniportWaveRTStream;
+ #endif // _SIMPLEAUDIOSAMPLE_MINWAVERTSTREAM_H_
+diff --git a/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj b/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj
+--- a/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj
++++ b/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj
+@@ -183,8 +183,6 @@
+   <ItemGroup>
+     <ClCompile Include="hw.cpp" />
+     <ClCompile Include="kshelper.cpp" />
+-    <ClCompile Include="savedata.cpp" />
+-    <ClCompile Include="tonegenerator.cpp" />
+   </ItemGroup>
+   <ItemGroup>
+     <Inf Exclude="@(Inf)" Include="*.inf" />

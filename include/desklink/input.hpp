@@ -11,6 +11,10 @@ namespace desklink {
 class IInputInjector {
 public:
     virtual ~IInputInjector() = default;
+    // Focus must not be admitted while the platform is presenting an input
+    // desktop or foreground process into which this process cannot inject.
+    // The default keeps non-Windows/test injectors source compatible.
+    [[nodiscard]] virtual bool ReadyForInput() const noexcept { return true; }
     virtual bool inject_key(const KeyEventMessage& event) = 0;
     virtual bool inject_button(const MouseButtonMessage& event) = 0;
     virtual bool inject_pointer(const PointerPositionMessage& event) = 0;

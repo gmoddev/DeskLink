@@ -3,9 +3,11 @@
 #include "desklink/discovery.hpp"
 #include "desklink/host_input_lifecycle.hpp"
 #include "desklink/profile.hpp"
+#include "desklink/product.hpp"
 #include "desklink/roaming_runtime.hpp"
 #include "desklink/session.hpp"
 #include "desklink/win32_audio.hpp"
+#include "desklink/win32_voice.hpp"
 #include "desklink/win32_capture.hpp"
 #include "desklink/win32_clipboard.hpp"
 #include "desklink/win32_control.hpp"
@@ -100,12 +102,17 @@ struct CommandLine {
     bool GrantInput{};
     bool GrantAudioSend{};
     bool GrantAudioReceive{};
+    bool GrantVoiceSend{};
+    bool GrantVoiceReceive{};
     bool GrantTopology{};
     bool GrantClipboardRead{};
     bool GrantClipboardWrite{};
     bool CaptureInput{};
     bool SendAudio{};
     bool ReceiveAudio{};
+    bool SendVoice{};
+    bool ReceiveVoice{};
+    std::optional<std::string> VoiceInputEndpointId;
     bool SyncClipboard{};
     bool BrokerManaged{};
     std::optional<std::uint64_t> BrokerPairingOperationId;
@@ -292,14 +299,16 @@ void PrintUsage() {
         << L"Usage:\n"
         << L"  desklink_pair identity\n"
         << L"  desklink_pair discover [seconds: 1..30]\n"
-        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
-        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
-        << L"  desklink_pair serve [port] [--send-audio] [--sync-clipboard] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
-        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--receive-audio] [--sync-clipboard] [--edge-roaming <absolute-settings-path>]\n"
+        << L"  desklink_pair listen [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-voice-send|--grant-voice-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
+        << L"  desklink_pair pair <host-or-ip> [port] [--grant-input] [--grant-audio-send|--grant-audio-receive] [--grant-voice-send|--grant-voice-receive] [--grant-topology] [--grant-clipboard-read] [--grant-clipboard-write]\n"
+        << L"  desklink_pair serve [port] [--send-audio] [--receive-audio] [--send-voice] [--receive-voice] [--voice-input <endpoint-id>] [--sync-clipboard] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
+        << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--send-audio] [--receive-audio] [--send-voice] [--receive-voice] [--voice-input <endpoint-id>] [--sync-clipboard] [--edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair control state\n"
         << L"  desklink_pair control mode roam|lock|game\n"
         << L"  desklink_pair control gain 0..10000\n"
         << L"  desklink_pair control mute\n"
+        << L"  desklink_pair control voice-ptt down|up\n"
+        << L"  desklink_pair control voice-mute on|off\n"
         << L"  desklink_pair control preferences\n"
         << L"  desklink_pair control devices\n"
         << L"  desklink_pair control focus <32-hex-machine-id>\n"
@@ -308,12 +317,17 @@ void PrintUsage() {
         << L"--grant-input allows the newly paired remote PC to inject input on this PC.\n"
         << L"--grant-audio-send allows the remote PC to send audio into this PC.\n"
         << L"--grant-audio-receive allows the remote PC to receive audio captured on this PC.\n"
+        << L"--grant-voice-send allows the remote PC to play microphone voice into this PC.\n"
+        << L"--grant-voice-receive allows the remote PC to receive this PC's microphone voice.\n"
         << L"--grant-topology allows the authenticated peer to exchange bounded display topology snapshots.\n"
         << L"--grant-clipboard-read allows the authenticated peer to read this PC's text clipboard.\n"
         << L"--grant-clipboard-write allows the authenticated peer to replace this PC's text clipboard.\n"
         << L"--sync-clipboard explicitly enables bounded text-only synchronization; both peers still need complementary grants.\n"
         << L"--send-audio explicitly starts loopback capture for authorized peers.\n"
         << L"--receive-audio explicitly starts shared-mode rendering for an authorized peer.\n"
+        << L"--send-voice enables local push-to-talk for an authorized peer; it never opens the microphone by itself.\n"
+        << L"--receive-voice enables communications-device voice rendering for an authorized peer.\n"
+        << L"--voice-input selects an exact microphone endpoint; no fallback occurs if it is unavailable.\n"
         << L"--capture forwards physical input and suppresses it locally until release.\n"
         << L"--pointer-gain scales relative motion; 100 preserves raw counts.\n"
         << L"--pointer-dpi normalizes a known source DPI to an 800-DPI reference.\n"
@@ -415,6 +429,22 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.ControlPayload = desklink::ToggleAudioMuteControlRequest{};
             return Result;
         }
+        if (ArgumentCount == 4 &&
+            std::wstring_view(Arguments[2]) == L"voice-ptt") {
+            const std::wstring_view Value(Arguments[3]);
+            if (Value != L"down" && Value != L"up") return std::nullopt;
+            Result.ControlPayload = desklink::SetVoiceTransmitControlRequest{
+                Value == L"down"};
+            return Result;
+        }
+        if (ArgumentCount == 4 &&
+            std::wstring_view(Arguments[2]) == L"voice-mute") {
+            const std::wstring_view Value(Arguments[3]);
+            if (Value != L"on" && Value != L"off") return std::nullopt;
+            Result.ControlPayload = desklink::SetVoiceMutedControlRequest{
+                Value == L"on"};
+            return Result;
+        }
         if (ArgumentCount == 3 &&
             std::wstring_view(Arguments[2]) == L"preferences") {
             Result.ControlPayload =
@@ -482,6 +512,16 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             Result.GrantAudioReceive = true;
             continue;
         }
+        if (Argument == L"--grant-voice-send") {
+            if (Result.GrantVoiceSend) return std::nullopt;
+            Result.GrantVoiceSend = true;
+            continue;
+        }
+        if (Argument == L"--grant-voice-receive") {
+            if (Result.GrantVoiceReceive) return std::nullopt;
+            Result.GrantVoiceReceive = true;
+            continue;
+        }
         if (Argument == L"--grant-topology") {
             if (Result.GrantTopology) return std::nullopt;
             Result.GrantTopology = true;
@@ -534,6 +574,28 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (Argument == L"--receive-audio") {
             if (Result.ReceiveAudio) return std::nullopt;
             Result.ReceiveAudio = true;
+            continue;
+        }
+        if (Argument == L"--send-voice") {
+            if (Result.SendVoice) return std::nullopt;
+            Result.SendVoice = true;
+            continue;
+        }
+        if (Argument == L"--receive-voice") {
+            if (Result.ReceiveVoice) return std::nullopt;
+            Result.ReceiveVoice = true;
+            continue;
+        }
+        if (Argument == L"--voice-input") {
+            if (Result.VoiceInputEndpointId || Index + 1 >= ArgumentCount) {
+                return std::nullopt;
+            }
+            const auto Endpoint = ToUtf8(Arguments[++Index]);
+            if (!Endpoint || Endpoint->empty() ||
+                Endpoint->size() > desklink::kMaximumVoiceEndpointIdBytes) {
+                return std::nullopt;
+            }
+            Result.VoiceInputEndpointId = *Endpoint;
             continue;
         }
         if (Argument == L"--sync-clipboard") {
@@ -704,7 +766,8 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         PortSeen = true;
     }
     if ((Result.GrantInput || Result.GrantAudioSend ||
-         Result.GrantAudioReceive || Result.GrantTopology ||
+         Result.GrantAudioReceive || Result.GrantVoiceSend ||
+         Result.GrantVoiceReceive || Result.GrantTopology ||
          Result.GrantClipboardRead || Result.GrantClipboardWrite) &&
         Result.Mode != Operation::PairListen &&
         Result.Mode != Operation::PairConnect) {
@@ -731,6 +794,10 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     }
     if (Result.SendAudio && Result.Mode != Operation::Serve) return std::nullopt;
     if (Result.ReceiveAudio && Result.Mode != Operation::Focus) return std::nullopt;
+    if ((Result.SendVoice || Result.ReceiveVoice ||
+         Result.VoiceInputEndpointId) && !DirectionalSession) {
+        return std::nullopt;
+    }
     if (Result.SyncClipboard && !DirectionalSession) return std::nullopt;
     if (Result.BrokerManaged && !DirectionalSession) return std::nullopt;
     if (BrokerPairingSeen &&
@@ -1140,6 +1207,8 @@ desklink::CapabilitySet GetPairingCapabilities(
     bool GrantInput,
     bool GrantAudioSend,
     bool GrantAudioReceive,
+    bool GrantVoiceSend,
+    bool GrantVoiceReceive,
     bool GrantTopology,
     bool GrantClipboardRead,
     bool GrantClipboardWrite) noexcept {
@@ -1148,6 +1217,10 @@ desklink::CapabilitySet GetPairingCapabilities(
     if (GrantAudioSend) Capabilities.grant(desklink::Capability::AudioSend);
     if (GrantAudioReceive) {
         Capabilities.grant(desklink::Capability::AudioReceive);
+    }
+    if (GrantVoiceSend) Capabilities.grant(desklink::Capability::VoiceSend);
+    if (GrantVoiceReceive) {
+        Capabilities.grant(desklink::Capability::VoiceReceive);
     }
     if (GrantTopology) {
         Capabilities.grant(desklink::Capability::DisplayTopologyExchange);
@@ -1221,6 +1294,8 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
                     bool GrantInput,
                     bool GrantAudioSend,
                     bool GrantAudioReceive,
+                    bool GrantVoiceSend,
+                    bool GrantVoiceReceive,
                     bool GrantTopology,
                     bool GrantClipboardRead,
                     bool GrantClipboardWrite,
@@ -1242,6 +1317,7 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
             Session,
             GetPairingCapabilities(
                 GrantInput, GrantAudioSend, GrantAudioReceive,
+                GrantVoiceSend, GrantVoiceReceive,
                 GrantTopology, GrantClipboardRead, GrantClipboardWrite),
             *BrokerOperationId,
             *BrokerToken);
@@ -1264,6 +1340,10 @@ bool ConfirmPairing(const desklink::MsQuicPairingSession& Session,
     Text += GrantAudioSend ? L"allowed" : L"not allowed";
     Text += L"\nAudio receive from this PC: ";
     Text += GrantAudioReceive ? L"allowed" : L"not allowed";
+    Text += L"\nMicrophone audio into this PC: ";
+    Text += GrantVoiceSend ? L"allowed" : L"not allowed";
+    Text += L"\nRemote may receive this PC's microphone: ";
+    Text += GrantVoiceReceive ? L"allowed" : L"not allowed";
     Text += L"\nDisplay topology exchange: ";
     Text += GrantTopology ? L"allowed" : L"not allowed";
     Text += L"\nRemote may read this PC's text clipboard: ";
@@ -1305,6 +1385,8 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
                         bool GrantInput,
                         bool GrantAudioSend,
                         bool GrantAudioReceive,
+                        bool GrantVoiceSend,
+                        bool GrantVoiceReceive,
                         bool GrantTopology,
                         bool GrantClipboardRead,
                         bool GrantClipboardWrite,
@@ -1323,10 +1405,12 @@ void HandlePairingOffer(const std::shared_ptr<PairingResult>& Result,
 
     const bool UserConfirmed = ConfirmPairing(
         *Session, GrantInput, GrantAudioSend, GrantAudioReceive,
+        GrantVoiceSend, GrantVoiceReceive,
         GrantTopology, GrantClipboardRead, GrantClipboardWrite,
         ConsoleConfirm, BrokerOperationId, BrokerToken);
     const auto Capabilities = GetPairingCapabilities(
-        GrantInput, GrantAudioSend, GrantAudioReceive, GrantTopology,
+        GrantInput, GrantAudioSend, GrantAudioReceive,
+        GrantVoiceSend, GrantVoiceReceive, GrantTopology,
         GrantClipboardRead, GrantClipboardWrite);
     const bool ConfirmationSent = UserConfirmed &&
         Session->Confirm(Session->Candidate().VerificationCode, Capabilities);
@@ -2169,6 +2253,12 @@ struct PeerRuntime {
                 bool ObserveRejections,
                 bool SendAudio,
                 bool ReceiveAudio,
+                bool SendVoice,
+                bool ReceiveVoice,
+                 std::optional<std::string> VoiceInputEndpointId,
+                 std::uint16_t VoiceGainPermyriad,
+                 desklink::VoiceReceiveDestination VoiceDestination,
+                 bool VoiceEchoGuard,
                 bool SyncClipboard,
                 bool ValidationAudioLatency,
                 bool InitiateLatencyCalibration)
@@ -2197,6 +2287,44 @@ struct PeerRuntime {
           Receiver([this](desklink::AudioFrameMessage Frame) {
               LatencyDiagnostics.ObserveSubmission(Frame);
               return Renderer.Submit(std::move(Frame));
+          }),
+          VoiceRenderer(desklink::Win32WasapiVoiceRenderHandlers{
+              [this](desklink::Win32WasapiFailureKind,
+                     std::string Message) {
+                  std::cerr << "[Voice:Render] "
+                            << (Message.empty() ? "renderer stopped" : Message)
+                            << "; voice playout will recover independently\n";
+                   VoiceRenderRecovery.store(true);
+               }}),
+          VirtualMicrophoneFeed(desklink::Win32WasapiVoiceRenderHandlers{
+              [this](desklink::Win32WasapiFailureKind,
+                     std::string Message) {
+                  std::cerr << "[Voice:VirtualMic] "
+                            << (Message.empty() ? "feed stopped" : Message)
+                            << "; monitor and session remain active\n";
+                  VirtualMicrophoneUnavailable_.store(true);
+                  VirtualMicrophoneRecovery.store(true);
+              }}),
+          VoiceRouter(
+              {[this](desklink::VoicePcmFrame Frame) {
+                   return VoiceRenderer.Submit(std::move(Frame));
+               }, [this] { VoiceRenderer.Reset(); }},
+              {[this](desklink::VoicePcmFrame Frame) {
+                   const auto Accepted =
+                       VirtualMicrophoneFeed.Submit(std::move(Frame));
+                   if (Accepted) {
+                       VirtualMicrophoneLive_.store(true);
+                       VirtualMicrophoneLastFrameMilliseconds_.store(
+                           static_cast<std::uint64_t>(
+                               std::chrono::duration_cast<
+                                   std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now()
+                                           .time_since_epoch()).count()));
+                   }
+                   return Accepted;
+               }, [this] { VirtualMicrophoneFeed.Reset(); }}),
+          VoiceReceiver([this](desklink::VoicePcmFrame Frame) {
+              return VoiceRouter.Submit(std::move(Frame));
           }),
           Clipboard(desklink::Win32ClipboardHandlers{
               [this](std::string Text) {
@@ -2232,10 +2360,17 @@ struct PeerRuntime {
                           std::uint64_t LocalArrivalTimestampUs) {
                           LatencyDiagnostics.ObserveArrival(
                               Sequence, Frame, LocalArrivalTimestampUs);
-                      }}),
+                      }},
+                  &VoiceReceiver),
           ClipboardRequested(SyncClipboard),
           SendAudioRequested(SendAudio),
           ReceiveAudioRequested(ReceiveAudio),
+          SendVoiceRequested(SendVoice),
+          ReceiveVoiceRequested(ReceiveVoice),
+          VoiceInputEndpointId_(std::move(VoiceInputEndpointId)),
+          VoiceGainPermyriad_(VoiceGainPermyriad),
+          VoiceDestination_(VoiceDestination),
+          VoiceEchoGuard_(VoiceEchoGuard),
           InitiateLatencyCalibration_(InitiateLatencyCalibration) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
         (void)DropNextKeyRelease;
@@ -2243,12 +2378,15 @@ struct PeerRuntime {
         (void)ObserveCleanup;
         (void)ObserveRejections;
 #endif
+        (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
+        (void)VoiceRouter.SetDestination(VoiceDestination_);
     }
 
     ~PeerRuntime() {
         StopLatencyCalibration();
         StopDisplayIdentification();
         StopClipboard();
+        StopVoice();
         StopSendingAudio();
         StopReceivingAudio();
     }
@@ -2349,21 +2487,62 @@ struct PeerRuntime {
         } else if (!ReceiveAudioRequested || !Session.CanReceiveAudio()) {
             StopReceivingAudio();
         }
+        if (VoiceCaptureFailed.exchange(false) ||
+            !SendVoiceRequested || !Session.CanSendVoice()) {
+            StopVoiceTransmitLocked();
+        }
+        if (ReceiveVoiceRequested && Session.CanReceiveVoice()) {
+            (void)StartReceivingVoiceLocked();
+        } else {
+            StopReceivingVoiceLocked();
+        }
     }
 
     [[nodiscard]] bool ApplyManagedPreferences(
         bool ClipboardDesired,
         bool SendAudioDesired,
         bool ReceiveAudioDesired,
-        std::uint16_t AudioGainPermyriad) noexcept {
+        std::uint16_t AudioGainPermyriad,
+        bool SendVoiceDesired,
+        bool ReceiveVoiceDesired,
+        std::optional<std::string> VoiceInputEndpointId,
+        std::uint16_t VoiceGainPermyriad,
+        desklink::VoiceReceiveDestination VoiceDestination,
+        bool VoiceEchoGuard) noexcept {
         if (AudioGainPermyriad >
             desklink::kDeskLinkAudioMaximumGainPermyriad) {
             return false;
         }
+        if (VoiceGainPermyriad > desklink::kVoiceMaximumGainPermyriad ||
+            (VoiceDestination !=
+                 desklink::VoiceReceiveDestination::CommunicationsPlayback &&
+             VoiceDestination !=
+                 desklink::VoiceReceiveDestination::VirtualMicrophone &&
+             VoiceDestination != desklink::VoiceReceiveDestination::
+                 CommunicationsPlaybackAndVirtualMicrophone) ||
+            (VoiceInputEndpointId &&
+             (VoiceInputEndpointId->empty() ||
+              VoiceInputEndpointId->size() >
+                  desklink::kMaximumVoiceEndpointIdBytes))) return false;
         std::scoped_lock Lock(ModuleLifecycleMutex);
         ClipboardRequested = ClipboardDesired;
         SendAudioRequested = SendAudioDesired;
         ReceiveAudioRequested = ReceiveAudioDesired;
+        const bool VoiceInputChanged =
+            VoiceInputEndpointId_ != VoiceInputEndpointId;
+        SendVoiceRequested = SendVoiceDesired;
+        ReceiveVoiceRequested = ReceiveVoiceDesired;
+        VoiceInputEndpointId_ = std::move(VoiceInputEndpointId);
+        VoiceGainPermyriad_ = VoiceGainPermyriad;
+        VoiceDestination_ = VoiceDestination;
+        VoiceEchoGuard_ = VoiceEchoGuard;
+        (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
+        if (VoiceRenderPump.joinable()) ConfigureVoiceOutputsLocked();
+        else (void)VoiceRouter.SetDestination(VoiceDestination_);
+        if (VoiceInputChanged || !SendVoiceRequested ||
+            !Session.CanSendVoice()) {
+            StopVoiceTransmitLocked();
+        }
         Session.SetClipboardEnabled(ClipboardRequested);
         if (!SetAudioGainPermyriad(AudioGainPermyriad)) return false;
         if (ClipboardRequested) {
@@ -2380,6 +2559,11 @@ struct PeerRuntime {
             (void)StartReceivingAudio();
         } else if (!ReceiveAudioRequested || !Session.CanReceiveAudio()) {
             StopReceivingAudio();
+        }
+        if (ReceiveVoiceRequested && Session.CanReceiveVoice()) {
+            (void)StartReceivingVoiceLocked();
+        } else {
+            StopReceivingVoiceLocked();
         }
         return true;
     }
@@ -2399,6 +2583,312 @@ struct PeerRuntime {
 
     [[nodiscard]] bool AudioMuted() const noexcept {
         return Receiver.Muted();
+    }
+
+    [[nodiscard]] bool SetVoiceTransmit(bool Active) noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        if (!Active) {
+            StopVoiceTransmitLocked();
+            return true;
+        }
+        return StartVoiceTransmitLocked();
+    }
+
+    void SetVoiceMuted(bool Muted) noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        VoiceMuted_.store(Muted);
+        if (Muted) StopVoiceTransmitLocked();
+    }
+
+    [[nodiscard]] bool StartVoiceTransmitLocked() noexcept {
+        if (VoiceCapture && VoiceCapture->Running()) return true;
+        if (VoiceMuted_.load() || !SendVoiceRequested ||
+            !Session.CanSendVoice()) {
+            return false;
+        }
+        StopVoiceTransmitLocked();
+        try {
+            VoiceEncoder_ = std::make_unique<desklink::VoiceEncoder>();
+            if (!VoiceEncoder_->Ready()) {
+                VoiceEncoder_.reset();
+                return false;
+            }
+            const auto StreamId = NextVoiceStreamId_++;
+            if (NextVoiceStreamId_ == 0) ++NextVoiceStreamId_;
+            desklink::Win32WasapiMicrophoneHandlers Handlers;
+            Handlers.Frame = [this, StreamId](desklink::VoicePcmFrame Pcm) {
+                if (!VoiceTransmitting_.load() || !VoiceEncoder_ ||
+                    !Session.CanSendVoice()) return false;
+                auto Encoded = VoiceEncoder_->Encode(Pcm.Samples);
+                if (!Encoded) {
+                    ++VoiceCodecFailures_;
+                    return false;
+                }
+                desklink::VoiceFrameMessage Frame;
+                Frame.StreamId = StreamId;
+                Frame.CaptureTimestampUs = Pcm.CaptureTimestampUs;
+                Frame.Encoded = std::move(*Encoded);
+                if (!Session.SendVoiceFrame(std::move(Frame))) return false;
+                ++VoiceEncodedFrames_;
+                return true;
+            };
+            Handlers.Failed = [this](desklink::Win32WasapiFailureKind,
+                                     std::string Message) {
+                std::cerr << "[Voice:Capture] "
+                          << (Message.empty() ? "microphone stopped" : Message)
+                          << "; transmission stopped and requires fresh PTT\n";
+                VoiceInputUnavailable_.store(true);
+                VoiceCaptureFailed.store(true);
+            };
+            VoiceCapture = std::make_unique<
+                desklink::Win32WasapiMicrophoneCapture>(
+                    VoiceInputEndpointId_, std::move(Handlers));
+            VoiceCaptureFailed.store(false);
+            VoiceInputUnavailable_.store(false);
+            VoiceTransmitting_.store(true);
+            if (VoiceEchoGuard_) VoiceRouter.SetMonitorMuted(true);
+            if (!VoiceCapture->Start()) {
+                StopVoiceTransmitLocked();
+                VoiceInputUnavailable_.store(true);
+                return false;
+            }
+            ++VoicePttActivations_;
+            std::cout
+                << "[Voice:Privacy] microphone is being sent to authenticated peer\n";
+            return true;
+        } catch (...) {
+            StopVoiceTransmitLocked();
+            VoiceInputUnavailable_.store(true);
+            return false;
+        }
+    }
+
+    void StopVoiceTransmitLocked() noexcept {
+        const bool WasTransmitting = VoiceTransmitting_.exchange(false);
+        if (VoiceCapture) VoiceCapture->Stop();
+        VoiceCapture.reset();
+        VoiceEncoder_.reset();
+        VoiceRouter.SetMonitorMuted(false);
+        if (WasTransmitting) {
+            std::cout << "[Voice:Privacy] microphone transmission stopped\n";
+        }
+    }
+
+    void RunVoiceRenderPump() noexcept {
+        auto MonitorDelay = kAudioRecoveryInitialDelay;
+        auto VirtualMicrophoneDelay = kAudioRecoveryInitialDelay;
+        auto MonitorRetryAt = std::chrono::steady_clock::now();
+        auto VirtualMicrophoneRetryAt = std::chrono::steady_clock::now();
+        while (!VoiceRenderStop.load()) {
+            const auto Now = std::chrono::steady_clock::now();
+            const auto Destination = VoiceRouter.Destination();
+            const bool MonitorRequired = Destination ==
+                    desklink::VoiceReceiveDestination::CommunicationsPlayback ||
+                Destination == desklink::VoiceReceiveDestination::
+                    CommunicationsPlaybackAndVirtualMicrophone;
+            const bool VirtualMicrophoneRequired = Destination ==
+                    desklink::VoiceReceiveDestination::VirtualMicrophone ||
+                Destination == desklink::VoiceReceiveDestination::
+                    CommunicationsPlaybackAndVirtualMicrophone;
+
+            if (!MonitorRequired && VoiceRenderer.Running()) {
+                VoiceRenderer.Stop();
+            }
+            if (!VirtualMicrophoneRequired &&
+                VirtualMicrophoneFeed.Running()) {
+                VirtualMicrophoneFeed.Stop();
+                VirtualMicrophoneLive_.store(false);
+                VirtualMicrophoneLastFrameMilliseconds_.store(0);
+            }
+
+            const bool MonitorFailed = VoiceRenderRecovery.exchange(false) ||
+                (MonitorRequired && !VoiceRenderer.Running());
+            if (MonitorRequired && MonitorFailed && Now >= MonitorRetryAt) {
+                bool Restarted{};
+                try {
+                    VoiceRenderer.Stop();
+                    Restarted = !VoiceRenderStop.load() && VoiceRenderer.Start();
+                } catch (...) { Restarted = false; }
+                if (Restarted) {
+                    MonitorDelay = kAudioRecoveryInitialDelay;
+                    ++VoiceRenderRestartCount;
+                    std::cout
+                        << "[Voice:Render] communications endpoint recovered; virtual microphone and session remained active\n";
+                } else {
+                    MonitorDelay = NextAudioRecoveryDelay(MonitorDelay);
+                }
+                MonitorRetryAt = std::chrono::steady_clock::now() +
+                    MonitorDelay;
+            }
+
+            const bool VirtualMicrophoneFailed =
+                VirtualMicrophoneRecovery.exchange(false) ||
+                (VirtualMicrophoneRequired &&
+                 !VirtualMicrophoneFeed.Running());
+            if (VirtualMicrophoneRequired && VirtualMicrophoneFailed &&
+                Now >= VirtualMicrophoneRetryAt) {
+                bool Restarted{};
+                try {
+                    VirtualMicrophoneFeed.Stop();
+                    Restarted = !VoiceRenderStop.load() &&
+                        VirtualMicrophoneFeed.Start();
+                } catch (...) { Restarted = false; }
+                VirtualMicrophoneUnavailable_.store(!Restarted);
+                VirtualMicrophoneLive_.store(false);
+                VirtualMicrophoneLastFrameMilliseconds_.store(0);
+                if (Restarted) {
+                    VirtualMicrophoneDelay = kAudioRecoveryInitialDelay;
+                    ++VirtualMicrophoneRestartCount;
+                    std::cout
+                        << "[Voice:VirtualMic] feed ready; monitor and session remained active\n";
+                } else {
+                    VirtualMicrophoneDelay =
+                        NextAudioRecoveryDelay(VirtualMicrophoneDelay);
+                }
+                VirtualMicrophoneRetryAt = std::chrono::steady_clock::now() +
+                    VirtualMicrophoneDelay;
+            }
+            (void)VoiceReceiver.PumpAvailable();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    [[nodiscard]] bool StartReceivingVoiceLocked() noexcept {
+        if (VoiceRenderPump.joinable()) return true;
+        if (!Session.CanReceiveVoice()) return false;
+        VoiceReceiver.Reset();
+        VoiceRouter.Reset();
+        (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
+        (void)VoiceRouter.SetDestination(VoiceDestination_);
+        VoiceRenderStop.store(false);
+        try {
+            ConfigureVoiceOutputsLocked();
+            VoiceRenderPump = std::thread(
+                [this] { RunVoiceRenderPump(); });
+        } catch (...) {
+            VoiceRenderer.Stop();
+            VirtualMicrophoneFeed.Stop();
+            return false;
+        }
+        return true;
+    }
+
+    void StopReceivingVoiceLocked() noexcept {
+        VoiceRenderStop.store(true);
+        if (VoiceRenderPump.joinable() &&
+            VoiceRenderPump.get_id() != std::this_thread::get_id()) {
+            VoiceRenderPump.join();
+        }
+        VoiceReceiver.Reset();
+        VoiceRouter.Reset();
+        VoiceRenderer.Stop();
+        VirtualMicrophoneFeed.Stop();
+        VoiceRenderRecovery.store(false);
+        VirtualMicrophoneRecovery.store(false);
+        VirtualMicrophoneLive_.store(false);
+        VirtualMicrophoneLastFrameMilliseconds_.store(0);
+    }
+
+    void ConfigureVoiceOutputsLocked() noexcept {
+        const bool MonitorRequired = VoiceDestination_ ==
+                desklink::VoiceReceiveDestination::CommunicationsPlayback ||
+            VoiceDestination_ == desklink::VoiceReceiveDestination::
+                CommunicationsPlaybackAndVirtualMicrophone;
+        const bool VirtualMicrophoneRequired = VoiceDestination_ ==
+                desklink::VoiceReceiveDestination::VirtualMicrophone ||
+            VoiceDestination_ == desklink::VoiceReceiveDestination::
+                CommunicationsPlaybackAndVirtualMicrophone;
+        if (MonitorRequired && !VoiceRenderer.Running() &&
+            !VoiceRenderStop.load()) {
+            if (!VoiceRenderer.Start()) VoiceRenderRecovery.store(true);
+        }
+        if (VirtualMicrophoneRequired && !VirtualMicrophoneFeed.Running() &&
+            !VoiceRenderStop.load()) {
+            const bool Started = VirtualMicrophoneFeed.Start();
+            VirtualMicrophoneUnavailable_.store(!Started);
+            if (!Started) VirtualMicrophoneRecovery.store(true);
+        }
+        (void)VoiceRouter.SetDestination(VoiceDestination_);
+        if (!MonitorRequired) VoiceRenderer.Stop();
+        if (!VirtualMicrophoneRequired) {
+            VirtualMicrophoneFeed.Stop();
+            VirtualMicrophoneLive_.store(false);
+            VirtualMicrophoneLastFrameMilliseconds_.store(0);
+            VirtualMicrophoneUnavailable_.store(false);
+        }
+    }
+
+    void StopVoice() noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        StopVoiceTransmitLocked();
+        StopReceivingVoiceLocked();
+    }
+
+    [[nodiscard]] bool VoiceEnabled() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        return SendVoiceRequested || ReceiveVoiceRequested;
+    }
+    [[nodiscard]] bool VoiceMuted() const noexcept {
+        return VoiceMuted_.load();
+    }
+    [[nodiscard]] bool VoiceTransmitting() const noexcept {
+        return VoiceTransmitting_.load();
+    }
+    [[nodiscard]] bool VoicePttReady() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        return SendVoiceRequested && !VoiceMuted_.load() &&
+            Session.CanSendVoice();
+    }
+    [[nodiscard]] bool VoicePermissionMissing() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        return SendVoiceRequested && !Session.CanSendVoice();
+    }
+    [[nodiscard]] bool VoiceInputUnavailable() const noexcept {
+        return VoiceInputUnavailable_.load();
+    }
+    [[nodiscard]] std::uint16_t VoiceGainPermyriad() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        return VoiceGainPermyriad_;
+    }
+    [[nodiscard]] desklink::VoiceReceiveDestination
+    VoiceDestination() const noexcept {
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        return VoiceDestination_;
+    }
+    [[nodiscard]] desklink::ControlVirtualMicrophoneState
+    VirtualMicrophoneState() const noexcept {
+        const auto Component =
+            desklink::GetWin32VirtualMicrophoneComponentState();
+        if (Component == desklink::
+                Win32VirtualMicrophoneComponentState::NotInstalled) {
+            return desklink::ControlVirtualMicrophoneState::NotInstalled;
+        }
+        if (Component == desklink::
+                Win32VirtualMicrophoneComponentState::NeedsRepair) {
+            return desklink::ControlVirtualMicrophoneState::NeedsRepair;
+        }
+        std::scoped_lock Lock(ModuleLifecycleMutex);
+        const bool Routed = VoiceDestination_ ==
+                desklink::VoiceReceiveDestination::VirtualMicrophone ||
+            VoiceDestination_ == desklink::VoiceReceiveDestination::
+                CommunicationsPlaybackAndVirtualMicrophone;
+        if (!Routed) {
+            return desklink::ControlVirtualMicrophoneState::Installed;
+        }
+        if (!VirtualMicrophoneFeed.Running() ||
+            VirtualMicrophoneUnavailable_.load()) {
+            return desklink::ControlVirtualMicrophoneState::Unavailable;
+        }
+        const auto Last = VirtualMicrophoneLastFrameMilliseconds_.load();
+        if (Last == 0) {
+            return desklink::ControlVirtualMicrophoneState::FeedReady;
+        }
+        const auto Now = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        return Now >= Last && Now - Last <= 250
+            ? desklink::ControlVirtualMicrophoneState::Live
+            : desklink::ControlVirtualMicrophoneState::Silent;
     }
 
     void RequestRenderRecovery(
@@ -2708,14 +3198,40 @@ struct PeerRuntime {
     AudioLatencyDiagnostics LatencyDiagnostics;
     desklink::Win32WasapiRenderer Renderer;
     desklink::AudioReceiver Receiver;
+    desklink::Win32WasapiVoiceRenderer VoiceRenderer;
+    desklink::Win32VirtualMicrophoneFeed VirtualMicrophoneFeed;
+    desklink::VoiceOutputRouter VoiceRouter;
+    desklink::VoiceReceiver VoiceReceiver;
     desklink::Win32ClipboardSynchronizer Clipboard;
     desklink::PeerSession Session;
     bool ClipboardRequested{};
     bool ClipboardStarted{};
     bool SendAudioRequested{};
     bool ReceiveAudioRequested{};
+    bool SendVoiceRequested{};
+    bool ReceiveVoiceRequested{};
+    std::optional<std::string> VoiceInputEndpointId_;
+    std::uint16_t VoiceGainPermyriad_{10'000};
+    desklink::VoiceReceiveDestination VoiceDestination_{
+        desklink::VoiceReceiveDestination::CommunicationsPlayback};
+    bool VoiceEchoGuard_{true};
+    std::atomic_bool VoiceMuted_{};
+    std::atomic_bool VoiceTransmitting_{};
+    std::atomic_bool VoiceInputUnavailable_{};
+    std::atomic_bool VoiceCaptureFailed{};
+    std::atomic_bool VoiceRenderRecovery{};
+    std::atomic_uint64_t VoiceRenderRestartCount{};
+    std::atomic_bool VirtualMicrophoneRecovery{};
+    std::atomic_bool VirtualMicrophoneUnavailable_{};
+    std::atomic_bool VirtualMicrophoneLive_{};
+    std::atomic_uint64_t VirtualMicrophoneLastFrameMilliseconds_{};
+    std::atomic_uint64_t VirtualMicrophoneRestartCount{};
+    std::uint32_t NextVoiceStreamId_{1};
+    std::uint64_t VoicePttActivations_{};
+    std::uint64_t VoiceEncodedFrames_{};
+    std::uint64_t VoiceCodecFailures_{};
     bool InitiateLatencyCalibration_{};
-    std::mutex ModuleLifecycleMutex;
+    mutable std::mutex ModuleLifecycleMutex;
     std::jthread LatencyCalibrationWorker;
 
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
@@ -2731,6 +3247,11 @@ struct PeerRuntime {
     std::atomic_uint64_t RenderRecoveryGeneration{};
     std::atomic_uint64_t RenderRestartCount{};
     std::thread RenderPump;
+
+    std::unique_ptr<desklink::VoiceEncoder> VoiceEncoder_;
+    std::unique_ptr<desklink::Win32WasapiMicrophoneCapture> VoiceCapture;
+    std::atomic_bool VoiceRenderStop{};
+    std::thread VoiceRenderPump;
 
     std::mutex DisplayIdentificationMutex;
     std::atomic_bool DisplayIdentificationRunning{};
@@ -4185,6 +4706,22 @@ int RunTrusted(const CommandLine& Command,
                     Request.Payload)) {
                 desklink::ControlState State;
                 State.LocalMachine = LocalIdentity.machine_id;
+                switch (desklink::GetWin32VirtualMicrophoneComponentState()) {
+                    case desklink::Win32VirtualMicrophoneComponentState::
+                            NotInstalled:
+                        State.VirtualMicrophoneState = desklink::
+                            ControlVirtualMicrophoneState::NotInstalled;
+                        break;
+                    case desklink::Win32VirtualMicrophoneComponentState::Ready:
+                        State.VirtualMicrophoneState = desklink::
+                            ControlVirtualMicrophoneState::Installed;
+                        break;
+                    case desklink::Win32VirtualMicrophoneComponentState::
+                            NeedsRepair:
+                        State.VirtualMicrophoneState = desklink::
+                            ControlVirtualMicrophoneState::NeedsRepair;
+                        break;
+                }
                 State.Role = Command.Mode == Operation::Serve
                     ? desklink::ControlRole::Agent
                     : desklink::ControlRole::Host;
@@ -4232,9 +4769,24 @@ int RunTrusted(const CommandLine& Command,
                     }
                 }
                 if (SelectedPeer) {
-                    State.AudioGainPermyriad =
+                State.AudioGainPermyriad =
                         SelectedPeer->AudioGainPermyriad();
-                    State.AudioMuted = SelectedPeer->AudioMuted();
+                State.AudioMuted = SelectedPeer->AudioMuted();
+                    State.VoiceGainPermyriad =
+                        SelectedPeer->VoiceGainPermyriad();
+                    State.VoiceDestination =
+                        SelectedPeer->VoiceDestination();
+                    State.VirtualMicrophoneState =
+                        SelectedPeer->VirtualMicrophoneState();
+                    State.VoiceEnabled = SelectedPeer->VoiceEnabled();
+                    State.VoiceMuted = SelectedPeer->VoiceMuted();
+                    State.VoicePttReady = SelectedPeer->VoicePttReady();
+                    State.VoiceTransmitting =
+                        SelectedPeer->VoiceTransmitting();
+                    State.VoiceInputUnavailable =
+                        SelectedPeer->VoiceInputUnavailable();
+                    State.VoicePermissionMissing =
+                        SelectedPeer->VoicePermissionMissing();
                 }
                 if (!desklink::IsValidControlState(State)) {
                     return desklink::ControlResponse{
@@ -4350,10 +4902,23 @@ int RunTrusted(const CommandLine& Command,
                 const bool ReceiveAudio = Command.Mode == Operation::Focus &&
                     (Route == desklink::AudioRoutePreference::PeerToLocal ||
                      Route == desklink::AudioRoutePreference::Bidirectional);
+                const auto VoiceRoute =
+                    ApplyPreferences->Preferences.VoiceRoute;
+                const bool SendVoice =
+                    VoiceRoute == desklink::VoiceRoutePreference::LocalToPeer ||
+                    VoiceRoute == desklink::VoiceRoutePreference::Bidirectional;
+                const bool ReceiveVoice =
+                    VoiceRoute == desklink::VoiceRoutePreference::PeerToLocal ||
+                    VoiceRoute == desklink::VoiceRoutePreference::Bidirectional;
                 bool Applied = SelectedPeer->ApplyManagedPreferences(
                     ApplyPreferences->Preferences.ClipboardDesired,
                     SendAudio, ReceiveAudio,
-                    ApplyPreferences->Preferences.AudioGainPermyriad);
+                    ApplyPreferences->Preferences.AudioGainPermyriad,
+                    SendVoice, ReceiveVoice,
+                    ApplyPreferences->Preferences.VoiceInputEndpointId,
+                    ApplyPreferences->Preferences.VoiceGainPermyriad,
+                    ApplyPreferences->Preferences.VoiceDestination,
+                    ApplyPreferences->Preferences.VoiceEchoGuard);
                 if (Applied && ActiveInput) {
                     Applied = ActiveInput->ApplyManagedPreferences(
                         ApplyPreferences->Preferences);
@@ -4390,6 +4955,33 @@ int RunTrusted(const CommandLine& Command,
                     Applied ? desklink::ControlStatus::Ok
                             : desklink::ControlStatus::Failed,
                     std::nullopt};
+            }
+
+            const auto* SetVoiceTransmit = std::get_if<
+                desklink::SetVoiceTransmitControlRequest>(&Request.Payload);
+            const auto* SetVoiceMuted = std::get_if<
+                desklink::SetVoiceMutedControlRequest>(&Request.Payload);
+            if (SetVoiceTransmit || SetVoiceMuted) {
+                std::shared_ptr<PeerRuntime> SelectedPeer;
+                {
+                    std::scoped_lock Lock(RuntimesMutex);
+                    SelectedPeer = ActivePeer;
+                }
+                if (!SelectedPeer) {
+                    return desklink::ControlResponse{
+                        Request.RequestId, desklink::ControlStatus::NotReady};
+                }
+                bool Applied = true;
+                if (SetVoiceMuted) {
+                    SelectedPeer->SetVoiceMuted(SetVoiceMuted->Muted);
+                } else {
+                    Applied = SelectedPeer->SetVoiceTransmit(
+                        SetVoiceTransmit->Active);
+                }
+                return desklink::ControlResponse{
+                    Request.RequestId,
+                    Applied ? desklink::ControlStatus::Ok
+                            : desklink::ControlStatus::NotReady};
             }
 
             const auto* SetMode = std::get_if<
@@ -4601,10 +5193,22 @@ int RunTrusted(const CommandLine& Command,
             Command.ValidationObserveRejections,
             Command.SendAudio,
             Command.ReceiveAudio,
+            Command.SendVoice,
+            Command.ReceiveVoice,
+            Command.VoiceInputEndpointId,
+            10'000,
+            desklink::VoiceReceiveDestination::CommunicationsPlayback,
+            true,
             Command.SyncClipboard,
             Command.ValidationAudioLatency,
-            Command.ValidationAudioLatency &&
+                Command.ValidationAudioLatency &&
                 Command.Mode == Operation::Focus);
+        Runtime->Session.SetVoiceAuthorizationChangedHandler(
+            [Weak = std::weak_ptr<PeerRuntime>(Runtime)] {
+                if (const auto Value = Weak.lock()) {
+                    Value->ReconcileCapabilityModules();
+                }
+            });
         *DisplayIdentificationTarget = Runtime;
         Runtime->StartClipboard();
         if (!Runtime->Session.Start()) {
@@ -5104,6 +5708,8 @@ int Run(const CommandLine& Command) {
                                GrantInput = Command.GrantInput,
                                GrantAudioSend = Command.GrantAudioSend,
                                GrantAudioReceive = Command.GrantAudioReceive,
+                               GrantVoiceSend = Command.GrantVoiceSend,
+                               GrantVoiceReceive = Command.GrantVoiceReceive,
                                GrantTopology = Command.GrantTopology,
                                GrantClipboardRead = Command.GrantClipboardRead,
                                GrantClipboardWrite = Command.GrantClipboardWrite,
@@ -5114,7 +5720,8 @@ int Run(const CommandLine& Command) {
         std::shared_ptr<desklink::MsQuicPairingSession> Session) {
         HandlePairingOffer(
             Result, std::move(Session), GrantInput, GrantAudioSend,
-            GrantAudioReceive, GrantTopology, GrantClipboardRead,
+            GrantAudioReceive, GrantVoiceSend, GrantVoiceReceive,
+            GrantTopology, GrantClipboardRead,
             GrantClipboardWrite, ConsoleConfirm, BrokerOperationId,
             BrokerToken);
     };

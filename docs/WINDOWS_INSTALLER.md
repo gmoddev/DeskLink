@@ -6,6 +6,12 @@ for the Windows 11 / Windows Server 2022+ production baseline. It installs to
 and registers its uninstaller only under HKCU. It does not request elevation,
 install a service, add Firewall rules, or modify the Windows network profile.
 
+The optional virtual-microphone feature is a deliberately separate exception:
+when and only when an externally Microsoft production-signed driver package is
+supplied at release packaging time, Setup may carry that exact package and the
+normal UI may explicitly launch a fixed UAC-elevated helper. The main DeskLink
+application and every unrelated feature remain usable without it.
+
 PR 9A makes `desklink.exe` the normal Start menu and post-install entry point.
 The sign-in command uses `desklink.exe --background` only as a windowless,
 short-lived bootstrap for the native broker; updates restart
@@ -43,6 +49,17 @@ not a supported or production artifact.
   records, application preferences, and roaming preferences are not installer
   payload and are not removed or migrated. The device private key remains
   non-exportable.
+- `desklink_virtual_microphone_installer.exe` accepts exactly `install` or
+  `uninstall`; it knows only the fixed sibling
+  `driver\DeskLinkVirtualMicrophone` package and stable
+  `ROOT\DeskLinkVirtualMicrophone` hardware ID. It rejects reparse points,
+  extra/missing files, altered INF identity, failed catalog membership, and a
+  signer other than Microsoft Windows Hardware Compatibility Publisher. The UI
+  cannot provide an INF path.
+- Installing or routing the virtual microphone never changes a Windows default
+  audio endpoint. UAC denial leaves DeskLink and all other features intact.
+  Driver removal is attempted during normal uninstall; denial or driver-removal
+  failure is reported without corrupting the rest of application removal.
 - The packaged update coordinator performs `Return Local -> confirm no remote
   focus/capture -> stop runtime/UI -> update/validate -> optional restart` and
   invokes a prevalidated current-version installer on candidate failure. Setup
@@ -68,6 +85,27 @@ executable, the generated uninstaller, and Setup; it then verifies the signer
 and timestamp before copying the artifact to its destination. The release
 signing key is separate from DeskLink's device CNG identity. The build accepts
 no PFX, PEM, private-key path, or exported DeskLink key.
+
+To include the optional driver, first validate a Microsoft-signed package and
+pass its directory explicitly:
+
+```powershell
+.\scripts\Test-VirtualMicrophonePackage.ps1 `
+  -PackagePath '<signed-driver-package>' `
+  -RequireMicrosoftProductionSignature
+.\scripts\Build-WindowsInstaller.ps1 `
+  -StagePath installer-stage `
+  -VirtualMicrophonePackagePath '<signed-driver-package>' `
+  -OutputPath DeskLink-0.1.0-windows-x64-setup.exe `
+  -IsccPath 'C:\Program Files\Inno Setup 7\ISCC.exe' `
+  -AppVersion 0.1.0 `
+  -CertificateThumbprint '<current-user code-signing certificate SHA-1>' `
+  -TimestampUrl 'https://<approved-rfc3161-service>'
+```
+
+An unsigned/test-signed package cannot satisfy this mode. Development does not
+disable Secure Boot, enable test-signing, weaken signature enforcement, or ship
+a test trust root.
 
 ```powershell
 cmake --install build-msquic --config Release `
@@ -141,6 +179,12 @@ unsafe timestamp endpoints, lost PerMonitorV2/accessibility/theme/UTF-8
 metadata, elevation, or automatic Firewall changes. These tests do not make an
 unsigned development artifact a release package.
 
+The optional-driver CI job separately builds the x64 WaveRT driver from the
+pinned Microsoft sample and WDK inputs, runs Inf2Cat, and validates the exact
+unsigned development package. Installer validation also proves that this
+package is rejected by `-VirtualMicrophonePackagePath`; physical installation
+is reserved for a Microsoft production-signed package.
+
 `Test-WindowsInstaller.ps1` refuses to run unless
 `-AllowCurrentUserMutation` is supplied. Use that switch only on an isolated
 test account or disposable Windows worker.
@@ -156,3 +200,6 @@ test account or disposable Windows worker.
   automatic Firewall changes; and
 - validate signed update/rollback plus process termination, power loss,
   disk-full, and restart failure on clean supported systems.
+- obtain Microsoft production signing/certification for the virtual-microphone
+  catalog, then validate install/update/uninstall, zero-physical-microphone
+  capture, crash/revoke/disconnect silence, and Discord/OBS capture.
