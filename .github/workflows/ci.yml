@@ -76,7 +76,7 @@ jobs:
           ref: 197ba2156a60e2b76fcd4820bae594223e91a1e9
           path: external/windows-driver-samples
 
-      - name: Install matching Microsoft WDK and Visual Studio integration
+      - name: Install matching Microsoft WDK
         shell: pwsh
         run: |
           $WdkSetup = Join-Path $env:RUNNER_TEMP 'wdk-26100.6584.exe'
@@ -96,22 +96,6 @@ jobs:
           ) -Wait -PassThru
           if ($Wdk.ExitCode -notin 0, 3010) {
             throw "WDK installation failed with exit code $($Wdk.ExitCode)."
-          }
-          $VsWhere = Join-Path ${env:ProgramFiles(x86)} `
-            'Microsoft Visual Studio\Installer\vswhere.exe'
-          $VsRoot = (& $VsWhere -latest -products '*' `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath).Trim()
-          $VsInstaller = Join-Path ${env:ProgramFiles(x86)} `
-            'Microsoft Visual Studio\Installer\setup.exe'
-          $Vs = Start-Process -FilePath $VsInstaller -ArgumentList @(
-            'modify', '--installPath', $VsRoot,
-            '--add', 'Component.Microsoft.Windows.DriverKit',
-            '--add', 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre',
-            '--quiet', '--norestart'
-          ) -Wait -PassThru
-          if ($Vs.ExitCode -notin 0, 3010) {
-            throw "Visual Studio WDK integration failed with exit code $($Vs.ExitCode)."
           }
 
       - name: Install pinned WDK build package
