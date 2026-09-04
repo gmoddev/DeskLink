@@ -60,7 +60,10 @@ jobs:
 
   VirtualMicrophoneDriver:
     name: Optional virtual microphone driver
-    runs-on: windows-latest
+    # The WDK 10.0.26100 VSIX currently targets Visual Studio 2022. Pin this
+    # job so a windows-latest image transition to VS 2026 cannot silently
+    # replace the vetted driver toolchain.
+    runs-on: windows-2022
 
     steps:
       - name: Checkout DeskLink
