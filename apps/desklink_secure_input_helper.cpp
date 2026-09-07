@@ -21,8 +21,13 @@ enum class ProbeOperation {
 
 enum class ProbeExitCode : int {
     Success = 0,
-    InvalidExecutionContext = 10,
     ReleaseFailed = 11,
+    NotLocalSystem = 12,
+    SessionLookupFailed = 13,
+    ConsoleSessionMismatch = 14,
+    SessionLockedOrUnknown = 15,
+    ThreadDesktopMismatch = 16,
+    InputDesktopMismatch = 17,
     ForegroundUnavailable = 20,
     ForegroundProcessUnavailable = 21,
     ForegroundImageUnavailable = 22,
@@ -106,28 +111,37 @@ bool IsSessionUnlocked(DWORD SessionId) noexcept {
     return Unlocked;
 }
 
-bool ValidateExecutionContext(ProbeOperation Operation) {
+ProbeExitCode ValidateExecutionContext(ProbeOperation Operation) {
     if (!IsLocalSystem()) {
         Log(L"probe refused because helper is not LocalSystem");
-        return false;
+        return ProbeExitCode::NotLocalSystem;
     }
     DWORD SessionId{};
-    if (!ProcessIdToSessionId(GetCurrentProcessId(), &SessionId) ||
-        SessionId != WTSGetActiveConsoleSessionId() ||
-        !IsSessionUnlocked(SessionId)) {
-        Log(L"probe refused because helper is not in the active console session");
-        return false;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &SessionId)) {
+        Log(L"probe refused because the helper session could not be read");
+        return ProbeExitCode::SessionLookupFailed;
+    }
+    if (SessionId != WTSGetActiveConsoleSessionId()) {
+        Log(L"probe refused because helper is not in the console session");
+        return ProbeExitCode::ConsoleSessionMismatch;
+    }
+    if (!IsSessionUnlocked(SessionId)) {
+        Log(L"probe refused because the console session is locked or unknown");
+        return ProbeExitCode::SessionLockedOrUnknown;
     }
     const auto DesktopName = CurrentDesktopName();
     const auto InputDesktopName = ActiveInputDesktopName();
     const wchar_t* Expected = Operation == ProbeOperation::SecureCancel
         ? L"Winlogon" : L"Default";
-    if (_wcsicmp(DesktopName.c_str(), Expected) != 0 ||
-        _wcsicmp(InputDesktopName.c_str(), Expected) != 0) {
-        Log(L"probe refused because helper is not on the active input desktop");
-        return false;
+    if (_wcsicmp(DesktopName.c_str(), Expected) != 0) {
+        Log(L"probe refused because the helper thread desktop is unexpected");
+        return ProbeExitCode::ThreadDesktopMismatch;
     }
-    return true;
+    if (_wcsicmp(InputDesktopName.c_str(), Expected) != 0) {
+        Log(L"probe refused because the active input desktop is unexpected");
+        return ProbeExitCode::InputDesktopMismatch;
+    }
+    return ProbeExitCode::Success;
 }
 
 INPUT KeyInput(WORD VirtualKey, DWORD Flags) noexcept {
@@ -225,8 +239,9 @@ ProbeExitCode CancelSecureDesktopPrompt() noexcept {
 }
 
 int RunProbe(ProbeOperation Operation) {
-    if (!ValidateExecutionContext(Operation)) {
-        return static_cast<int>(ProbeExitCode::InvalidExecutionContext);
+    const auto ContextResult = ValidateExecutionContext(Operation);
+    if (ContextResult != ProbeExitCode::Success) {
+        return static_cast<int>(ContextResult);
     }
     if (!ReleaseOwnedInput()) {
         Log(L"release-only probe failed closed");
