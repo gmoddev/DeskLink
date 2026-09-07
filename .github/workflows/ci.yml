@@ -26,6 +26,7 @@ jobs:
         run: >-
           cmake -S . -B build
           -DDESKLINK_BUILD_WINDOWS_BACKENDS=ON
+          -DDESKLINK_BUILD_SECURE_INPUT_RND=${{ runner.os == 'Windows' && 'ON' || 'OFF' }}
           -DCMAKE_BUILD_TYPE=Release
 
       - name: Build

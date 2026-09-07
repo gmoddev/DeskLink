@@ -306,6 +306,41 @@ normal desktop re-arms roaming; and a fresh edge crossing works without pairing
 or reconnecting. This interactive UAC check is not simulated or silently
 approved by CI.
 
+### Secure-input R&D validation
+
+Normal Windows CI builds the default-off R&D targets explicitly, runs their
+nonprivileged self-tests, and proves console service launch and an unprivileged
+helper probe are rejected. `Test-SecureInputRAndDContracts.ps1` rejects product
+packaging, networking, arbitrary process/command mechanisms, private-key
+export APIs, UIAccess, UAC-policy changes, automatic service startup, and loss
+of the fixed Program Files/session/desktop checks. Portable tests reject absent
+or stale grants, wrong certificate hash, nonce, epoch, revision, replayed
+sequence, invalid operation, and expired lease.
+
+CI does not install or run a LocalSystem service and cannot claim UAC desktop
+access. The physical lab gate must use the separate explicit R&D script on an
+approved Windows 11 PC, record the installed hashes and service DACL, run the
+Default release probe, open a benign UAC prompt, run the fixed secure Escape
+probe, and require both the helper's `Winlogon`-to-`Default` postcondition and
+visual confirmation that the prompt cancels. Each probe is one-shot: the
+service must stop and expose zero Win32/service exit codes before the script
+reports success. Then uninstall the service and verify both files and the
+service registration are gone. No prompt may be approved by this probe.
+
+That fixed-probe gate first passed on Windows 11 Pro build 26200 on 2026-09-07
+at source revision `162368a`, then passed again on the one-shot hardened
+revision `a786563`. The hardened Default release probe completed; the secure
+probe verified foreground `consent.exe` before release/injection, sent only
+scan-code Escape, observed `Winlogon` return to `Default`, and received
+independent visual confirmation that the benign prompt disappeared. The
+service stopped with zero Win32/service exit codes and left no helper. A
+no-prompt retry failed closed with helper stage 17/service code 1017. All 10
+configured native tests passed, a complete security diff review found no
+reportable vulnerabilities, and subsequent cleanup verified that the service
+registration, staged Program Files directory, and helper process were absent.
+Exact hardened hashes and the service DACL are recorded in
+`UAC_SECURE_INPUT.md`.
+
 ### Phase 3 configurator validation
 
 Portable tests build EDID-sized and DPI-estimated display cards, retain saved

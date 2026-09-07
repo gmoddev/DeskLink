@@ -666,9 +666,14 @@ authentication/security `ActionRequired` state is restored rather than being
 turned into an availability retry. Missing power-notification support prevents
 the broker from starting on the supported production baseline.
 
-Do not introduce a SYSTEM service until a concrete requirement needs one.
-
-If privileged functions later become necessary, add a small broker service with an allowlisted API. The broker should not own networking, hooks, UI, or arbitrary command execution.
+UAC secure-desktop input is the first approved concrete investigation for a
+SYSTEM boundary. The default product still installs no service. A separately
+built validation-only service may launch a fixed SYSTEM helper into the active
+session and exact input desktop. The service owns no networking, capture, UI,
+identity, trust, clipboard, audio, arbitrary path, or arbitrary command
+execution. Product integration remains blocked on production signing, an
+administrator-protected machine-wide install, independent grant verification,
+and the complete physical security matrix. See `UAC_SECURE_INPUT.md`.
 
 ---
 
