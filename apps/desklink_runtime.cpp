@@ -1804,6 +1804,23 @@ int wmain(int Count, wchar_t** Values) {
         std::cerr << "[Broker:Storage] protected state could not be loaded\n";
         return 1;
     }
+    const auto StartupPreferences = PreferencesStore.Current();
+    const bool StartupPathAllowed = StartupPreferences &&
+        (!StartupPreferences->RunAtLogin ||
+         desklink::IsSafeWin32ProductFile(ProductShellPath));
+    if (!StartupPathAllowed ||
+        !desklink::SetWin32RunAtLogin(
+            StartupPreferences->RunAtLogin, ProductShellPath)) {
+        // A missing/stale Run value must not prevent the broker from keeping
+        // input Local and serving the current session. Repair is retried on
+        // every broker start and whenever preferences are saved.
+        std::cerr
+            << "[Broker:Startup] current-user sign-in registration could not be reconciled; the current broker remains active\n";
+    } else {
+        std::cout
+            << "[Broker:Startup] current-user sign-in registration reconciled enabled="
+            << (StartupPreferences->RunAtLogin ? "true" : "false") << '\n';
+    }
 
     BrokerRuntimeSafetyController SafetyController;
     desklink::RuntimeTrustAuthority TrustAuthority(
