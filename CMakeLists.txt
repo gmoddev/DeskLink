@@ -23,6 +23,8 @@ option(DESKLINK_BUILD_PRODUCT_UI
 option(DESKLINK_BUILD_VOICE "Build pinned Opus voice forwarding" ON)
 option(DESKLINK_BUILD_VIRTUAL_MICROPHONE_DRIVER
     "Build the optional signed WaveRT virtual microphone component" OFF)
+option(DESKLINK_BUILD_SECURE_INPUT_RND
+    "Build validation-only LocalSystem secure-input R&D components" OFF)
 set(DESKLINK_WINDOWS_DRIVER_SAMPLES_ROOT "" CACHE PATH
     "Pinned microsoft/Windows-driver-samples checkout for the optional driver")
 set(DESKLINK_VIRTUAL_MICROPHONE_WDK_ROOT "" CACHE PATH
@@ -63,6 +65,13 @@ add_custom_target(desklink_virtual_microphone_safety_check ALL
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVirtualMicrophoneSafety.cmake"
     VERBATIM)
 
+if(WIN32)
+    add_custom_target(desklink_secure_input_rnd_contract_check ALL
+        COMMAND powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-SecureInputRAndDContracts.ps1"
+        VERBATIM)
+endif()
+
 if(DESKLINK_BUILD_TESTS)
     add_test(NAME desklink_private_key_export_check
         COMMAND ${CMAKE_COMMAND}
@@ -76,6 +85,12 @@ if(DESKLINK_BUILD_TESTS)
         COMMAND ${CMAKE_COMMAND}
             "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVirtualMicrophoneSafety.cmake")
+    if(WIN32)
+        add_test(NAME desklink_secure_input_rnd_contract_check
+            COMMAND powershell -NoProfile -NonInteractive
+                -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-SecureInputRAndDContracts.ps1")
+    endif()
 endif()
 
 add_library(desklink_core
@@ -92,6 +107,7 @@ add_library(desklink_core
     src/topology_exchange.cpp
     src/protocol.cpp
     src/input.cpp
+    src/secure_input.cpp
     src/focus.cpp
     src/host.cpp
     src/host_input_lifecycle.cpp
@@ -413,6 +429,38 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
                     /W4 /permissive-)
             endif()
         endif()
+    endif()
+endif()
+
+if(DESKLINK_BUILD_SECURE_INPUT_RND)
+    if(NOT WIN32)
+        message(FATAL_ERROR
+            "DESKLINK_BUILD_SECURE_INPUT_RND is available only on Windows")
+    endif()
+    add_executable(desklink_secure_service
+        apps/desklink_secure_service.cpp)
+    add_executable(desklink_secure_input_helper
+        apps/desklink_secure_input_helper.cpp)
+    target_link_libraries(desklink_secure_service PRIVATE
+        advapi32 ole32 shell32 wtsapi32)
+    target_link_libraries(desklink_secure_input_helper PRIVATE
+        advapi32 user32 wtsapi32)
+    target_compile_definitions(desklink_secure_service PRIVATE
+        UNICODE _UNICODE DESKLINK_SECURE_INPUT_RND=1)
+    target_compile_definitions(desklink_secure_input_helper PRIVATE
+        UNICODE _UNICODE DESKLINK_SECURE_INPUT_RND=1)
+    if(MSVC)
+        foreach(Target desklink_secure_service desklink_secure_input_helper)
+            target_compile_options(${Target} PRIVATE /W4 /permissive-)
+            target_link_options(${Target} PRIVATE
+                "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
+        endforeach()
+    endif()
+    if(DESKLINK_BUILD_TESTS)
+        add_test(NAME desklink_secure_service_self_test
+            COMMAND desklink_secure_service --self-test)
+        add_test(NAME desklink_secure_input_helper_self_test
+            COMMAND desklink_secure_input_helper --self-test)
     endif()
 endif()
 

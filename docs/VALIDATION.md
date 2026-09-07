@@ -306,6 +306,24 @@ normal desktop re-arms roaming; and a fresh edge crossing works without pairing
 or reconnecting. This interactive UAC check is not simulated or silently
 approved by CI.
 
+### Secure-input R&D validation
+
+Normal Windows CI builds the default-off R&D targets explicitly and runs their
+nonprivileged self-tests. `Test-SecureInputRAndDContracts.ps1` rejects product
+packaging, networking, arbitrary process/command mechanisms, private-key
+export APIs, UIAccess, UAC-policy changes, automatic service startup, and loss
+of the fixed Program Files/session/desktop checks. Portable tests reject absent
+or stale grants, wrong certificate hash, nonce, epoch, revision, replayed
+sequence, invalid operation, and expired lease.
+
+CI does not install or run a LocalSystem service and cannot claim UAC desktop
+access. The physical lab gate must use the separate explicit R&D script on an
+approved Windows 11 PC, record the installed hashes and service DACL, run the
+Default release probe, open a benign UAC prompt, run the fixed secure Escape
+probe, and confirm the prompt cancels. Then stop/uninstall the manual service
+and verify both files and the service registration are gone. No prompt may be
+approved by this probe.
+
 ### Phase 3 configurator validation
 
 Portable tests build EDID-sized and DPI-estimated display cards, retain saved

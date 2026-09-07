@@ -139,6 +139,26 @@ The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
 work does not wait for unavailable hardware.
 
+## UAC secure-desktop input R&D
+
+The user-mode service/helper path is approved for staged investigation before
+any kernel driver. The default-off validation foundation is implemented: a
+networkless LocalSystem service can launch only a fixed SYSTEM helper into the
+active console session's exact `Default` or `Winlogon` desktop, and the helper
+currently exposes release-only and UAC-cancel probes. A portable authorization
+gate requires an explicit grant, exact peer machine/certificate DER hash,
+session nonce, focus epoch, monotonic revision/sequence, and a 100-2000 ms
+lease.
+
+The next gate is controlled physical validation of those fixed probes. Product
+integration may not begin until DeskLink has production code signing and an
+administrator-protected machine-wide install from which the service can
+independently authenticate the runtime. The current-user LocalAppData runtime
+and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC
+approval, credential UI, secure-desktop video, lock/sign-in desktop control,
+and a kernel driver remain out of scope. Full design and stop conditions are in
+[`UAC_SECURE_INPUT.md`](UAC_SECURE_INPUT.md).
+
 ## Post-roaming milestones
 
 Work proceeds in this order. Automated and single-machine fault work may begin

@@ -86,6 +86,9 @@ room propagation, or microphone capture latency. See
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
+- Default-off secure-desktop R&D foundation with a networkless LocalSystem
+  service, fixed active-session helper, and exact lease/identity/nonce/epoch/
+  sequence authorization model; it is not product-integrated or packaged
 - Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
 - Bounded pointer gain (25-400%) and optional source-DPI normalization without
   changing either PC's Windows mouse settings
@@ -163,6 +166,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Microsoft production signing/certification and physical zero-microphone and
   Discord qualification for the optional virtual-microphone driver
+- Production-signed, protected-install secure-input authorization and physical
+  UAC validation; the current service/helper code is a cancel-only lab probe
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Production-signed Windows 11 installer/update qualification, physical
@@ -170,6 +175,8 @@ The following are intentionally kept behind interfaces and are the next producti
   polish, and Stream Deck plugin
 
 See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact boundary.
+The secure-desktop investigation and its explicit stop boundary are documented
+in [`docs/UAC_SECURE_INPUT.md`](docs/UAC_SECURE_INPUT.md).
 Current release-specific defects and workarounds are tracked in
 [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md).
 

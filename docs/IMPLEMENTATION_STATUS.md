@@ -24,6 +24,7 @@ The current build proves the core invariants independently of Windows networking
 | Emergency fail-local | Done | Explicit state transition |
 | Input cleanup contract | Done | Backend callback on failure/release |
 | Windows SendInput injector | Done | Built only on Windows |
+| UAC secure-input R&D boundary | Validation foundation implemented; product integration blocked | Default-off networkless LocalSystem service and fixed active-session SYSTEM helper; Program Files/manual-service lab harness; fixed release/cancel probes only; portable exact grant/pin/nonce/epoch/sequence/lease gate. No product IPC, packaging, UAC approval, credential handling, lock-screen input, or secure-desktop video. Production signing and protected machine-wide authorization remain mandatory. |
 | Windows physical input capture | Done | Low-level non-injected keyboard scan codes plus Raw Input mouse, bounded 1024-event queue, relative-motion coalescing, and a 50 ms fail-local input-desktop gate that pauses on UAC/secure desktop and re-arms on `Default` without dropping TLS |
 | Low-level suppression gate | Done | Atomic route flag, injected-event pass-through, Ctrl+Alt+Pause/Break fail-local |
 | Input-state reconciliation | Done | Reliable 500 ms snapshots; normal/extended keys and five buttons; owned-state convergence |
@@ -223,7 +224,8 @@ Do not add these to solve early implementation friction:
 
 - generic remote shell
 - arbitrary command execution API
-- SYSTEM service owning the whole application
+- SYSTEM service owning the whole application; the isolated secure-input R&D
+  service is validation-only and cannot own product networking or policy
 - permanent elevation
 - virtual HID driver
 - any virtual audio driver beyond the implemented optional microphone-only

@@ -15,6 +15,7 @@
 #include "desklink/protocol.hpp"
 #include "desklink/roaming.hpp"
 #include "desklink/roaming_runtime.hpp"
+#include "desklink/secure_input.hpp"
 #include "desklink/runtime_broker.hpp"
 #include "desklink/product_shell.hpp"
 #include "desklink/session.hpp"
@@ -6650,6 +6651,60 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
     CHECK(Injector.release_calls >= 2);
 }
 
+void SecureInputAuthorizationIsExactAndLeaseBound() {
+    using namespace desklink;
+
+    ManualClock Clock;
+    SecureInputAuthorizationGate Gate(Clock);
+    SecureInputGrant Grant;
+    Grant.PeerMachine[0] = 0x31;
+    Grant.PeerCertificateDerHash[0] = 0x72;
+    Grant.SessionNonce = 41;
+    Grant.Epoch = 9;
+    Grant.GrantRevision = 3;
+    Grant.AllowSecureDesktopInput = true;
+
+    CHECK(!Gate.Authorize(Grant, std::chrono::milliseconds(99)));
+    CHECK(!Gate.Authorized());
+    CHECK(Gate.Authorize(Grant, std::chrono::milliseconds(750)));
+
+    SecureInputEnvelope Envelope;
+    Envelope.PeerMachine = Grant.PeerMachine;
+    Envelope.PeerCertificateDerHash = Grant.PeerCertificateDerHash;
+    Envelope.SessionNonce = Grant.SessionNonce;
+    Envelope.Epoch = Grant.Epoch;
+    Envelope.GrantRevision = Grant.GrantRevision;
+    Envelope.Sequence = 1;
+    Envelope.Operation = SecureInputOperation::Key;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::Accepted);
+
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedSequence);
+    Envelope.Sequence = 2;
+    ++Envelope.SessionNonce;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedSession);
+    Envelope.SessionNonce = Grant.SessionNonce;
+    ++Envelope.Epoch;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedEpoch);
+    Envelope.Epoch = Grant.Epoch;
+    Envelope.PeerCertificateDerHash[0] ^= 0xff;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedIdentity);
+    Envelope.PeerCertificateDerHash = Grant.PeerCertificateDerHash;
+    Envelope.Operation = static_cast<SecureInputOperation>(0xff);
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedOperation);
+
+    Clock.advance(std::chrono::milliseconds(750));
+    Envelope.Operation = SecureInputOperation::ReleaseOwnedState;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedExpired);
+    CHECK(!Gate.Authorized());
+
+    // A stale or replayed grant revision cannot become authoritative again.
+    CHECK(!Gate.Authorize(Grant, std::chrono::milliseconds(750)));
+    ++Grant.GrantRevision;
+    CHECK(Gate.Authorize(Grant, std::chrono::milliseconds(2'000)));
+    Gate.Revoke();
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedNoGrant);
+}
+
 #ifdef DESKLINK_BUILD_VOICE
 void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     using namespace desklink;
@@ -7025,6 +7080,7 @@ int main() {
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
     UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
+    SecureInputAuthorizationIsExactAndLeaseBound();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();
     out_of_order_pointer_rejected();

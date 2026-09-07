@@ -562,7 +562,14 @@ UIPI, increase privilege, change trust, or silently replace identity.
 
 Do not permanently elevate DeskLink merely to bypass this boundary.
 
-If elevated injection is ever required, implement it as a separately installed, separately granted component with a tightly scoped API.
+The approved UAC investigation uses a default-off, separately staged
+LocalSystem service and per-session SYSTEM helper. It is not product-integrated
+or packaged. The service has no network stack and the cancel-only lab helper
+accepts no caller-supplied key, pointer, path, command, or data. Future product
+input requires a machine-protected explicit grant plus independent exact peer
+pin, session nonce, focus epoch, monotonic sequence, and short lease checks.
+The ordinary current-user pipe or a LocalAppData binary is not sufficient
+authentication for a SYSTEM boundary. See `UAC_SECURE_INPUT.md`.
 
 ---
 
