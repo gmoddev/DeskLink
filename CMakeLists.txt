@@ -461,6 +461,15 @@ if(DESKLINK_BUILD_SECURE_INPUT_RND)
             COMMAND desklink_secure_service --self-test)
         add_test(NAME desklink_secure_input_helper_self_test
             COMMAND desklink_secure_input_helper --self-test)
+        add_test(NAME desklink_secure_service_rejects_console_launch
+            COMMAND desklink_secure_service)
+        add_test(NAME desklink_secure_helper_rejects_unprivileged_probe
+            COMMAND desklink_secure_input_helper
+                --service-probe default-release)
+        set_tests_properties(
+            desklink_secure_service_rejects_console_launch
+            desklink_secure_helper_rejects_unprivileged_probe
+            PROPERTIES WILL_FAIL TRUE)
     endif()
 endif()
 

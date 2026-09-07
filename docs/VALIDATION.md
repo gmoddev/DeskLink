@@ -308,8 +308,9 @@ approved by CI.
 
 ### Secure-input R&D validation
 
-Normal Windows CI builds the default-off R&D targets explicitly and runs their
-nonprivileged self-tests. `Test-SecureInputRAndDContracts.ps1` rejects product
+Normal Windows CI builds the default-off R&D targets explicitly, runs their
+nonprivileged self-tests, and proves console service launch and an unprivileged
+helper probe are rejected. `Test-SecureInputRAndDContracts.ps1` rejects product
 packaging, networking, arbitrary process/command mechanisms, private-key
 export APIs, UIAccess, UAC-policy changes, automatic service startup, and loss
 of the fixed Program Files/session/desktop checks. Portable tests reject absent
