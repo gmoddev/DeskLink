@@ -52,7 +52,9 @@ function Invoke-ProbeControl([int] $Control, [string] $Description) {
         Start-Sleep -Milliseconds 100
         $Service.Refresh()
         if ($Service.Status -ne 'Running') {
-            throw "$Description failed closed and stopped the validation service."
+            $ServiceExit = (& sc.exe query $ServiceName |
+                Select-String 'SERVICE_EXIT_CODE').Line.Trim()
+            throw "$Description failed closed and stopped the validation service ($ServiceExit)."
         }
     }
 }

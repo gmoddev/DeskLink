@@ -119,7 +119,8 @@ bool IsSessionUnlocked(DWORD SessionId) noexcept {
     return Unlocked;
 }
 
-bool LaunchFixedProbe(bool SecureDesktop) {
+bool LaunchFixedProbe(bool SecureDesktop, DWORD& FailureCode) {
+    FailureCode = ERROR_ACCESS_DENIED;
     if (!IsLocalSystem()) {
         Log(L"probe refused because the service is not LocalSystem");
         return false;
@@ -200,14 +201,22 @@ bool LaunchFixedProbe(bool SecureDesktop) {
     CloseHandle(Process.hThread);
     const DWORD Wait = WaitForSingleObject(Process.hProcess, 5'000);
     DWORD ExitCode = ERROR_PROCESS_ABORTED;
-    bool Completed = Wait == WAIT_OBJECT_0 &&
-        GetExitCodeProcess(Process.hProcess, &ExitCode) && ExitCode == 0;
+    const bool ReadExitCode = Wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(Process.hProcess, &ExitCode);
+    bool Completed = ReadExitCode && ExitCode == 0;
     if (Wait == WAIT_TIMEOUT) {
         // The helper is a fixed, single-operation child. A hung probe must not
         // retain SYSTEM authority after its bounded control request expires.
         (void)TerminateProcess(Process.hProcess, ERROR_TIMEOUT);
         (void)WaitForSingleObject(Process.hProcess, 1'000);
         Completed = false;
+    }
+    if (Wait == WAIT_OBJECT_0 && !ReadExitCode) {
+        FailureCode = 1'997;
+    } else if (Wait == WAIT_OBJECT_0 && ExitCode != 0) {
+        FailureCode = 1'000 + ExitCode;
+    } else if (Wait == WAIT_TIMEOUT) {
+        FailureCode = 1'999;
     }
     CloseHandle(Process.hProcess);
     if (!Completed) {
@@ -241,24 +250,30 @@ DWORD WINAPI ServiceControlHandler(
             ReportServiceStatus(SERVICE_STOP_PENDING);
             if (StopEvent) SetEvent(StopEvent);
             return NO_ERROR;
-        case kControlDefaultReleaseProbe:
+        case kControlDefaultReleaseProbe: {
+            DWORD FailureCode{};
             try {
-                if (LaunchFixedProbe(false)) return NO_ERROR;
+                if (LaunchFixedProbe(false, FailureCode)) return NO_ERROR;
             } catch (...) {
                 Log(L"Default-desktop probe failed with an internal exception");
+                FailureCode = 1'998;
             }
-            TerminalProbeError.store(ERROR_ACCESS_DENIED);
+            TerminalProbeError.store(FailureCode);
             if (StopEvent) SetEvent(StopEvent);
             return NO_ERROR;
-        case kControlSecureCancelProbe:
+        }
+        case kControlSecureCancelProbe: {
+            DWORD FailureCode{};
             try {
-                if (LaunchFixedProbe(true)) return NO_ERROR;
+                if (LaunchFixedProbe(true, FailureCode)) return NO_ERROR;
             } catch (...) {
                 Log(L"secure-desktop probe failed with an internal exception");
+                FailureCode = 1'998;
             }
-            TerminalProbeError.store(ERROR_ACCESS_DENIED);
+            TerminalProbeError.store(FailureCode);
             if (StopEvent) SetEvent(StopEvent);
             return NO_ERROR;
+        }
         default:
             return ERROR_CALL_NOT_IMPLEMENTED;
     }
@@ -283,7 +298,13 @@ void WINAPI ServiceMain(DWORD, wchar_t**) noexcept {
     WaitForSingleObject(StopEvent, INFINITE);
     CloseHandle(StopEvent);
     StopEvent = nullptr;
-    ReportServiceStatus(SERVICE_STOPPED, TerminalProbeError.load());
+    const DWORD ProbeError = TerminalProbeError.load();
+    if (ProbeError == ERROR_SUCCESS) {
+        ReportServiceStatus(SERVICE_STOPPED);
+    } else {
+        ServiceStatus.dwServiceSpecificExitCode = ProbeError;
+        ReportServiceStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR);
+    }
 }
 
 int SelfTest() {

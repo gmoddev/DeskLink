@@ -59,6 +59,7 @@ if ($Helper -notmatch 'CheckTokenMembership' -or
     $Helper -notmatch 'OpenInputDesktop' -or
     $Helper -notmatch 'consent\.exe' -or
     $Helper -notmatch 'KEYEVENTF_SCANCODE' -or
+    $Helper -notmatch 'DesktopTransitionTimedOut = 27' -or
     $Helper -notmatch 'ActiveInputDesktopName\(\)[\s\S]{0,100}L"Default"' -or
     $Helper -notmatch 'UOI_NAME' -or
     $Helper -notmatch 'secure-cancel' -or
@@ -70,6 +71,7 @@ if ($InstallScript -notmatch 'StartupType Manual' -or
     $InstallScript -notmatch 'ConfirmExperimental' -or
     $InstallScript -notmatch 'sdset' -or
     $InstallScript -notmatch 'failed closed and stopped' -or
+    $InstallScript -notmatch 'SERVICE_EXIT_CODE' -or
     $InstallScript -match '(?i)AutomaticDelayedStart|start=\s*auto') {
     throw 'The lab harness must remain explicit, manual-start, and R&D-only.'
 }

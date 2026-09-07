@@ -19,6 +19,20 @@ enum class ProbeOperation {
     SecureCancel,
 };
 
+enum class ProbeExitCode : int {
+    Success = 0,
+    InvalidExecutionContext = 10,
+    ReleaseFailed = 11,
+    ForegroundUnavailable = 20,
+    ForegroundProcessUnavailable = 21,
+    ForegroundImageUnavailable = 22,
+    ForegroundIsNotConsent = 23,
+    InputDesktopChanged = 24,
+    EscapeScanCodeUnavailable = 25,
+    SendInputFailed = 26,
+    DesktopTransitionTimedOut = 27,
+};
+
 void Log(std::wstring_view Message) {
     std::wstring Line = L"[SecureInput:Helper] ";
     Line.append(Message);
@@ -158,17 +172,17 @@ bool ReleaseOwnedInput() noexcept {
     return SendInput(Expected, Releases.data(), sizeof(INPUT)) == Expected;
 }
 
-bool CancelSecureDesktopPrompt() noexcept {
+ProbeExitCode CancelSecureDesktopPrompt() noexcept {
     const HWND Foreground = GetForegroundWindow();
     DWORD ProcessId{};
     if (!Foreground ||
         GetWindowThreadProcessId(Foreground, &ProcessId) == 0 ||
         ProcessId == 0) {
-        return false;
+        return ProbeExitCode::ForegroundUnavailable;
     }
     HANDLE Process = OpenProcess(
         PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
-    if (!Process) return false;
+    if (!Process) return ProbeExitCode::ForegroundProcessUnavailable;
     std::array<wchar_t, 32'768> ImagePath{};
     DWORD ImageLength = static_cast<DWORD>(ImagePath.size());
     const BOOL ReadImage = QueryFullProcessImageNameW(
@@ -176,48 +190,55 @@ bool CancelSecureDesktopPrompt() noexcept {
     CloseHandle(Process);
     if (!ReadImage || ImageLength == 0 ||
         ImageLength >= static_cast<DWORD>(ImagePath.size())) {
-        return false;
+        return ProbeExitCode::ForegroundImageUnavailable;
     }
     const std::wstring_view Image(ImagePath.data(), ImageLength);
     const auto Separator = Image.find_last_of(L"\\/");
     const auto BaseName = Separator == std::wstring_view::npos
         ? Image : Image.substr(Separator + 1);
-    if (_wcsicmp(std::wstring(BaseName).c_str(), L"consent.exe") != 0 ||
-        _wcsicmp(ActiveInputDesktopName().c_str(), L"Winlogon") != 0) {
-        return false;
+    if (_wcsicmp(std::wstring(BaseName).c_str(), L"consent.exe") != 0) {
+        return ProbeExitCode::ForegroundIsNotConsent;
+    }
+    if (_wcsicmp(ActiveInputDesktopName().c_str(), L"Winlogon") != 0) {
+        return ProbeExitCode::InputDesktopChanged;
     }
 
     const auto ScanCode = static_cast<WORD>(
         MapVirtualKeyW(VK_ESCAPE, MAPVK_VK_TO_VSC));
-    if (ScanCode == 0) return false;
+    if (ScanCode == 0) return ProbeExitCode::EscapeScanCodeUnavailable;
     std::array<INPUT, 2> Escape = {
         ScanCodeInput(ScanCode, 0),
         ScanCodeInput(ScanCode, KEYEVENTF_KEYUP),
     };
     const auto Expected = static_cast<UINT>(Escape.size());
     if (SendInput(Expected, Escape.data(), sizeof(INPUT)) != Expected) {
-        return false;
+        return ProbeExitCode::SendInputFailed;
     }
     for (std::size_t Attempt = 0; Attempt < 20; ++Attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (_wcsicmp(
                 ActiveInputDesktopName().c_str(), L"Default") == 0) {
-            return true;
+            return ProbeExitCode::Success;
         }
     }
-    return false;
+    return ProbeExitCode::DesktopTransitionTimedOut;
 }
 
 int RunProbe(ProbeOperation Operation) {
-    if (!ValidateExecutionContext(Operation)) return 1;
+    if (!ValidateExecutionContext(Operation)) {
+        return static_cast<int>(ProbeExitCode::InvalidExecutionContext);
+    }
     if (!ReleaseOwnedInput()) {
         Log(L"release-only probe failed closed");
-        return 1;
+        return static_cast<int>(ProbeExitCode::ReleaseFailed);
     }
-    if (Operation == ProbeOperation::SecureCancel &&
-        !CancelSecureDesktopPrompt()) {
-        Log(L"secure-desktop cancel probe failed closed");
-        return 1;
+    if (Operation == ProbeOperation::SecureCancel) {
+        const auto Result = CancelSecureDesktopPrompt();
+        if (Result != ProbeExitCode::Success) {
+            Log(L"secure-desktop cancel probe failed closed at stage " +
+                std::to_wstring(static_cast<int>(Result)));
+            return static_cast<int>(Result);
+        }
     }
     Log(Operation == ProbeOperation::SecureCancel
         ? L"secure-desktop cancel probe completed"
