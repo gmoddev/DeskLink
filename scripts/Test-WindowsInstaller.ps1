@@ -437,6 +437,9 @@ try {
         throw 'Legacy product-shell background launch retained the WinUI process.'
     }
     Wait-ForBrokerReady
+    if ((Get-StartupCommand) -ne $ProductStartup) {
+        throw 'The product broker did not repair the legacy sign-in startup command.'
+    }
     $Broker = Get-CimInstance Win32_Process | Where-Object {
         $_.ExecutablePath -eq (Join-Path $InstallPath 'desklink_runtime.exe')
     } | Select-Object -First 1
@@ -527,8 +530,8 @@ try {
     Assert-InstalledPayload
     Assert-IdentitySnapshot $IdentityBefore 'Rollback'
     Assert-PreservedStateHashes $StateHashesBefore
-    if ((Get-StartupCommand) -ne $LegacyStartup) {
-        throw 'Rollback did not restore the exact pre-update startup command.'
+    if ((Get-StartupCommand) -ne $ProductStartup) {
+        throw 'Rollback did not preserve the repaired pre-update startup command.'
     }
 
     $InstallGate = [Threading.Mutex]::new($false, 'Local\DeskLink.Install.v1')
