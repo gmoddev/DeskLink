@@ -57,6 +57,9 @@ if ($Helper -notmatch 'CheckTokenMembership' -or
     $Helper -notmatch 'WTSGetActiveConsoleSessionId' -or
     $Helper -notmatch 'WTS_SESSIONSTATE_UNLOCK' -or
     $Helper -notmatch 'OpenInputDesktop' -or
+    $Helper -notmatch 'consent\.exe' -or
+    $Helper -notmatch 'KEYEVENTF_SCANCODE' -or
+    $Helper -notmatch 'ActiveInputDesktopName\(\)[\s\S]{0,100}L"Default"' -or
     $Helper -notmatch 'UOI_NAME' -or
     $Helper -notmatch 'secure-cancel' -or
     $Helper -match '(?i)username|password|credential|clipboard') {

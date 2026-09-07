@@ -83,8 +83,10 @@ by the product build.
 - accepts no path, process, command line, scan code, pointer coordinate, text,
   credential, or network input;
 - the Default probe releases modifier and mouse-button state only; and
-- the secure probe performs the same release and sends Escape to cancel a UAC
-  dialog. It cannot approve a prompt or select a consent credential.
+- the secure probe performs the same release and sends Escape only when
+  `consent.exe` owns the foreground. It uses an Escape scan code and reports
+  success only after the active input desktop returns to `Default`. It cannot
+  approve a prompt or select a consent credential.
 
 The lab installer is intentionally separate from the DeskLink installer. It
 requires elevation plus `-ConfirmExperimental -DenyProductIntegration`, stages

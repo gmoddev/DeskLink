@@ -5,10 +5,12 @@
 #include <wtsapi32.h>
 
 #include <array>
+#include <chrono>
 #include <cwchar>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -122,6 +124,14 @@ INPUT KeyInput(WORD VirtualKey, DWORD Flags) noexcept {
     return Input;
 }
 
+INPUT ScanCodeInput(WORD ScanCode, DWORD Flags) noexcept {
+    INPUT Input{};
+    Input.type = INPUT_KEYBOARD;
+    Input.ki.wScan = ScanCode;
+    Input.ki.dwFlags = KEYEVENTF_SCANCODE | Flags;
+    return Input;
+}
+
 INPUT MouseInput(DWORD Flags, DWORD Data = 0) noexcept {
     INPUT Input{};
     Input.type = INPUT_MOUSE;
@@ -149,12 +159,53 @@ bool ReleaseOwnedInput() noexcept {
 }
 
 bool CancelSecureDesktopPrompt() noexcept {
+    const HWND Foreground = GetForegroundWindow();
+    DWORD ProcessId{};
+    if (!Foreground ||
+        GetWindowThreadProcessId(Foreground, &ProcessId) == 0 ||
+        ProcessId == 0) {
+        return false;
+    }
+    HANDLE Process = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+    if (!Process) return false;
+    std::array<wchar_t, 32'768> ImagePath{};
+    DWORD ImageLength = static_cast<DWORD>(ImagePath.size());
+    const BOOL ReadImage = QueryFullProcessImageNameW(
+        Process, 0, ImagePath.data(), &ImageLength);
+    CloseHandle(Process);
+    if (!ReadImage || ImageLength == 0 ||
+        ImageLength >= static_cast<DWORD>(ImagePath.size())) {
+        return false;
+    }
+    const std::wstring_view Image(ImagePath.data(), ImageLength);
+    const auto Separator = Image.find_last_of(L"\\/");
+    const auto BaseName = Separator == std::wstring_view::npos
+        ? Image : Image.substr(Separator + 1);
+    if (_wcsicmp(std::wstring(BaseName).c_str(), L"consent.exe") != 0 ||
+        _wcsicmp(ActiveInputDesktopName().c_str(), L"Winlogon") != 0) {
+        return false;
+    }
+
+    const auto ScanCode = static_cast<WORD>(
+        MapVirtualKeyW(VK_ESCAPE, MAPVK_VK_TO_VSC));
+    if (ScanCode == 0) return false;
     std::array<INPUT, 2> Escape = {
-        KeyInput(VK_ESCAPE, 0),
-        KeyInput(VK_ESCAPE, KEYEVENTF_KEYUP),
+        ScanCodeInput(ScanCode, 0),
+        ScanCodeInput(ScanCode, KEYEVENTF_KEYUP),
     };
     const auto Expected = static_cast<UINT>(Escape.size());
-    return SendInput(Expected, Escape.data(), sizeof(INPUT)) == Expected;
+    if (SendInput(Expected, Escape.data(), sizeof(INPUT)) != Expected) {
+        return false;
+    }
+    for (std::size_t Attempt = 0; Attempt < 20; ++Attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (_wcsicmp(
+                ActiveInputDesktopName().c_str(), L"Default") == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 int RunProbe(ProbeOperation Operation) {

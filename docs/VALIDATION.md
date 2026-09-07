@@ -321,7 +321,8 @@ CI does not install or run a LocalSystem service and cannot claim UAC desktop
 access. The physical lab gate must use the separate explicit R&D script on an
 approved Windows 11 PC, record the installed hashes and service DACL, run the
 Default release probe, open a benign UAC prompt, run the fixed secure Escape
-probe, and confirm the prompt cancels. Then stop/uninstall the manual service
+probe, and require both the helper's `Winlogon`-to-`Default` postcondition and
+visual confirmation that the prompt cancels. Then stop/uninstall the service
 and verify both files and the service registration are gone. No prompt may be
 approved by this probe.
 
