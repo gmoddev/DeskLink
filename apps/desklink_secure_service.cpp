@@ -252,25 +252,29 @@ DWORD WINAPI ServiceControlHandler(
             return NO_ERROR;
         case kControlDefaultReleaseProbe: {
             DWORD FailureCode{};
+            bool Succeeded{};
             try {
-                if (LaunchFixedProbe(false, FailureCode)) return NO_ERROR;
+                Succeeded = LaunchFixedProbe(false, FailureCode);
             } catch (...) {
                 Log(L"Default-desktop probe failed with an internal exception");
                 FailureCode = 1'998;
             }
-            TerminalProbeError.store(FailureCode);
+            TerminalProbeError.store(
+                Succeeded ? ERROR_SUCCESS : FailureCode);
             if (StopEvent) SetEvent(StopEvent);
             return NO_ERROR;
         }
         case kControlSecureCancelProbe: {
             DWORD FailureCode{};
+            bool Succeeded{};
             try {
-                if (LaunchFixedProbe(true, FailureCode)) return NO_ERROR;
+                Succeeded = LaunchFixedProbe(true, FailureCode);
             } catch (...) {
                 Log(L"secure-desktop probe failed with an internal exception");
                 FailureCode = 1'998;
             }
-            TerminalProbeError.store(FailureCode);
+            TerminalProbeError.store(
+                Succeeded ? ERROR_SUCCESS : FailureCode);
             if (StopEvent) SetEvent(StopEvent);
             return NO_ERROR;
         }

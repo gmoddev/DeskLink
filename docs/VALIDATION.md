@@ -322,9 +322,10 @@ access. The physical lab gate must use the separate explicit R&D script on an
 approved Windows 11 PC, record the installed hashes and service DACL, run the
 Default release probe, open a benign UAC prompt, run the fixed secure Escape
 probe, and require both the helper's `Winlogon`-to-`Default` postcondition and
-visual confirmation that the prompt cancels. Then stop/uninstall the service
-and verify both files and the service registration are gone. No prompt may be
-approved by this probe.
+visual confirmation that the prompt cancels. Each probe is one-shot: the
+service must stop and expose zero Win32/service exit codes before the script
+reports success. Then uninstall the service and verify both files and the
+service registration are gone. No prompt may be approved by this probe.
 
 That fixed-probe gate passed on Windows 11 Pro build 26200 on 2026-09-07 at
 source revision `162368a`. The current-build Default release probe completed;

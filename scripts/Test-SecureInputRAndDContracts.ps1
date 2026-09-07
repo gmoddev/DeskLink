@@ -48,6 +48,7 @@ if ($Service -notmatch 'CreateProcessAsUserW' -or
     $Service -notmatch 'WaitForSingleObject' -or
     $Service -notmatch 'GetExitCodeProcess' -or
     $Service -notmatch 'TerminalProbeError' -or
+    $Service -notmatch 'Succeeded \? ERROR_SUCCESS : FailureCode' -or
     $Service -notmatch 'FOLDERID_ProgramFiles' -or
     $Service -notmatch 'FILE_ATTRIBUTE_REPARSE_POINT' -or
     $Service -notmatch 'DeskLinkSecureInputRnd') {
@@ -72,8 +73,10 @@ if ($InstallScript -notmatch 'StartupType Manual' -or
     $InstallScript -notmatch 'DenyProductIntegration' -or
     $InstallScript -notmatch 'ConfirmExperimental' -or
     $InstallScript -notmatch 'sdset' -or
-    $InstallScript -notmatch 'failed closed and stopped' -or
+    $InstallScript -notmatch 'failed closed' -or
     $InstallScript -notmatch 'SERVICE_EXIT_CODE' -or
+    $InstallScript -notmatch 'WIN32_EXIT_CODE' -or
+    $InstallScript -notmatch 'timed out; the validation service was stopped' -or
     $InstallScript -match '(?i)AutomaticDelayedStart|start=\s*auto') {
     throw 'The lab harness must remain explicit, manual-start, and R&D-only.'
 }

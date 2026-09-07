@@ -186,7 +186,7 @@ bool ReleaseOwnedInput() noexcept {
     return SendInput(Expected, Releases.data(), sizeof(INPUT)) == Expected;
 }
 
-ProbeExitCode CancelSecureDesktopPrompt() noexcept {
+ProbeExitCode ValidateSecureConsentForeground() noexcept {
     const HWND Foreground = GetForegroundWindow();
     DWORD ProcessId{};
     if (!Foreground ||
@@ -216,6 +216,18 @@ ProbeExitCode CancelSecureDesktopPrompt() noexcept {
     if (_wcsicmp(ActiveInputDesktopName().c_str(), L"Winlogon") != 0) {
         return ProbeExitCode::InputDesktopChanged;
     }
+    return ProbeExitCode::Success;
+}
+
+ProbeExitCode CancelSecureDesktopPrompt() noexcept {
+    auto Result = ValidateSecureConsentForeground();
+    if (Result != ProbeExitCode::Success) return Result;
+    if (!ReleaseOwnedInput()) return ProbeExitCode::ReleaseFailed;
+
+    // Recheck after releasing owned state so a foreground transition cannot
+    // turn the following Escape into input for another secure surface.
+    Result = ValidateSecureConsentForeground();
+    if (Result != ProbeExitCode::Success) return Result;
 
     const auto ScanCode = static_cast<WORD>(
         MapVirtualKeyW(VK_ESCAPE, MAPVK_VK_TO_VSC));
@@ -243,11 +255,12 @@ int RunProbe(ProbeOperation Operation) {
     if (ContextResult != ProbeExitCode::Success) {
         return static_cast<int>(ContextResult);
     }
-    if (!ReleaseOwnedInput()) {
-        Log(L"release-only probe failed closed");
-        return static_cast<int>(ProbeExitCode::ReleaseFailed);
-    }
-    if (Operation == ProbeOperation::SecureCancel) {
+    if (Operation == ProbeOperation::DefaultRelease) {
+        if (!ReleaseOwnedInput()) {
+            Log(L"release-only probe failed closed");
+            return static_cast<int>(ProbeExitCode::ReleaseFailed);
+        }
+    } else {
         const auto Result = CancelSecureDesktopPrompt();
         if (Result != ProbeExitCode::Success) {
             Log(L"secure-desktop cancel probe failed closed at stage " +

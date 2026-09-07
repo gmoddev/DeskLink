@@ -41,22 +41,37 @@ function Get-ServiceIfPresent {
 
 function Invoke-ProbeControl([int] $Control, [string] $Description) {
     $Service = Get-ServiceIfPresent
-    if (-not $Service -or $Service.Status -ne 'Running') {
-        throw "$ServiceName must be installed and running before $Description."
+    if (-not $Service) {
+        throw "$ServiceName must be installed before $Description."
+    }
+    if ($Service.Status -eq 'Stopped') {
+        Start-Service -Name $ServiceName
+        $Service.Refresh()
+    }
+    if ($Service.Status -ne 'Running') {
+        throw "$ServiceName could not enter Running before $Description."
     }
     & sc.exe control $ServiceName $Control | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "$Description could not be delivered to the service."
     }
-    for ($Attempt = 0; $Attempt -lt 20; ++$Attempt) {
+    for ($Attempt = 0; $Attempt -lt 80; ++$Attempt) {
         Start-Sleep -Milliseconds 100
         $Service.Refresh()
-        if ($Service.Status -ne 'Running') {
-            $ServiceExit = (& sc.exe query $ServiceName |
+        if ($Service.Status -eq 'Stopped') {
+            $Query = & sc.exe query $ServiceName
+            $Win32Exit = ($Query | Select-String 'WIN32_EXIT_CODE').Line.Trim()
+            $ServiceExit = ($Query |
                 Select-String 'SERVICE_EXIT_CODE').Line.Trim()
-            throw "$Description failed closed and stopped the validation service ($ServiceExit)."
+            if ($Win32Exit -match ':\s+0\s+' -and
+                $ServiceExit -match ':\s+0\s+') {
+                return
+            }
+            throw "$Description failed closed ($Win32Exit; $ServiceExit)."
         }
     }
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    throw "$Description timed out; the validation service was stopped."
 }
 
 switch ($Action) {
@@ -108,7 +123,7 @@ switch ($Action) {
                 throw 'The restricted service DACL could not be applied.'
             }
             Start-Service -Name $ServiceName
-            Write-Host '[SecureInput:RAndD] validation service installed with Manual startup.'
+            Write-Host '[SecureInput:RAndD] one-shot validation service installed with Manual startup.'
         }
         break
     }

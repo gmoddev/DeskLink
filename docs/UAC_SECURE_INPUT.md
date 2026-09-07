@@ -66,8 +66,9 @@ by the product build.
   and launches one fixed non-reparse sibling path with `CreateProcessAsUser`;
 - waits at most five seconds for that one-operation child and fails the probe
   unless the helper exits successfully;
-- stops with an error after any refused/failed probe so the lab harness cannot
-  confuse service-control delivery with successful input execution;
+- stops after every probe with an explicit success or service-specific failure
+  status so the lab harness cannot confuse service-control delivery with
+  successful input execution;
 - accepts only two lab controls: a Default-desktop release probe and a
   Winlogon-desktop cancel probe; and
 - has manual startup and an admin/SYSTEM-only start, stop, reconfigure, and
@@ -83,10 +84,11 @@ by the product build.
 - accepts no path, process, command line, scan code, pointer coordinate, text,
   credential, or network input;
 - the Default probe releases modifier and mouse-button state only; and
-- the secure probe performs the same release and sends Escape only when
-  `consent.exe` owns the foreground. It uses an Escape scan code and reports
-  success only after the active input desktop returns to `Default`. It cannot
-  approve a prompt or select a consent credential.
+- the secure probe verifies that `consent.exe` owns the foreground before
+  releasing owned state, rechecks it afterward, then sends Escape. It uses an
+  Escape scan code and reports success only after the active input desktop
+  returns to `Default`. It cannot approve a prompt or select a consent
+  credential.
 
 The lab installer is intentionally separate from the DeskLink installer. It
 requires elevation plus `-ConfirmExperimental -DenyProductIntegration`, stages
