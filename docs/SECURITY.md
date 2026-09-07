@@ -506,6 +506,15 @@ The Agent should run at normal user integrity.
 
 Windows `SendInput` is subject to UIPI. That means normal DeskLink input should not silently gain authority over higher-integrity applications, secure desktop/UAC, or the Windows login screen.
 
+DeskLink treats that boundary as a temporary, typed safety state. The capture
+gate permits routing only on the ordinary Windows `Default` input desktop. A
+secure, inaccessible, or differently named input desktop clears suppression
+and queued forwarding before returning focus Local; inbound injection rejects
+input as temporarily unavailable. The authenticated TLS session may remain
+connected, but it grants no input authority during the interruption. Returning
+to `Default` may re-arm the already-approved roaming policy; it does not bypass
+UIPI, increase privilege, change trust, or silently replace identity.
+
 Do not permanently elevate DeskLink merely to bypass this boundary.
 
 If elevated injection is ever required, implement it as a separately installed, separately granted component with a tightly scoped API.

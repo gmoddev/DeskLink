@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 
@@ -3260,7 +3261,10 @@ void MainWindow::UpdateDeveloperInputStatus() {
            << (RuntimeState_.RoamingObserverActive ? L"on" : L"off")
            << L" ready_routes=" << RuntimeState_.ReadyRoamingRouteCount
            << L" capture="
-           << (RuntimeState_.CaptureActive ? L"remote" : L"local");
+           << (RuntimeState_.CaptureActive ? L"remote" : L"local")
+           << L" input_desktop="
+           << (RuntimeState_.InputDesktopAvailable
+                   ? L"default" : L"secure-or-unavailable");
     DeveloperInputStatus().Text(Output.str());
 }
 
@@ -3280,6 +3284,24 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
         DiagnosticRuntimePhase().Text(Detail);
         DiagnosticRuntimeFailure().Text(
             RuntimeFailureName(RuntimeState_.RuntimeFailure));
+        if (RuntimeState_.RuntimeProcessExitCodeAvailable) {
+            std::wostringstream Exit;
+            Exit << RuntimeState_.RuntimeProcessExitCode << L" (0x"
+                 << std::uppercase << std::hex << std::setw(8)
+                 << std::setfill(L'0')
+                 << RuntimeState_.RuntimeProcessExitCode << L")";
+            DiagnosticRuntimeExitCode().Text(Exit.str());
+        } else {
+            DiagnosticRuntimeExitCode().Text(L"Not recorded");
+        }
+        DiagnosticInputDesktop().Text(
+            RuntimeState_.InputDesktopAvailable
+                ? L"Default desktop available"
+                : L"Windows secure or inaccessible desktop active; input forwarding is paused");
+        DiagnosticInputSafetyEvent().Text(
+            RuntimeState_.InputDesktopInterruptionObserved
+                ? L"Secure-desktop transition observed; input failed Local and the authenticated connection was preserved"
+                : L"None observed in the current managed runtime");
         DiagnosticRetryStatus().Text(RuntimeRetryStatus(RuntimeState_));
         DiagnosticRecommendedAction().Text(
             RuntimeRecommendedAction(RuntimeState_));
@@ -3300,6 +3322,9 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
     } else {
         DiagnosticRuntimePhase().Text(Presentation.ConnectionDetail);
         DiagnosticRuntimeFailure().Text(L"Runtime state unavailable");
+        DiagnosticRuntimeExitCode().Text(L"Unavailable");
+        DiagnosticInputDesktop().Text(L"Unavailable");
+        DiagnosticInputSafetyEvent().Text(L"Unavailable");
         DiagnosticRetryStatus().Text(L"Unknown");
         DiagnosticRecommendedAction().Text(
             L"Start or repair the DeskLink runtime, then run the check again.");

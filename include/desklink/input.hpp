@@ -11,6 +11,12 @@ namespace desklink {
 class IInputInjector {
 public:
     virtual ~IInputInjector() = default;
+    // Windows secure desktops (for example UAC consent) are intentionally
+    // outside DeskLink's authority. A false result pauses admission/injection
+    // without treating the authenticated transport as malformed.
+    [[nodiscard]] virtual bool InputAvailable() noexcept { return true; }
+    [[nodiscard]] virtual bool InputDesktopInterruptionObserved()
+        const noexcept { return false; }
     virtual bool inject_key(const KeyEventMessage& event) = 0;
     virtual bool inject_button(const MouseButtonMessage& event) = 0;
     virtual bool inject_pointer(const PointerPositionMessage& event) = 0;

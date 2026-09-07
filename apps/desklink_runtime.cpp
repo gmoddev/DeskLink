@@ -594,6 +594,15 @@ public:
         State.RuntimePhase = Runtime.Phase;
         State.RuntimeFailure = Runtime.Failure;
         State.RetryAttempt = Runtime.RetryAttempt;
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (Runtime.Phase ==
+                    desklink::BrokerRuntimePhase::ActionRequired &&
+                LastProcessExitCode_) {
+                State.RuntimeProcessExitCode = *LastProcessExitCode_;
+                State.RuntimeProcessExitCodeAvailable = true;
+            }
+        }
         if (Runtime.Phase == desklink::BrokerRuntimePhase::RetryWaiting) {
             const auto Remaining = Runtime.RetryAt > Clock_.now()
                 ? std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -684,9 +693,12 @@ private:
         Changed_.wait_for(Lock, Duration);
     }
 
-    void RecordFailure(desklink::BrokerRuntimeFailure Failure) noexcept {
+    void RecordFailure(
+        desklink::BrokerRuntimeFailure Failure,
+        std::optional<std::uint32_t> ProcessExitCode = std::nullopt) noexcept {
         {
             std::scoped_lock Lock(Mutex_);
+            LastProcessExitCode_ = ProcessExitCode;
             Reconnect_.ProcessStopped(Failure, Clock_.now());
         }
         Changed_.notify_all();
@@ -743,6 +755,7 @@ private:
         }
         CloseHandle(Process.hThread);
         Process_.Reset(Process.hProcess);
+        LastProcessExitCode_.reset();
         ChildPreferences_ = Preferences;
         RoamingArmed_ = Request.CaptureInput &&
             Request.ProfileDefaultMode == desklink::DeskMode::Roam;
@@ -967,6 +980,7 @@ private:
     [[nodiscard]] bool ConsumeExitedChild() noexcept {
         bool WaitFailed{};
         DWORD ExitCode{};
+        bool ExitCodeAvailable{};
         bool Intentional{};
         bool WasBlocked{};
         {
@@ -978,6 +992,8 @@ private:
             } else if (Wait == WAIT_OBJECT_0) {
                 if (!GetExitCodeProcess(Process_.Get(), &ExitCode)) {
                     ExitCode = desklink::kBrokerManagedActionRequiredProcessExit;
+                } else {
+                    ExitCodeAvailable = true;
                 }
                 Process_.Reset();
                 Intentional = std::exchange(IntentionalStop_, false);
@@ -1001,8 +1017,17 @@ private:
         std::cout << "[Broker:Process] managed transport exited; code="
                   << ExitCode << '\n';
         if (!Intentional && !(WasBlocked && ExitCode == 0)) {
+            const auto Failure =
+                desklink::ClassifyBrokerManagedProcessExit(ExitCode);
             RecordFailure(
-                desklink::ClassifyBrokerManagedProcessExit(ExitCode));
+                Failure,
+                ExitCodeAvailable &&
+                        !desklink::IsRetryableBrokerRuntimeFailure(Failure)
+                    ? std::optional<std::uint32_t>(ExitCode)
+                    : std::nullopt);
+        } else {
+            std::scoped_lock Lock(Mutex_);
+            LastProcessExitCode_.reset();
         }
         Changed_.notify_all();
         return true;
@@ -1104,6 +1129,7 @@ private:
     std::condition_variable Changed_;
     std::thread Worker_;
     UniqueHandle Process_;
+    std::optional<std::uint32_t> LastProcessExitCode_;
     desklink::BrokerReconnectController Reconnect_;
     desklink::ProductPreferences ChildPreferences_;
     std::atomic_uint64_t NextRequestId_{0xC000'0000u};

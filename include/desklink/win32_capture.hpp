@@ -88,6 +88,9 @@ struct Win32CaptureHandlers {
     std::function<void(MouseWheelMessage)> Wheel;
     std::function<void()> ReturnLocal;
     std::function<void()> Emergency;
+    // Called after suppression has synchronously failed local whenever the
+    // active Windows input desktop changes between Default and unavailable.
+    std::function<void(bool Available)> InputDesktopChanged;
     std::function<void(std::string)> Failed;
 };
 

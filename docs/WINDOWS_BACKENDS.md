@@ -88,6 +88,15 @@ not modify global Windows settings. Absolute input devices establish a first
 sample baseline and are converted to relative screen-pixel deltas rather than
 jumping the receiving cursor.
 
+The capture owner also polls the active Windows input desktop every 50 ms.
+Only the case-insensitive `Default` desktop is eligible for routing. An
+inaccessible desktop or any other desktop (including the UAC consent desktop)
+atomically clears suppression before queued input can be forwarded, returns
+focus Local, and preserves the authenticated transport. The capture watcher is
+kept alive while input is unavailable so returning to `Default` re-arms the
+saved roaming policy without a reconnect. It never injects into, attaches to,
+or attempts to bypass the secure desktop.
+
 Physical wheel messages are the deliberate exception to Raw Input authority:
 the low-level mouse hook must enqueue each cumulative wheel delta before it can
 safely suppress the matching local event. It accepts vertical and horizontal
@@ -140,6 +149,14 @@ supplies `--capture`.
 ## 3. Injection boundary
 
 `SendInput` should remain the default injection mechanism.
+
+The injector applies the same `Default`-desktop gate. Focus acquisition is
+temporarily rejected while Windows owns another input desktop, and input that
+arrives during an already-held lease is rejected as unavailable rather than as
+malformed protocol traffic. This distinction prevents an expected UAC
+transition from terminating TLS while retaining UIPI as the authority boundary.
+Held DeskLink-owned state remains subject to the normal bounded snapshot and
+release reconciliation when `Default` returns.
 
 Do not install a virtual HID driver in the initial product merely to make synthetic input look more physical.
 

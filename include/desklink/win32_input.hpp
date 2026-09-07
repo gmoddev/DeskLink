@@ -9,6 +9,10 @@
 
 namespace desklink {
 
+// Returns true only when the interactive input desktop is the ordinary
+// Default desktop. Inaccessible and non-Default desktops fail closed.
+[[nodiscard]] bool IsWin32DefaultInputDesktop() noexcept;
+
 // Moves the pointer just beyond the visible right edge of its current monitor,
 // away from either corner, so an inactive DeskLink PC does not retain a
 // distracting cursor or activate a taskbar/hot-corner target.
@@ -18,6 +22,9 @@ class Win32InputInjector final : public IInputInjector {
 public:
     Win32InputInjector();
 
+    [[nodiscard]] bool InputAvailable() noexcept override;
+    [[nodiscard]] bool InputDesktopInterruptionObserved()
+        const noexcept override;
     bool inject_key(const KeyEventMessage& event) override;
     bool inject_button(const MouseButtonMessage& event) override;
     bool inject_pointer(const PointerPositionMessage& event) override;
@@ -36,6 +43,9 @@ private:
     InputStateSnapshotMessage OwnedState_{};
     Win32DisplayTopology DisplayTopology_;
     std::optional<std::uint64_t> DisplayGeneration_;
+    std::uint64_t NextInputDesktopCheck_{};
+    bool InputDesktopAvailable_{true};
+    bool InputDesktopInterruptionObserved_{};
 };
 
 } // namespace desklink

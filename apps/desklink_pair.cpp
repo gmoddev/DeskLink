@@ -2823,6 +2823,14 @@ public:
 
     void NotifyFocusReady() noexcept {
         if (!Post([this] {
+            if (!InputDesktopAvailable_.load()) {
+                (void)Lifecycle_.ReturnLocal();
+                Roaming_.ReturnLocal();
+                PublishLifecycleStatus();
+                std::cout
+                    << "[Input:SecureDesktop] FocusReady deferred because the Default input desktop is unavailable\n";
+                return;
+            }
             LastBackendFailure_ = BackendFailure::None;
             const bool RoamingTransition =
                 PendingRoamingRequest_.has_value();
@@ -3069,24 +3077,45 @@ public:
         return RoamingObserverActive_.load();
     }
 
+    [[nodiscard]] bool InputDesktopAvailable() const noexcept {
+        return InputDesktopAvailable_.load();
+    }
+
+    [[nodiscard]] bool InputDesktopInterruptionObserved() const noexcept {
+        return InputDesktopInterruptionObserved_.load();
+    }
+
     void DisableCapture() noexcept override {
         CaptureActive_.store(false);
         try {
             std::scoped_lock Lock(CaptureLifetimeMutex_);
             if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
-            RestoreParkedLocalCursorLocked();
+            if (InputDesktopAvailable_.load()) {
+                RestoreParkedLocalCursorLocked();
+            }
         } catch (...) {
         }
     }
 
     void StopCapture() noexcept override {
         CaptureActive_.store(false);
-        RoamingObserverActive_.store(false);
         try {
             {
                 std::scoped_lock Lock(CaptureLifetimeMutex_);
                 if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
-                RestoreParkedLocalCursorLocked();
+                if (InputDesktopAvailable_.load()) {
+                    RestoreParkedLocalCursorLocked();
+                }
+                // Keep the lightweight desktop watcher installed while UAC
+                // owns input. It is what observes Default returning and does
+                // not keep remote routing enabled.
+                if (!InputDesktopAvailable_.load() &&
+                    !Stopping_.load() && Capture_) {
+                    RoamingObserverActive_.store(
+                        RoamingSettings_ != nullptr);
+                    return;
+                }
+                RoamingObserverActive_.store(false);
                 ActiveCapture_ = nullptr;
             }
             if (Capture_) {
@@ -3153,7 +3182,8 @@ public:
     void EnableCapture() noexcept override {
         try {
             std::scoped_lock Lock(CaptureLifetimeMutex_);
-            if (!ActiveCapture_ || FailLocalRequested_.load()) {
+            if (!ActiveCapture_ || FailLocalRequested_.load() ||
+                !InputDesktopAvailable_.load()) {
                 CaptureActive_.store(false);
                 if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
                 return;
@@ -3280,6 +3310,11 @@ private:
             };
             Handlers.Emergency = [Weak] {
                 if (const auto Runtime = Weak.lock()) Runtime->EmergencyRelease();
+            };
+            Handlers.InputDesktopChanged = [Weak](bool Available) {
+                if (const auto Runtime = Weak.lock()) {
+                    Runtime->InputDesktopChanged(Available);
+                }
             };
             Handlers.Failed = [Weak](std::string Message) {
                 if (const auto Runtime = Weak.lock()) {
@@ -3421,6 +3456,11 @@ private:
             if (Profiles_.Decision().Mode != desklink::DeskMode::Roam ||
                 Status.State !=
                     desklink::HostInputLifecycleState::Local) {
+                return;
+            }
+            if (!InputDesktopAvailable_.load()) {
+                std::scoped_lock Lock(CaptureLifetimeMutex_);
+                if (ActiveCapture_) ActiveCapture_->SetRemoteRouting(false);
                 return;
             }
             if (Update.ReadyRouteCount == 0) {
@@ -3859,6 +3899,51 @@ private:
         }
     }
 
+    void InputDesktopChanged(bool Available) noexcept {
+        const bool Previous = InputDesktopAvailable_.exchange(Available);
+        if (Previous == Available) return;
+        if (!Available) {
+            InputDesktopInterruptionObserved_.store(true);
+            CaptureActive_.store(false);
+        }
+        if (!Post([this, Available] {
+                if (!Available) {
+                    Roaming_.BeginReturn();
+                    PendingRoamingRequest_.reset();
+                    PendingLanding_.reset();
+                    const bool Released = Lifecycle_.ReturnLocal();
+                    Roaming_.ReturnLocal();
+                    Host_->Session.FailLocalDirections();
+                    PublishLifecycleStatus();
+                    {
+                        std::scoped_lock Lock(Result_->Mutex);
+                        Result_->Ready = false;
+                    }
+                    Result_->Changed.notify_all();
+                    std::cout
+                        << "[Input:SecureDesktop] Windows secure input desktop active; input returned Local; authenticated session preserved release_sent="
+                        << (Released ? "true" : "false") << '\n';
+                    return;
+                }
+
+                {
+                    std::scoped_lock Lock(CaptureLifetimeMutex_);
+                    RestoreParkedLocalCursorLocked();
+                }
+                if (RoamingSettings_) {
+                    MaintainRoaming();
+                } else {
+                    (void)ApplyDecision();
+                }
+                PublishLifecycleStatus();
+                std::cout
+                    << "[Input:SecureDesktop] Default input desktop restored; input policy re-armed without reconnecting\n";
+            }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal(
+                "secure desktop transition queue overflow");
+        }
+    }
+
     void ForwardKey(desklink::KeyEventMessage Event) noexcept {
         KeyEventsCaptured_.fetch_add(1, std::memory_order_relaxed);
         bool Sent = false;
@@ -4069,6 +4154,8 @@ private:
     std::atomic_uint16_t ReadyRoamingRouteCount_{};
     std::atomic_bool RoamingObserverActive_{};
     std::atomic_bool CaptureActive_{};
+    std::atomic_bool InputDesktopAvailable_{true};
+    std::atomic_bool InputDesktopInterruptionObserved_{};
     std::atomic_bool EmergencyTriggered_{};
     std::atomic_uint64_t KeyEventsCaptured_{};
     std::atomic_uint64_t KeyEventsForwarded_{};
@@ -4202,6 +4289,8 @@ int RunTrusted(const CommandLine& Command,
                 State.ConnectedPeerCount = static_cast<std::uint16_t>(
                     std::min<std::size_t>(Peers.size(),
                         std::numeric_limits<std::uint16_t>::max()));
+                State.InputDesktopAvailable =
+                    desklink::IsWin32DefaultInputDesktop();
                 if (SelectedPeer && ActiveInput) {
                     State.DesiredMode = ActiveInput->DesiredMode();
                     State.CaptureActive = ActiveInput->CaptureActive();
@@ -4214,6 +4303,8 @@ int RunTrusted(const CommandLine& Command,
                         ActiveInput->ReadyRoamingRouteCount();
                     State.RoamingObserverActive =
                         ActiveInput->RoamingObserverActive();
+                    State.InputDesktopInterruptionObserved =
+                        ActiveInput->InputDesktopInterruptionObserved();
                     if (State.RemoteFocused) {
                         State.FocusedMachine = SelectedPeer->PeerMachine;
                     }
@@ -4221,6 +4312,13 @@ int RunTrusted(const CommandLine& Command,
                 if (SelectedPeer && !ActiveInput) {
                     State.PeerDirection = ToControlPeerDirectionState(
                         SelectedPeer->Session.DirectionState());
+                }
+                for (const auto& Runtime : Peers) {
+                    (void)Runtime->Injector.InputAvailable();
+                    State.InputDesktopInterruptionObserved =
+                        State.InputDesktopInterruptionObserved ||
+                        Runtime->Injector
+                            .InputDesktopInterruptionObserved();
                 }
                 if (!State.RemoteFocused) {
                     for (const auto& Runtime : Peers) {

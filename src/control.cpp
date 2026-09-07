@@ -1015,6 +1015,7 @@ void EncodeState(Writer& Output, const ControlState& State) {
     Output.U16(State.AudioGainPermyriad);
     Output.U16(State.RetryAttempt);
     Output.U32(State.RetryDelayMilliseconds);
+    Output.U32(State.RuntimeProcessExitCode);
     Output.U8(static_cast<std::uint8_t>(State.RuntimePhase));
     Output.U8(static_cast<std::uint8_t>(State.RuntimeFailure));
     Output.U8(static_cast<std::uint8_t>(State.RoamingState));
@@ -1025,6 +1026,9 @@ void EncodeState(Writer& Output, const ControlState& State) {
     if (State.CaptureActive) Flags |= 0x02u;
     if (State.AudioMuted) Flags |= 0x04u;
     if (State.RoamingObserverActive) Flags |= 0x08u;
+    if (State.InputDesktopAvailable) Flags |= 0x10u;
+    if (State.InputDesktopInterruptionObserved) Flags |= 0x20u;
+    if (State.RuntimeProcessExitCodeAvailable) Flags |= 0x40u;
     Output.U8(Flags);
 }
 
@@ -1043,6 +1047,7 @@ std::optional<ControlState> DecodeState(Reader& Input) {
         !Input.U16(State.AudioGainPermyriad) ||
         !Input.U16(State.RetryAttempt) ||
         !Input.U32(State.RetryDelayMilliseconds) ||
+        !Input.U32(State.RuntimeProcessExitCode) ||
         !Input.U8(RawRuntimePhase) || !Input.U8(RawRuntimeFailure) ||
         !Input.U8(RawRoamingState) || !Input.U8(RawPeerDirection) ||
         !Input.U16(State.ReadyRoamingRouteCount) ||
@@ -1060,7 +1065,10 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.CaptureActive = (Flags & 0x02u) != 0;
     State.AudioMuted = (Flags & 0x04u) != 0;
     State.RoamingObserverActive = (Flags & 0x08u) != 0;
-    if ((Flags & 0xf0u) != 0 || !IsValidControlState(State)) return std::nullopt;
+    State.InputDesktopAvailable = (Flags & 0x10u) != 0;
+    State.InputDesktopInterruptionObserved = (Flags & 0x20u) != 0;
+    State.RuntimeProcessExitCodeAvailable = (Flags & 0x40u) != 0;
+    if ((Flags & 0x80u) != 0 || !IsValidControlState(State)) return std::nullopt;
     return State;
 }
 
@@ -1292,7 +1300,8 @@ bool IsValidControlState(const ControlState& State) noexcept {
         return false;
     }
     if (State.CaptureActive && (!State.RemoteFocused ||
-                                State.Role != ControlRole::Host)) {
+                                State.Role != ControlRole::Host ||
+                                !State.InputDesktopAvailable)) {
         return false;
     }
     if (State.RemoteFocused && !IsNonzeroMachine(State.FocusedMachine)) {
@@ -1308,6 +1317,14 @@ bool IsValidControlState(const ControlState& State) noexcept {
     }
     if (State.ReadyRoamingRouteCount != 0 &&
         State.RoamingState == ControlRoamingState::Unavailable) {
+        return false;
+    }
+    if (!State.RuntimeProcessExitCodeAvailable &&
+        State.RuntimeProcessExitCode != 0) {
+        return false;
+    }
+    if (State.RuntimeProcessExitCodeAvailable &&
+        State.RuntimePhase != BrokerRuntimePhase::ActionRequired) {
         return false;
     }
     return true;
