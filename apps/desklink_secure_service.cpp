@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cwchar>
 #include <iostream>
 #include <string>
@@ -23,6 +24,7 @@ constexpr DWORD kControlSecureCancelProbe = 129;
 SERVICE_STATUS_HANDLE ServiceStatusHandle{};
 SERVICE_STATUS ServiceStatus{};
 HANDLE StopEvent{};
+std::atomic<DWORD> TerminalProbeError{ERROR_SUCCESS};
 
 void Log(std::wstring_view Message) {
     std::wstring Line = L"[SecureInput:Service] ";
@@ -240,9 +242,23 @@ DWORD WINAPI ServiceControlHandler(
             if (StopEvent) SetEvent(StopEvent);
             return NO_ERROR;
         case kControlDefaultReleaseProbe:
-            return LaunchFixedProbe(false) ? NO_ERROR : ERROR_ACCESS_DENIED;
+            try {
+                if (LaunchFixedProbe(false)) return NO_ERROR;
+            } catch (...) {
+                Log(L"Default-desktop probe failed with an internal exception");
+            }
+            TerminalProbeError.store(ERROR_ACCESS_DENIED);
+            if (StopEvent) SetEvent(StopEvent);
+            return NO_ERROR;
         case kControlSecureCancelProbe:
-            return LaunchFixedProbe(true) ? NO_ERROR : ERROR_ACCESS_DENIED;
+            try {
+                if (LaunchFixedProbe(true)) return NO_ERROR;
+            } catch (...) {
+                Log(L"secure-desktop probe failed with an internal exception");
+            }
+            TerminalProbeError.store(ERROR_ACCESS_DENIED);
+            if (StopEvent) SetEvent(StopEvent);
+            return NO_ERROR;
         default:
             return ERROR_CALL_NOT_IMPLEMENTED;
     }
@@ -267,7 +283,7 @@ void WINAPI ServiceMain(DWORD, wchar_t**) noexcept {
     WaitForSingleObject(StopEvent, INFINITE);
     CloseHandle(StopEvent);
     StopEvent = nullptr;
-    ReportServiceStatus(SERVICE_STOPPED);
+    ReportServiceStatus(SERVICE_STOPPED, TerminalProbeError.load());
 }
 
 int SelfTest() {

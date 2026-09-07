@@ -39,6 +39,24 @@ function Get-ServiceIfPresent {
     return Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 }
 
+function Invoke-ProbeControl([int] $Control, [string] $Description) {
+    $Service = Get-ServiceIfPresent
+    if (-not $Service -or $Service.Status -ne 'Running') {
+        throw "$ServiceName must be installed and running before $Description."
+    }
+    & sc.exe control $ServiceName $Control | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description could not be delivered to the service."
+    }
+    for ($Attempt = 0; $Attempt -lt 20; ++$Attempt) {
+        Start-Sleep -Milliseconds 100
+        $Service.Refresh()
+        if ($Service.Status -ne 'Running') {
+            throw "$Description failed closed and stopped the validation service."
+        }
+    }
+}
+
 switch ($Action) {
     'Status' {
         $Service = Get-ServiceIfPresent
@@ -127,17 +145,15 @@ switch ($Action) {
     'DefaultReleaseProbe' {
         Assert-Administrator
         Assert-ExperimentalConsent
-        & sc.exe control $ServiceName 128 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Default-desktop probe was refused.' }
-        Write-Host '[SecureInput:RAndD] Default-desktop release probe requested.'
+        Invoke-ProbeControl 128 'Default-desktop release probe'
+        Write-Host '[SecureInput:RAndD] Default-desktop release probe completed.'
         break
     }
     'SecureCancelProbe' {
         Assert-Administrator
         Assert-ExperimentalConsent
-        & sc.exe control $ServiceName 129 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Secure-desktop probe was refused.' }
-        Write-Host '[SecureInput:RAndD] secure-desktop cancel probe requested.'
+        Invoke-ProbeControl 129 'Secure-desktop cancel probe'
+        Write-Host '[SecureInput:RAndD] secure-desktop cancel probe completed.'
         break
     }
 }

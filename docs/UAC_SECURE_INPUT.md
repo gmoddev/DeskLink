@@ -66,6 +66,8 @@ by the product build.
   and launches one fixed non-reparse sibling path with `CreateProcessAsUser`;
 - waits at most five seconds for that one-operation child and fails the probe
   unless the helper exits successfully;
+- stops with an error after any refused/failed probe so the lab harness cannot
+  confuse service-control delivery with successful input execution;
 - accepts only two lab controls: a Default-desktop release probe and a
   Winlogon-desktop cancel probe; and
 - has manual startup and an admin/SYSTEM-only start, stop, reconfigure, and
