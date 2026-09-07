@@ -43,6 +43,8 @@ if ($CMake -notmatch
 }
 if ($Service -notmatch 'CreateProcessAsUserW' -or
     $Service -notmatch 'TokenSessionId' -or
+    $Service -notmatch 'SE_TCB_NAME' -or
+    $Service -notmatch 'WTS_SESSIONSTATE_UNLOCK' -or
     $Service -notmatch 'FOLDERID_ProgramFiles' -or
     $Service -notmatch 'FILE_ATTRIBUTE_REPARSE_POINT' -or
     $Service -notmatch 'DeskLinkSecureInputRnd') {
@@ -50,6 +52,8 @@ if ($Service -notmatch 'CreateProcessAsUserW' -or
 }
 if ($Helper -notmatch 'CheckTokenMembership' -or
     $Helper -notmatch 'WTSGetActiveConsoleSessionId' -or
+    $Helper -notmatch 'WTS_SESSIONSTATE_UNLOCK' -or
+    $Helper -notmatch 'OpenInputDesktop' -or
     $Helper -notmatch 'UOI_NAME' -or
     $Helper -notmatch 'secure-cancel' -or
     $Helper -match '(?i)username|password|credential|clipboard') {

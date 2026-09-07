@@ -73,8 +73,9 @@ by the product build.
 
 - refuses non-SYSTEM execution and any session other than the active console
   session;
-- verifies its actual thread desktop is exactly `Default` or `Winlogon` for the
-  requested fixed probe;
+- refuses locked/unknown sessions and verifies both its thread desktop and the
+  current input desktop are exactly `Default` or `Winlogon` for the requested
+  fixed probe;
 - accepts no path, process, command line, scan code, pointer coordinate, text,
   credential, or network input;
 - the Default probe releases modifier and mouse-button state only; and

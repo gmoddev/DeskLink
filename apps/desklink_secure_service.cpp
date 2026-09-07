@@ -101,6 +101,22 @@ bool EnablePrivilege(const wchar_t* Name) noexcept {
     return Adjusted && Error == ERROR_SUCCESS;
 }
 
+bool IsSessionUnlocked(DWORD SessionId) noexcept {
+    LPWSTR Buffer{};
+    DWORD Bytes{};
+    if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, SessionId,
+            WTSSessionInfoEx, &Buffer, &Bytes) || !Buffer ||
+        Bytes < sizeof(WTSINFOEXW)) {
+        if (Buffer) WTSFreeMemory(Buffer);
+        return false;
+    }
+    const auto* Info = reinterpret_cast<const WTSINFOEXW*>(Buffer);
+    const bool Unlocked = Info->Level == 1 &&
+        Info->Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_UNLOCK;
+    WTSFreeMemory(Buffer);
+    return Unlocked;
+}
+
 bool LaunchFixedProbe(bool SecureDesktop) {
     if (!IsLocalSystem()) {
         Log(L"probe refused because the service is not LocalSystem");
@@ -127,8 +143,13 @@ bool LaunchFixedProbe(bool SecureDesktop) {
         Log(L"probe refused because there is no active console session");
         return false;
     }
+    if (!IsSessionUnlocked(SessionId)) {
+        Log(L"probe refused because the active session is locked or unknown");
+        return false;
+    }
     if (!EnablePrivilege(SE_ASSIGNPRIMARYTOKEN_NAME) ||
-        !EnablePrivilege(SE_INCREASE_QUOTA_NAME)) {
+        !EnablePrivilege(SE_INCREASE_QUOTA_NAME) ||
+        !EnablePrivilege(SE_TCB_NAME)) {
         Log(L"probe refused because required service privileges are unavailable");
         return false;
     }

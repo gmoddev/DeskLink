@@ -55,6 +55,41 @@ std::wstring CurrentDesktopName() {
     return Name;
 }
 
+std::wstring ActiveInputDesktopName() {
+    const HDESK Desktop = OpenInputDesktop(
+        0, FALSE, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP);
+    if (!Desktop) return {};
+    DWORD Required{};
+    GetUserObjectInformationW(Desktop, UOI_NAME, nullptr, 0, &Required);
+    if (Required < sizeof(wchar_t) || Required > 1024) {
+        CloseDesktop(Desktop);
+        return {};
+    }
+    std::wstring Name(Required / sizeof(wchar_t), L'\0');
+    const BOOL Read = GetUserObjectInformationW(
+        Desktop, UOI_NAME, Name.data(), Required, &Required);
+    CloseDesktop(Desktop);
+    if (!Read) return {};
+    Name.resize(std::wcslen(Name.c_str()));
+    return Name;
+}
+
+bool IsSessionUnlocked(DWORD SessionId) noexcept {
+    LPWSTR Buffer{};
+    DWORD Bytes{};
+    if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, SessionId,
+            WTSSessionInfoEx, &Buffer, &Bytes) || !Buffer ||
+        Bytes < sizeof(WTSINFOEXW)) {
+        if (Buffer) WTSFreeMemory(Buffer);
+        return false;
+    }
+    const auto* Info = reinterpret_cast<const WTSINFOEXW*>(Buffer);
+    const bool Unlocked = Info->Level == 1 &&
+        Info->Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_UNLOCK;
+    WTSFreeMemory(Buffer);
+    return Unlocked;
+}
+
 bool ValidateExecutionContext(ProbeOperation Operation) {
     if (!IsLocalSystem()) {
         Log(L"probe refused because helper is not LocalSystem");
@@ -62,15 +97,18 @@ bool ValidateExecutionContext(ProbeOperation Operation) {
     }
     DWORD SessionId{};
     if (!ProcessIdToSessionId(GetCurrentProcessId(), &SessionId) ||
-        SessionId != WTSGetActiveConsoleSessionId()) {
+        SessionId != WTSGetActiveConsoleSessionId() ||
+        !IsSessionUnlocked(SessionId)) {
         Log(L"probe refused because helper is not in the active console session");
         return false;
     }
     const auto DesktopName = CurrentDesktopName();
+    const auto InputDesktopName = ActiveInputDesktopName();
     const wchar_t* Expected = Operation == ProbeOperation::SecureCancel
         ? L"Winlogon" : L"Default";
-    if (_wcsicmp(DesktopName.c_str(), Expected) != 0) {
-        Log(L"probe refused because helper is on the wrong desktop");
+    if (_wcsicmp(DesktopName.c_str(), Expected) != 0 ||
+        _wcsicmp(InputDesktopName.c_str(), Expected) != 0) {
+        Log(L"probe refused because helper is not on the active input desktop");
         return false;
     }
     return true;
