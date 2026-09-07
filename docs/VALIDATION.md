@@ -326,6 +326,16 @@ visual confirmation that the prompt cancels. Then stop/uninstall the service
 and verify both files and the service registration are gone. No prompt may be
 approved by this probe.
 
+That fixed-probe gate passed on Windows 11 Pro build 26200 on 2026-09-07 at
+source revision `162368a`. The current-build Default release probe completed;
+the secure probe verified foreground `consent.exe`, sent only scan-code Escape,
+observed `Winlogon` return to `Default`, and received independent visual
+confirmation that the benign prompt disappeared. A no-prompt retry failed
+closed with helper stage 17/service code 1017. All 10 configured native tests
+passed, and subsequent cleanup verified that the service registration, staged
+Program Files directory, and helper process were absent. Exact hashes and the
+service DACL are recorded in `UAC_SECURE_INPUT.md`.
+
 ### Phase 3 configurator validation
 
 Portable tests build EDID-sized and DPI-estimated display cards, retain saved

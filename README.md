@@ -166,8 +166,9 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Microsoft production signing/certification and physical zero-microphone and
   Discord qualification for the optional virtual-microphone driver
-- Production-signed, protected-install secure-input authorization and physical
-  UAC validation; the current service/helper code is a cancel-only lab probe
+- Production-signed, protected-install secure-input authorization and the full
+  physical UAC matrix; the fixed Windows 11 cancel access probe passed, but the
+  current service/helper remains an unintegrated, cancel-only lab boundary
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Production-signed Windows 11 installer/update qualification, physical

@@ -94,6 +94,46 @@ only the two fixed files beneath Program Files, creates a manual-start service,
 and applies a restrictive service DACL. It must not be used on a daily-use PC
 until the build and static security gates pass.
 
+## Windows 11 physical access-probe result
+
+The Stage 3 fixed-probe gate passed on an approved Windows 11 Pro build 26200
+target on 2026-09-07 using source revision `162368a`. The exact installed
+artifacts were:
+
+- service SHA-256
+  `A17B8A0FA874D64C0D07B32F2674C6C0716973FE8E13F44B64F56CC64810454E`;
+- helper SHA-256
+  `4A394E153DD30F75CACA01F5AF99FBA5A184533536B6743E4CDB89B8612F2BD2`;
+- LocalSystem, demand-start service under
+  `C:\Program Files\DeskLink Secure Input R&D`; and
+- service DACL
+  `D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)`
+  `(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)`.
+
+The current-build Default release probe completed. For the secure probe, the
+helper verified LocalSystem, the active console session, an unlocked session,
+its `Winlogon` thread desktop, the active `Winlogon` input desktop, and
+foreground `consent.exe`. It then sent scan-code Escape and observed the input
+desktop return to `Default`; the person viewing the target independently
+confirmed that the benign UAC prompt disappeared.
+
+An earlier return-count-only attempt was explicitly rejected after visual
+confirmation showed that the prompt remained. Acceptance was strengthened to
+require the observable `Winlogon`-to-`Default` transition. A later attempt made
+without an active secure desktop returned stage code 17, surfaced by the
+service as `1017`, and injected nothing. This fail-closed negative result is
+part of the evidence, not a successful prompt test.
+
+The same build passed all 10 configured native tests. After evidence capture,
+the R&D service, its Program Files staging directory, and its helper process
+were removed and their absence was verified. The incremental source and build
+trees remain under `C:\Sandbox\Codex` for reproducibility.
+
+This proves only that the narrow SYSTEM helper can cancel a visible consent
+prompt under the lab constraints. It does not approve prompts, prove arbitrary
+remote input, authorize a current-user runtime, provide secure-desktop video,
+or satisfy the Stage 5 product matrix.
+
 ## Authorization model for product integration
 
 The portable `SecureInputAuthorizationGate` defines the minimum eventual input
