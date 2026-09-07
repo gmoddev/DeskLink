@@ -45,6 +45,8 @@ if ($Service -notmatch 'CreateProcessAsUserW' -or
     $Service -notmatch 'TokenSessionId' -or
     $Service -notmatch 'SE_TCB_NAME' -or
     $Service -notmatch 'WTS_SESSIONSTATE_UNLOCK' -or
+    $Service -notmatch 'WaitForSingleObject' -or
+    $Service -notmatch 'GetExitCodeProcess' -or
     $Service -notmatch 'FOLDERID_ProgramFiles' -or
     $Service -notmatch 'FILE_ATTRIBUTE_REPARSE_POINT' -or
     $Service -notmatch 'DeskLinkSecureInputRnd') {

@@ -196,10 +196,25 @@ bool LaunchFixedProbe(bool SecureDesktop) {
         return false;
     }
     CloseHandle(Process.hThread);
+    const DWORD Wait = WaitForSingleObject(Process.hProcess, 5'000);
+    DWORD ExitCode = ERROR_PROCESS_ABORTED;
+    bool Completed = Wait == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(Process.hProcess, &ExitCode) && ExitCode == 0;
+    if (Wait == WAIT_TIMEOUT) {
+        // The helper is a fixed, single-operation child. A hung probe must not
+        // retain SYSTEM authority after its bounded control request expires.
+        (void)TerminateProcess(Process.hProcess, ERROR_TIMEOUT);
+        (void)WaitForSingleObject(Process.hProcess, 1'000);
+        Completed = false;
+    }
     CloseHandle(Process.hProcess);
+    if (!Completed) {
+        Log(L"fixed helper failed or timed out; probe failed closed");
+        return false;
+    }
     Log(SecureDesktop
-        ? L"secure-desktop cancel probe launched"
-        : L"Default-desktop release probe launched");
+        ? L"secure-desktop cancel probe completed"
+        : L"Default-desktop release probe completed");
     return true;
 }
 

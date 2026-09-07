@@ -64,6 +64,8 @@ by the product build.
   audio, capture, or product control pipe;
 - duplicates only its own SYSTEM token, binds it to the active console session,
   and launches one fixed non-reparse sibling path with `CreateProcessAsUser`;
+- waits at most five seconds for that one-operation child and fails the probe
+  unless the helper exits successfully;
 - accepts only two lab controls: a Default-desktop release probe and a
   Winlogon-desktop cancel probe; and
 - has manual startup and an admin/SYSTEM-only start, stop, reconfigure, and
