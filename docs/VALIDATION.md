@@ -327,15 +327,19 @@ service must stop and expose zero Win32/service exit codes before the script
 reports success. Then uninstall the service and verify both files and the
 service registration are gone. No prompt may be approved by this probe.
 
-That fixed-probe gate passed on Windows 11 Pro build 26200 on 2026-09-07 at
-source revision `162368a`. The current-build Default release probe completed;
-the secure probe verified foreground `consent.exe`, sent only scan-code Escape,
-observed `Winlogon` return to `Default`, and received independent visual
-confirmation that the benign prompt disappeared. A no-prompt retry failed
-closed with helper stage 17/service code 1017. All 10 configured native tests
-passed, and subsequent cleanup verified that the service registration, staged
-Program Files directory, and helper process were absent. Exact hashes and the
-service DACL are recorded in `UAC_SECURE_INPUT.md`.
+That fixed-probe gate first passed on Windows 11 Pro build 26200 on 2026-09-07
+at source revision `162368a`, then passed again on the one-shot hardened
+revision `a786563`. The hardened Default release probe completed; the secure
+probe verified foreground `consent.exe` before release/injection, sent only
+scan-code Escape, observed `Winlogon` return to `Default`, and received
+independent visual confirmation that the benign prompt disappeared. The
+service stopped with zero Win32/service exit codes and left no helper. A
+no-prompt retry failed closed with helper stage 17/service code 1017. All 10
+configured native tests passed, a complete security diff review found no
+reportable vulnerabilities, and subsequent cleanup verified that the service
+registration, staged Program Files directory, and helper process were absent.
+Exact hardened hashes and the service DACL are recorded in
+`UAC_SECURE_INPUT.md`.
 
 ### Phase 3 configurator validation
 

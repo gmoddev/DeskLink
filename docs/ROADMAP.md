@@ -153,8 +153,10 @@ lease.
 The controlled Windows 11 physical validation of the fixed Default release and
 foreground-consent Escape probes has passed, including an observable
 `Winlogon`-to-`Default` postcondition, visual confirmation, fail-closed
-no-prompt rejection, and complete lab-service cleanup. Product integration is
-still blocked until DeskLink has production code signing and an
+no-prompt rejection, one-shot zero-exit acknowledgement, and complete
+lab-service cleanup. The hardened revision received a complete security diff
+review with no reportable findings. Product integration is still blocked until
+DeskLink has production code signing and an
 administrator-protected machine-wide install from which the service can
 independently authenticate the runtime. The current-user LocalAppData runtime
 and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC

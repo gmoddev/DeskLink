@@ -98,26 +98,30 @@ until the build and static security gates pass.
 
 ## Windows 11 physical access-probe result
 
-The Stage 3 fixed-probe gate passed on an approved Windows 11 Pro build 26200
-target on 2026-09-07 using source revision `162368a`. The exact installed
-artifacts were:
+The Stage 3 fixed-probe gate first passed on an approved Windows 11 Pro build
+26200 target on 2026-09-07 using source revision `162368a`. After tightening
+the acknowledgement contract and moving consent verification ahead of every
+release/injection action, the complete visible probe passed again using the
+reviewed source revision `a786563`. The exact hardened artifacts were:
 
 - service SHA-256
-  `A17B8A0FA874D64C0D07B32F2674C6C0716973FE8E13F44B64F56CC64810454E`;
+  `38E8F836F4A94C3CB1906D0E4BE983429BDD19CEB97498355D67381FA854FE75`;
 - helper SHA-256
-  `4A394E153DD30F75CACA01F5AF99FBA5A184533536B6743E4CDB89B8612F2BD2`;
+  `59BF63A61E1957958E4CCE8752BD2DDB16324FF5ED6B9935F6FA06F9ED03FD9A`;
 - LocalSystem, demand-start service under
   `C:\Program Files\DeskLink Secure Input R&D`; and
 - service DACL
   `D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)`
   `(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORC;;;AU)`.
 
-The current-build Default release probe completed. For the secure probe, the
-helper verified LocalSystem, the active console session, an unlocked session,
-its `Winlogon` thread desktop, the active `Winlogon` input desktop, and
-foreground `consent.exe`. It then sent scan-code Escape and observed the input
+The hardened current-build Default release probe completed. For the secure
+probe, the helper verified LocalSystem, the active console session, an unlocked
+session, its `Winlogon` thread desktop, the active `Winlogon` input desktop,
+and foreground `consent.exe` before releasing any fixed input state. It
+revalidated the secure context, sent scan-code Escape, and observed the input
 desktop return to `Default`; the person viewing the target independently
-confirmed that the benign UAC prompt disappeared.
+confirmed that the benign UAC prompt disappeared. The one-shot service then
+stopped with Win32 and service exit codes both zero, and no helper remained.
 
 An earlier return-count-only attempt was explicitly rejected after visual
 confirmation showed that the prompt remained. Acceptance was strengthened to
@@ -126,10 +130,16 @@ without an active secure desktop returned stage code 17, surfaced by the
 service as `1017`, and injected nothing. This fail-closed negative result is
 part of the evidence, not a successful prompt test.
 
-The same build passed all 10 configured native tests. After evidence capture,
-the R&D service, its Program Files staging directory, and its helper process
-were removed and their absence was verified. The incremental source and build
-trees remain under `C:\Sandbox\Codex` for reproducibility.
+The same hardened build passed all 10 configured native tests. A complete
+security diff review from main revision `902931e` through `a786563` found no
+reportable vulnerabilities. It intentionally did not promote the lab's
+inherited Program Files protection into a production guarantee: a shipping
+installer/service must verify every path component's owner and ACL, reject
+reparse points throughout the path, and verify the helper's trusted signature.
+After evidence capture, the R&D service, its Program Files staging directory,
+and its helper process were removed and their absence was verified. The
+incremental source and build trees remain under `C:\Sandbox\Codex` for
+reproducibility.
 
 This proves only that the narrow SYSTEM helper can cancel a visible consent
 prompt under the lab constraints. It does not approve prompts, prove arbitrary
