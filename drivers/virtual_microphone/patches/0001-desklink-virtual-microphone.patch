@@ -1,0 +1,435 @@
+diff --git a/audio/simpleaudiosample/Source/Main/adapter.cpp b/audio/simpleaudiosample/Source/Main/adapter.cpp
+index 44c4c37..bfdb9ca 100644
+--- a/audio/simpleaudiosample/Source/Main/adapter.cpp
++++ b/audio/simpleaudiosample/Source/Main/adapter.cpp
+@@ -22,6 +22,7 @@ Abstract:
+ #include "definitions.h"
+ #include "endpoints.h"
+ #include "minipairs.h"
++#include "DeskLinkPcmBridge.h"
+ 
+ typedef void (*fnPcDriverUnload) (PDRIVER_OBJECT);
+ fnPcDriverUnload gPCDriverUnloadRoutine = NULL;
+@@ -284,6 +285,8 @@ DriverEntry
+     WDF_DRIVER_CONFIG           config;
+ 
+     DPF(D_TERSE, ("[DriverEntry]"));
++
++    DeskLinkPcmBridgeInitialize();
+ 
+     // Copy registry Path name in a global variable to be used by modules inside driver.
+     // !! NOTE !! Inside this function we are initializing the registrypath, so we MUST NOT add any failing calls
+diff --git a/audio/simpleaudiosample/Source/Main/minwavertstream.cpp b/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
+index 3d333bd..0967f4b 100644
+--- a/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
++++ b/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
+@@ -4,6 +4,7 @@
+ #include "endpoints.h"
+ #include "minwavert.h"
+ #include "minwavertstream.h"
++#include "DeskLinkPcmBridge.h"
+ #define MINWAVERTSTREAM_POOLTAG 'SRWM'
+ 
+ #pragma warning (disable : 4127)
+@@ -33,6 +34,12 @@ Return Value:
+ --*/
+ {
+     PAGED_CODE();
++    if (m_bCapture)
++    {
++        DeskLinkPcmBridgeSetCaptureRunning(FALSE);
++    }
++    else
++    {
++        DeskLinkPcmBridgeSetFeedRunning(FALSE);
++    }
+     if (NULL != m_pMiniport)
+     {
+@@ -301,77 +308,8 @@ Return Value:
+         return STATUS_INSUFFICIENT_RESOURCES;
+     }
+ 
+-    if (m_bCapture)
+-    {
+-        ReadRegistrySettings();
+-        DWORD toneFrequency = 0;
+-        DWORD toneAmplitude = 0;
+-        DWORD toneDCOffset = 0;
+-        DWORD toneInitialPhase = 0;
+-
+-        double toneAmplitudeDouble = 0;
+-        double toneDCOffsetDouble = 0;
+-        double toneInitialPhaseDouble = 0;
+-
+-        toneFrequency = m_ulHostCaptureToneFrequency;
+-        toneAmplitude = m_dwHostCaptureToneAmplitude;
+-        toneDCOffset = m_dwHostCaptureToneDCOffset;
+-        toneInitialPhase = m_dwHostCaptureToneInitialPhase;
+-
+-        if (labs(toneAmplitude) > 100)
+-        {
+-            toneAmplitude = toneAmplitude > 0 ? 100 : -100;
+-        }
+-
+-        if (labs(toneDCOffset) > 100)
+-        {
+-            toneDCOffset = toneDCOffset > 0 ? 100 : -100;
+-        }
+-
+-        DWORD abssum = labs(toneAmplitude) + labs(toneDCOffset);
+-
+-        if (abssum > 100)
+-        {
+-            toneAmplitudeDouble = ((double)toneAmplitude) / abssum;
+-            toneDCOffsetDouble = ((double)toneDCOffset) / abssum;
+-        }
+-        else
+-        {
+-            toneAmplitudeDouble = ((double)toneAmplitude) / 100.0;
+-            toneDCOffsetDouble = ((double)toneDCOffset) / 100.0;
+-        }
+-
+-        if (labs(toneInitialPhase) > 31416)
+-        {
+-            toneInitialPhase = toneInitialPhase > 0 ? 31416 : -31416;
+-        }
+-
+-        toneInitialPhaseDouble = (double)toneInitialPhase / 10000;
+-
+-        ntStatus = m_ToneGenerator.Init(toneFrequency, toneAmplitudeDouble, toneDCOffsetDouble, toneInitialPhaseDouble, m_pWfExt);
+-
+-        if (!NT_SUCCESS(ntStatus))
+-        {
+-            return ntStatus;
+-        }
+-    }
+-    else if (!g_DoNotCreateDataFiles)
+-    {
+-        //
+-        // Create an output file for the render data.
+-        //
+-        DPF(D_TERSE, ("SaveData %p", &m_SaveData));
+-        ntStatus = m_SaveData.SetDataFormat(DataFormat_);
+-        if (NT_SUCCESS(ntStatus))
+-        {
+-            ntStatus = m_SaveData.Initialize();
+-        }
+-    
+-        if (!NT_SUCCESS(ntStatus))
+-        {
+-            return ntStatus;
+-        }
+-    }
++    // DeskLink capture is supplied only by the bounded render-to-capture
++    // bridge. The sample tone generator and render-to-disk paths are removed.
+ 
+     //
+     // Register this stream.
+@@ -1172,6 +1110,18 @@ NTSTATUS CMiniportWaveRTStream::SetState
+     NTSTATUS        ntStatus        = STATUS_SUCCESS;
+     KIRQL oldIrql;
+ 
++    if (State_ != m_KsState)
++    {
++        const BOOLEAN Running = State_ == KSSTATE_RUN ? TRUE : FALSE;
++        if (m_bCapture)
++        {
++            DeskLinkPcmBridgeSetCaptureRunning(Running);
++        }
++        else
++        {
++            DeskLinkPcmBridgeSetFeedRunning(Running);
++        }
++    }
++
+     // Spew an event for a pin state change request from portcls
+     //Event type: eMINIPORT_PIN_STATE
+     switch (State_)
+@@ -1364,11 +1314,8 @@ VOID CMiniportWaveRTStream::UpdatePosition
+             m_bLastBufferRendered = TRUE;
+         }
+ 
+-        if (!g_DoNotCreateDataFiles)
+-        {
+-            // Read from buffer and write to a file.
+-            ReadBytes(ByteDisplacement);
+-        }
++        // Feed every rendered byte into the bounded microphone bridge.
++        ReadBytes(ByteDisplacement);
+     }
+     
+     // Increment the DMA position by the number of bytes displaced since the last
+@@ -1397,7 +1344,7 @@ VOID CMiniportWaveRTStream::WriteBytes
+ 
+ Routine Description:
+ 
+-This function writes the audio buffer using a sine wave generator
++This function fills the capture buffer from the bounded DeskLink bridge.
+ 
+ Arguments:
+ 
+@@ -1413,7 +1360,7 @@ ByteDisplacement - # of bytes to process.
+     {
+         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
+         
+-        m_ToneGenerator.GenerateSine(m_pDmaBuffer + bufferOffset, runWrite);
++        DeskLinkPcmBridgePop(m_pDmaBuffer + bufferOffset, runWrite);
+            	
+         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
+         ByteDisplacement -= runWrite;
+@@ -1430,7 +1377,7 @@ VOID CMiniportWaveRTStream::ReadBytes
+ 
+ Routine Description:
+ 
+-This function reads the audio buffer and saves the data in a file.
++This function copies rendered PCM into the bounded DeskLink bridge.
+ 
+ Arguments:
+ 
+@@ -1445,7 +1392,7 @@ ByteDisplacement - # of bytes to process.
+     while (ByteDisplacement > 0)
+     {
+         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
+-        m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
++        DeskLinkPcmBridgePush(m_pDmaBuffer + bufferOffset, runWrite);
+         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
+         ByteDisplacement -= runWrite;
+     }
+diff --git a/audio/simpleaudiosample/Source/Main/Main.vcxproj b/audio/simpleaudiosample/Source/Main/Main.vcxproj
+index b164a06..6c06743 100644
+--- a/audio/simpleaudiosample/Source/Main/Main.vcxproj
++++ b/audio/simpleaudiosample/Source/Main/Main.vcxproj
+@@ -145,19 +145,25 @@
+   </ItemDefinitionGroup>
++  <ItemDefinitionGroup>
++    <Inf>
++      <DateStamp>09/03/2026</DateStamp>
++      <TimeStamp>0.1.0.0</TimeStamp>
++    </Inf>
++  </ItemDefinitionGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+-    <TargetName>SimpleAudioSample</TargetName>
++    <TargetName>DeskLinkVirtualMicrophone</TargetName>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+-    <TargetName>SimpleAudioSample</TargetName>
++    <TargetName>DeskLinkVirtualMicrophone</TargetName>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+-    <TargetName>SimpleAudioSample</TargetName>
++    <TargetName>DeskLinkVirtualMicrophone</TargetName>
+   </PropertyGroup>
+   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+-    <TargetName>SimpleAudioSample</TargetName>
++    <TargetName>DeskLinkVirtualMicrophone</TargetName>
+   </PropertyGroup>
+@@ -243,6 +243,7 @@
+     <ClCompile Include="adapter.cpp" />
+     <ClCompile Include="basetopo.cpp" />
+     <ClCompile Include="common.cpp" />
++    <ClCompile Include="DeskLinkPcmBridge.cpp" />
+     <ClCompile Include="mintopo.cpp" />
+     <ClCompile Include="minwavert.cpp" />
+     <ClCompile Include="minwavertstream.cpp" />
+diff --git a/audio/simpleaudiosample/Source/Filters/speakerwavtable.h b/audio/simpleaudiosample/Source/Filters/speakerwavtable.h
+index b55198e..3a8ab3a 100644
+--- a/audio/simpleaudiosample/Source/Filters/speakerwavtable.h
++++ b/audio/simpleaudiosample/Source/Filters/speakerwavtable.h
+@@ -17,5 +17,5 @@ Abstract:
+-// To keep the code simple assume device supports only 48KHz, 16-bit, stereo (PCM and NON-PCM)
++// DeskLink's internal feed accepts exactly canonical 48 kHz mono PCM16.
+ 
+-#define SPEAKER_DEVICE_MAX_CHANNELS                 2       // Max Channels.
++#define SPEAKER_DEVICE_MAX_CHANNELS                 1       // Max Channels.
+ 
+-#define SPEAKER_HOST_MAX_CHANNELS                   2       // Max Channels.
++#define SPEAKER_HOST_MAX_CHANNELS                   1       // Max Channels.
+@@ -49,11 +49,11 @@ KSDATAFORMAT_WAVEFORMATEXTENSIBLE SpeakerHostPinSupportedDeviceFormats[] =
+         {
+             {
+                 WAVE_FORMAT_EXTENSIBLE,
+-                2,
++                1,
+                 48000,
+-                192000,
+-                4,
++                96000,
++                2,
+                 16,
+                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)
+             },
+             16,
+-            KSAUDIO_SPEAKER_STEREO,
++            KSAUDIO_SPEAKER_MONO,
+             STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM)
+         }
+diff --git a/audio/simpleaudiosample/Source/Filters/micarraywavtable.h b/audio/simpleaudiosample/Source/Filters/micarraywavtable.h
+index a4b723a..e66fa2e 100644
+--- a/audio/simpleaudiosample/Source/Filters/micarraywavtable.h
++++ b/audio/simpleaudiosample/Source/Filters/micarraywavtable.h
+@@ -15,9 +15,9 @@ Abstract:-
+ // Mic array range.
+ //
+-#define MICARRAY_RAW_CHANNELS                   2       // Channels for raw mode
+-#define MICARRAY_DEVICE_MAX_CHANNELS            2       // Max channels overall
+-#define MICARRAY_32_BITS_PER_SAMPLE_PCM         32      // 32 Bits Per Sample
++#define MICARRAY_RAW_CHANNELS                   1       // Canonical mono
++#define MICARRAY_DEVICE_MAX_CHANNELS            1       // Canonical mono
++#define MICARRAY_16_BITS_PER_SAMPLE_PCM         16      // Canonical PCM16
+ #define MICARRAY_RAW_SAMPLE_RATE                48000   // Raw sample rate
+@@ -28,7 +28,7 @@ Abstract:-
+ static
+ KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
+ {
+-    // 48 KHz 32-bit 2 channels
++    // Exactly 48 kHz, 16-bit, mono PCM.
+     {
+@@ -47,15 +47,15 @@ KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
+         {
+             {
+                 WAVE_FORMAT_EXTENSIBLE,
+-                2,
++                1,
+                 48000,
+-                384000,
+-                8,
+-                32,
++                96000,
++                2,
++                16,
+                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)
+             },
+-            32,
+-            KSAUDIO_SPEAKER_STEREO,
++            16,
++            KSAUDIO_SPEAKER_MONO,
+             STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM)
+         }
+@@ -101,8 +101,8 @@ KSDATARANGE_AUDIO MicArrayPinDataRangesRawStream[] =
+             STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)
+         },
+         MICARRAY_RAW_CHANNELS,
+-        MICARRAY_32_BITS_PER_SAMPLE_PCM,
+-        MICARRAY_32_BITS_PER_SAMPLE_PCM,
++        MICARRAY_16_BITS_PER_SAMPLE_PCM,
++        MICARRAY_16_BITS_PER_SAMPLE_PCM,
+         MICARRAY_RAW_SAMPLE_RATE,
+         MICARRAY_RAW_SAMPLE_RATE
+diff --git a/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx b/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx
+index ee2f41b..d7b31ca 100644
+--- a/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx
++++ b/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx
+@@ -2,20 +2,20 @@
+ Signature   = "$Windows NT$"
+ Class       = MEDIA
+ Provider    = %ProviderName%
+ ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+-DriverVer   = 02/22/2016, 1.0.0.1
+-CatalogFile = SimpleAudioSample.cat
++DriverVer   = 09/03/2026, 0.1.0.0
++CatalogFile = DeskLinkVirtualMicrophone.cat
+ PnpLockDown = 1
+ 
+ [SourceDisksNames]
+-222="SIMPLEAUDIOSAMPLE Driver Disk","",222
++222="DeskLink Virtual Microphone Driver Disk","",222
+ 
+ [SourceDisksFiles]
+-simpleaudiosample.sys=222
++DeskLinkVirtualMicrophone.sys=222
+ 
+ [SignatureAttributes]
+-simpleaudiosample.sys=SignatureAttributes.DRM
++DeskLinkVirtualMicrophone.sys=SignatureAttributes.DRM
+@@ -23,19 +23,19 @@ PETrust=true
+ 
+ [Manufacturer]
+-%MfgName%=SIMPLEAUDIOSAMPLE,NT$ARCH$.10.0...22000
++%MfgName%=SIMPLEAUDIOSAMPLE,NT$ARCH$.10.0...20348
+ 
+-[SIMPLEAUDIOSAMPLE.NT$ARCH$.10.0...22000]
++[SIMPLEAUDIOSAMPLE.NT$ARCH$.10.0...20348]
+-%SIMPLEAUDIOSAMPLE_SA.DeviceDesc%=SIMPLEAUDIOSAMPLE_SA, ROOT\SimpleAudioSample
++%SIMPLEAUDIOSAMPLE_SA.DeviceDesc%=SIMPLEAUDIOSAMPLE_SA, ROOT\DeskLinkVirtualMicrophone
+@@ -35,11 +35,11 @@ SIMPLEAUDIOSAMPLE_SA.CopyList=13 ; 13=Package's DriverStore directory
+ ; SIMPLEAUDIOSAMPLE_SA
+ ;======================================================
+ [SIMPLEAUDIOSAMPLE_SA.CopyList]
+-simpleaudiosample.sys
++DeskLinkVirtualMicrophone.sys
+ 
+ [SIMPLEAUDIOSAMPLE_SA.AddReg]
+ HKR,,AssociatedFilters,,"wdmaud,swmidi,redbook"
+-HKR,,Driver,,simpleaudiosample.sys
++HKR,,Driver,,DeskLinkVirtualMicrophone.sys
+@@ -75,6 +75,7 @@ HKR,,CLSID,,%Proxy.CLSID%
+ HKR,,FriendlyName,,%SIMPLEAUDIOSAMPLE.TopologyMicArray1.szPname%
+ 
+ HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
++HKR,EP\0,%PKEY_DeskLinkVirtualAudioEndpointKind%,0x00010001,0x2
+ 
+ ; The following lines opt-in to pull mode.
+@@ -97,6 +98,7 @@ HKR,,CLSID,,%Proxy.CLSID%
+ HKR,,FriendlyName,,%SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname%
+ 
+ HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
++HKR,EP\0,%PKEY_DeskLinkVirtualAudioEndpointKind%,0x00010001,0x1
+ 
+ ; The following lines opt-in to pull mode.
+@@ -130,14 +132,14 @@ AddInterface=%KSCATEGORY_AUDIO%,    %KSNAME_TopologyMicArray1%, SIMPLEAUDIOSAMPLE.I.TopologyMicArray1
+ AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologyMicArray1%, SIMPLEAUDIOSAMPLE.I.TopologyMicArray1
+ 
+ [SIMPLEAUDIOSAMPLE_SA.NT.Services]
+-AddService=SimpleAudioSample,0x00000002,SimpleAudioSample_Service_Inst
++AddService=DeskLinkVirtualMicrophone,0x00000002,DeskLinkVirtualMicrophone_Service_Inst
+ 
+-[SimpleAudioSample_Service_Inst]
+-DisplayName=%SimpleAudioSample.SvcDesc%
++[DeskLinkVirtualMicrophone_Service_Inst]
++DisplayName=%DeskLinkVirtualMicrophone.SvcDesc%
+ ServiceType=1
+ StartType=3
+ ErrorControl=1
+-ServiceBinary=%13%\simpleaudiosample.sys
++ServiceBinary=%13%\DeskLinkVirtualMicrophone.sys
+@@ -154,8 +156,8 @@ HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;WD)(A;;GRGWGX;;;RC)
+ ; WDF
+ ;======================================================
+ [SIMPLEAUDIOSAMPLE_SA.NT.Wdf]
+-KmdfService = SimpleAudioSample, SIMPLEAUDIOSAMPLE_SA_WdfSect
++KmdfService = DeskLinkVirtualMicrophone, SIMPLEAUDIOSAMPLE_SA_WdfSect
+ [SIMPLEAUDIOSAMPLE_SA_WdfSect]
+ KmdfLibraryVersion = $KMDFVERSION$
+@@ -181,21 +183,22 @@ KSNODETYPE_ANY   = "{00000000-0000-0000-0000-000000000000}"
+ 
+ PKEY_AudioEndpoint_Association               = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+ PKEY_AudioEndpoint_Supports_EventDriven_Mode = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"
++PKEY_DeskLinkVirtualAudioEndpointKind        = "{D21F0A7C-80DA-4E7E-A906-81DF3E2EA4B9},2"
+ 
+ ;Localizable
+ 
+-ProviderName = "TODO-Set-Provider"
+-MfgName      = "TODO-Set-Manufacturer"
+-MsCopyRight  = "TODO-Set-Copyright"
++ProviderName = "DeskLink"
++MfgName      = "DeskLink"
++MsCopyRight  = "Copyright (c) DeskLink contributors"
+ 
+-SIMPLEAUDIOSAMPLE_SA.DeviceDesc="Virtual Audio Device (WDM) - Simple Audio Sample"
+-SimpleAudioSample.SvcDesc="Virtual Audio Device (WDM) - Simple Audio Sample Driver"
++SIMPLEAUDIOSAMPLE_SA.DeviceDesc="DeskLink Virtual Microphone"
++DeskLinkVirtualMicrophone.SvcDesc="DeskLink Virtual Microphone Driver"
+ 
+ ;; friendly names
+-SIMPLEAUDIOSAMPLE.WaveSpeaker.szPname="Simple Audio Sample Wave Speaker"
+-SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname="Simple Audio Sample Topology Speaker"
++SIMPLEAUDIOSAMPLE.WaveSpeaker.szPname="DeskLink Microphone Feed Wave"
++SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname="DeskLink Microphone Feed"
+ 
+-SIMPLEAUDIOSAMPLE.WaveMicArray1.szPname="Simple Audio Sample Wave Microphone Array - Front"
+-SIMPLEAUDIOSAMPLE.TopologyMicArray1.szPname="Simple Audio Sample Topology Microphone Array - Front"
++SIMPLEAUDIOSAMPLE.WaveMicArray1.szPname="DeskLink Remote Microphone Wave"
++SIMPLEAUDIOSAMPLE.TopologyMicArray1.szPname="DeskLink Remote Microphone"
+ 
+-MicArray1CustomName= "Internal Microphone Array - Front"
++MicArray1CustomName= "DeskLink Remote Microphone"

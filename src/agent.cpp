@@ -40,9 +40,10 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
 
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
-        if (!injector_.InputAvailable()) {
+        if (!injector_.InputDesktopAvailable()) {
             return AgentDecision::RejectedLease;
         }
+        if (!injector_.ReadyForInput()) return RejectInputUnavailable();
         const auto& request = std::get<FocusRequestMessage>(packet.message);
         if (focus_.focus() == FocusLocation::Remote && !ReleaseOwnedState()) {
             focus_.release_remote_focus();
@@ -50,7 +51,10 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         }
         if (InputCleanupPending_) return AgentDecision::RejectedLease;
         const auto new_epoch = focus_.begin_remote_focus(clamp_lease(request.requested_lease_ms));
-        if (new_epoch != 0) last_pointer_sequence_ = 0;
+        if (new_epoch != 0) {
+            last_pointer_sequence_ = 0;
+            InputUnavailable_ = false;
+        }
         return new_epoch == 0 ? AgentDecision::RejectedLease : AgentDecision::Accepted;
     }
 
@@ -80,7 +84,9 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         // Secure desktop ownership is an expected, temporary Windows safety
         // boundary. Reject input without classifying the authenticated packet
         // as malformed or tearing down its transport.
-        if (!injector_.InputAvailable()) return AgentDecision::RejectedLease;
+        if (!injector_.InputDesktopAvailable()) {
+            return AgentDecision::RejectedLease;
+        }
         if (InputCleanupPending_) return AgentDecision::RejectedLease;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         if (!focus_.accepts_remote_input(packet.header.epoch)) return AgentDecision::RejectedLease;
@@ -88,10 +94,10 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         switch (type) {
             case MessageType::KeyEvent:
                 return injector_.inject_key(std::get<KeyEventMessage>(packet.message))
-                    ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
+                    ? AgentDecision::Accepted : RejectInputUnavailable();
             case MessageType::MouseButton:
                 return injector_.inject_button(std::get<MouseButtonMessage>(packet.message))
-                    ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
+                    ? AgentDecision::Accepted : RejectInputUnavailable();
             case MessageType::PointerPosition:
             case MessageType::PointerMotion:
                 if (packet.header.sequence <= last_pointer_sequence_) {
@@ -100,23 +106,23 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
                 if (type == MessageType::PointerPosition &&
                     !injector_.inject_pointer(
                         std::get<PointerPositionMessage>(packet.message))) {
-                    return AgentDecision::RejectedMalformed;
+                    return RejectInputUnavailable();
                 }
                 if (type == MessageType::PointerMotion &&
                     !injector_.InjectPointerMotion(
                         std::get<PointerMotionMessage>(packet.message))) {
-                    return AgentDecision::RejectedMalformed;
+                    return RejectInputUnavailable();
                 }
                 last_pointer_sequence_ = packet.header.sequence;
                 return AgentDecision::Accepted;
             case MessageType::InputStateSnapshot:
                 return injector_.ReconcileState(
                     std::get<InputStateSnapshotMessage>(packet.message))
-                    ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
+                    ? AgentDecision::Accepted : RejectInputUnavailable();
             case MessageType::MouseWheel:
                 return injector_.InjectWheel(
                     std::get<MouseWheelMessage>(packet.message))
-                    ? AgentDecision::Accepted : AgentDecision::RejectedMalformed;
+                    ? AgentDecision::Accepted : RejectInputUnavailable();
             default:
                 break;
         }
@@ -162,6 +168,15 @@ void AgentCoordinator::disconnect() noexcept {
     focus_.release_remote_focus();
     last_pointer_sequence_ = 0;
     (void)ReleaseOwnedState();
+    InputUnavailable_ = false;
+}
+
+AgentDecision AgentCoordinator::RejectInputUnavailable() noexcept {
+    focus_.release_remote_focus();
+    last_pointer_sequence_ = 0;
+    InputUnavailable_ = true;
+    (void)ReleaseOwnedState();
+    return AgentDecision::RejectedInputUnavailable;
 }
 
 bool AgentCoordinator::ReleaseOwnedState() noexcept {

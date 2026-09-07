@@ -11,10 +11,14 @@ namespace desklink {
 class IInputInjector {
 public:
     virtual ~IInputInjector() = default;
-    // Windows secure desktops (for example UAC consent) are intentionally
-    // outside DeskLink's authority. A false result pauses admission/injection
-    // without treating the authenticated transport as malformed.
-    [[nodiscard]] virtual bool InputAvailable() noexcept { return true; }
+    // Focus must not be admitted while the platform is presenting an input
+    // desktop or foreground process into which this process cannot inject.
+    // The default keeps non-Windows/test injectors source compatible.
+    [[nodiscard]] virtual bool ReadyForInput() const noexcept { return true; }
+    // Desktop availability is reported separately from foreground-integrity
+    // admission so a secure-desktop transition can fail Local without
+    // misclassifying or closing the authenticated peer transport.
+    [[nodiscard]] virtual bool InputDesktopAvailable() noexcept { return true; }
     [[nodiscard]] virtual bool InputDesktopInterruptionObserved()
         const noexcept { return false; }
     virtual bool inject_key(const KeyEventMessage& event) = 0;

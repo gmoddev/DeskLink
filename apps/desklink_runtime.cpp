@@ -23,6 +23,7 @@
 #include "desklink/win32_pairing.hpp"
 #include "desklink/win32_product_lifecycle.hpp"
 #include "desklink/win32_roaming_settings.hpp"
+#include "desklink/win32_voice.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -781,6 +782,17 @@ private:
                 desklink::AudioRoutePreference::LocalToPeer ||
             Preferences.AudioRoute ==
                 desklink::AudioRoutePreference::Bidirectional;
+        Request.SendVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::LocalToPeer ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.ReceiveVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::PeerToLocal ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.VoiceInputEndpointId = Preferences.VoiceInputEndpointId;
         return Launch(Request, Preferences);
     }
 
@@ -866,6 +878,17 @@ private:
                 desklink::AudioRoutePreference::PeerToLocal ||
             Preferences.AudioRoute ==
                 desklink::AudioRoutePreference::Bidirectional;
+        Request.SendVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::LocalToPeer ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.ReceiveVoice =
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::PeerToLocal ||
+            Preferences.VoiceRoute ==
+                desklink::VoiceRoutePreference::Bidirectional;
+        Request.VoiceInputEndpointId = Preferences.VoiceInputEndpointId;
         return Launch(Request, Preferences);
     }
 
@@ -1483,6 +1506,10 @@ private:
             desklink::Capability::AudioSend);
         Request.GrantAudioReceive = Capabilities.contains(
             desklink::Capability::AudioReceive);
+        Request.GrantVoiceSend = Capabilities.contains(
+            desklink::Capability::VoiceSend);
+        Request.GrantVoiceReceive = Capabilities.contains(
+            desklink::Capability::VoiceReceive);
         Request.GrantTopology = Capabilities.contains(
             desklink::Capability::DisplayTopologyExchange);
         Request.GrantClipboardRead = Capabilities.contains(
@@ -1680,6 +1707,20 @@ desklink::ControlState LocalState(const desklink::MachineId& LocalMachine) {
     State.LocalMachine = LocalMachine;
     State.Role = desklink::ControlRole::Idle;
     State.DesiredMode = desklink::DeskMode::LockPc1;
+    switch (desklink::GetWin32VirtualMicrophoneComponentState()) {
+        case desklink::Win32VirtualMicrophoneComponentState::NotInstalled:
+            State.VirtualMicrophoneState =
+                desklink::ControlVirtualMicrophoneState::NotInstalled;
+            break;
+        case desklink::Win32VirtualMicrophoneComponentState::Ready:
+            State.VirtualMicrophoneState =
+                desklink::ControlVirtualMicrophoneState::Installed;
+            break;
+        case desklink::Win32VirtualMicrophoneComponentState::NeedsRepair:
+            State.VirtualMicrophoneState =
+                desklink::ControlVirtualMicrophoneState::NeedsRepair;
+            break;
+    }
     return State;
 }
 
@@ -1708,6 +1749,7 @@ bool ValidateInstalledBrokerForUpdate() {
     for (const auto* Relative : {
              L"desklink.exe", L"desklink_alpha.exe", L"desklink_pair.exe",
              L"desklink_runtime.exe", L"desklink_update.exe",
+             L"desklink_virtual_microphone_installer.exe",
              L"runtime\\schannel\\msquic.dll"}) {
         if (!desklink::IsSafeWin32ProductFile(Root / Relative)) return false;
     }
@@ -1787,6 +1829,23 @@ int wmain(int Count, wchar_t** Values) {
     if (!TrustStore.Load() || !PreferencesStore.Load()) {
         std::cerr << "[Broker:Storage] protected state could not be loaded\n";
         return 1;
+    }
+    const auto StartupPreferences = PreferencesStore.Current();
+    const bool StartupPathAllowed = StartupPreferences &&
+        (!StartupPreferences->RunAtLogin ||
+         desklink::IsSafeWin32ProductFile(ProductShellPath));
+    if (!StartupPathAllowed ||
+        !desklink::SetWin32RunAtLogin(
+            StartupPreferences->RunAtLogin, ProductShellPath)) {
+        // A missing/stale Run value must not prevent the broker from keeping
+        // input Local and serving the current session. Repair is retried on
+        // every broker start and whenever preferences are saved.
+        std::cerr
+            << "[Broker:Startup] current-user sign-in registration could not be reconciled; the current broker remains active\n";
+    } else {
+        std::cout
+            << "[Broker:Startup] current-user sign-in registration reconciled enabled="
+            << (StartupPreferences->RunAtLogin ? "true" : "false") << '\n';
     }
 
     BrokerRuntimeSafetyController SafetyController;
@@ -1937,10 +1996,15 @@ int wmain(int Count, wchar_t** Values) {
                     (Change->DesiredCapabilities.bits() &
                      ~Existing->Capabilities.bits()) != 0;
                 if (!AddsAuthority) {
-                    const auto Status = TrustAuthority.RequestPermissionChange(
+                    auto Status = TrustAuthority.RequestPermissionChange(
                         Change->Machine, Change->DesiredCapabilities);
                     if (Status == desklink::TrustMutationStatus::CleanupFailed) {
-                        (void)Supervisor.ConfigurationChanged();
+                        // The trust record is already committed and the child
+                        // is fail-local. A supervised restart is a successful
+                        // fallback application, not an action-required fault.
+                        if (Supervisor.ConfigurationChanged()) {
+                            Status = desklink::TrustMutationStatus::Applied;
+                        }
                     }
                     return desklink::ControlResponse{
                         Request.RequestId, MapMutationStatus(Status)};
@@ -1961,9 +2025,14 @@ int wmain(int Count, wchar_t** Values) {
                     Existing->Capabilities.bits() &
                     Change->DesiredCapabilities.bits()};
                 if (Reduced.bits() != Existing->Capabilities.bits()) {
-                    const auto Reduction =
+                    auto Reduction =
                         TrustAuthority.RequestPermissionChange(
                             Change->Machine, Reduced);
+                    if (Reduction ==
+                            desklink::TrustMutationStatus::CleanupFailed &&
+                        Supervisor.ConfigurationChanged()) {
+                        Reduction = desklink::TrustMutationStatus::Applied;
+                    }
                     if (Reduction != desklink::TrustMutationStatus::Applied &&
                         Reduction != desklink::TrustMutationStatus::NoChange) {
                         return desklink::ControlResponse{
@@ -2090,13 +2159,15 @@ int wmain(int Count, wchar_t** Values) {
                     return desklink::ControlResponse{
                         Request.RequestId, desklink::ControlStatus::NotReady};
                 }
-                const auto Status =
+                auto Status =
                     TrustAuthority.ApplyReauthorizedPermissionChange(
                         Approved->Identity,
                         Approved->CurrentCapabilities,
                         Approved->DesiredCapabilities);
                 if (Status == desklink::TrustMutationStatus::CleanupFailed) {
-                    (void)Supervisor.ConfigurationChanged();
+                    if (Supervisor.ConfigurationChanged()) {
+                        Status = desklink::TrustMutationStatus::Applied;
+                    }
                 }
                 return desklink::ControlResponse{
                     Request.RequestId, MapMutationStatus(Status)};

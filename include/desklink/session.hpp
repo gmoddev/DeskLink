@@ -8,6 +8,9 @@
 #include "desklink/roaming_runtime.hpp"
 #include "desklink/topology_exchange.hpp"
 #include "desklink/transport.hpp"
+#ifdef DESKLINK_BUILD_VOICE
+#include "desklink/voice.hpp"
+#endif
 
 #include <cstdint>
 #include <chrono>
@@ -30,6 +33,11 @@ struct SessionStats {
     std::uint64_t AudioReceived{};
     std::uint64_t AudioAccepted{};
     std::uint64_t AudioRejected{};
+    std::uint64_t VoiceSent{};
+    std::uint64_t VoiceSendRejected{};
+    std::uint64_t VoiceReceived{};
+    std::uint64_t VoiceAccepted{};
+    std::uint64_t VoiceRejected{};
     std::uint64_t TopologySent{};
     std::uint64_t TopologySendRejected{};
     std::uint64_t TopologyReceived{};
@@ -202,6 +210,11 @@ struct PeerSessionHandlers {
         RemotePointerFeedback;
     // Must return promptly. The runtime owns any overlay worker lifetime.
     std::function<void(std::uint16_t)> IdentifyDisplays;
+#ifdef DESKLINK_BUILD_VOICE
+    // Signals that reciprocal voice admission may have changed. The runtime
+    // must re-check CanSendVoice/CanReceiveVoice and stop capture on loss.
+    std::function<void()> VoiceAuthorizationChanged;
+#endif
 };
 
 // Owns both directions of one authenticated peer connection. Capability grants
@@ -218,7 +231,11 @@ public:
                 AudioReceiver* Receiver = nullptr,
                 DisplayTopologyExchangeOptions TopologyOptions = {},
                 ClipboardSessionOptions ClipboardOptions = {},
-                LatencyDiagnosticOptions LatencyOptions = {}) noexcept;
+                LatencyDiagnosticOptions LatencyOptions = {}
+#ifdef DESKLINK_BUILD_VOICE
+                , VoiceReceiver* VoiceReceiver = nullptr
+#endif
+                ) noexcept;
     ~PeerSession();
 
     [[nodiscard]] bool Start();
@@ -259,6 +276,13 @@ public:
     [[nodiscard]] bool CanSendAudio() const noexcept;
     [[nodiscard]] bool CanReceiveAudio() const noexcept;
     [[nodiscard]] bool SendAudioFrame(AudioFrameMessage Frame);
+#ifdef DESKLINK_BUILD_VOICE
+    [[nodiscard]] bool CanSendVoice() const noexcept;
+    [[nodiscard]] bool CanReceiveVoice() const noexcept;
+    [[nodiscard]] bool SendVoiceFrame(VoiceFrameMessage Frame);
+    void SetVoiceAuthorizationChangedHandler(
+        std::function<void()> Handler) noexcept;
+#endif
     [[nodiscard]] bool SendClockSyncProbe(std::uint64_t ProbeId);
     [[nodiscard]] bool CanSendClipboard() const noexcept;
     [[nodiscard]] bool CanReceiveClipboard() const noexcept;
@@ -277,6 +301,7 @@ public:
 private:
     void OnReliable(ByteBuffer Packet);
     void OnDatagram(ByteBuffer Packet);
+    void HandleTransportClosed(TransportCloseReason Reason) noexcept;
     [[nodiscard]] bool ValidateSession(
         const DecodedPacket& Packet) noexcept;
     void CountDecision(AgentDecision Decision) noexcept;
@@ -295,6 +320,9 @@ private:
     std::uint64_t SessionNonce_{};
     PeerSessionHandlers Handlers_;
     AudioReceiver* AudioReceiver_{};
+#ifdef DESKLINK_BUILD_VOICE
+    VoiceReceiver* VoiceReceiver_{};
+#endif
     CapabilitySet LocalCapabilities_;
     std::optional<CapabilitySet> RemoteCapabilities_;
     DisplayTopologyExchangeOptions TopologyOptions_;
@@ -309,6 +337,9 @@ private:
     std::optional<PeerDirectionToken> IncomingToken_;
     std::uint64_t ReliableSequence_{1};
     std::uint64_t AudioDatagramSequence_{1};
+#ifdef DESKLINK_BUILD_VOICE
+    std::uint64_t VoiceDatagramSequence_{1};
+#endif
     std::uint64_t PointerFeedbackSequence_{1};
     std::uint64_t LastPointerFeedbackSequence_{};
     std::uint64_t TopologySequence_{1};
@@ -320,6 +351,8 @@ private:
     mutable std::recursive_mutex Mutex_;
     std::condition_variable_any CapabilityChanged_;
     bool CapabilityConflict_{};
+    bool InputUnavailableClosePending_{};
+    bool TransportCloseNotified_{};
     bool Started_{};
 };
 

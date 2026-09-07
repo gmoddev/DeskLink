@@ -128,6 +128,10 @@ if ($BrokerText -notmatch
     'const auto Forwarded = RuntimeProcessMayExist\(\)\s*\?\s*ForwardToActiveRuntime\(Request\)\s*:\s*std::nullopt;') {
     throw 'The product broker must not wait on the transport pipe when no runtime owner exists.'
 }
+if ($BrokerText -notmatch
+    'PreferencesStore\.Load\(\)[\s\S]{0,1800}SetWin32RunAtLogin\(\s*StartupPreferences->RunAtLogin, ProductShellPath\)') {
+    throw 'The product broker must reconcile the saved sign-in preference on every startup.'
+}
 if ($InstallerText -notmatch '(?m)^PrivilegesRequired=lowest\r?$' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.20348\r?$' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.19045\r?$' -or

@@ -37,7 +37,8 @@ bool IsValidHost(std::wstring_view Host) noexcept {
 
 bool HasPairingGrants(const LauncherRequest& Request) noexcept {
     return Request.GrantInput || Request.GrantAudioSend ||
-           Request.GrantAudioReceive || Request.GrantTopology ||
+           Request.GrantAudioReceive || Request.GrantVoiceSend ||
+           Request.GrantVoiceReceive || Request.GrantTopology ||
            Request.GrantClipboardRead || Request.GrantClipboardWrite;
 }
 
@@ -53,6 +54,10 @@ void AppendPairingGrants(std::vector<std::wstring>& Arguments,
     }
     if (Request.GrantAudioReceive) {
         Arguments.emplace_back(L"--grant-audio-receive");
+    }
+    if (Request.GrantVoiceSend) Arguments.emplace_back(L"--grant-voice-send");
+    if (Request.GrantVoiceReceive) {
+        Arguments.emplace_back(L"--grant-voice-receive");
     }
     if (Request.GrantTopology) {
         Arguments.emplace_back(L"--grant-topology");
@@ -182,7 +187,11 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
     if (Request.Port == 0 || Request.DiscoverySeconds == 0 ||
         Request.DiscoverySeconds > 30 ||
         !IsValidWin32PointerCalibration(Request.PointerCalibration) ||
-        !IsValidProfileConfiguration(Request)) {
+        !IsValidProfileConfiguration(Request) ||
+        (Request.VoiceInputEndpointId &&
+         (Request.VoiceInputEndpointId->empty() ||
+          Request.VoiceInputEndpointId->size() >
+              kMaximumVoiceEndpointIdBytes))) {
         return std::nullopt;
     }
     const auto HasEdgeRoaming =
@@ -236,6 +245,8 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
         case LauncherOperation::Identity:
             if (HasPairingGrants(Request) || Request.CaptureInput ||
                 Request.SendAudio || Request.ReceiveAudio ||
+                Request.SendVoice || Request.ReceiveVoice ||
+                Request.VoiceInputEndpointId ||
                 Request.SyncClipboard ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
@@ -246,6 +257,8 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
         case LauncherOperation::Discover:
             if (HasPairingGrants(Request) || Request.CaptureInput ||
                 Request.SendAudio || Request.ReceiveAudio ||
+                Request.SendVoice || Request.ReceiveVoice ||
+                Request.VoiceInputEndpointId ||
                 Request.SyncClipboard ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
@@ -256,7 +269,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             break;
         case LauncherOperation::PairListen:
             if (Request.CaptureInput || Request.SendAudio ||
-                Request.ReceiveAudio || Request.SyncClipboard ||
+                Request.ReceiveAudio || Request.SendVoice ||
+                Request.ReceiveVoice || Request.SyncClipboard ||
+                Request.VoiceInputEndpointId ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
                 return std::nullopt;
@@ -271,7 +286,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             break;
         case LauncherOperation::PairConnect:
             if (Request.CaptureInput || Request.SendAudio ||
-                Request.ReceiveAudio || Request.SyncClipboard ||
+                Request.ReceiveAudio || Request.SendVoice ||
+                Request.ReceiveVoice || Request.SyncClipboard ||
+                Request.VoiceInputEndpointId ||
                 Request.PointerCalibration.GainPercent != 100 ||
                 Request.PointerCalibration.SourceDpi != 0) {
                 return std::nullopt;
@@ -296,6 +313,14 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             Arguments.emplace_back(L"serve");
             AppendPort(Arguments, Request.Port);
             if (Request.SendAudio) Arguments.emplace_back(L"--send-audio");
+            if (Request.SendVoice) Arguments.emplace_back(L"--send-voice");
+            if (Request.ReceiveVoice) Arguments.emplace_back(L"--receive-voice");
+            if (Request.VoiceInputEndpointId) {
+                const auto Endpoint = Utf8ToWide(*Request.VoiceInputEndpointId);
+                if (!Endpoint) return std::nullopt;
+                Arguments.emplace_back(L"--voice-input");
+                Arguments.push_back(*Endpoint);
+            }
             if (Request.SyncClipboard) {
                 Arguments.emplace_back(L"--sync-clipboard");
             }
@@ -349,6 +374,14 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             }
             if (Request.ReceiveAudio) {
                 Arguments.emplace_back(L"--receive-audio");
+            }
+            if (Request.SendVoice) Arguments.emplace_back(L"--send-voice");
+            if (Request.ReceiveVoice) Arguments.emplace_back(L"--receive-voice");
+            if (Request.VoiceInputEndpointId) {
+                const auto Endpoint = Utf8ToWide(*Request.VoiceInputEndpointId);
+                if (!Endpoint) return std::nullopt;
+                Arguments.emplace_back(L"--voice-input");
+                Arguments.push_back(*Endpoint);
             }
             if (Request.SyncClipboard) {
                 Arguments.emplace_back(L"--sync-clipboard");

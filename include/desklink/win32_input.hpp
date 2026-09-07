@@ -22,7 +22,8 @@ class Win32InputInjector final : public IInputInjector {
 public:
     Win32InputInjector();
 
-    [[nodiscard]] bool InputAvailable() noexcept override;
+    [[nodiscard]] bool ReadyForInput() const noexcept override;
+    [[nodiscard]] bool InputDesktopAvailable() noexcept override;
     [[nodiscard]] bool InputDesktopInterruptionObserved()
         const noexcept override;
     bool inject_key(const KeyEventMessage& event) override;
