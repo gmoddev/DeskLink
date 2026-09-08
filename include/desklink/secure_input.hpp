@@ -17,6 +17,7 @@ enum class SecureInputOperation : std::uint8_t {
     MouseButton = 2,
     PointerMotion = 3,
     Wheel = 4,
+    ReconcileState = 5,
 };
 
 struct SecureInputGrant {

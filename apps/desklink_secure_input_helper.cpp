@@ -424,6 +424,14 @@ desklink::secure_input_wire::Status ApplyBrokerOperation(
         ValidateSecureConsentForeground() != ProbeExitCode::Success) {
         return Status::DesktopUnavailable;
     }
+    // DeskLink's privileged development path is limited to pointer-based
+    // approval or cancellation of an already visible consent prompt. It must
+    // never type authentication secrets into an over-the-shoulder UAC prompt.
+    if (SecureDesktop &&
+        (Operation == desklink::secure_input_wire::Operation::Key ||
+         Operation == desklink::secure_input_wire::Operation::ReconcileState)) {
+        return Status::InvalidRequest;
+    }
 
     switch (Operation) {
         case desklink::secure_input_wire::Operation::ReleaseOwnedState:

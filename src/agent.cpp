@@ -108,8 +108,17 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         const bool OrdinaryInputReady = DesktopAvailable &&
             injector_.ReadyForInput();
         if (!OrdinaryInputReady) {
+            const bool SequencedPointer = type == MessageType::PointerPosition ||
+                type == MessageType::PointerMotion;
+            if (SequencedPointer &&
+                packet.header.sequence <= last_pointer_sequence_) {
+                return AgentDecision::RejectedSequence;
+            }
             if (PrivilegedInput_ && PrivilegedInput_->Authorized() &&
                 PrivilegedInput_->Forward(packet)) {
+                if (SequencedPointer) {
+                    last_pointer_sequence_ = packet.header.sequence;
+                }
                 return AgentDecision::Accepted;
             }
             // A secure desktop remains a temporary pause when the separately
@@ -211,7 +220,6 @@ void AgentCoordinator::disconnect() noexcept {
     focus_.release_remote_focus();
     last_pointer_sequence_ = 0;
     (void)ReleaseOwnedState();
-    if (PrivilegedInput_) PrivilegedInput_->Revoke();
     InputUnavailable_ = false;
     NextInputAvailabilityCheck_ = {};
 }
@@ -226,8 +234,11 @@ AgentDecision AgentCoordinator::RejectInputUnavailable() noexcept {
 
 bool AgentCoordinator::ReleaseOwnedState() noexcept {
     const bool OrdinaryReleased = injector_.release_owned_state();
-    const bool PrivilegedReleased = !PrivilegedInput_ ||
-        !PrivilegedInput_->Authorized() || PrivilegedInput_->Release();
+    const bool PrivilegedWasAuthorized = PrivilegedInput_ &&
+        PrivilegedInput_->Authorized();
+    const bool PrivilegedReleased = !PrivilegedWasAuthorized ||
+        PrivilegedInput_->Release();
+    if (PrivilegedWasAuthorized) PrivilegedInput_->Revoke();
     InputCleanupPending_ = !OrdinaryReleased || !PrivilegedReleased;
     return !InputCleanupPending_;
 }

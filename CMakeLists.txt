@@ -82,6 +82,10 @@ if(WIN32)
         COMMAND powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
             -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-DevelopmentSecureSigningContracts.ps1"
         VERBATIM)
+    add_custom_target(desklink_secure_input_product_contract_check ALL
+        COMMAND powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-SecureInputProductContracts.ps1"
+        VERBATIM)
 endif()
 
 if(DESKLINK_BUILD_TESTS)
@@ -110,6 +114,10 @@ if(DESKLINK_BUILD_TESTS)
             COMMAND powershell -NoProfile -NonInteractive
                 -ExecutionPolicy Bypass
                 -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-DevelopmentSecureSigningContracts.ps1")
+        add_test(NAME desklink_secure_input_product_contract_check
+            COMMAND powershell -NoProfile -NonInteractive
+                -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-SecureInputProductContracts.ps1")
     endif()
 endif()
 

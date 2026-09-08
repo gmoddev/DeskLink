@@ -592,9 +592,7 @@ private:
             case Operation::Wheel:
                 return desklink::SecureInputOperation::Wheel;
             case Operation::ReconcileState:
-                // Reconciliation is a bounded collection of the same key and
-                // button operations under one admitted envelope.
-                return desklink::SecureInputOperation::Key;
+                return desklink::SecureInputOperation::ReconcileState;
             default:
                 return std::nullopt;
         }
