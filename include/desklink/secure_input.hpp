@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desklink/types.hpp"
+#include "desklink/protocol.hpp"
 
 #include <array>
 #include <chrono>
@@ -35,6 +36,23 @@ struct SecureInputEnvelope {
     std::uint64_t GrantRevision{};
     std::uint64_t Sequence{};
     SecureInputOperation Operation{SecureInputOperation::ReleaseOwnedState};
+};
+
+// A network-facing runtime may use this interface only after its transport has
+// completed normal peer-certificate validation. The broker remains a local,
+// optional privilege boundary; it never replaces transport admission.
+class IPrivilegedInputBroker {
+public:
+    virtual ~IPrivilegedInputBroker() = default;
+    [[nodiscard]] virtual bool Begin(
+        std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept = 0;
+    [[nodiscard]] virtual bool Renew(
+        std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept = 0;
+    [[nodiscard]] virtual bool Forward(
+        const DecodedPacket& Packet) noexcept = 0;
+    [[nodiscard]] virtual bool Release() noexcept = 0;
+    virtual void Revoke() noexcept = 0;
+    [[nodiscard]] virtual bool Authorized() const noexcept = 0;
 };
 
 enum class SecureInputDecision : std::uint8_t {

@@ -3,6 +3,7 @@
 #include "desklink/capabilities.hpp"
 #include "desklink/focus.hpp"
 #include "desklink/input.hpp"
+#include "desklink/secure_input.hpp"
 
 #include <optional>
 #include "desklink/protocol.hpp"
@@ -25,6 +26,9 @@ enum class AgentDecision {
 class AgentCoordinator {
 public:
     AgentCoordinator(const IClock& clock, IInputInjector& injector) noexcept;
+    AgentCoordinator(
+        const IClock& Clock, IInputInjector& Injector,
+        IPrivilegedInputBroker* PrivilegedInput) noexcept;
 
     void set_peer_capabilities(CapabilitySet capabilities) noexcept;
     [[nodiscard]] CapabilitySet peer_capabilities() const noexcept { return peer_capabilities_; }
@@ -55,6 +59,7 @@ private:
     [[nodiscard]] AgentDecision RejectInputUnavailable() noexcept;
 
     IInputInjector& injector_;
+    IPrivilegedInputBroker* PrivilegedInput_{};
     const IClock& Clock_;
     CapabilitySet peer_capabilities_;
     InputFocusStateMachine focus_;

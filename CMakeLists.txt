@@ -25,6 +25,8 @@ option(DESKLINK_BUILD_VIRTUAL_MICROPHONE_DRIVER
     "Build the optional signed WaveRT virtual microphone component" OFF)
 option(DESKLINK_BUILD_SECURE_INPUT_RND
     "Build validation-only LocalSystem secure-input R&D components" OFF)
+option(DESKLINK_BUILD_SECURE_INPUT_PRODUCT
+    "Build opt-in signed LocalSystem secure-input product components" OFF)
 set(DESKLINK_WINDOWS_DRIVER_SAMPLES_ROOT "" CACHE PATH
     "Pinned microsoft/Windows-driver-samples checkout for the optional driver")
 set(DESKLINK_VIRTUAL_MICROPHONE_WDK_ROOT "" CACHE PATH
@@ -364,6 +366,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_audio.cpp
         src/win32_voice.cpp
         src/win32_input.cpp
+        src/win32_secure_input.cpp
         src/win32_capture.cpp
         src/win32_clipboard.cpp
         src/win32_pairing.cpp
@@ -450,43 +453,89 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
     endif()
 endif()
 
-if(DESKLINK_BUILD_SECURE_INPUT_RND)
+if(DESKLINK_BUILD_SECURE_INPUT_RND OR DESKLINK_BUILD_SECURE_INPUT_PRODUCT)
     if(NOT WIN32)
         message(FATAL_ERROR
-            "DESKLINK_BUILD_SECURE_INPUT_RND is available only on Windows")
+            "DeskLink secure-input components are available only on Windows")
     endif()
-    add_executable(desklink_secure_service
-        apps/desklink_secure_service.cpp)
     add_executable(desklink_secure_input_helper
         apps/desklink_secure_input_helper.cpp)
-    target_link_libraries(desklink_secure_service PRIVATE
-        advapi32 ole32 shell32 wtsapi32)
     target_link_libraries(desklink_secure_input_helper PRIVATE
-        advapi32 user32 wtsapi32)
-    target_compile_definitions(desklink_secure_service PRIVATE
-        UNICODE _UNICODE DESKLINK_SECURE_INPUT_RND=1)
+        desklink_core advapi32 user32 wtsapi32)
     target_compile_definitions(desklink_secure_input_helper PRIVATE
-        UNICODE _UNICODE DESKLINK_SECURE_INPUT_RND=1)
+        UNICODE _UNICODE)
     if(MSVC)
-        foreach(Target desklink_secure_service desklink_secure_input_helper)
-            target_compile_options(${Target} PRIVATE /W4 /permissive-)
-            target_link_options(${Target} PRIVATE
-                "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
-        endforeach()
+        target_compile_options(desklink_secure_input_helper PRIVATE
+            /W4 /permissive-)
+        target_link_options(desklink_secure_input_helper PRIVATE
+            "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
     endif()
     if(DESKLINK_BUILD_TESTS)
-        add_test(NAME desklink_secure_service_self_test
-            COMMAND desklink_secure_service --self-test)
         add_test(NAME desklink_secure_input_helper_self_test
             COMMAND desklink_secure_input_helper --self-test)
-        add_test(NAME desklink_secure_service_rejects_console_launch
-            COMMAND desklink_secure_service)
         add_test(NAME desklink_secure_helper_rejects_unprivileged_probe
             COMMAND desklink_secure_input_helper
                 --service-probe default-release)
         set_tests_properties(
-            desklink_secure_service_rejects_console_launch
             desklink_secure_helper_rejects_unprivileged_probe
+            PROPERTIES WILL_FAIL TRUE)
+    endif()
+endif()
+
+if(DESKLINK_BUILD_SECURE_INPUT_RND)
+    add_executable(desklink_secure_service
+        apps/desklink_secure_service.cpp)
+    target_link_libraries(desklink_secure_service PRIVATE
+        advapi32 ole32 shell32 wtsapi32)
+    target_compile_definitions(desklink_secure_service PRIVATE
+        UNICODE _UNICODE DESKLINK_SECURE_INPUT_RND=1)
+    if(MSVC)
+        target_compile_options(desklink_secure_service PRIVATE
+            /W4 /permissive-)
+        target_link_options(desklink_secure_service PRIVATE
+            "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
+    endif()
+    if(DESKLINK_BUILD_TESTS)
+        add_test(NAME desklink_secure_service_self_test
+            COMMAND desklink_secure_service --self-test)
+        add_test(NAME desklink_secure_service_rejects_console_launch
+            COMMAND desklink_secure_service)
+        set_tests_properties(
+            desklink_secure_service_rejects_console_launch
+            PROPERTIES WILL_FAIL TRUE)
+    endif()
+endif()
+
+if(DESKLINK_BUILD_SECURE_INPUT_PRODUCT)
+    add_executable(desklink_secure_input_service
+        apps/desklink_secure_input_service.cpp)
+    add_executable(desklink_secure_input_configurator WIN32
+        apps/desklink_secure_input_configurator.cpp)
+    target_link_libraries(desklink_secure_input_service PRIVATE
+        desklink_core advapi32 crypt32 ole32 shell32 user32 wintrust wtsapi32)
+    target_link_libraries(desklink_secure_input_configurator PRIVATE
+        desklink_core advapi32 user32)
+    target_compile_definitions(desklink_secure_input_service PRIVATE
+        UNICODE _UNICODE DESKLINK_SECURE_INPUT_PRODUCT=1)
+    target_compile_definitions(desklink_secure_input_configurator PRIVATE
+        UNICODE _UNICODE DESKLINK_SECURE_INPUT_PRODUCT=1)
+    if(MSVC)
+        foreach(Target desklink_secure_input_service
+                       desklink_secure_input_configurator)
+            target_compile_options(${Target} PRIVATE /W4 /permissive-)
+        endforeach()
+        target_link_options(desklink_secure_input_service PRIVATE
+            "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
+        target_link_options(desklink_secure_input_configurator PRIVATE
+            "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    endif()
+    if(DESKLINK_BUILD_TESTS)
+        add_test(NAME desklink_secure_input_product_service_self_test
+            COMMAND desklink_secure_input_service --self-test)
+        add_test(NAME desklink_secure_input_product_service_rejects_console
+            COMMAND desklink_secure_input_service)
+        set_tests_properties(
+            desklink_secure_input_product_service_rejects_console
             PROPERTIES WILL_FAIL TRUE)
     endif()
 endif()

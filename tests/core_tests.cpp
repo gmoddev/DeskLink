@@ -869,7 +869,8 @@ void ControlProtocolRoundTripAndValidation() {
 
     ControlTrustedDeviceList Devices;
     Devices.Devices.push_back(ControlTrustedDevice{
-        MakeMachineId(8), "Companion PC", RequestedCapabilities, true});
+        DeriveMachineId(MakeDigest(8)), "Companion PC",
+        FormatFingerprint(MakeDigest(8)), RequestedCapabilities, true});
     ControlResponse DevicesResponse{16, ControlStatus::Ok};
     DevicesResponse.TrustedDevices = Devices;
     const auto DevicesFrame = EncodeControlResponse(DevicesResponse);

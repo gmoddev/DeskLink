@@ -17,6 +17,12 @@ std::chrono::milliseconds clamp_lease(std::uint32_t requested) {
 AgentCoordinator::AgentCoordinator(const IClock& clock, IInputInjector& injector) noexcept
     : injector_(injector), Clock_(clock), focus_(clock) {}
 
+AgentCoordinator::AgentCoordinator(
+    const IClock& Clock, IInputInjector& Injector,
+    IPrivilegedInputBroker* PrivilegedInput) noexcept
+    : injector_(Injector), PrivilegedInput_(PrivilegedInput), Clock_(Clock),
+      focus_(Clock) {}
+
 void AgentCoordinator::set_peer_capabilities(CapabilitySet capabilities) noexcept {
     peer_capabilities_ = capabilities;
     if (!can_inject()) {
@@ -40,10 +46,9 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
 
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
-        if (!injector_.InputDesktopAvailable()) {
-            return AgentDecision::RejectedLease;
-        }
-        if (!injector_.ReadyForInput()) return RejectInputUnavailable();
+        const bool DesktopAvailable = injector_.InputDesktopAvailable();
+        const bool OrdinaryInputReady = DesktopAvailable &&
+            injector_.ReadyForInput();
         const auto& request = std::get<FocusRequestMessage>(packet.message);
         if (focus_.focus() == FocusLocation::Remote && !ReleaseOwnedState()) {
             focus_.release_remote_focus();
@@ -54,6 +59,15 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (new_epoch != 0) {
             last_pointer_sequence_ = 0;
             InputUnavailable_ = false;
+            const bool PrivilegedReady = PrivilegedInput_ &&
+                PrivilegedInput_->Begin(
+                    new_epoch, clamp_lease(request.requested_lease_ms));
+            if (!OrdinaryInputReady && !PrivilegedReady) {
+                focus_.release_remote_focus();
+                return DesktopAvailable
+                    ? RejectInputUnavailable()
+                    : AgentDecision::RejectedLease;
+            }
         }
         return new_epoch == 0 ? AgentDecision::RejectedLease : AgentDecision::Accepted;
     }
@@ -62,9 +76,14 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         const auto& renew = std::get<FocusRenewMessage>(packet.message);
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
-        return focus_.renew(packet.header.epoch, clamp_lease(renew.requested_lease_ms))
-            ? AgentDecision::Accepted
-            : AgentDecision::RejectedLease;
+        const auto Lease = clamp_lease(renew.requested_lease_ms);
+        if (!focus_.renew(packet.header.epoch, Lease)) {
+            return AgentDecision::RejectedLease;
+        }
+        if (PrivilegedInput_ && PrivilegedInput_->Authorized()) {
+            (void)PrivilegedInput_->Renew(packet.header.epoch, Lease);
+        }
+        return AgentDecision::Accepted;
     }
 
     if (type == MessageType::FocusRelease) {
@@ -81,15 +100,25 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         type == MessageType::InputStateSnapshot ||
         type == MessageType::MouseWheel) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
-        // Secure desktop ownership is an expected, temporary Windows safety
-        // boundary. Reject input without classifying the authenticated packet
-        // as malformed or tearing down its transport.
-        if (!injector_.InputDesktopAvailable()) {
-            return AgentDecision::RejectedLease;
-        }
         if (InputCleanupPending_) return AgentDecision::RejectedLease;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         if (!focus_.accepts_remote_input(packet.header.epoch)) return AgentDecision::RejectedLease;
+
+        const bool DesktopAvailable = injector_.InputDesktopAvailable();
+        const bool OrdinaryInputReady = DesktopAvailable &&
+            injector_.ReadyForInput();
+        if (!OrdinaryInputReady) {
+            if (PrivilegedInput_ && PrivilegedInput_->Authorized() &&
+                PrivilegedInput_->Forward(packet)) {
+                return AgentDecision::Accepted;
+            }
+            // A secure desktop remains a temporary pause when the separately
+            // approved privileged path is absent or unavailable. A Default-
+            // desktop integrity boundary still fails Local.
+            return DesktopAvailable
+                ? RejectInputUnavailable()
+                : AgentDecision::RejectedLease;
+        }
 
         switch (type) {
             case MessageType::KeyEvent:
@@ -168,7 +197,8 @@ void AgentCoordinator::tick() noexcept {
         // a higher-integrity Task Manager) cannot receive SendInput and must
         // revoke remote focus instead of leaving the controller suppressed.
         if (injector_.InputDesktopAvailable() &&
-            !injector_.ReadyForInput()) {
+            !injector_.ReadyForInput() &&
+            !(PrivilegedInput_ && PrivilegedInput_->Authorized())) {
             (void)RejectInputUnavailable();
         }
     }
@@ -181,6 +211,7 @@ void AgentCoordinator::disconnect() noexcept {
     focus_.release_remote_focus();
     last_pointer_sequence_ = 0;
     (void)ReleaseOwnedState();
+    if (PrivilegedInput_) PrivilegedInput_->Revoke();
     InputUnavailable_ = false;
     NextInputAvailabilityCheck_ = {};
 }
@@ -194,7 +225,10 @@ AgentDecision AgentCoordinator::RejectInputUnavailable() noexcept {
 }
 
 bool AgentCoordinator::ReleaseOwnedState() noexcept {
-    InputCleanupPending_ = !injector_.release_owned_state();
+    const bool OrdinaryReleased = injector_.release_owned_state();
+    const bool PrivilegedReleased = !PrivilegedInput_ ||
+        !PrivilegedInput_->Authorized() || PrivilegedInput_->Release();
+    InputCleanupPending_ = !OrdinaryReleased || !PrivilegedReleased;
     return !InputCleanupPending_;
 }
 

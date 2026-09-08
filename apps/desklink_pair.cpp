@@ -16,6 +16,7 @@
 #include "desklink/win32_monitor_configurator.hpp"
 #include "desklink/win32_pairing.hpp"
 #include "desklink/win32_roaming_settings.hpp"
+#include "desklink/win32_secure_input.hpp"
 #include "desklink/win32_discovery.hpp"
 #include "desklink/win32_display_topology.hpp"
 
@@ -1755,7 +1756,9 @@ struct AgentRuntime {
 #else
         : PeerMachine(Trusted.Endpoint->peer_info().identity.machine_id),
           LocalTopology(LocalMachine),
-          Coordinator(Clock, Injector),
+          PrivilegedInput(
+              Trusted.Endpoint->peer_info().identity, Trusted.SessionNonce),
+          Coordinator(Clock, Injector, &PrivilegedInput),
 #endif
           Session(std::move(Trusted.Endpoint), Coordinator, TrustStore,
                   Trusted.SessionNonce,
@@ -1903,6 +1906,9 @@ struct AgentRuntime {
     desklink::MachineId PeerMachine{};
     LocalTopologyRuntime LocalTopology;
     AgentInputInjector Injector;
+#ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
+    desklink::Win32SecureInputBroker PrivilegedInput;
+#endif
     desklink::AgentCoordinator Coordinator;
     desklink::AgentSession Session;
     std::unique_ptr<desklink::Win32WasapiLoopbackCapture> AudioCapture;
@@ -2278,7 +2284,9 @@ struct PeerRuntime {
           LocalTopology(LocalMachine),
           Endpoint(Trusted.Endpoint),
           SessionNonce(Trusted.SessionNonce),
-          IncomingCoordinator(Clock, Injector),
+          PrivilegedInput(
+              Trusted.Endpoint->peer_info().identity, Trusted.SessionNonce),
+          IncomingCoordinator(Clock, Injector, &PrivilegedInput),
 #endif
           OutgoingCoordinator(Trusted.SessionNonce),
           LatencyDiagnostics(Clock, ValidationAudioLatency),
@@ -3298,6 +3306,9 @@ struct PeerRuntime {
     std::shared_ptr<desklink::MsQuicTransportEndpoint> Endpoint;
     std::uint64_t SessionNonce{};
     AgentInputInjector Injector;
+#ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
+    desklink::Win32SecureInputBroker PrivilegedInput;
+#endif
     desklink::AgentCoordinator IncomingCoordinator;
     desklink::HostCoordinator OutgoingCoordinator;
     AudioLatencyDiagnostics LatencyDiagnostics;

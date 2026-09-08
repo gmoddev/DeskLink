@@ -1,4 +1,5 @@
 #include "desklink/control.hpp"
+#include "desklink/pairing.hpp"
 
 #include <algorithm>
 #include <array>
@@ -910,6 +911,10 @@ void EncodeTrustedDevices(Writer& Output,
     Output.U8(static_cast<std::uint8_t>(Devices.Devices.size()));
     for (const auto& Device : Devices.Devices) {
         Output.Raw(Device.Machine);
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Device.PublicKeyFingerprint.data()),
+            Device.PublicKeyFingerprint.size()});
         Output.U64(Device.Capabilities.bits());
         Output.U8(Device.Connected ? 1u : 0u);
         Output.U8(static_cast<std::uint8_t>(Device.DisplayName.size()));
@@ -931,7 +936,9 @@ std::optional<ControlTrustedDeviceList> DecodeTrustedDevices(Reader& Input) {
         std::uint64_t CapabilityBits{};
         std::uint8_t Connected{};
         std::uint8_t NameLength{};
-        if (!Input.Raw(Device.Machine) || !Input.U64(CapabilityBits) ||
+        ByteBuffer Fingerprint(kControlFingerprintLength);
+        if (!Input.Raw(Device.Machine) || !Input.Raw(Fingerprint) ||
+            !Input.U64(CapabilityBits) ||
             !Input.U8(Connected) || Connected > 1 ||
             !Input.U8(NameLength) || NameLength == 0 ||
             NameLength > kMaximumControlDisplayName ||
@@ -942,6 +949,9 @@ std::optional<ControlTrustedDeviceList> DecodeTrustedDevices(Reader& Input) {
         if (!Input.Raw(Name)) return std::nullopt;
         Device.DisplayName.assign(
             reinterpret_cast<const char*>(Name.data()), Name.size());
+        Device.PublicKeyFingerprint.assign(
+            reinterpret_cast<const char*>(Fingerprint.data()),
+            Fingerprint.size());
         Device.Capabilities = CapabilitySet(CapabilityBits);
         Device.Connected = Connected != 0;
         Result.Devices.push_back(std::move(Device));
@@ -1525,8 +1535,11 @@ bool IsValidControlTrustedDeviceList(
     if (Devices.Devices.size() > kMaximumControlTrustedDevices) return false;
     for (std::size_t Index = 0; Index < Devices.Devices.size(); ++Index) {
         const auto& Device = Devices.Devices[Index];
+        const auto Fingerprint = ParseFingerprint(
+            Device.PublicKeyFingerprint);
         if (!IsNonzeroMachine(Device.Machine) ||
             !IsBoundedDisplayName(Device.DisplayName) ||
+            !Fingerprint || Device.Machine != DeriveMachineId(*Fingerprint) ||
             !HasOnlyKnownCapabilities(Device.Capabilities)) {
             return false;
         }

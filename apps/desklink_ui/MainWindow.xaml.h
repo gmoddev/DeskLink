@@ -186,6 +186,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnRetryConnection(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
+    void OnConfigureSecureInput(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::RoutedEventArgs const& Args);
 
     void InitializeWindowLifecycle();
     void RequestExit();
@@ -275,6 +278,8 @@ private:
         desklink::ControlPermissionCandidate Candidate);
     [[nodiscard]] Windows::Foundation::IAsyncAction ConfirmForget(
         desklink::ControlTrustedDevice Device);
+    [[nodiscard]] Windows::Foundation::IAsyncAction
+    ConfigureSecureInput();
 
     HWND MainWindowHandle_{};
     HWND LifecycleWindow_{};
