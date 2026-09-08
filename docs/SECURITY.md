@@ -229,6 +229,10 @@ This turns delayed network traffic into harmless stale data. Focus acquisition a
 The Windows capture adapter uses Ctrl+Alt+Pause as its physical fail-local
 chord, accepting both the Pause and Windows Ctrl+Break virtual-key forms. The
 low-level hook clears the atomic routing flag before notifying the worker.
+The first activation releases remote focus but retains the authenticated
+transport; a second deliberate activation within three seconds terminates the
+managed session. This confirmation window affects only disconnection: the
+first activation always returns input Local synchronously.
 Injected events always pass through. An invalid keyboard scan code, a busy/full
 keyboard capture queue, Raw Input queue overflow, or an invalid/unqueueable
 physical wheel event disables routing before the session is released. Wheel

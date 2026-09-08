@@ -4659,8 +4659,30 @@ private:
 
     void EmergencyRelease() noexcept {
         DisableCaptureImmediately();
-        EmergencyTriggered_.store(true, std::memory_order_relaxed);
-        if (!Post([this] {
+        constexpr auto DisconnectConfirmationWindow =
+            std::chrono::seconds(3);
+        const auto Now = Clock_.now();
+        bool DisconnectRequested{};
+        {
+            std::scoped_lock Lock(EmergencyMutex_);
+            DisconnectRequested = LastEmergencyReturnLocal_ !=
+                    desklink::IClock::time_point{} &&
+                Now >= LastEmergencyReturnLocal_ &&
+                Now - LastEmergencyReturnLocal_ <=
+                    DisconnectConfirmationWindow;
+            LastEmergencyReturnLocal_ = DisconnectRequested
+                ? desklink::IClock::time_point{} : Now;
+        }
+        if (!Post([this, DisconnectRequested] {
+            if (!DisconnectRequested) {
+                ReturnLocalPreservingRoaming(
+                    "emergency shortcut; press again within 3 seconds to disconnect");
+                std::cout
+                    << "[Input:Safety] emergency shortcut returned input Local; "
+                       "press again within 3 seconds to disconnect\n";
+                return;
+            }
+            EmergencyTriggered_.store(true, std::memory_order_relaxed);
             ResetRoamingState();
             Profiles_.EmergencyFailLocal();
             Lifecycle_.FailLocal();
@@ -4783,6 +4805,9 @@ private:
     bool StopRequested_{};
     std::atomic_bool Stopping_{};
     std::atomic_bool FailLocalRequested_{};
+
+    std::mutex EmergencyMutex_;
+    desklink::IClock::time_point LastEmergencyReturnLocal_{};
 
     std::mutex RoamingObservationMutex_;
     std::optional<desklink::Win32LocalPointerObservation>

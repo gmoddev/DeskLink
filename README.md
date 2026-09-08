@@ -108,7 +108,8 @@ room propagation, or microphone capture latency. See
 - Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
 - Bounded pointer gain (25-400%) and optional source-DPI normalization without
   changing either PC's Windows mouse settings
-- Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
+- Fail-local keyboard/mouse suppression gate: Ctrl+Alt+Pause returns input
+  Local immediately; pressing it again within three seconds disconnects
 - Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
 - Guarded two-PC reconciliation fault validation with a non-production-only control
 - Stable Windows DisplayConfig identities, deterministic display IDs, rectangle mapping,
@@ -283,7 +284,9 @@ fails active input Local during migration.
 Controller sessions always start in `lock-pc1` and require an explicit
 **Focus remote** action. **RETURN LOCAL** applies `LockPc1` through the
 authenticated control pipe, while Ctrl+Alt+Pause/Break remains the independent
-physical emergency path. The alpha package is Schannel-only and supports the
+physical emergency path. One activation returns input Local without dropping
+the trusted session; a second activation within three seconds disconnects. The
+alpha package is Schannel-only and supports the
 Windows 11 / Server 2022+ production baseline. See
 [`docs/ALPHA_WRAPPER.md`](docs/ALPHA_WRAPPER.md) for the workflow and packaging
 command.
@@ -443,7 +446,8 @@ On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires
 and renews a remote-focus lease, forwards physical keyboard events from the
 low-level hook and mouse events from Raw Input, and suppresses corresponding
 local input until Enter is pressed. Ctrl+Alt+Pause (including Windows'
-Ctrl+Break representation) immediately disables suppression and fails local.
+Ctrl+Break representation) immediately disables suppression and returns input
+Local. Pressing it again within three seconds disconnects the trusted session.
 Omitting `--capture` retains the manual control-plane-only check.
 Ordinary motion is transported as relative Raw Input counts, avoiding any
 dependency on the controlling PC's total virtual-desktop width. Optional

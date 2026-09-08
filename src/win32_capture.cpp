@@ -450,9 +450,11 @@ Win32HookDecision Win32SuppressionGate::HandleKeyboard(
     UpdateModifier(AltMask_, ModifierBit(VirtualKey, false), Down);
     UpdateModifier(ShiftMask_, ShiftModifierBit(VirtualKey), Down);
     if (Down && (VirtualKey == VK_PAUSE || VirtualKey == VK_CANCEL) &&
-        RemoteRouting() &&
         ControlMask_.load(std::memory_order_relaxed) != 0 &&
         AltMask_.load(std::memory_order_relaxed) != 0) {
+        // The first activation synchronously disables routing. Keep accepting
+        // the same chord while Local so the runtime can interpret a deliberate
+        // second activation as a disconnect confirmation.
         SetRemoteRouting(false);
         return Win32HookDecision::Emergency;
     }

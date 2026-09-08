@@ -430,7 +430,7 @@ desklink::secure_input_wire::Status ApplyBrokerOperation(
     if (SecureDesktop &&
         (Operation == desklink::secure_input_wire::Operation::Key ||
          Operation == desklink::secure_input_wire::Operation::ReconcileState)) {
-        return Status::InvalidRequest;
+        return Status::SecureOperationBlocked;
     }
 
     switch (Operation) {

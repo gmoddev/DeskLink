@@ -16,6 +16,7 @@
 #include "desklink/roaming.hpp"
 #include "desklink/roaming_runtime.hpp"
 #include "desklink/secure_input.hpp"
+#include "desklink/secure_input_wire.hpp"
 #include "desklink/runtime_broker.hpp"
 #include "desklink/product_shell.hpp"
 #include "desklink/session.hpp"
@@ -6004,6 +6005,15 @@ void WindowsSuppressionGateFailsLocal() {
           Win32HookDecision::Emergency);
     CHECK(!Gate.RemoteRouting());
     CHECK(Gate.HandleMouse(false) == Win32HookDecision::Pass);
+    // A second deliberate activation remains observable after the first one
+    // has synchronously disabled routing. The runtime uses it as disconnect
+    // confirmation while a single activation only returns input Local.
+    CHECK(Gate.HandleKeyboard(LeftControl, true, false) ==
+          Win32HookDecision::Pass);
+    CHECK(Gate.HandleKeyboard(LeftAlt, true, false) ==
+          Win32HookDecision::Pass);
+    CHECK(Gate.HandleKeyboard(Pause, true, false) ==
+          Win32HookDecision::Emergency);
 
     Win32SuppressionGate BreakGate;
     BreakGate.SetRemoteRouting(true);
@@ -6864,6 +6874,20 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
     CHECK(Injector.release_calls >= 2);
 }
 
+void SecureInputBlockedOperationsPreserveOnlyExistingAuthorization() {
+    using namespace desklink::secure_input_wire;
+    CHECK(PreservesAuthorizationAfterForwardFailure(
+        Status::SecureOperationBlocked));
+    CHECK(PreservesAuthorizationAfterForwardFailure(
+        Status::DesktopUnavailable));
+    CHECK(PreservesAuthorizationAfterForwardFailure(
+        Status::InjectionFailed));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::InvalidRequest));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::GrantRejected));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::Expired));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::InternalFailure));
+}
+
 void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
     using namespace desklink;
 
@@ -7423,6 +7447,7 @@ int main() {
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
     UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
+    SecureInputBlockedOperationsPreserveOnlyExistingAuthorization();
     PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus();
     SecureInputAuthorizationIsExactAndLeaseBound();
     host_agent_focus_transaction();

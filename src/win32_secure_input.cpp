@@ -229,8 +229,10 @@ public:
         const auto Result = Transact(
             RequestedOperation, 0, Sequence_, Payload);
         if (!Result || Result->Result != Status::Ok) {
-            if (!Result || (Result->Result != Status::DesktopUnavailable &&
-                Result->Result != Status::InjectionFailed)) {
+            if (!Result ||
+                !secure_input_wire::
+                    PreservesAuthorizationAfterForwardFailure(
+                        Result->Result)) {
                 Revoke();
             }
             return false;

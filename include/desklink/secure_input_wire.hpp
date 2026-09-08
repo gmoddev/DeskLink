@@ -37,7 +37,18 @@ enum class Status : std::uint32_t {
     DesktopUnavailable = 6,
     InjectionFailed = 7,
     InternalFailure = 8,
+    // The authenticated grant remains valid, but this operation is forbidden
+    // on the currently active desktop. In particular, Winlogon permits only
+    // pointer-based manual consent/cancel and release-owned-state operations.
+    SecureOperationBlocked = 9,
 };
+
+[[nodiscard]] constexpr bool PreservesAuthorizationAfterForwardFailure(
+    Status Result) noexcept {
+    return Result == Status::DesktopUnavailable ||
+        Result == Status::InjectionFailed ||
+        Result == Status::SecureOperationBlocked;
+}
 
 #pragma pack(push, 1)
 struct Request {

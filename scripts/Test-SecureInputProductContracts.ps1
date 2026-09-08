@@ -92,7 +92,7 @@ foreach ($Required in @(
     }
 }
 if ($Helper -notmatch
-        'SecureDesktop\s*&&[\s\S]{0,180}Operation::Key[\s\S]{0,180}Operation::ReconcileState[\s\S]{0,120}Status::InvalidRequest') {
+        'SecureDesktop\s*&&[\s\S]{0,180}Operation::Key[\s\S]{0,180}Operation::ReconcileState[\s\S]{0,120}Status::SecureOperationBlocked') {
     throw 'The secure desktop must reject keyboard and reconciliation input.'
 }
 
@@ -118,6 +118,11 @@ if ($Broker -notmatch 'kPipeName' -or
     $Broker -notmatch 'GrantRevision_' -or
     $Broker -notmatch 'Sequence_') {
     throw 'The runtime broker lost its fixed local IPC or replay-bound identity envelope.'
+}
+if ($Broker -notmatch 'PreservesAuthorizationAfterForwardFailure' -or
+    $Broker -match
+        'Result->Result\s*==\s*Status::SecureOperationBlocked[\s\S]{0,120}Revoke\(') {
+    throw 'Expected secure-desktop operation blocking must preserve the existing exact authorization.'
 }
 if ($Runtime -notmatch
         'PrivilegedInput\([\s\S]{0,220}Trusted\.SessionNonce' -or
