@@ -234,9 +234,16 @@ void AgentCoordinator::tick() noexcept {
         const bool DesktopAvailable = injector_.InputDesktopAvailable();
         const bool OrdinaryInputReady = DesktopAvailable &&
             injector_.ReadyForInput();
-        if (OrdinaryInputReady) {
+        if (!DesktopAvailable) {
+            // The first broker response can race the injector's short-lived
+            // desktop cache as Windows enters Winlogon. Once the secure
+            // desktop is positively observed, discard any Default-desktop
+            // helper handoff timer so time spent on UAC cannot expire it and
+            // tear down focus immediately after Default returns.
             PrivilegedInputUnavailableSince_.reset();
-        } else if (DesktopAvailable) {
+        } else if (OrdinaryInputReady) {
+            PrivilegedInputUnavailableSince_.reset();
+        } else {
             const bool PrivilegedAuthorized = PrivilegedInput_ &&
                 PrivilegedInput_->Authorized();
             const bool TransitionExpired = PrivilegedInputUnavailableSince_ &&

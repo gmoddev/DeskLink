@@ -65,6 +65,7 @@ private:
 class Win32SuppressionGate final {
 public:
     void SetRemoteRouting(bool Enabled) noexcept;
+    void EmergencyFailLocal() noexcept;
     void SetReturnLocalHotkey(ProductHotkey Hotkey) noexcept;
     [[nodiscard]] bool RemoteRouting() const noexcept;
     [[nodiscard]] Win32HookDecision HandleKeyboard(

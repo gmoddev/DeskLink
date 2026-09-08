@@ -123,7 +123,7 @@ struct Win32InputCapture::State {
     }
 
     void Emergency() {
-        Gate.SetRemoteRouting(false);
+        Gate.EmergencyFailLocal();
         ClearQueue();
         if (Handlers.Emergency) Handlers.Emergency();
     }
@@ -432,6 +432,13 @@ void Win32SuppressionGate::SetRemoteRouting(bool Enabled) noexcept {
     }
 }
 
+void Win32SuppressionGate::EmergencyFailLocal() noexcept {
+    // Preserve the physical modifier state. A user who keeps Ctrl+Alt held and
+    // taps Pause a second time must still be able to request the documented
+    // disconnect confirmation after the first tap has failed input Local.
+    RemoteRouting_.store(false, std::memory_order_release);
+}
+
 void Win32SuppressionGate::SetReturnLocalHotkey(
     ProductHotkey Hotkey) noexcept {
     ReturnLocalHotkey_.store(
@@ -455,7 +462,7 @@ Win32HookDecision Win32SuppressionGate::HandleKeyboard(
         // The first activation synchronously disables routing. Keep accepting
         // the same chord while Local so the runtime can interpret a deliberate
         // second activation as a disconnect confirmation.
-        SetRemoteRouting(false);
+        EmergencyFailLocal();
         return Win32HookDecision::Emergency;
     }
     const auto Hotkey = ReturnLocalHotkey_.load(std::memory_order_acquire);

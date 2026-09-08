@@ -6010,12 +6010,14 @@ void WindowsSuppressionGateFailsLocal() {
     // A second deliberate activation remains observable after the first one
     // has synchronously disabled routing. The runtime uses it as disconnect
     // confirmation while a single activation only returns input Local.
-    CHECK(Gate.HandleKeyboard(LeftControl, true, false) ==
-          Win32HookDecision::Pass);
-    CHECK(Gate.HandleKeyboard(LeftAlt, true, false) ==
-          Win32HookDecision::Pass);
+    // Ctrl+Alt remain physically held. The first activation must not erase
+    // that state before the second Pause/Break confirmation arrives.
     CHECK(Gate.HandleKeyboard(Pause, true, false) ==
           Win32HookDecision::Emergency);
+    CHECK(Gate.HandleKeyboard(LeftAlt, false, false) ==
+          Win32HookDecision::Pass);
+    CHECK(Gate.HandleKeyboard(LeftControl, false, false) ==
+          Win32HookDecision::Pass);
 
     Win32SuppressionGate BreakGate;
     BreakGate.SetRemoteRouting(true);
@@ -7046,6 +7048,49 @@ void PrivilegedInputTransitionGraceIsBoundedAndFailClosed() {
         CHECK(Agent.RemoteFocused());
         CHECK(!Agent.InputUnavailable());
         CHECK(Injector.motions.empty());
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+
+        // The broker can observe Winlogon just before the injector's cached
+        // desktop state catches up. Positively observing the secure desktop
+        // must clear that stale Default-desktop transition timer.
+        Injector.DesktopAvailable = false;
+        Clock.advance(std::chrono::milliseconds(1'000));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+
+        Injector.DesktopAvailable = true;
+        Clock.advance(std::chrono::milliseconds(50));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+
+        Broker.ForwardResult = PrivilegedInputForwardResult::Forwarded;
+        Header.sequence = 2;
+        Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{3, 1}), true);
+        CHECK(Motion.packet.has_value());
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::Accepted);
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
     }
 
     {
