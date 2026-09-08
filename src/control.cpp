@@ -764,6 +764,16 @@ void EncodePreferences(Writer& Output,
                 Preferences.VoiceInputEndpointId->data()),
             Preferences.VoiceInputEndpointId->size()});
     }
+    Output.U8(static_cast<std::uint8_t>(Preferences.VoiceOutputBackend));
+    const auto OutputEndpointSize = Preferences.VoiceOutputEndpointId
+        ? Preferences.VoiceOutputEndpointId->size() : 0u;
+    Output.U16(static_cast<std::uint16_t>(OutputEndpointSize));
+    if (Preferences.VoiceOutputEndpointId) {
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Preferences.VoiceOutputEndpointId->data()),
+            Preferences.VoiceOutputEndpointId->size()});
+    }
 }
 
 std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
@@ -865,6 +875,22 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         ByteBuffer Endpoint(VoiceEndpointSize);
         if (!Input.Raw(Endpoint)) return std::nullopt;
         Preferences.VoiceInputEndpointId = std::string(
+            reinterpret_cast<const char*>(Endpoint.data()), Endpoint.size());
+    }
+    std::uint8_t RawVoiceOutputBackend{};
+    std::uint16_t VoiceOutputEndpointSize{};
+    if (!Input.U8(RawVoiceOutputBackend) ||
+        !Input.U16(VoiceOutputEndpointSize) ||
+        VoiceOutputEndpointSize > kMaximumVoiceEndpointIdBytes ||
+        Input.Remaining() < VoiceOutputEndpointSize) {
+        return std::nullopt;
+    }
+    Preferences.VoiceOutputBackend =
+        static_cast<VoiceApplicationOutputBackend>(RawVoiceOutputBackend);
+    if (VoiceOutputEndpointSize != 0) {
+        ByteBuffer Endpoint(VoiceOutputEndpointSize);
+        if (!Input.Raw(Endpoint)) return std::nullopt;
+        Preferences.VoiceOutputEndpointId = std::string(
             reinterpret_cast<const char*>(Endpoint.data()), Endpoint.size());
     }
     return IsValidProductPreferences(Preferences)

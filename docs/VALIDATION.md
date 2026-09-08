@@ -779,10 +779,22 @@ source gate proving that the microphone backend does not use loopback capture.
 
 The virtual-microphone application-routing slice adds automated coverage for
 all three local destinations, one-decode fanout, independent sink failure,
-monitor-only gain/echo guard, source-wide reset/mute, preference-schema-7
+monitor-only gain/echo guard, source-wide reset/mute, preference-schema-8
 migration with default PTT and continuous fail-closed gate checks, control
 serialization, stable-property endpoint filtering, and
 lower-level rejection of DeskLink's capture endpoint as an outgoing source.
+The application-input abstraction test injects and replaces fake backends,
+proving stop-before-replace ownership and unavailable-without-backend behavior.
+A separate source contract requires the runtime to depend on
+`VoiceApplicationOutput`, requires the external adapter to receive an exact
+endpoint ID, and rejects direct concrete-feed ownership in runtime code.
+
+The external-cable factory rejects a missing endpoint and rejects an endpoint
+for the DeskLink-driver adapter. Its WASAPI path binds endpoint notifications to
+the exact selected device and disables default-device following. Physical
+VB-CABLE output/input mapping, application enumeration, lifecycle silence, and
+two-PC latency remain open qualification gates; automated success does not
+claim those physical results.
 
 The optional driver build is isolated from normal CMake. Its CI path checks out
 Microsoft Windows-driver-samples at the pinned commit, installs the exact
@@ -829,6 +841,8 @@ This validation does not yet prove:
   feedback, and reconnect behavior
 - Microsoft-signed virtual-microphone installation, zero-physical-microphone
   capture, crash/revoke/disconnect silence, and Discord/OBS application capture
+- user-installed production-signed external-cable endpoint selection,
+  no-fallback removal/reconnect behavior, and Discord/OBS capture
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

@@ -62,7 +62,7 @@ bool UsesVoiceMonitor(
                CommunicationsPlaybackAndVirtualMicrophone;
 }
 
-bool UsesVirtualMicrophone(
+bool UsesApplicationInput(
     desklink::VoiceReceiveDestination Destination) noexcept {
     return Destination == desklink::VoiceReceiveDestination::VirtualMicrophone ||
            Destination == desklink::VoiceReceiveDestination::
@@ -523,6 +523,7 @@ MainWindow::MainWindow(bool DeveloperMode)
             ComputerName, ComputerNameLength));
     }
     LoadVoiceInputDevices();
+    LoadVoiceApplicationOutputDevices();
     ApplyState(State_);
     PollTimer_ = DispatcherQueue().CreateTimer();
     PollTimer_.Interval(std::chrono::milliseconds{750});
@@ -2358,6 +2359,22 @@ void MainWindow::UpdateFeatureControls() {
     VoiceReceiveDestinationBox().IsEnabled(Device != nullptr);
     VoiceReceiveDestinationBox().SelectedIndex(
         static_cast<int>(Preferences_.VoiceDestination));
+    const bool UsesApplicationVoice =
+        UsesApplicationInput(Preferences_.VoiceDestination);
+    const bool ExternalVoiceOutput = Preferences_.VoiceOutputBackend ==
+        desklink::VoiceApplicationOutputBackend::ExternalAudioCable;
+    VoiceApplicationOutputBackendBox().IsEnabled(
+        Device != nullptr && UsesApplicationVoice);
+    VoiceApplicationOutputBackendBox().SelectedIndex(
+        static_cast<int>(Preferences_.VoiceOutputBackend));
+    VoiceApplicationOutputDeviceBox().Visibility(ExternalVoiceOutput
+        ? Microsoft::UI::Xaml::Visibility::Visible
+        : Microsoft::UI::Xaml::Visibility::Collapsed);
+    VoiceApplicationOutputDeviceBox().IsEnabled(
+        Device != nullptr && UsesApplicationVoice && ExternalVoiceOutput);
+    VoiceApplicationOutputHelpText().Text(ExternalVoiceOutput
+        ? L"DeskLink writes only to the exact selected playback endpoint. In Discord or another app, select the matching cable recording endpoint (for VB-CABLE, CABLE Output). DeskLink never changes Windows defaults."
+        : L"The DeskLink driver exposes paired-PC voice as “DeskLink Remote Microphone” without changing Windows defaults.");
     LocalVoiceDesiredToggle().IsEnabled(Device != nullptr);
     LocalVoiceDesiredToggle().IsOn(SendsLocalVoice(Preferences_.VoiceRoute));
     VoiceGainBox().Value(
@@ -2394,6 +2411,19 @@ void MainWindow::UpdateFeatureControls() {
             VirtualMicrophonePackage / L"manifest.json");
     if (RuntimeStateLoaded_) {
         VirtualMicrophoneState = RuntimeState_.VirtualMicrophoneState;
+    } else if (ExternalVoiceOutput) {
+        const auto Match = std::find_if(
+            VoiceApplicationOutputDevices_.begin(),
+            VoiceApplicationOutputDevices_.end(),
+            [&](const auto& Candidate) {
+                return Preferences_.VoiceOutputEndpointId &&
+                    Candidate.EndpointId ==
+                        *Preferences_.VoiceOutputEndpointId;
+            });
+        VirtualMicrophoneState = Match ==
+                VoiceApplicationOutputDevices_.end()
+            ? desklink::ControlVirtualMicrophoneState::Unavailable
+            : desklink::ControlVirtualMicrophoneState::Installed;
     } else {
         const auto LocalState =
             desklink::GetWin32VirtualMicrophoneComponentState();
@@ -2408,47 +2438,65 @@ void MainWindow::UpdateFeatureControls() {
     switch (VirtualMicrophoneState) {
         case desklink::ControlVirtualMicrophoneState::NotInstalled:
             VirtualMicrophoneStatusText().Text(
-                !VirtualMicrophoneInstallAvailable
+                ExternalVoiceOutput
+                    ? L"The selected external audio-cable endpoint is not available. Choose an exact endpoint after installing the cable."
+                : !VirtualMicrophoneInstallAvailable
                     ? L"DeskLink Virtual Microphone is not bundled in this build. Microsoft production driver signing is required; other DeskLink features remain available."
-                : UsesVirtualMicrophone(Preferences_.VoiceDestination)
+                : UsesApplicationVoice
                     ? L"DeskLink Virtual Microphone is required. Install it to use the paired PC's microphone in Discord, OBS, games, and other apps."
                     : L"DeskLink Virtual Microphone: not installed (optional)");
             break;
         case desklink::ControlVirtualMicrophoneState::Installed:
             VirtualMicrophoneStatusText().Text(
-                L"DeskLink Virtual Microphone: installed. Select Microphone for apps or Both to start its feed.");
+                ExternalVoiceOutput
+                    ? L"External audio cable selected. Select Microphone for apps or Both to start its exact endpoint."
+                    : L"DeskLink Virtual Microphone: installed. Select Microphone for apps or Both to start its feed.");
             break;
         case desklink::ControlVirtualMicrophoneState::FeedReady:
             VirtualMicrophoneStatusText().Text(
-                L"DeskLink Virtual Microphone: feed ready. Apps can select “DeskLink Remote Microphone”.");
+                ExternalVoiceOutput
+                    ? L"External audio-cable feed ready. Select its matching recording endpoint in the receiving app."
+                    : L"DeskLink Virtual Microphone: feed ready. Apps can select “DeskLink Remote Microphone”.");
             break;
         case desklink::ControlVirtualMicrophoneState::Live:
             VirtualMicrophoneStatusText().Text(
-                L"Paired PC is sending microphone audio to apps through “DeskLink Remote Microphone”.");
+                ExternalVoiceOutput
+                    ? L"Paired PC is sending microphone audio through the selected external audio cable."
+                    : L"Paired PC is sending microphone audio to apps through “DeskLink Remote Microphone”.");
             break;
         case desklink::ControlVirtualMicrophoneState::Silent:
             VirtualMicrophoneStatusText().Text(
-                L"DeskLink Remote Microphone is available to apps and currently silent.");
+                ExternalVoiceOutput
+                    ? L"The selected external audio cable is available and currently silent."
+                    : L"DeskLink Remote Microphone is available to apps and currently silent.");
             break;
         case desklink::ControlVirtualMicrophoneState::Unavailable:
             VirtualMicrophoneStatusText().Text(
-                L"DeskLink Virtual Microphone is installed, but its feed is unavailable. DeskLink will retry without stopping other features.");
+                ExternalVoiceOutput
+                    ? Preferences_.VoiceOutputEndpointId
+                        ? L"The exact external audio-cable endpoint is unavailable. DeskLink will retry it without falling back to another output."
+                        : L"Choose the cable's exact playback endpoint. DeskLink will not guess or fall back to a different device."
+                    : L"DeskLink Virtual Microphone is installed, but its feed is unavailable. DeskLink will retry without stopping other features.");
             break;
         case desklink::ControlVirtualMicrophoneState::NeedsRepair:
             VirtualMicrophoneStatusText().Text(
-                L"DeskLink Virtual Microphone needs repair. Reinstall the optional component.");
+                ExternalVoiceOutput
+                    ? L"The external audio cable needs repair or was removed."
+                    : L"DeskLink Virtual Microphone needs repair. Reinstall the optional component.");
             break;
     }
     InstallVirtualMicrophoneButton().Visibility(
-        VirtualMicrophoneInstallAvailable &&
+        ExternalVoiceOutput || (VirtualMicrophoneInstallAvailable &&
             (VirtualMicrophoneState ==
                 desklink::ControlVirtualMicrophoneState::NotInstalled ||
             VirtualMicrophoneState ==
-                desklink::ControlVirtualMicrophoneState::NeedsRepair)
+                desklink::ControlVirtualMicrophoneState::NeedsRepair))
             ? Microsoft::UI::Xaml::Visibility::Visible
             : Microsoft::UI::Xaml::Visibility::Collapsed);
     InstallVirtualMicrophoneButton().Content(winrt::box_value(
-        VirtualMicrophoneState ==
+        ExternalVoiceOutput
+            ? L"Get VB-CABLE"
+        : VirtualMicrophoneState ==
                 desklink::ControlVirtualMicrophoneState::NeedsRepair
             ? L"Repair virtual microphone"
             : L"Install virtual microphone"));
@@ -2465,6 +2513,22 @@ void MainWindow::UpdateFeatureControls() {
             : Endpoint.empty();
         if (Selected) {
             VoiceInputDeviceBox().SelectedIndex(static_cast<int>(Index));
+            break;
+        }
+    }
+    VoiceApplicationOutputDeviceBox().SelectedIndex(0);
+    for (std::uint32_t Index = 0;
+         Index < VoiceApplicationOutputDeviceBox().Items().Size(); ++Index) {
+        const auto Item = VoiceApplicationOutputDeviceBox().Items().GetAt(Index)
+            .try_as<Microsoft::UI::Xaml::Controls::ComboBoxItem>();
+        if (!Item) continue;
+        const auto Endpoint = winrt::unbox_value_or<winrt::hstring>(
+            Item.Tag(), L"");
+        const auto Selected = Preferences_.VoiceOutputEndpointId &&
+            ToHString(*Preferences_.VoiceOutputEndpointId) == Endpoint;
+        if (Selected) {
+            VoiceApplicationOutputDeviceBox().SelectedIndex(
+                static_cast<int>(Index));
             break;
         }
     }
@@ -2550,6 +2614,28 @@ void MainWindow::LoadVoiceInputDevices() {
         VoiceInputDeviceBox().Items().Append(Item);
     }
     VoiceInputDeviceBox().SelectedIndex(0);
+}
+
+void MainWindow::LoadVoiceApplicationOutputDevices() {
+    using Microsoft::UI::Xaml::Controls::ComboBoxItem;
+    VoiceApplicationOutputDevices_ =
+        desklink::EnumerateWin32VoiceApplicationOutputDevices();
+    VoiceApplicationOutputDeviceBox().Items().Clear();
+    ComboBoxItem None;
+    None.Content(winrt::box_value(L"Choose an exact playback endpoint"));
+    None.Tag(winrt::box_value(winrt::hstring{}));
+    VoiceApplicationOutputDeviceBox().Items().Append(None);
+    for (const auto& Device : VoiceApplicationOutputDevices_) {
+        ComboBoxItem Item;
+        auto Label = ToHString(Device.DisplayName);
+        if (Device.DisplayName.find("CABLE Input") != std::string::npos) {
+            Label = JoinText(Label, L" (VB-CABLE candidate)");
+        }
+        Item.Content(winrt::box_value(Label));
+        Item.Tag(winrt::box_value(ToHString(Device.EndpointId)));
+        VoiceApplicationOutputDeviceBox().Items().Append(Item);
+    }
+    VoiceApplicationOutputDeviceBox().SelectedIndex(0);
 }
 
 void MainWindow::RenderProfiles() {
@@ -2901,15 +2987,25 @@ void MainWindow::SetVoiceReceiveDestination(
     Updated.VoiceDestination = Destination;
     const bool Saved = SavePreferences(
         Updated,
-        UsesVirtualMicrophone(Destination)
-            ? L"DeskLink Remote Microphone was selected as the application-input destination."
+        UsesApplicationInput(Destination)
+            ? L"Application microphone output was selected. Its local backend remains independently replaceable."
             : L"Paired-PC voice will play only through this PC's communications output.");
-    if (Saved && UsesVirtualMicrophone(Destination) &&
+    if (Saved && UsesApplicationInput(Destination) &&
+        Preferences_.VoiceOutputBackend ==
+            desklink::VoiceApplicationOutputBackend::DeskLinkDriver &&
         desklink::GetWin32VirtualMicrophoneComponentState() !=
             desklink::Win32VirtualMicrophoneComponentState::Ready) {
         ShowFeatureStatus(
             L"Windows microphone input unavailable",
             L"DeskLink Remote Microphone is not installed on this PC. Computer-audio sharing feeds speakers only, so Discord will not list a DeskLink input until a Microsoft production-signed driver package is installed.",
+            InfoBarSeverity::Warning);
+    } else if (Saved && UsesApplicationInput(Destination) &&
+               Preferences_.VoiceOutputBackend == desklink::
+                   VoiceApplicationOutputBackend::ExternalAudioCable &&
+               !Preferences_.VoiceOutputEndpointId) {
+        ShowFeatureStatus(
+            L"Choose the cable endpoint",
+            L"Select the exact playback endpoint exposed by your virtual audio cable. DeskLink will not guess or fall back to another device.",
             InfoBarSeverity::Warning);
     }
 }
@@ -2927,10 +3023,72 @@ void MainWindow::OnVoiceReceiveDestinationChanged(
         static_cast<desklink::VoiceReceiveDestination>(Selection));
 }
 
+void MainWindow::OnVoiceApplicationOutputBackendChanged(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&) {
+    if (!ContentReady_ || UpdatingFeatureControls_) return;
+    const auto Selection = VoiceApplicationOutputBackendBox().SelectedIndex();
+    if (Selection < 0 || Selection > 1) {
+        UpdateFeatureControls();
+        return;
+    }
+    auto Updated = Preferences_;
+    Updated.VoiceOutputBackend =
+        static_cast<desklink::VoiceApplicationOutputBackend>(Selection);
+    if (Updated.VoiceOutputBackend ==
+        desklink::VoiceApplicationOutputBackend::DeskLinkDriver) {
+        Updated.VoiceOutputEndpointId.reset();
+    }
+    (void)SavePreferences(
+        Updated,
+        Updated.VoiceOutputBackend == desklink::
+                VoiceApplicationOutputBackend::ExternalAudioCable
+            ? L"External audio-cable backend selected. Choose its exact playback endpoint; DeskLink will never use a default-device fallback."
+            : L"DeskLink virtual-microphone backend selected.");
+}
+
+void MainWindow::OnVoiceApplicationOutputDeviceChanged(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&) {
+    if (!ContentReady_ || UpdatingFeatureControls_ ||
+        Preferences_.VoiceOutputBackend != desklink::
+            VoiceApplicationOutputBackend::ExternalAudioCable) {
+        return;
+    }
+    const auto Item = VoiceApplicationOutputDeviceBox().SelectedItem()
+        .try_as<Microsoft::UI::Xaml::Controls::ComboBoxItem>();
+    if (!Item) return;
+    const auto Endpoint = winrt::unbox_value_or<winrt::hstring>(
+        Item.Tag(), L"");
+    auto Updated = Preferences_;
+    Updated.VoiceOutputEndpointId = Endpoint.empty()
+        ? std::optional<std::string>{}
+        : ToUtf8(Endpoint);
+    (void)SavePreferences(
+        Updated,
+        Endpoint.empty()
+            ? L"External audio-cable output is unconfigured and remains fail-closed."
+            : L"Exact external audio-cable endpoint saved. No Windows default device was changed.");
+}
+
 void MainWindow::OnInstallVirtualMicrophone(
     Windows::Foundation::IInspectable const&,
     Microsoft::UI::Xaml::RoutedEventArgs const&) {
     using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
+    if (Preferences_.VoiceOutputBackend ==
+        desklink::VoiceApplicationOutputBackend::ExternalAudioCable) {
+        const auto Result = reinterpret_cast<std::intptr_t>(ShellExecuteW(
+            nullptr, L"open", L"https://vb-audio.com/Cable/", nullptr,
+            nullptr, SW_SHOWNORMAL));
+        ShowFeatureStatus(
+            Result > 32 ? L"VB-CABLE page opened" : L"Page not opened",
+            Result > 32
+                ? L"Install the official production-signed driver yourself, then restart DeskLink and select its exact CABLE Input playback endpoint. DeskLink does not bundle or silently install it."
+                : L"Windows could not open the official VB-CABLE page. No system setting was changed.",
+            Result > 32 ? InfoBarSeverity::Informational
+                        : InfoBarSeverity::Error);
+        return;
+    }
     const auto Executable = GetExecutablePath();
     const auto Installer = Executable
         ? Executable->parent_path() /

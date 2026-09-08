@@ -24,6 +24,14 @@ struct VoiceInputDevice {
         const VoiceInputDevice&) const noexcept = default;
 };
 
+struct VoiceApplicationOutputDevice {
+    std::string EndpointId;
+    std::string DisplayName;
+
+    [[nodiscard]] bool operator==(
+        const VoiceApplicationOutputDevice&) const noexcept = default;
+};
+
 enum class DeskLinkVirtualAudioEndpointKind : std::uint32_t {
     None = 0,
     MicrophoneFeed = 1,
@@ -46,6 +54,12 @@ GetWin32VirtualMicrophoneComponentState();
 
 [[nodiscard]] std::vector<VoiceInputDevice>
 EnumerateWin32VoiceInputDevices();
+
+// Enumerates active render endpoints that can be explicitly selected as the
+// input side of a user-installed virtual audio cable. DeskLink's private feed
+// endpoint is excluded; ordinary endpoints are never selected automatically.
+[[nodiscard]] std::vector<VoiceApplicationOutputDevice>
+EnumerateWin32VoiceApplicationOutputDevices();
 
 struct Win32WasapiMicrophoneHandlers {
     std::function<bool(VoicePcmFrame)> Frame;
@@ -86,6 +100,11 @@ public:
 
     explicit Win32WasapiVoiceRenderer(
         Win32WasapiVoiceRenderHandlers Handlers = {});
+    Win32WasapiVoiceRenderer(
+        std::optional<std::string> EndpointId,
+        std::size_t MaximumQueuedFrames,
+        bool DropStaleFrames,
+        Win32WasapiVoiceRenderHandlers Handlers = {});
     ~Win32WasapiVoiceRenderer();
 
     Win32WasapiVoiceRenderer(const Win32WasapiVoiceRenderer&) = delete;
@@ -103,6 +122,20 @@ public:
 private:
     std::unique_ptr<State> State_;
 };
+
+struct Win32VoiceApplicationOutputConfiguration {
+    VoiceApplicationOutputBackend Backend{
+        VoiceApplicationOutputBackend::DeskLinkDriver};
+    std::optional<std::string> EndpointId;
+    Win32WasapiVoiceRenderHandlers Handlers;
+};
+
+// Platform factory for the replaceable application-input backend. The
+// external-cable adapter requires one exact endpoint ID and never falls back
+// to the communications device or to another render endpoint.
+[[nodiscard]] std::unique_ptr<IVoiceApplicationOutputBackend>
+CreateWin32VoiceApplicationOutputBackend(
+    Win32VoiceApplicationOutputConfiguration Configuration);
 
 // Writes already-authorized, canonical 48 kHz mono PCM16 to the private
 // DeskLink driver feed endpoint. Discovery is property-based and never falls

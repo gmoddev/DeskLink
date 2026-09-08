@@ -687,6 +687,9 @@ void ControlProtocolRoundTripAndValidation() {
     Preferences.AudioGainPermyriad = 7'500;
     Preferences.VoiceDestination =
         VoiceReceiveDestination::VirtualMicrophone;
+    Preferences.VoiceOutputBackend =
+        VoiceApplicationOutputBackend::ExternalAudioCable;
+    Preferences.VoiceOutputEndpointId = "external-cable-render-endpoint";
     Preferences.VoiceTransmit = VoiceTransmitMode::Continuous;
     Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
@@ -5356,6 +5359,20 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
         kMaximumVoiceEndpointIdBytes + 1, 'a');
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
+    Malformed.VoiceOutputBackend =
+        static_cast<VoiceApplicationOutputBackend>(0xffu);
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceOutputEndpointId = "unexpected-driver-endpoint";
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceOutputBackend =
+        VoiceApplicationOutputBackend::ExternalAudioCable;
+    CHECK(IsValidProductPreferences(Malformed));
+    Malformed.VoiceOutputEndpointId = std::string(
+        kMaximumVoiceEndpointIdBytes + 1, 'a');
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
     Malformed.ReturnLocalHotkey = Malformed.FocusPeerHotkey;
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
@@ -6157,6 +6174,19 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     CHECK(Second.Load());
     CHECK(Second.Current() == Settings);
 
+    const auto ExternalOutputPath = Directory / "external-output.bin";
+    auto ExternalOutputSettings = Settings;
+    ExternalOutputSettings.VoiceOutputBackend =
+        VoiceApplicationOutputBackend::ExternalAudioCable;
+    ExternalOutputSettings.VoiceOutputEndpointId =
+        "external-cable-render-endpoint";
+    Win32ProductPreferencesStore ExternalOutputStore(ExternalOutputPath);
+    CHECK(ExternalOutputStore.Load());
+    CHECK(ExternalOutputStore.Save(ExternalOutputSettings));
+    Win32ProductPreferencesStore ReloadedExternalOutput(ExternalOutputPath);
+    CHECK(ReloadedExternalOutput.Load());
+    CHECK(ReloadedExternalOutput.Current() == ExternalOutputSettings);
+
     const auto Version5Path = Directory / "version-5.bin";
     CHECK(std::filesystem::copy_file(Path, Version5Path));
     {
@@ -6203,6 +6233,30 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
           VoiceTransmitMode::PushToTalk);
     {
         std::ifstream Input(Version6Path, std::ios::binary);
+        std::array<std::uint8_t, 6> Header{};
+        Input.read(reinterpret_cast<char*>(Header.data()), Header.size());
+        CHECK(Input.good());
+        CHECK(Header[5] == kProductPreferencesSchemaVersion);
+    }
+
+    const auto Version7Path = Directory / "version-7.bin";
+    CHECK(std::filesystem::copy_file(Path, Version7Path));
+    {
+        std::fstream Output(
+            Version7Path, std::ios::binary | std::ios::in | std::ios::out);
+        CHECK(Output.good());
+        Output.seekp(5);
+        Output.put(static_cast<char>(7));
+    }
+    Win32ProductPreferencesStore MigratedVersion7(Version7Path);
+    CHECK(MigratedVersion7.Load());
+    CHECK(MigratedVersion7.Current()->VoiceTransmit ==
+          VoiceTransmitMode::Continuous);
+    CHECK(MigratedVersion7.Current()->VoiceOutputBackend ==
+          VoiceApplicationOutputBackend::DeskLinkDriver);
+    CHECK(!MigratedVersion7.Current()->VoiceOutputEndpointId);
+    {
+        std::ifstream Input(Version7Path, std::ios::binary);
         std::array<std::uint8_t, 6> Header{};
         Input.read(reinterpret_cast<char*>(Header.data()), Header.size());
         CHECK(Input.good());
@@ -6601,6 +6655,17 @@ void WindowsVirtualMicrophoneIdentityIsStableAndLoopSafe() {
         DeskLinkVirtualAudioEndpointKind::MicrophoneFeed));
     CHECK(IsDeskLinkVirtualMicrophoneSource(
         DeskLinkVirtualAudioEndpointKind::RemoteMicrophone));
+    CHECK(!CreateWin32VoiceApplicationOutputBackend(
+        Win32VoiceApplicationOutputConfiguration{
+            VoiceApplicationOutputBackend::ExternalAudioCable,
+            std::nullopt, {}}));
+    CHECK(!CreateWin32VoiceApplicationOutputBackend(
+        Win32VoiceApplicationOutputConfiguration{
+            VoiceApplicationOutputBackend::DeskLinkDriver,
+            std::string("unexpected-endpoint"), {}}));
+    const auto DriverBackend = CreateWin32VoiceApplicationOutputBackend(
+        Win32VoiceApplicationOutputConfiguration{});
+    CHECK(DriverBackend != nullptr);
 }
 #endif
 
@@ -6941,6 +7006,69 @@ void VoiceOutputRouterFansOutCanonicalPcmAndIsolatesFailures() {
         static_cast<VoiceReceiveDestination>(0xffu)));
 }
 
+void VoiceApplicationOutputOwnsAndReplacesBackendsSafely() {
+    using namespace desklink;
+    struct BackendState {
+        std::uint64_t Starts{};
+        std::uint64_t Submits{};
+        std::uint64_t Resets{};
+        std::uint64_t Stops{};
+        bool Running{};
+    };
+    class FakeBackend final : public IVoiceApplicationOutputBackend {
+    public:
+        explicit FakeBackend(std::shared_ptr<BackendState> State)
+            : State_(std::move(State)) {}
+        bool Start() override {
+            ++State_->Starts;
+            State_->Running = true;
+            return true;
+        }
+        bool Submit(VoicePcmFrame) override {
+            if (!State_->Running) return false;
+            ++State_->Submits;
+            return true;
+        }
+        void Reset() noexcept override {
+            ++State_->Resets;
+            State_->Running = false;
+        }
+        void Stop() noexcept override {
+            ++State_->Stops;
+            State_->Running = false;
+        }
+        bool Running() const noexcept override { return State_->Running; }
+    private:
+        std::shared_ptr<BackendState> State_;
+    };
+
+    VoiceApplicationOutput Output;
+    VoicePcmFrame Frame;
+    CHECK(!Output.Available());
+    CHECK(!Output.Start());
+    CHECK(!Output.Submit(Frame));
+
+    auto First = std::make_shared<BackendState>();
+    CHECK(Output.ReplaceBackend(std::make_unique<FakeBackend>(First)));
+    CHECK(Output.Available());
+    CHECK(Output.Start());
+    CHECK(Output.Running());
+    CHECK(Output.Submit(Frame));
+    CHECK(First->Submits == 1);
+
+    auto Second = std::make_shared<BackendState>();
+    CHECK(Output.ReplaceBackend(std::make_unique<FakeBackend>(Second)));
+    CHECK(First->Stops == 1);
+    CHECK(!First->Running);
+    CHECK(Output.Start());
+    Output.Reset();
+    CHECK(Second->Resets == 1);
+    CHECK(!Output.Running());
+    CHECK(!Output.ReplaceBackend(nullptr));
+    CHECK(Second->Stops == 1);
+    CHECK(!Output.Available());
+}
+
 void PeerVoiceRequiresComplementaryAcknowledgedGrants() {
     using namespace desklink;
     constexpr std::uint64_t Nonce = 0x5151'7171u;
@@ -7061,6 +7189,7 @@ int main() {
 #ifdef DESKLINK_BUILD_VOICE
     VoiceProtocolCodecJitterAndBoundsAreStrict();
     VoiceOutputRouterFansOutCanonicalPcmAndIsolatesFailures();
+    VoiceApplicationOutputOwnsAndReplacesBackendsSafely();
     PeerVoiceRequiresComplementaryAcknowledgedGrants();
 #endif
     CallbackGateClosesAndDrainsAdmittedCallbacks();

@@ -71,7 +71,9 @@ MsQuic datagram
   -> one canonical 48 kHz mono PCM16 decoded block
   -> local VoiceOutputRouter
      -> eRender communications monitor (local gain and echo guard)
-     -> DeskLink Microphone Feed (unity gain)
+     -> VoiceApplicationOutput (unity gain)
+        -> DeskLink Microphone Feed adapter
+        OR exact external virtual-cable eRender adapter
      -> both sinks from the same decoded block
 ```
 
@@ -130,9 +132,15 @@ Capture uses the communications audio category and `NOPERSIST` so DeskLink does
 not alter persistent Windows mixer policy.
 
 Received voice can route to the communications-role `eRender` endpoint, the
-optional DeskLink virtual-microphone feed, or both. This does not alter the
+provider-neutral application-input output, or both. This does not alter the
 existing system-audio loopback source or ordinary system-audio render path. A
 build-time source check rejects loopback capture APIs in the voice backend.
+
+`VoiceApplicationOutput` owns one `IVoiceApplicationOutputBackend`. Runtime,
+session, authorization, decoding, and routing code do not name a concrete
+driver. The Win32 factory currently creates either the DeskLink driver adapter
+or an external-audio-cable adapter, while tests inject a fake implementation.
+Replacing the backend stops the old backend first.
 
 The virtual path opens only an endpoint carrying DeskLink's stable endpoint
 property and feed role. It never falls back to a friendly-name or default
@@ -149,6 +157,16 @@ capture role. Microphone enumeration and the lower-level capture opener reject
 that role regardless of its friendly name, so DeskLink cannot forward its own
 remote microphone back across the network.
 
+The external-cable adapter supports a separately installed, production-signed
+virtual cable without coupling that vendor to DeskLink's voice architecture. It
+requires one exact active render endpoint. The endpoint ID is opened directly,
+notifications watch that same device, and default-device following is disabled.
+A missing selection, removed endpoint, or failed open is unavailable: DeskLink
+never guesses, selects speakers, or falls back to the DeskLink driver. The
+adapter caps its queue at three 20 ms blocks, discards the oldest queued voice
+to avoid latency growth, and closes the render client on reset. With VB-CABLE,
+select `CABLE Input` in DeskLink and `CABLE Output` in the receiving app.
+
 Echo guard defaults on. While this PC transmits, incoming DeskLink voice is
 locally ramped to mute on the communications monitor only; release restores it.
 It does not change application-microphone amplitude. This is half-duplex
@@ -157,9 +175,11 @@ AEC remains deferred.
 
 ## Product behavior
 
-Preferences schema 7 stores a separate voice route, optional exact input
+Preferences schema 8 stores a separate voice route, optional exact input
 endpoint ID, incoming gain, echo-guard setting, default-PTT/explicit-continuous
-activation, and local received-voice destination. Migration from every older
+activation, local received-voice destination, local application-output backend,
+and an optional exact external render endpoint. Migration from schema 7 chooses
+the DeskLink-driver backend and no external endpoint. Migration from every older
 schema leaves voice off, selects the default communications microphone, sets
 gain to 100%, enables echo guard, defaults activation to PTT, and defaults the
 destination to communications playback where that field was not yet present.
@@ -169,12 +189,16 @@ activation, and device changes are negotiated through the existing managed
 runtime; they do not modify pairing.
 
 The product shell exposes **Listen on this PC**, **Microphone for apps**, and
-**Both**. Choosing an application route does not silently elevate or install a
-driver. A separately visible action invokes a fixed, UAC-elevated helper only
-when a bundled Microsoft production-signed package is present. The helper takes
-only `install` or `uninstall`, validates the fixed sibling package and exact
-hardware identity, and cannot accept an arbitrary INF path. The driver remains
-installed across routing changes so applications retain their device choice.
+**Both**, then offers **DeskLink virtual microphone** or **External virtual
+audio cable** behind the same application-input route. External mode requires
+an explicit exact playback endpoint; DeskLink does not auto-select one. The UI
+may label `CABLE Input` as a VB-CABLE candidate and opens the official vendor
+page, but it does not download, install, or redistribute that driver. The
+DeskLink-driver action invokes a fixed, UAC-elevated helper only when a bundled
+Microsoft production-signed package is present. The helper takes only `install`
+or `uninstall`, validates the fixed sibling package and exact hardware identity,
+and cannot accept an arbitrary INF path. Drivers remain installed across route
+changes so applications retain their device choices.
 
 Pairing and the Devices page expose two separate, default-off consequences:
 
@@ -203,9 +227,13 @@ Automated coverage must remain green for:
   destination changes;
 - stable property-based feed selection and source-loop rejection independent
   of endpoint friendly name;
+- provider-neutral backend injection and stop-before-replace ownership;
+- external-cable missing-endpoint rejection, exact-endpoint open, disabled
+  default following, 60 ms queue bound, and close-on-reset behavior;
 - optional-driver safety/source checks plus an Inf2Cat-valid unsigned
   development build using the pinned Microsoft sample and WDK inputs;
-- preference-schema-7 migration, default PTT, continuous fail-closed gate
+- preference-schema-8 migration (including schema-7 backend defaults), default
+  PTT, continuous fail-closed gate
   combinations, separate route planning, default echo guard, and current-user
   control framing;
 - native Windows, MsQuic loopback/runtime, reliability soak, locked WinUI, and
@@ -233,8 +261,14 @@ Before production sign-off, two supported physical Windows PCs must pass:
 8. Discord enumeration, input activity/voice test, PTT release, revoke,
    disconnect, crash, destination disable, and `Both` behavior without stale
    speech or double decoding.
+9. A separately installed production-signed external cable maps the exact
+   selected playback endpoint to its matching recording endpoint in Discord or
+   OBS. Endpoint removal/rename, default changes, revoke, disconnect, and
+   process termination produce silence without redirecting voice elsewhere.
 
 Items 7 and 8 remain blocked on external Microsoft production driver signing.
+Item 9 is available for physical qualification with a user-installed cable;
+DeskLink does not redistribute it.
 DeskLink does not install the unsigned development package, enable test mode,
 disable Secure Boot, or weaken signature enforcement to bypass that boundary.
 

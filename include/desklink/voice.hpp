@@ -29,6 +29,44 @@ struct VoicePcmFrame {
     bool Concealed{};
 };
 
+// Replaceable backend boundary for presenting already-authorized peer voice
+// to local applications. Network admission, peer authorization, decoding, and
+// routing remain outside every backend implementation.
+class IVoiceApplicationOutputBackend {
+public:
+    virtual ~IVoiceApplicationOutputBackend() = default;
+    [[nodiscard]] virtual bool Start() = 0;
+    [[nodiscard]] virtual bool Submit(VoicePcmFrame Frame) = 0;
+    virtual void Reset() noexcept = 0;
+    virtual void Stop() noexcept = 0;
+    [[nodiscard]] virtual bool Running() const noexcept = 0;
+};
+
+// Owns the selected backend and is the only application-output type exposed
+// to the voice runtime. Tests and future providers can inject another backend
+// without changing session or routing code.
+class VoiceApplicationOutput final {
+public:
+    explicit VoiceApplicationOutput(
+        std::unique_ptr<IVoiceApplicationOutputBackend> Backend = {});
+    ~VoiceApplicationOutput();
+    VoiceApplicationOutput(const VoiceApplicationOutput&) = delete;
+    VoiceApplicationOutput& operator=(const VoiceApplicationOutput&) = delete;
+
+    [[nodiscard]] bool ReplaceBackend(
+        std::unique_ptr<IVoiceApplicationOutputBackend> Backend) noexcept;
+    [[nodiscard]] bool Start() noexcept;
+    [[nodiscard]] bool Submit(VoicePcmFrame Frame) noexcept;
+    void Reset() noexcept;
+    void Stop() noexcept;
+    [[nodiscard]] bool Running() const noexcept;
+    [[nodiscard]] bool Available() const noexcept;
+
+private:
+    mutable std::mutex Mutex_;
+    std::unique_ptr<IVoiceApplicationOutputBackend> Backend_;
+};
+
 struct VoiceOutputSinkHandlers {
     std::function<bool(VoicePcmFrame)> Submit;
     std::function<void()> Reset;

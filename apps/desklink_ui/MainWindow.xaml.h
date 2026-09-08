@@ -132,6 +132,12 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnVoiceReceiveDestinationChanged(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
+    void OnVoiceApplicationOutputBackendChanged(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
+    void OnVoiceApplicationOutputDeviceChanged(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
     void OnInstallVirtualMicrophone(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::RoutedEventArgs const& Args);
@@ -245,6 +251,7 @@ private:
     void SetVoiceReceiveDestination(
         desklink::VoiceReceiveDestination Destination);
     void LoadVoiceInputDevices();
+    void LoadVoiceApplicationOutputDevices();
     void ShowPairingStatus(
         winrt::hstring const& Message,
         Microsoft::UI::Xaml::Controls::InfoBarSeverity Severity);
@@ -280,6 +287,8 @@ private:
     std::vector<desklink::ControlNearbyPeer> NearbyPeers_;
     std::vector<desklink::ControlTrustedDevice> TrustedDevices_;
     std::vector<desklink::VoiceInputDevice> VoiceInputDevices_;
+    std::vector<desklink::VoiceApplicationOutputDevice>
+        VoiceApplicationOutputDevices_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore> RoamingSettings_;
     std::unique_ptr<desklink::Win32RoamingSettingsStore>
         DeveloperRoamingSettings_;

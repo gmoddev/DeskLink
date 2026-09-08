@@ -348,6 +348,8 @@ AudioRoute
 AudioGain
 VoiceRoute
 VoiceInputEndpointId
+VoiceApplicationOutputBackend
+VoiceApplicationOutputEndpointId
 VoiceGain
 VoiceEchoGuard
 GamingBehavior
@@ -674,6 +676,14 @@ capture; release/cancel/pointer-capture loss stops it. Echo guard is labeled as
 half-duplex feedback protection and never as acoustic echo cancellation. A
 global PTT binding is deferred until it has a separate input-lifecycle design.
 
+The receive destination separately offers a replaceable application-microphone
+backend. **DeskLink virtual microphone** and **External virtual audio cable**
+are peers behind the same product contract, not separate network features.
+External mode requires an explicit exact playback endpoint and explains the
+matching recording endpoint an app must select. It never guesses, changes a
+Windows default, or silently installs a driver. The vendor link is informational
+and any future bundled redistribution requires separate licensing review.
+
 ## 15. Accessibility and visual requirements
 
 - Responsive XAML layout with no fixed 940×890-style dependency.
@@ -881,11 +891,14 @@ allowlist; `Ctrl+Alt+Pause/Break` is reserved. A named focus request reaches the
 existing authenticated input lifecycle only when that exact peer and the Host
 input owner are active, so a shortcut cannot bypass normal admission.
 
-Application preferences schema 7 persists at most 32 exact executable rules,
+Application preferences schema 8 persists at most 32 exact executable rules,
 optional fullscreen matching, the two bounded shortcuts, the simple global
 fullscreen keep-local choice, and a local-only received-voice destination that
 migrates older installs to communications playback, plus a default-PTT and
-explicit-continuous local voice activation choice. The broker passes these only to the explicit
+explicit-continuous local voice activation choice, plus a local application-
+input backend and exact optional external cable endpoint. Schema 7 migrates to
+the DeskLink-driver backend without an external endpoint. The broker passes
+these only to the explicit
 input-roaming child. A Roam fallback arms edge observation without installing a
 manual override, preserving emergency, manual, exact-rule, global-fullscreen,
 then default precedence. Any required foreground observation that cannot be

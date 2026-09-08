@@ -295,7 +295,7 @@ must not be described as production-qualified before physical validation.
 
 ### 5.1 Virtual microphone application routing — implementation complete; certification open
 
-- preferences schema 7 adds explicit local transmit mode while retaining the
+- preferences schema 8 adds explicit local transmit mode while retaining the
   local-only received-voice destination; every older install migrates to
   communications playback and/or default PTT as appropriate;
 - one decoded 48 kHz mono PCM16 playout block fans out through
@@ -308,6 +308,14 @@ must not be described as production-qualified before physical validation.
   returns silence on underrun, and flushes on feed/capture lifecycle boundaries;
 - a stable-property filter prevents the virtual capture endpoint from becoming
   an outgoing DeskLink microphone, and no new network message or grant exists;
+- a replaceable `IVoiceApplicationOutputBackend` boundary now isolates the
+  runtime from the concrete microphone implementation. The DeskLink driver is
+  one adapter; a second adapter supports a separately installed production-
+  signed external virtual cable through one exact user-selected WASAPI render
+  endpoint, with no default-device fallback;
+- the UI identifies VB-CABLE's `CABLE Input` as a candidate and links to the
+  official vendor page, but does not download, silently install, or redistribute
+  it. Bundling remains subject to a separate licensing decision;
 - the fixed UAC helper and application installer admit only an externally
   supplied Microsoft production-signed package; normal builds and all other
   DeskLink features remain driver-independent; and
@@ -359,10 +367,12 @@ must not be described as production-qualified before physical validation.
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, the capture hook owns Return-to-this-PC while remote,
   crossing changes reuse Local-before-atomic-save, and required
-  but uninspectable foreground state remains Local. Preferences schema 7
+  but uninspectable foreground state remains Local. Preferences schema 8
   retains those migrations, adds a local-only received-voice destination that
   defaults older installs to communications playback, and adds an explicit
-  continuous voice option while retaining PTT as the migration default;
+  continuous voice option while retaining PTT as the migration default, and
+  adds the local replaceable application-input backend plus an exact optional
+  external cable endpoint;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu
   and post-install entry point. Its `--background` mode is a short-lived
   sign-in bootstrap, while updates restart the native broker directly. Every

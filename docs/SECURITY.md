@@ -310,11 +310,23 @@ clipboard, or system-audio authority. See
 
 After all existing voice admission, jitter, FEC/PLC, and Opus decoding, a
 local-only output router may send the one canonical PCM block to the
-communications monitor, the optional virtual microphone, or both. The
+communications monitor, a replaceable local application-input backend, or
+both. The
 destination is not protocol state and the peer cannot select or observe it.
 Monitor gain and echo guard never change virtual-microphone amplitude. Loss of
 authenticated stream authority resets both sinks; failure of one local sink
 does not stop the other.
+
+The backend choice and any external endpoint ID are local current-user policy,
+never peer-controlled state. The runtime owns only the provider-neutral
+`IVoiceApplicationOutputBackend` contract. Backend replacement first stops the
+old backend. The external-cable adapter requires an exact active `eRender`
+endpoint ID and deliberately has no default-device or alternate-provider
+fallback. Missing selection, endpoint removal, initialization failure, and
+endpoint change remain fail-closed for application input while the admitted
+session and optional communications monitor continue independently. Its queue
+is capped at three 20 ms frames, drops stale samples, and closes on reset,
+permission loss, route disable, disconnect, reconfiguration, or shutdown.
 
 The virtual feed opens only an endpoint with the DeskLink-owned stable property
 and feed role. It never falls back to a friendly name or default device. The

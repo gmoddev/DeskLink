@@ -63,9 +63,10 @@ room propagation, or microphone capture latency. See
 - Communications-role microphone selection and voice rendering, local hard
   mute/incoming gain, and default-on half-duplex echo guard; full acoustic echo
   cancellation and a global PTT binding remain deferred
-- Local received-voice routing to communications playback, a genuine optional
-  `DeskLink Remote Microphone` Core Audio capture endpoint, or both, with one
-  authoritative Opus decode/FEC/PLC path and independent sink recovery
+- Local received-voice routing to communications playback, a replaceable
+  application-input backend, or both, with one authoritative Opus
+  decode/FEC/PLC path and independent sink recovery. The first adapters are
+  the optional DeskLink driver and an exact user-selected external WASAPI cable
 - Explicit, text-only clipboard synchronization with complementary per-peer
   read/write grants, a session-scoped module handshake, and loop suppression
 - Default-endpoint notification and bounded audio-only WASAPI recovery
@@ -501,21 +502,29 @@ feedback protection, not acoustic echo cancellation. See
 [`docs/VOICE_FORWARDING.md`](docs/VOICE_FORWARDING.md).
 
 On the receiving PC, **Listen on this PC**, **Microphone for apps**, and
-**Both** are local-only destination choices. The virtual path submits the same
-canonical 48 kHz mono PCM16 playout blocks to `DeskLink Microphone Feed`; the
-optional WaveRT driver exposes them as `DeskLink Remote Microphone` for Discord,
-OBS, games, browsers, and recording tools. The feed is selected by a stable
-DeskLink endpoint property, never by friendly name, and the virtual capture
-endpoint is excluded from outgoing microphone selection to prevent a network
-feedback loop. When the driver is absent, only application-microphone routing
-is unavailable; roaming, clipboard, desktop audio, and normal voice monitoring
-continue to work.
+**Both** are local-only destination choices. Application routing goes through
+the provider-neutral `VoiceApplicationOutput` boundary, modeled as an owned
+backend with an explicit factory. The bundled-driver adapter submits the same
+canonical 48 kHz mono PCM16 blocks to `DeskLink Microphone Feed`; the optional
+WaveRT driver exposes them as `DeskLink Remote Microphone` for Discord, OBS,
+games, browsers, and recording tools. The external-cable adapter instead opens
+one exact, locally selected active WASAPI render endpoint. It never follows the
+default device or substitutes another endpoint after removal or rename. With
+VB-CABLE, select **CABLE Input** in DeskLink and **CABLE Output** in the app.
+The UI links to the official driver page but does not download, bundle, or
+silently install it. Backend failure affects only application-microphone
+routing; roaming, clipboard, desktop audio, and normal voice monitoring remain
+available.
 
 Desktop/system-audio sharing never creates a Windows input device. Developer
 and beta packages omit the virtual-microphone payload unless an externally
 Microsoft production-signed driver catalog is supplied, so Discord will not
 list `DeskLink Remote Microphone` on those installs. DeskLink does not bypass
 driver-signature enforcement or enable Windows test-signing to change that.
+Users may separately install a production-signed virtual cable such as
+[VB-CABLE](https://vb-audio.com/Cable/) and select it through the external
+backend. Redistribution is not assumed; any future bundling requires a separate
+license review under the vendor's published terms.
 
 Text clipboard synchronization is separately opt-in and requires complementary
 grants. To synchronize both directions, pair each PC with both clipboard grants,

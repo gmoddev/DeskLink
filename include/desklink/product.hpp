@@ -13,7 +13,7 @@
 
 namespace desklink {
 
-inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 7;
+inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 8;
 inline constexpr std::size_t kMaximumPreferredPeerHostBytes = 253;
 inline constexpr std::size_t kMaximumVoiceEndpointIdBytes = 2'048;
 
@@ -44,6 +44,14 @@ enum class VoiceReceiveDestination : std::uint8_t {
     CommunicationsPlayback = 0,
     VirtualMicrophone = 1,
     CommunicationsPlaybackAndVirtualMicrophone = 2,
+};
+
+// Local implementation used to expose authenticated peer voice as an input
+// to applications. The runtime depends on the provider-neutral voice output
+// contract; these values select a concrete local adapter only.
+enum class VoiceApplicationOutputBackend : std::uint8_t {
+    DeskLinkDriver = 0,
+    ExternalAudioCable = 1,
 };
 
 // Local-only microphone activation policy. Continuous mode is explicit user
@@ -96,6 +104,11 @@ struct ProductPreferences {
     VoiceRoutePreference VoiceRoute{VoiceRoutePreference::Off};
     VoiceReceiveDestination VoiceDestination{
         VoiceReceiveDestination::CommunicationsPlayback};
+    VoiceApplicationOutputBackend VoiceOutputBackend{
+        VoiceApplicationOutputBackend::DeskLinkDriver};
+    // Required by ExternalAudioCable. It is an exact eRender endpoint ID;
+    // the backend never substitutes a default or another endpoint.
+    std::optional<std::string> VoiceOutputEndpointId;
     VoiceTransmitMode VoiceTransmit{VoiceTransmitMode::PushToTalk};
     std::optional<std::string> VoiceInputEndpointId;
     std::uint16_t VoiceGainPermyriad{10'000};
