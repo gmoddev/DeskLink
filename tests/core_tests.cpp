@@ -1190,6 +1190,23 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
           BrokerRuntimeFailure::Unknown);
     CHECK(ClassifyBrokerManagedProcessExit(1) ==
           BrokerRuntimeFailure::Unknown);
+    CHECK(CanCommitManagedChildPoll(7, 7, true, true));
+    CHECK(!CanCommitManagedChildPoll(7, 8, true, true));
+    CHECK(!CanCommitManagedChildPoll(7, 7, false, false));
+    CHECK(!CanCommitManagedChildPoll(7, 7, true, false));
+    CHECK(!CanCommitManagedChildPoll(0, 0, true, true));
+    CHECK(ReconcileManagedChildPeerCount(
+              BrokerRuntimePhase::ConnectedLocal,
+              BrokerRuntimePhase::Connecting, 0) ==
+          BrokerRuntimePhase::Connecting);
+    CHECK(ReconcileManagedChildPeerCount(
+              BrokerRuntimePhase::ConnectedLocal,
+              BrokerRuntimePhase::Listening, 0) ==
+          BrokerRuntimePhase::Listening);
+    CHECK(ReconcileManagedChildPeerCount(
+              BrokerRuntimePhase::ConnectedLocal,
+              BrokerRuntimePhase::Connecting, 1) ==
+          BrokerRuntimePhase::ConnectedLocal);
 
     InMemoryTrustStore Store;
     CapabilitySet Initial;

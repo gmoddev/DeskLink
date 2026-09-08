@@ -94,6 +94,30 @@ ClassifyBrokerManagedProcessExit(std::uint32_t ExitCode) noexcept {
     return ExitCode == kBrokerManagedEmergencyProcessExit;
 }
 
+// A state reply belongs to the managed child generation that was active when
+// the poll began. Never let a late reply from an exited/replaced child restore
+// ConnectedLocal after exit handling has already scheduled a retry.
+[[nodiscard]] constexpr bool CanCommitManagedChildPoll(
+    std::uint64_t PolledGeneration,
+    std::uint64_t CurrentGeneration,
+    bool HasCurrentProcess,
+    bool CurrentProcessRunning) noexcept {
+    return PolledGeneration != 0 &&
+        PolledGeneration == CurrentGeneration &&
+        HasCurrentProcess && CurrentProcessRunning;
+}
+
+[[nodiscard]] constexpr BrokerRuntimePhase
+ReconcileManagedChildPeerCount(
+    BrokerRuntimePhase CurrentPhase,
+    BrokerRuntimePhase WaitingPhase,
+    std::uint16_t ConnectedPeerCount) noexcept {
+    return ConnectedPeerCount == 0 &&
+            CurrentPhase == BrokerRuntimePhase::ConnectedLocal
+        ? WaitingPhase
+        : CurrentPhase;
+}
+
 // Pure lifecycle controller for one broker-owned transport process. Only
 // ordinary availability/network failures may schedule another attempt.
 // Security, identity, credential, signing, authentication, capability,
