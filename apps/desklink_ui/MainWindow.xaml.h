@@ -208,6 +208,7 @@ private:
     void ApplyState(desklink::ProductShellState State);
     void UpdateDeveloperInputStatus();
     void PollBroker();
+    void PollSecureInputConfiguration();
     void PollPreferences();
     void PollNearby();
     void PollDevices();
@@ -283,6 +284,7 @@ private:
 
     HWND MainWindowHandle_{};
     HWND LifecycleWindow_{};
+    HANDLE SecureInputConfiguratorProcess_{};
     Microsoft::UI::Dispatching::DispatcherQueueTimer PollTimer_{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer
         DeveloperPollTimer_{nullptr};
@@ -315,6 +317,8 @@ private:
     std::int32_t MonitorViewOriginY_{};
     double MonitorViewScale_{1.0};
     desklink::MachineId LocalMachine_{};
+    desklink::MachineId SecureInputRequestedPeer_{};
+    desklink::CertificateDerHash SecureInputRequestedFingerprint_{};
     std::atomic_uint64_t NextRequestId_{1};
     std::uint64_t DisplayedPairingOperation_{};
     std::uint64_t DisplayedPermissionOperation_{};
@@ -332,6 +336,7 @@ private:
     bool BrokerAvailable_{};
     bool PairingDialogActive_{};
     bool ModalDialogActive_{};
+    bool SecureInputEnableRequested_{};
     bool DiscoveryActive_{};
     bool BrokerPaused_{};
     bool MonitorLayoutLoaded_{};

@@ -19,6 +19,8 @@ $Helper = Get-StrictUtf8 (Join-Path $RepositoryRoot `
     'apps\desklink_secure_input_helper.cpp')
 $Configurator = Get-StrictUtf8 (Join-Path $RepositoryRoot `
     'apps\desklink_secure_input_configurator.cpp')
+$ProductShell = Get-StrictUtf8 (Join-Path $RepositoryRoot `
+    'apps\desklink_ui\MainWindow.xaml.cpp')
 $Broker = Get-StrictUtf8 (Join-Path $RepositoryRoot `
     'src\win32_secure_input.cpp')
 $Runtime = Get-StrictUtf8 (Join-Path $RepositoryRoot `
@@ -99,6 +101,15 @@ if ($Configurator -notmatch 'RegSetKeySecurity' -or
     $Configurator -notmatch 'SetDword\(Key, L"Enabled", Disabled\)' -or
     $Configurator -notmatch 'SetDword\(Key, L"Enabled", Enabled\)') {
     throw 'The configurator lost its protected, fail-disabled exact-peer grant.'
+}
+foreach ($Required in @(
+        'ShellExecuteExW', 'SEE_MASK_NOCLOSEPROCESS',
+        'PollSecureInputConfiguration', 'WaitForSingleObject',
+        'Elevated control enabled', 'Protected review canceled',
+        'protected stored state did not match the exact requested peer')) {
+    if ($ProductShell.IndexOf($Required, [StringComparison]::Ordinal) -lt 0) {
+        throw "The product shell lost protected configurator completion handling: $Required"
+    }
 }
 if ($Broker -notmatch 'kPipeName' -or
     $Broker -notmatch 'kRegistryPath' -or
