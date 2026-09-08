@@ -2359,12 +2359,12 @@ void MainWindow::UpdateFeatureControls() {
         SecureConfiguration->Enabled && Device && DeviceFingerprint &&
         SecureConfiguration->PeerMachine == Device->Machine &&
         SecureConfiguration->PeerCertificateDerHash == *DeviceFingerprint;
-    const auto ProductExecutable = GetExecutablePath();
-    const auto SecureConfigurator = ProductExecutable
-        ? ProductExecutable->parent_path() /
+    const auto SecureProductExecutable = GetExecutablePath();
+    const auto SecureConfigurator = SecureProductExecutable
+        ? SecureProductExecutable->parent_path() /
               L"desklink_secure_input_configurator.exe"
         : std::filesystem::path{};
-    const bool SecureInputAvailable = ProductExecutable &&
+    const bool SecureInputAvailable = SecureProductExecutable &&
         std::filesystem::is_regular_file(SecureConfigurator);
     SecureInputStatusText().Text(SecureInputEnabled
         ? JoinText(
