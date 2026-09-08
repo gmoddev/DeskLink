@@ -687,6 +687,7 @@ void ControlProtocolRoundTripAndValidation() {
     Preferences.AudioGainPermyriad = 7'500;
     Preferences.VoiceDestination =
         VoiceReceiveDestination::VirtualMicrophone;
+    Preferences.VoiceTransmit = VoiceTransmitMode::Continuous;
     Preferences.FocusPeerHotkey = ProductHotkey::CtrlAltF11;
     Preferences.ReturnLocalHotkey = ProductHotkey::CtrlAltF12;
     Preferences.ProfileRules.push_back(
@@ -5138,6 +5139,7 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     Preferences.AudioRoute = AudioRoutePreference::Bidirectional;
     Preferences.AudioGainPermyriad = 7'500;
     Preferences.VoiceRoute = VoiceRoutePreference::Bidirectional;
+    Preferences.VoiceTransmit = VoiceTransmitMode::Continuous;
     Preferences.VoiceInputEndpointId = "communications-microphone";
     Preferences.VoiceGainPermyriad = 6'500;
     Preferences.VoiceEchoGuard = true;
@@ -5194,6 +5196,16 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(Main.ReceiveAudio);
     CHECK(Main.SendVoice);
     CHECK(Main.ReceiveVoice);
+    CHECK(CanStartContinuousVoice(
+        Preferences.VoiceTransmit, Main.SendVoice, true, false, true));
+    CHECK(!CanStartContinuousVoice(
+        Preferences.VoiceTransmit, Main.SendVoice, false, false, true));
+    CHECK(!CanStartContinuousVoice(
+        Preferences.VoiceTransmit, Main.SendVoice, true, true, true));
+    CHECK(!CanStartContinuousVoice(
+        Preferences.VoiceTransmit, Main.SendVoice, true, false, false));
+    CHECK(!CanStartContinuousVoice(
+        VoiceTransmitMode::PushToTalk, Main.SendVoice, true, false, true));
     CHECK(Main.InitialMode == DeskMode::LockPc1);
     CHECK(Main.AudioGainPermyriad == 7'500);
     CHECK(Main.VoiceGainPermyriad == 6'500);
@@ -5335,6 +5347,9 @@ void ProductPreferencesAndPlannerAreStrictAndFailLocal() {
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.VoiceRoute = static_cast<VoiceRoutePreference>(0xffu);
+    CHECK(!IsValidProductPreferences(Malformed));
+    Malformed = Preferences;
+    Malformed.VoiceTransmit = static_cast<VoiceTransmitMode>(0xffu);
     CHECK(!IsValidProductPreferences(Malformed));
     Malformed = Preferences;
     Malformed.VoiceInputEndpointId = std::string(
@@ -6121,6 +6136,7 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
     Settings.VoiceRoute = VoiceRoutePreference::Bidirectional;
     Settings.VoiceDestination = VoiceReceiveDestination::
         CommunicationsPlaybackAndVirtualMicrophone;
+    Settings.VoiceTransmit = VoiceTransmitMode::Continuous;
     Settings.VoiceInputEndpointId = "test-microphone-endpoint";
     Settings.VoiceGainPermyriad = 6'500;
     Settings.VoiceEchoGuard = false;
@@ -6149,6 +6165,8 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
         CHECK(Output.good());
         Output.seekp(5);
         Output.put(static_cast<char>(5));
+        Output.seekp(10);
+        Output.put(static_cast<char>(0));
         Output.seekp(39);
         Output.put(static_cast<char>(0));
     }
@@ -6158,11 +6176,38 @@ void WindowsApplicationSettingsAreAtomicAndStrict() {
           VoiceRoutePreference::Bidirectional);
     CHECK(MigratedVersion5.Current()->VoiceDestination ==
           VoiceReceiveDestination::CommunicationsPlayback);
+    CHECK(MigratedVersion5.Current()->VoiceTransmit ==
+          VoiceTransmitMode::PushToTalk);
     CHECK(std::filesystem::file_size(Version5Path) == 40 +
           Settings.ProfileRules[0].ExecutableName.size() + 4 +
           Settings.ProfileRules[1].ExecutableName.size() + 4 +
           Settings.PreferredPeerEndpoint->Host.size() + 4 +
           Settings.VoiceInputEndpointId->size() + 2);
+
+    const auto Version6Path = Directory / "version-6.bin";
+    CHECK(std::filesystem::copy_file(Path, Version6Path));
+    {
+        std::fstream Output(
+            Version6Path, std::ios::binary | std::ios::in | std::ios::out);
+        CHECK(Output.good());
+        Output.seekp(5);
+        Output.put(static_cast<char>(6));
+        Output.seekp(10);
+        Output.put(static_cast<char>(0));
+    }
+    Win32ProductPreferencesStore MigratedVersion6(Version6Path);
+    CHECK(MigratedVersion6.Load());
+    CHECK(MigratedVersion6.Current()->VoiceDestination ==
+          VoiceReceiveDestination::CommunicationsPlaybackAndVirtualMicrophone);
+    CHECK(MigratedVersion6.Current()->VoiceTransmit ==
+          VoiceTransmitMode::PushToTalk);
+    {
+        std::ifstream Input(Version6Path, std::ios::binary);
+        std::array<std::uint8_t, 6> Header{};
+        Input.read(reinterpret_cast<char*>(Header.data()), Header.size());
+        CHECK(Input.good());
+        CHECK(Header[5] == kProductPreferencesSchemaVersion);
+    }
 
     const auto InvalidRolePath = Directory / "invalid-role.bin";
     CHECK(std::filesystem::copy_file(Path, InvalidRolePath));

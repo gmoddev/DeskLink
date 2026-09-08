@@ -56,7 +56,8 @@ room propagation, or microphone capture latency. See
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
-- Protocol-v5, PTT-first microphone forwarding with separate reciprocal voice
+- Protocol-v5 microphone forwarding with default PTT and explicit continuous
+  transmit modes, separate reciprocal voice
   grants, pinned Opus 1.6.1, exact 48 kHz mono/20 ms frames, a dedicated
   datagram sequence, and bounded 40-120 ms FEC/PLC playout
 - Communications-role microphone selection and voice rendering, local hard
@@ -485,11 +486,15 @@ gain and `control mute` toggles mute. Changes ramp across one five-millisecond
 block, persist through audio-only endpoint recovery, and never change the
 Windows endpoint or system mixer volume.
 
-Microphone voice is a separate PTT-only module. It requires distinct
+Microphone voice is a separate module. It requires distinct
 `VoiceSend`/`VoiceReceive` grants and explicit route intent on both PCs; system
-audio permissions cannot authorize it. The microphone remains closed until the
-local user holds PTT, and release, hard mute, permission loss, disconnect, or
-endpoint loss stops capture. Voice uses pinned Opus 1.6.1 at 48 kHz mono in
+audio permissions cannot authorize it. Push to talk remains the default. An
+explicit local **Continuously while connected** option may open capture only
+after the pinned peer is admitted and reciprocal voice grants are acknowledged.
+PTT release, hard mute, permission loss, disconnect, or endpoint loss stops
+capture. Continuous mode may start again after a fresh authenticated reconnect;
+capture/device failures require a new local action. Voice uses pinned Opus
+1.6.1 at 48 kHz mono in
 20 ms datagrams with bounded 40-120 ms FEC/PLC playout. Echo guard defaults on
 and mutes incoming DeskLink voice while transmitting; it is half-duplex
 feedback protection, not acoustic echo cancellation. See
@@ -505,6 +510,12 @@ endpoint is excluded from outgoing microphone selection to prevent a network
 feedback loop. When the driver is absent, only application-microphone routing
 is unavailable; roaming, clipboard, desktop audio, and normal voice monitoring
 continue to work.
+
+Desktop/system-audio sharing never creates a Windows input device. Developer
+and beta packages omit the virtual-microphone payload unless an externally
+Microsoft production-signed driver catalog is supplied, so Discord will not
+list `DeskLink Remote Microphone` on those installs. DeskLink does not bypass
+driver-signature enforcement or enable Windows test-signing to change that.
 
 Text clipboard synchronization is separately opt-in and requires complementary
 grants. To synchronize both directions, pair each PC with both clipboard grants,

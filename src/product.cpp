@@ -33,6 +33,12 @@ namespace {
                CommunicationsPlaybackAndVirtualMicrophone;
 }
 
+[[nodiscard]] bool IsValidVoiceTransmitMode(
+    VoiceTransmitMode Mode) noexcept {
+    return Mode == VoiceTransmitMode::PushToTalk ||
+           Mode == VoiceTransmitMode::Continuous;
+}
+
 [[nodiscard]] bool IsValidGamingBehavior(GamingBehavior Behavior) noexcept {
     return Behavior == GamingBehavior::KeepLocal ||
            Behavior == GamingBehavior::FollowProfileRules;
@@ -78,6 +84,7 @@ bool IsValidProductPreferences(
         !IsValidAudioRoute(Preferences.AudioRoute) ||
         !IsValidVoiceRoute(Preferences.VoiceRoute) ||
         !IsValidVoiceReceiveDestination(Preferences.VoiceDestination) ||
+        !IsValidVoiceTransmitMode(Preferences.VoiceTransmit) ||
         !IsValidGamingBehavior(Preferences.Gaming) ||
         !IsValidProductHotkey(Preferences.FocusPeerHotkey) ||
         !IsValidProductHotkey(Preferences.ReturnLocalHotkey) ||
@@ -169,6 +176,13 @@ bool CanEnablePeerVoiceIntent(CapabilitySet LocalGrantsToPeer) noexcept {
 
 bool CanEnableLocalVoiceIntent(CapabilitySet LocalGrantsToPeer) noexcept {
     return LocalGrantsToPeer.contains(Capability::VoiceReceive);
+}
+
+bool CanStartContinuousVoice(
+    VoiceTransmitMode Mode, bool SendVoiceDesired, bool VoiceAuthorized,
+    bool Muted, bool ActivationPending) noexcept {
+    return Mode == VoiceTransmitMode::Continuous && SendVoiceDesired &&
+           VoiceAuthorized && !Muted && ActivationPending;
 }
 
 bool ApplyProductCrossingPreset(

@@ -2370,6 +2370,7 @@ struct PeerRuntime {
           VoiceInputEndpointId_(std::move(VoiceInputEndpointId)),
           VoiceGainPermyriad_(VoiceGainPermyriad),
           VoiceDestination_(VoiceDestination),
+          VoiceTransmitMode_(desklink::VoiceTransmitMode::PushToTalk),
           VoiceEchoGuard_(VoiceEchoGuard),
           InitiateLatencyCalibration_(InitiateLatencyCalibration) {
 #ifndef DESKLINK_ENABLE_VALIDATION_FAULTS
@@ -2487,9 +2488,18 @@ struct PeerRuntime {
         } else if (!ReceiveAudioRequested || !Session.CanReceiveAudio()) {
             StopReceivingAudio();
         }
-        if (VoiceCaptureFailed.exchange(false) ||
-            !SendVoiceRequested || !Session.CanSendVoice()) {
+        const bool VoiceCaptureFailedNow = VoiceCaptureFailed.exchange(false);
+        if (VoiceCaptureFailedNow) {
+            ContinuousVoiceStartPending_ = false;
             StopVoiceTransmitLocked();
+        } else if (!SendVoiceRequested || !Session.CanSendVoice()) {
+            StopVoiceTransmitLocked();
+        } else if (desklink::CanStartContinuousVoice(
+                       VoiceTransmitMode_, SendVoiceRequested,
+                       Session.CanSendVoice(), VoiceMuted_.load(),
+                       ContinuousVoiceStartPending_)) {
+            ContinuousVoiceStartPending_ = false;
+            (void)StartVoiceTransmitLocked();
         }
         if (ReceiveVoiceRequested && Session.CanReceiveVoice()) {
             (void)StartReceivingVoiceLocked();
@@ -2508,6 +2518,7 @@ struct PeerRuntime {
         std::optional<std::string> VoiceInputEndpointId,
         std::uint16_t VoiceGainPermyriad,
         desklink::VoiceReceiveDestination VoiceDestination,
+        desklink::VoiceTransmitMode VoiceTransmitMode,
         bool VoiceEchoGuard) noexcept {
         if (AudioGainPermyriad >
             desklink::kDeskLinkAudioMaximumGainPermyriad) {
@@ -2520,6 +2531,8 @@ struct PeerRuntime {
                  desklink::VoiceReceiveDestination::VirtualMicrophone &&
              VoiceDestination != desklink::VoiceReceiveDestination::
                  CommunicationsPlaybackAndVirtualMicrophone) ||
+            (VoiceTransmitMode != desklink::VoiceTransmitMode::PushToTalk &&
+             VoiceTransmitMode != desklink::VoiceTransmitMode::Continuous) ||
             (VoiceInputEndpointId &&
              (VoiceInputEndpointId->empty() ||
               VoiceInputEndpointId->size() >
@@ -2530,18 +2543,31 @@ struct PeerRuntime {
         ReceiveAudioRequested = ReceiveAudioDesired;
         const bool VoiceInputChanged =
             VoiceInputEndpointId_ != VoiceInputEndpointId;
+        const bool SendVoiceChanged = SendVoiceRequested != SendVoiceDesired;
+        const bool VoiceTransmitModeChanged =
+            VoiceTransmitMode_ != VoiceTransmitMode;
         SendVoiceRequested = SendVoiceDesired;
         ReceiveVoiceRequested = ReceiveVoiceDesired;
         VoiceInputEndpointId_ = std::move(VoiceInputEndpointId);
         VoiceGainPermyriad_ = VoiceGainPermyriad;
         VoiceDestination_ = VoiceDestination;
+        VoiceTransmitMode_ = VoiceTransmitMode;
         VoiceEchoGuard_ = VoiceEchoGuard;
         (void)VoiceRouter.SetMonitorGainPermyriad(VoiceGainPermyriad_);
         if (VoiceRenderPump.joinable()) ConfigureVoiceOutputsLocked();
         else (void)VoiceRouter.SetDestination(VoiceDestination_);
-        if (VoiceInputChanged || !SendVoiceRequested ||
+        if (VoiceInputChanged || VoiceTransmitModeChanged ||
+            !SendVoiceRequested ||
             !Session.CanSendVoice()) {
             StopVoiceTransmitLocked();
+        }
+        if (VoiceInputChanged || VoiceTransmitModeChanged ||
+            SendVoiceChanged) {
+            VoiceInputUnavailable_.store(false);
+            VoiceCaptureFailed.store(false);
+            ContinuousVoiceStartPending_ = SendVoiceRequested &&
+                VoiceTransmitMode_ ==
+                    desklink::VoiceTransmitMode::Continuous;
         }
         Session.SetClipboardEnabled(ClipboardRequested);
         if (!SetAudioGainPermyriad(AudioGainPermyriad)) return false;
@@ -2565,6 +2591,13 @@ struct PeerRuntime {
         } else {
             StopReceivingVoiceLocked();
         }
+        if (desklink::CanStartContinuousVoice(
+                VoiceTransmitMode_, SendVoiceRequested,
+                Session.CanSendVoice(), VoiceMuted_.load(),
+                ContinuousVoiceStartPending_)) {
+            ContinuousVoiceStartPending_ = false;
+            (void)StartVoiceTransmitLocked();
+        }
         return true;
     }
 
@@ -2587,6 +2620,9 @@ struct PeerRuntime {
 
     [[nodiscard]] bool SetVoiceTransmit(bool Active) noexcept {
         std::scoped_lock Lock(ModuleLifecycleMutex);
+        if (VoiceTransmitMode_ != desklink::VoiceTransmitMode::PushToTalk) {
+            return false;
+        }
         if (!Active) {
             StopVoiceTransmitLocked();
             return true;
@@ -2597,7 +2633,21 @@ struct PeerRuntime {
     void SetVoiceMuted(bool Muted) noexcept {
         std::scoped_lock Lock(ModuleLifecycleMutex);
         VoiceMuted_.store(Muted);
-        if (Muted) StopVoiceTransmitLocked();
+        if (Muted) {
+            StopVoiceTransmitLocked();
+        } else if (VoiceTransmitMode_ ==
+                       desklink::VoiceTransmitMode::Continuous) {
+            VoiceInputUnavailable_.store(false);
+            VoiceCaptureFailed.store(false);
+            ContinuousVoiceStartPending_ = true;
+            if (desklink::CanStartContinuousVoice(
+                    VoiceTransmitMode_, SendVoiceRequested,
+                    Session.CanSendVoice(), VoiceMuted_.load(),
+                    ContinuousVoiceStartPending_)) {
+                ContinuousVoiceStartPending_ = false;
+                (void)StartVoiceTransmitLocked();
+            }
+        }
     }
 
     [[nodiscard]] bool StartVoiceTransmitLocked() noexcept {
@@ -2636,7 +2686,7 @@ struct PeerRuntime {
                                      std::string Message) {
                 std::cerr << "[Voice:Capture] "
                           << (Message.empty() ? "microphone stopped" : Message)
-                          << "; transmission stopped and requires fresh PTT\n";
+                          << "; transmission stopped and requires a fresh local activation\n";
                 VoiceInputUnavailable_.store(true);
                 VoiceCaptureFailed.store(true);
             };
@@ -3214,7 +3264,10 @@ struct PeerRuntime {
     std::uint16_t VoiceGainPermyriad_{10'000};
     desklink::VoiceReceiveDestination VoiceDestination_{
         desklink::VoiceReceiveDestination::CommunicationsPlayback};
+    desklink::VoiceTransmitMode VoiceTransmitMode_{
+        desklink::VoiceTransmitMode::PushToTalk};
     bool VoiceEchoGuard_{true};
+    bool ContinuousVoiceStartPending_{};
     std::atomic_bool VoiceMuted_{};
     std::atomic_bool VoiceTransmitting_{};
     std::atomic_bool VoiceInputUnavailable_{};
@@ -5016,6 +5069,7 @@ int RunTrusted(const CommandLine& Command,
                     ApplyPreferences->Preferences.VoiceInputEndpointId,
                     ApplyPreferences->Preferences.VoiceGainPermyriad,
                     ApplyPreferences->Preferences.VoiceDestination,
+                    ApplyPreferences->Preferences.VoiceTransmit,
                     ApplyPreferences->Preferences.VoiceEchoGuard);
                 if (Applied && ActiveInput) {
                     Applied = ActiveInput->ApplyManagedPreferences(

@@ -273,16 +273,17 @@ are automated. Physical two-PC privacy, rapid-contention/coalescing behavior,
 clipboard-owner exit, and real reconnect tests remain required before this item
 is production-qualified. Image clipboard and file transfer remain excluded.
 
-### 5. PTT voice forwarding — automated implementation complete
+### 5. Microphone voice forwarding — automated implementation complete
 
 - protocol 5 adds independent default-off `VoiceSend`/`VoiceReceive` grants and
   a strictly bounded datagram-only Opus voice frame;
 - the product and runtime expose separate voice route, communications
-  microphone selection, incoming gain, hard mute, PTT state, and default-on
+  microphone selection, incoming gain, hard mute, default PTT plus explicit
+  continuous activation, and default-on
   half-duplex echo guard without modifying pairing or system-audio policy;
-- capture opens only for a local PTT press after reciprocal acknowledged
-  grants and closes on release, mute, revocation, disconnect, endpoint loss,
-  configuration change, or shutdown;
+- capture opens only for local PTT or explicit continuous policy after
+  reciprocal acknowledged grants and closes on release where applicable, mute,
+  revocation, disconnect, endpoint loss, configuration change, or shutdown;
 - pinned Opus 1.6.1, FEC/PLC, and a bounded adaptive 40-120 ms jitter target
   are covered by portable/native tests; and
 - production sign-off remains open until the two-PC privacy, device,
@@ -294,8 +295,9 @@ must not be described as production-qualified before physical validation.
 
 ### 5.1 Virtual microphone application routing — implementation complete; certification open
 
-- preferences schema 6 adds the local-only received-voice destination and
-  migrates every existing install to communications playback;
+- preferences schema 7 adds explicit local transmit mode while retaining the
+  local-only received-voice destination; every older install migrates to
+  communications playback and/or default PTT as appropriate;
 - one decoded 48 kHz mono PCM16 playout block fans out through
   `VoiceOutputRouter` to communications monitoring, the virtual feed, or both,
   with independent sink failure and monitor-only gain/echo policy;
@@ -357,9 +359,10 @@ must not be described as production-qualified before physical validation.
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, the capture hook owns Return-to-this-PC while remote,
   crossing changes reuse Local-before-atomic-save, and required
-  but uninspectable foreground state remains Local. Preferences schema 6
-  retains those migrations and adds a local-only received-voice destination
-  that defaults older installs to communications playback;
+  but uninspectable foreground state remains Local. Preferences schema 7
+  retains those migrations, adds a local-only received-voice destination that
+  defaults older installs to communications playback, and adds an explicit
+  continuous voice option while retaining PTT as the migration default;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu
   and post-install entry point. Its `--background` mode is a short-lived
   sign-in bootstrap, while updates restart the native broker directly. Every

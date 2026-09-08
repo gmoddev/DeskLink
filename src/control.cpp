@@ -722,6 +722,9 @@ void EncodePreferences(Writer& Output,
     if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
     if (Preferences.FirstRunComplete) Flags |= 0x0100u;
     if (Preferences.PreferredPeerEndpoint) Flags |= 0x0200u;
+    if (Preferences.VoiceTransmit == VoiceTransmitMode::Continuous) {
+        Flags |= 0x0400u;
+    }
     Output.U16(Flags);
     Output.U16(Preferences.AudioGainPermyriad);
     Output.U8(static_cast<std::uint8_t>(Preferences.FocusPeerHotkey));
@@ -775,7 +778,7 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         !Input.U8(RawGaming) || !Input.U16(Flags) ||
         !Input.U16(Preferences.AudioGainPermyriad) ||
         !Input.U8(RawFocusHotkey) || !Input.U8(RawReturnHotkey) ||
-        (Flags & 0xfc00u) != 0) {
+        (Flags & 0xf800u) != 0) {
         return std::nullopt;
     }
     Preferences.Role = static_cast<DeskRole>(RawRole);
@@ -794,6 +797,9 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
     Preferences.ClipboardDesired = (Flags & 0x0040u) != 0;
     Preferences.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
     Preferences.FirstRunComplete = (Flags & 0x0100u) != 0;
+    Preferences.VoiceTransmit = (Flags & 0x0400u) != 0
+        ? VoiceTransmitMode::Continuous
+        : VoiceTransmitMode::PushToTalk;
     if ((Flags & 0x0001u) != 0) {
         MachineId Machine{};
         if (!Input.Raw(Machine)) return std::nullopt;

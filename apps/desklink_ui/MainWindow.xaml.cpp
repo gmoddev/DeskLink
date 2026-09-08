@@ -2331,16 +2331,16 @@ void MainWindow::UpdateFeatureControls() {
 
     PeerAudioIntentLabel().Text(Device
         ? JoinText(L"Play ", PeerName,
-                   JoinText(L" audio on ", ThisPcName, L". The other PC must separately allow capture."))
-        : winrt::hstring(L"Pair a PC to configure its audio."));
+                   JoinText(L" computer audio on ", ThisPcName, L" speakers. This does not create a microphone input. The other PC must separately allow capture."))
+        : winrt::hstring(L"Pair a PC to configure its computer audio."));
     PeerAudioDesiredToggle().IsEnabled(Device != nullptr);
     PeerAudioDesiredToggle().IsOn(ReceivesPeerAudio(Preferences_.AudioRoute));
     LocalAudioIntentLabel().Text(Device
         ? JoinText(
               L"Share ", ThisPcName,
-              JoinText(L" audio with ", PeerName,
-                       L". The other PC must separately allow playback."))
-        : winrt::hstring(L"Pair a PC to share this PC's audio."));
+              JoinText(L" computer audio with ", PeerName,
+                       L" speakers. This does not forward a microphone. The other PC must separately allow playback."))
+        : winrt::hstring(L"Pair a PC to share this PC's computer audio."));
     LocalAudioDesiredToggle().IsEnabled(Device != nullptr);
     LocalAudioDesiredToggle().IsOn(SendsLocalAudio(Preferences_.AudioRoute));
     PeerAudioGainBox().Value(
@@ -2367,6 +2367,10 @@ void MainWindow::UpdateFeatureControls() {
     VoiceEchoGuardToggle().IsOn(Preferences_.VoiceEchoGuard);
     VoiceEchoGuardToggle().IsEnabled(Device != nullptr);
     VoiceInputDeviceBox().IsEnabled(Device != nullptr);
+    VoiceTransmitModeBox().IsEnabled(
+        Device != nullptr && SendsLocalVoice(Preferences_.VoiceRoute));
+    VoiceTransmitModeBox().SelectedIndex(
+        static_cast<int>(Preferences_.VoiceTransmit));
     auto VirtualMicrophoneState =
         desklink::ControlVirtualMicrophoneState::NotInstalled;
     const auto ProductExecutable = GetExecutablePath();
@@ -2448,9 +2452,7 @@ void MainWindow::UpdateFeatureControls() {
                 desklink::ControlVirtualMicrophoneState::NeedsRepair
             ? L"Repair virtual microphone"
             : L"Install virtual microphone"));
-    OpenSoundInputSettingsButton().IsEnabled(
-        VirtualMicrophoneState !=
-            desklink::ControlVirtualMicrophoneState::NotInstalled);
+    OpenSoundInputSettingsButton().IsEnabled(true);
     for (std::uint32_t Index = 0;
          Index < VoiceInputDeviceBox().Items().Size(); ++Index) {
         const auto Item = VoiceInputDeviceBox().Items().GetAt(Index)
@@ -2473,7 +2475,13 @@ void MainWindow::UpdateFeatureControls() {
     VoiceMuteButton().Content(winrt::box_value(
         RuntimeStateLoaded_ && RuntimeState_.VoiceMuted
             ? L"Unmute microphone" : L"Mute microphone"));
-    VoicePttButton().IsEnabled(Connected && RuntimeState_.VoicePttReady);
+    const bool PushToTalk = Preferences_.VoiceTransmit ==
+        desklink::VoiceTransmitMode::PushToTalk;
+    VoicePttButton().Visibility(PushToTalk
+        ? Microsoft::UI::Xaml::Visibility::Visible
+        : Microsoft::UI::Xaml::Visibility::Collapsed);
+    VoicePttButton().IsEnabled(
+        PushToTalk && Connected && RuntimeState_.VoicePttReady);
     VoicePttButton().Content(winrt::box_value(
         RuntimeStateLoaded_ && RuntimeState_.VoiceTransmitting
             ? L"Transmitting — release to stop" : L"Hold to talk"));
@@ -2487,17 +2495,24 @@ void MainWindow::UpdateFeatureControls() {
         VoiceStatusText().Text(JoinText(
             L"Microphone is being sent to ", PeerName));
     } else if (RuntimeState_.VoiceMuted) {
-        VoiceStatusText().Text(L"Microphone muted. PTT cannot start capture.");
+        VoiceStatusText().Text(PushToTalk
+            ? L"Microphone muted. PTT cannot start capture."
+            : L"Microphone muted. Continuous sharing is paused.");
     } else if (RuntimeState_.VoicePermissionMissing) {
         VoiceStatusText().Text(
             L"Voice permission is missing on one PC. Microphone capture is closed.");
     } else if (RuntimeState_.VoiceInputUnavailable) {
-        VoiceStatusText().Text(
-            L"The selected microphone is unavailable. Choose a device and press PTT again.");
+        VoiceStatusText().Text(PushToTalk
+            ? L"The selected microphone is unavailable. Choose a device and press PTT again."
+            : L"The selected microphone is unavailable. Choose a device or toggle continuous sharing off and on to retry.");
     } else {
-        VoiceStatusText().Text(
-            L"PTT ready. The microphone remains closed until you hold the button.");
+        VoiceStatusText().Text(PushToTalk
+            ? L"PTT ready. The microphone remains closed until you hold the button."
+            : L"Continuous sharing is armed and opens only for this authenticated, voice-authorized connection.");
     }
+    VoicePrivacyText().Text(PushToTalk
+        ? L"PTT is local authority. Reconnect, permission loss, mute, release, or microphone loss always stops capture. Echo guard is half-duplex feedback protection, not acoustic echo cancellation."
+        : L"Continuous sharing is explicit local authority. It can restart after an authenticated reconnect, but permission loss, mute, microphone loss, or session shutdown stops capture. The peer cannot enable or unmute it. Echo guard is not acoustic echo cancellation.");
 
     GamingBehaviorToggle().IsOn(
         Preferences_.Gaming == desklink::GamingBehavior::KeepLocal);
@@ -2754,7 +2769,9 @@ void MainWindow::SetLocalVoiceDesired(bool Desired) {
     (void)SavePreferences(
         Updated,
         Desired
-            ? L"Microphone sharing is enabled for push-to-talk. Capture remains closed until PTT is held and both PCs admit the voice module."
+            ? Updated.VoiceTransmit == desklink::VoiceTransmitMode::PushToTalk
+                ? L"Microphone sharing is enabled for push-to-talk. Capture remains closed until PTT is held and both PCs admit the voice module."
+                : L"Continuous microphone sharing is enabled. Capture starts only after both PCs admit the voice module and stops fail-closed on loss, mute, or error."
             : L"Microphone sharing is off and capture is closed.");
 }
 
@@ -2846,7 +2863,27 @@ void MainWindow::OnVoiceInputChanged(
         : ToUtf8(Endpoint);
     (void)SavePreferences(
         Updated,
-        L"Microphone selection saved. The device will be opened only while push-to-talk is held.");
+        Updated.VoiceTransmit == desklink::VoiceTransmitMode::PushToTalk
+            ? L"Microphone selection saved. The device will be opened only while push-to-talk is held."
+            : L"Microphone selection saved. Continuous sharing will retry only after authenticated voice admission.");
+}
+
+void MainWindow::OnVoiceTransmitModeChanged(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&) {
+    if (!ContentReady_ || UpdatingFeatureControls_) return;
+    const auto Selection = VoiceTransmitModeBox().SelectedIndex();
+    if (Selection < 0 || Selection > 1) {
+        UpdateFeatureControls();
+        return;
+    }
+    auto Updated = Preferences_;
+    Updated.VoiceTransmit = static_cast<desklink::VoiceTransmitMode>(Selection);
+    (void)SavePreferences(
+        Updated,
+        Updated.VoiceTransmit == desklink::VoiceTransmitMode::PushToTalk
+            ? L"Push to talk selected. The microphone stays closed until you hold the button."
+            : L"Continuous microphone sharing selected. It starts only after authenticated reciprocal voice permission and stops fail-closed on loss, mute, or error.");
 }
 
 void MainWindow::SetVoiceReceiveDestination(
@@ -2862,11 +2899,19 @@ void MainWindow::SetVoiceReceiveDestination(
     }
     auto Updated = Preferences_;
     Updated.VoiceDestination = Destination;
-    (void)SavePreferences(
+    const bool Saved = SavePreferences(
         Updated,
         UsesVirtualMicrophone(Destination)
-            ? L"Applications can use “DeskLink Remote Microphone” after the optional component is installed."
+            ? L"DeskLink Remote Microphone was selected as the application-input destination."
             : L"Paired-PC voice will play only through this PC's communications output.");
+    if (Saved && UsesVirtualMicrophone(Destination) &&
+        desklink::GetWin32VirtualMicrophoneComponentState() !=
+            desklink::Win32VirtualMicrophoneComponentState::Ready) {
+        ShowFeatureStatus(
+            L"Windows microphone input unavailable",
+            L"DeskLink Remote Microphone is not installed on this PC. Computer-audio sharing feeds speakers only, so Discord will not list a DeskLink input until a Microsoft production-signed driver package is installed.",
+            InfoBarSeverity::Warning);
+    }
 }
 
 void MainWindow::OnVoiceReceiveDestinationChanged(

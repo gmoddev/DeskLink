@@ -7,12 +7,12 @@ slice on the protocol-v5 development branch. It is deliberately separate from
 system-audio forwarding. Production qualification remains blocked on the
 physical two-PC voice matrix described below.
 
-The first slice is push-to-talk (PTT) only. It does not implement open-mic,
-voice activation, acoustic echo cancellation, mixing, conferencing, recording,
-or remote microphone activation. The WinUI hold button and typed local runtime
-control are implemented. A global PTT binding is the one explicitly deferred
-control surface because adding it safely requires a separate input-lifecycle
-design.
+Push-to-talk (PTT) is the default. The WinUI also exposes an explicit local
+**Continuously while connected** policy for users who do not want PTT. It is
+not remotely activatable: it is persisted as current-user policy and can open
+capture only after the pinned peer is admitted and reciprocal voice grants are
+acknowledged. Voice activation, acoustic echo cancellation, mixing,
+conferencing, recording, and a global PTT binding remain deferred.
 
 ## Security and privacy invariants
 
@@ -26,12 +26,14 @@ design.
 - `VoiceFrame` is accepted only as a QUIC datagram after `PeerValidated`, exact
   protocol-v5 decoding, current nonce validation, reciprocal grant admission,
   and strict format/size checks.
-- Only a local current-user PTT command can open the capture endpoint. There is
-  no network message that presses PTT, clears mute, or selects a microphone.
-- Hard mute prevents PTT from starting capture and stops active capture before
-  reporting success. PTT release, permission loss, disconnect, endpoint loss,
-  process shutdown, or configuration change stops capture and requires a fresh
-  local PTT activation.
+- Only local current-user policy can select PTT or continuous activation, press
+  PTT, clear mute, or select a microphone. No network message can perform any
+  of those actions.
+- Hard mute prevents either mode from starting capture and stops active capture
+  before reporting success. PTT release, permission loss, disconnect, endpoint
+  loss, or process shutdown stops capture. Continuous policy may activate
+  again only after a fresh authenticated reconnect or a fresh local retry
+  action; a device/capture failure is never retried in a tight loop.
 - Audio samples and decoded voice are bounded in memory and are never written
   to disk or included in diagnostics. Logs contain state and counters only.
 - A malformed or unauthorized voice datagram is rejected locally. Voice-device
@@ -47,7 +49,7 @@ authenticated PeerSession
   -> exact reciprocal acknowledged voice grants
   -> local voice-route intent
   -> local hard mute is clear
-  -> local PTT press
+  -> local PTT press OR explicit continuous policy with one pending activation
   -> selected eCapture endpoint (default communications or exact saved ID)
   -> WASAPI shared/event-driven 48 kHz mono PCM16 normalization
   -> exact 960-sample / 20 ms frame
@@ -75,8 +77,9 @@ MsQuic datagram
 
 Authority is re-evaluated after capability updates. Any loss stops the
 transmitter synchronously and rejects subsequent frames. Reconnect creates a
-fresh session nonce, resets voice stream/sequence state, and does not restore an
-old PTT-down state.
+fresh session nonce and resets voice stream/sequence state. It never restores
+an old PTT-down state. Explicit continuous policy is re-evaluated from the
+local preference only after the new peer is admitted.
 
 ## Wire format
 
@@ -95,7 +98,8 @@ encoded                   encoded_size bytes
 ```
 
 Voice has its own envelope sequence counter. A new nonzero stream ID is chosen
-for each PTT activation. Old-stream packets cannot re-enter a newer stream.
+for each local transmit activation. Old-stream packets cannot re-enter a newer
+stream.
 Protocol 4 peers are incompatible and are rejected during negotiation; there is
 no voice downgrade.
 
@@ -153,14 +157,16 @@ AEC remains deferred.
 
 ## Product behavior
 
-Preferences schema 6 stores a separate voice route, optional exact input
-endpoint ID, incoming gain, echo-guard setting, and local received-voice
-destination. Migration from every older schema leaves voice off, selects the
-default communications microphone, sets gain to 100%, enables echo guard, and
-defaults the destination to communications playback. Destination selection is
-local policy, is absent from the network protocol, and cannot be controlled or
-observed by the peer. Route and device changes are negotiated through the
-existing managed runtime; they do not modify pairing.
+Preferences schema 7 stores a separate voice route, optional exact input
+endpoint ID, incoming gain, echo-guard setting, default-PTT/explicit-continuous
+activation, and local received-voice destination. Migration from every older
+schema leaves voice off, selects the default communications microphone, sets
+gain to 100%, enables echo guard, defaults activation to PTT, and defaults the
+destination to communications playback where that field was not yet present.
+Destination and activation selection are local policy, are absent from the
+network protocol, and cannot be controlled or observed by the peer. Route,
+activation, and device changes are negotiated through the existing managed
+runtime; they do not modify pairing.
 
 The product shell exposes **Listen on this PC**, **Microphone for apps**, and
 **Both**. Choosing an application route does not silently elevate or install a
@@ -175,10 +181,12 @@ Pairing and the Devices page expose two separate, default-off consequences:
 - allow the peer to play microphone voice into this PC (`VoiceSend`);
 - allow the peer to receive this PC's microphone voice (`VoiceReceive`).
 
-The feature card shows off, permission missing, PTT ready, transmitting,
-muted, and input-unavailable states. Capture is not started by enabling the
-route. Press-and-hold pointer capture owns the PTT lifetime so release,
-cancellation, or pointer-capture loss sends a local PTT-up command.
+The feature card shows off, permission missing, PTT ready/continuous armed,
+transmitting, muted, and input-unavailable states. Enabling the route alone
+does not select continuous capture. Press-and-hold pointer capture owns the PTT
+lifetime so release, cancellation, or pointer-capture loss sends a local PTT-up
+command. Continuous selection is saved separately and remains guarded by the
+same session and permission checks.
 
 ## Validation gates
 
@@ -197,16 +205,19 @@ Automated coverage must remain green for:
   of endpoint friendly name;
 - optional-driver safety/source checks plus an Inf2Cat-valid unsigned
   development build using the pinned Microsoft sample and WDK inputs;
-- preference migration, separate route planning, default echo guard, and
-  current-user control framing;
+- preference-schema-7 migration, default PTT, continuous fail-closed gate
+  combinations, separate route planning, default echo guard, and current-user
+  control framing;
 - native Windows, MsQuic loopback/runtime, reliability soak, locked WinUI, and
   the voice-capture isolation source check.
 
 Before production sign-off, two supported physical Windows PCs must pass:
 
-1. PTT A to B and B to A, followed by immediate capture stop on release.
-2. Hard mute, route off, permission revocation, disconnect during PTT, process
-   termination, and reconnect requiring a fresh PTT action.
+1. PTT A to B and B to A, followed by immediate capture stop on release;
+   continuous mode A to B and B to A only after explicit local selection.
+2. Hard mute, route off, permission revocation, disconnect during each mode,
+   process termination, PTT reconnect requiring a fresh press, and continuous
+   reconnect requiring fresh peer admission before capture resumes.
 3. Default and explicit microphone selection, unplug/default changes, and no
    fallback from a missing explicit endpoint.
 4. Controlled packet loss/reordering with bounded FEC/PLC and no unbounded

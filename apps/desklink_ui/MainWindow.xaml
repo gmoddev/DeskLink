@@ -162,6 +162,8 @@
                                     <ComboBoxItem Content="Microphone for apps" />
                                     <ComboBoxItem Content="Both" />
                                 </ComboBox>
+                                <TextBlock Text="Computer-audio sharing feeds speakers only. Discord and other apps see paired-PC voice only through the optional DeskLink Remote Microphone input device."
+                                           TextWrapping="Wrap" Opacity="0.72" />
                                 <TextBlock x:Name="VirtualMicrophoneStatusText"
                                            Text="DeskLink Virtual Microphone: checking status"
                                            TextWrapping="Wrap" Opacity="0.78" />
@@ -181,6 +183,13 @@
                                           Header="Microphone input"
                                           SelectionChanged="OnVoiceInputChanged"
                                           MinWidth="360" />
+                                <ComboBox x:Name="VoiceTransmitModeBox"
+                                          Header="When to share this PC's microphone"
+                                          SelectionChanged="OnVoiceTransmitModeChanged"
+                                          MinWidth="360">
+                                    <ComboBoxItem Content="Push to talk" />
+                                    <ComboBoxItem Content="Continuously while connected" />
+                                </ComboBox>
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <NumberBox x:Name="VoiceGainBox"
                                                Header="Voice monitor volume (%)"
@@ -206,7 +215,8 @@
                                         PointerReleased="OnVoicePttReleased"
                                         PointerCanceled="OnVoicePttReleased"
                                         PointerCaptureLost="OnVoicePttReleased" />
-                                <TextBlock Text="PTT is local authority. Reconnect, permission loss, mute, release, or microphone loss always stops capture. Echo guard is half-duplex feedback protection, not acoustic echo cancellation."
+                                <TextBlock x:Name="VoicePrivacyText"
+                                           Text="PTT is local authority. Reconnect, permission loss, mute, release, or microphone loss always stops capture. Echo guard is half-duplex feedback protection, not acoustic echo cancellation."
                                            Opacity="0.72" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
@@ -269,7 +279,7 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Spacing="4">
-                                        <TextBlock Text="Audio"
+                                        <TextBlock Text="Computer audio (speakers)"
                                                    Style="{StaticResource SubtitleTextBlockStyle}" />
                                         <TextBlock x:Name="PeerAudioIntentLabel"
                                                    Text="Pair a PC to configure its audio."

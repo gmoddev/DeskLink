@@ -126,6 +126,9 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnVoiceInputChanged(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
+    void OnVoiceTransmitModeChanged(
+        Windows::Foundation::IInspectable const& Sender,
+        Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);
     void OnVoiceReceiveDestinationChanged(
         Windows::Foundation::IInspectable const& Sender,
         Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& Args);

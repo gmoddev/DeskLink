@@ -288,13 +288,17 @@ revision. Receiving requires the complementary pair and repeats the check
 after protocol, lane, nonce, stream, sequence, codec, and payload validation.
 Voice is never admitted before `PeerValidated`.
 
-Only the local current-user control boundary may press PTT, set hard mute, or
-select the input endpoint. No QUIC message can perform those actions. Enabling
-a route does not open capture. PTT release, hard mute, grant loss, disconnect,
-endpoint loss, or shutdown closes capture and stale reconnect state never
-reopens it. The exact saved microphone never silently falls back to another
-device. Samples remain memory-only and diagnostics expose counters/state, not
-content.
+Only the local current-user control boundary may select the activation mode,
+press PTT, set hard mute, or select the input endpoint. No QUIC message can
+perform those actions. PTT is the default; continuous transmission is a
+separate explicit persisted local choice. It starts only when a one-shot local
+activation is pending and the current admitted session reports reciprocal
+acknowledged voice authority. PTT release, hard mute, grant loss, disconnect,
+endpoint loss, or shutdown closes capture. A fresh authenticated reconnect may
+re-evaluate explicit continuous policy, but stale PTT-down state never reopens
+capture and device failure does not loop. The exact saved microphone never
+silently falls back to another device. Samples remain memory-only and
+diagnostics expose counters/state, not content.
 
 The voice source is an `eCapture` communications endpoint; a build check
 rejects loopback APIs in that backend. Rendering uses the communications role.

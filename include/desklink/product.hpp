@@ -13,7 +13,7 @@
 
 namespace desklink {
 
-inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 6;
+inline constexpr std::uint16_t kProductPreferencesSchemaVersion = 7;
 inline constexpr std::size_t kMaximumPreferredPeerHostBytes = 253;
 inline constexpr std::size_t kMaximumVoiceEndpointIdBytes = 2'048;
 
@@ -44,6 +44,13 @@ enum class VoiceReceiveDestination : std::uint8_t {
     CommunicationsPlayback = 0,
     VirtualMicrophone = 1,
     CommunicationsPlaybackAndVirtualMicrophone = 2,
+};
+
+// Local-only microphone activation policy. Continuous mode is explicit user
+// intent and still requires an admitted peer plus reciprocal voice grants.
+enum class VoiceTransmitMode : std::uint8_t {
+    PushToTalk = 0,
+    Continuous = 1,
 };
 
 enum class GamingBehavior : std::uint8_t {
@@ -89,6 +96,7 @@ struct ProductPreferences {
     VoiceRoutePreference VoiceRoute{VoiceRoutePreference::Off};
     VoiceReceiveDestination VoiceDestination{
         VoiceReceiveDestination::CommunicationsPlayback};
+    VoiceTransmitMode VoiceTransmit{VoiceTransmitMode::PushToTalk};
     std::optional<std::string> VoiceInputEndpointId;
     std::uint16_t VoiceGainPermyriad{10'000};
     bool VoiceEchoGuard{true};
@@ -118,6 +126,12 @@ struct ProductPreferences {
     CapabilitySet LocalGrantsToPeer) noexcept;
 [[nodiscard]] bool CanEnableLocalVoiceIntent(
     CapabilitySet LocalGrantsToPeer) noexcept;
+// VoiceAuthorized must come from the admitted session's reciprocal,
+// acknowledged voice grants. This helper intentionally fails closed for every
+// non-continuous or incomplete state.
+[[nodiscard]] bool CanStartContinuousVoice(
+    VoiceTransmitMode Mode, bool SendVoiceDesired, bool VoiceAuthorized,
+    bool Muted, bool ActivationPending) noexcept;
 
 enum class RuntimePlanBlocker : std::uint32_t {
     None = 0,

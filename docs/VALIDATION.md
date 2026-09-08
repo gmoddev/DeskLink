@@ -779,8 +779,9 @@ source gate proving that the microphone backend does not use loopback capture.
 
 The virtual-microphone application-routing slice adds automated coverage for
 all three local destinations, one-decode fanout, independent sink failure,
-monitor-only gain/echo guard, source-wide reset/mute, preference-schema-6
-migration, control serialization, stable-property endpoint filtering, and
+monitor-only gain/echo guard, source-wide reset/mute, preference-schema-7
+migration with default PTT and continuous fail-closed gate checks, control
+serialization, stable-property endpoint filtering, and
 lower-level rejection of DeskLink's capture endpoint as an outgoing source.
 
 The optional driver build is isolated from normal CMake. Its CI path checks out
