@@ -834,6 +834,7 @@ void ControlProtocolRoundTripAndValidation() {
           ControlVirtualMicrophoneState::Live);
     CHECK(Response.Decoded->State->InputDesktopAvailable);
     CHECK(Response.Decoded->State->InputDesktopInterruptionObserved);
+    CHECK(!Response.Decoded->State->EmergencyInputReleaseObserved);
 
     ControlTopologyState TopologyState;
     TopologyState.Machines.push_back(ControlMachineTopology{
@@ -991,6 +992,28 @@ void ControlProtocolRoundTripAndValidation() {
     InvalidRuntimeState.RuntimeProcessExitCodeAvailable = true;
     CHECK(IsValidControlState(InvalidRuntimeState));
     InvalidRuntimeState.RuntimeProcessExitCodeAvailable = false;
+    auto EmergencyRuntimeState = InvalidRuntimeState;
+    EmergencyRuntimeState.RuntimeProcessExitCode =
+        kBrokerManagedEmergencyProcessExit;
+    EmergencyRuntimeState.RuntimeProcessExitCodeAvailable = true;
+    EmergencyRuntimeState.EmergencyInputReleaseObserved = true;
+    CHECK(IsValidControlState(EmergencyRuntimeState));
+    const auto EmergencyFrame = EncodeControlResponse(ControlResponse{
+        22, ControlStatus::Ok, EmergencyRuntimeState});
+    CHECK(EmergencyFrame.has_value());
+    const auto DecodedEmergency = DecodeControlResponse(*EmergencyFrame);
+    CHECK(DecodedEmergency.Decoded.has_value());
+    CHECK(DecodedEmergency.Decoded->State.has_value());
+    CHECK(DecodedEmergency.Decoded->State
+              ->EmergencyInputReleaseObserved);
+    CHECK(DecodedEmergency.Decoded->State->RuntimeProcessExitCode ==
+          kBrokerManagedEmergencyProcessExit);
+    EmergencyRuntimeState.EmergencyInputReleaseObserved = false;
+    CHECK(!IsValidControlState(EmergencyRuntimeState));
+    EmergencyRuntimeState.EmergencyInputReleaseObserved = true;
+    EmergencyRuntimeState.RuntimeProcessExitCode =
+        kBrokerManagedActionRequiredProcessExit;
+    CHECK(!IsValidControlState(EmergencyRuntimeState));
     InvalidRuntimeState.RuntimePhase = BrokerRuntimePhase::RetryWaiting;
     CHECK(!IsValidControlState(InvalidRuntimeState));
     InvalidRuntimeState.RuntimeFailure =
@@ -1158,6 +1181,13 @@ void RuntimeBrokerTrustAndPairingAuthorityAreFailClosed() {
     CHECK(ClassifyBrokerManagedProcessExit(
               kBrokerManagedProtocolProcessExit) ==
           BrokerRuntimeFailure::Protocol);
+    CHECK(IsBrokerManagedEmergencyProcessExit(
+        kBrokerManagedEmergencyProcessExit));
+    CHECK(!IsBrokerManagedEmergencyProcessExit(
+        kBrokerManagedRetryableProcessExit));
+    CHECK(ClassifyBrokerManagedProcessExit(
+              kBrokerManagedEmergencyProcessExit) ==
+          BrokerRuntimeFailure::Unknown);
     CHECK(ClassifyBrokerManagedProcessExit(1) ==
           BrokerRuntimeFailure::Unknown);
 

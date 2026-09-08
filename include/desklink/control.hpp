@@ -316,6 +316,7 @@ struct ControlState {
     bool VoicePermissionMissing{};
     bool InputDesktopAvailable{true};
     bool InputDesktopInterruptionObserved{};
+    bool EmergencyInputReleaseObserved{};
     bool RuntimeProcessExitCodeAvailable{};
 };
 

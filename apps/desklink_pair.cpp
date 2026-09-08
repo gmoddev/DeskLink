@@ -1449,6 +1449,9 @@ std::uint32_t ManagedFailureExitCode(const TrustedResult& Result) noexcept {
     if (Result.FailureKind == desklink::BrokerRuntimeFailure::Protocol) {
         return desklink::kBrokerManagedProtocolProcessExit;
     }
+    if (Result.Emergency && Result.Failure.empty()) {
+        return desklink::kBrokerManagedEmergencyProcessExit;
+    }
     return desklink::kBrokerManagedActionRequiredProcessExit;
 }
 
@@ -5627,6 +5630,13 @@ int RunTrusted(const CommandLine& Command,
                 ExitCode = Command.BrokerManaged
                     ? static_cast<int>(ManagedFailureExitCode(*Result))
                     : 1;
+            } else if (Result->Emergency) {
+                std::cerr
+                    << "[Input:Safety] emergency fail-local requested\n";
+                ExitCode = Command.BrokerManaged
+                    ? static_cast<int>(
+                          desklink::kBrokerManagedEmergencyProcessExit)
+                    : 1;
             }
         }
     } else {
@@ -5854,6 +5864,13 @@ int RunTrusted(const CommandLine& Command,
                 std::cerr << "[Input:Lifecycle] " << Result->Failure << '\n';
                 ExitCode = Command.BrokerManaged
                     ? static_cast<int>(ManagedFailureExitCode(*Result))
+                    : 1;
+            } else if (Result->Emergency) {
+                std::cerr
+                    << "[Input:Safety] emergency fail-local requested\n";
+                ExitCode = Command.BrokerManaged
+                    ? static_cast<int>(
+                          desklink::kBrokerManagedEmergencyProcessExit)
                     : 1;
             }
         }

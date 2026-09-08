@@ -1135,6 +1135,7 @@ void EncodeState(Writer& Output, const ControlState& State) {
     if (State.InputDesktopAvailable) VoiceFlags |= 0x04u;
     if (State.InputDesktopInterruptionObserved) VoiceFlags |= 0x08u;
     if (State.RuntimeProcessExitCodeAvailable) VoiceFlags |= 0x10u;
+    if (State.EmergencyInputReleaseObserved) VoiceFlags |= 0x20u;
     Output.U8(VoiceFlags);
 }
 
@@ -1191,7 +1192,8 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.InputDesktopAvailable = (VoiceFlags & 0x04u) != 0;
     State.InputDesktopInterruptionObserved = (VoiceFlags & 0x08u) != 0;
     State.RuntimeProcessExitCodeAvailable = (VoiceFlags & 0x10u) != 0;
-    if ((VoiceFlags & 0xe0u) != 0 || !IsValidControlState(State)) {
+    State.EmergencyInputReleaseObserved = (VoiceFlags & 0x20u) != 0;
+    if ((VoiceFlags & 0xc0u) != 0 || !IsValidControlState(State)) {
         return std::nullopt;
     }
     return State;
@@ -1475,6 +1477,12 @@ bool IsValidControlState(const ControlState& State) noexcept {
     }
     if (State.RuntimeProcessExitCodeAvailable &&
         State.RuntimePhase != BrokerRuntimePhase::ActionRequired) {
+        return false;
+    }
+    const bool EmergencyProcessExit =
+        State.RuntimeProcessExitCodeAvailable &&
+        IsBrokerManagedEmergencyProcessExit(State.RuntimeProcessExitCode);
+    if (State.EmergencyInputReleaseObserved != EmergencyProcessExit) {
         return false;
     }
     return true;

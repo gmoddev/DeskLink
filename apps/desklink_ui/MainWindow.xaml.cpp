@@ -441,6 +441,28 @@ const wchar_t* RuntimeFailureName(
     return L"Unknown";
 }
 
+const wchar_t* RuntimeFailureName(
+    const desklink::ControlState& State) noexcept {
+    if (State.EmergencyInputReleaseObserved) {
+        return L"The emergency return-to-local shortcut was activated";
+    }
+    return RuntimeFailureName(State.RuntimeFailure);
+}
+
+std::wstring RuntimeProcessExitDescription(
+    const desklink::ControlState& State) {
+    std::wostringstream Exit;
+    Exit << State.RuntimeProcessExitCode << L" (0x"
+         << std::uppercase << std::hex << std::setw(8)
+         << std::setfill(L'0') << State.RuntimeProcessExitCode << L")";
+    if (State.EmergencyInputReleaseObserved) {
+        Exit << L" - emergency fail-local";
+    } else if (State.RuntimeProcessExitCode == 0) {
+        Exit << L" - unexplained clean exit";
+    }
+    return Exit.str();
+}
+
 std::wstring RuntimeConnectionDetail(
     const desklink::ControlState& State) {
     if (State.RuntimePhase == desklink::BrokerRuntimePhase::RetryWaiting) {
@@ -472,6 +494,9 @@ std::wstring RuntimeRetryStatus(const desklink::ControlState& State) {
 
 std::wstring RuntimeRecommendedAction(const desklink::ControlState& State) {
     if (State.RuntimePhase == desklink::BrokerRuntimePhase::ActionRequired) {
+        if (State.EmergencyInputReleaseObserved) {
+            return L"DeskLink stopped after the emergency shortcut. Confirm input is Local, then select Retry now when ready.";
+        }
         if (State.RuntimeFailure == desklink::BrokerRuntimeFailure::Security ||
             State.RuntimeFailure == desklink::BrokerRuntimeFailure::Identity ||
             State.RuntimeFailure == desklink::BrokerRuntimeFailure::Credential ||
@@ -3972,14 +3997,10 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
         const auto Detail = RuntimeConnectionDetail(RuntimeState_);
         DiagnosticRuntimePhase().Text(Detail);
         DiagnosticRuntimeFailure().Text(
-            RuntimeFailureName(RuntimeState_.RuntimeFailure));
+            RuntimeFailureName(RuntimeState_));
         if (RuntimeState_.RuntimeProcessExitCodeAvailable) {
-            std::wostringstream Exit;
-            Exit << RuntimeState_.RuntimeProcessExitCode << L" (0x"
-                 << std::uppercase << std::hex << std::setw(8)
-                 << std::setfill(L'0')
-                 << RuntimeState_.RuntimeProcessExitCode << L")";
-            DiagnosticRuntimeExitCode().Text(Exit.str());
+            DiagnosticRuntimeExitCode().Text(
+                RuntimeProcessExitDescription(RuntimeState_));
         } else {
             DiagnosticRuntimeExitCode().Text(L"Not recorded");
         }
@@ -3988,9 +4009,11 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
                 ? L"Default desktop available"
                 : L"Windows secure or inaccessible desktop active; input forwarding is paused");
         DiagnosticInputSafetyEvent().Text(
-            RuntimeState_.InputDesktopInterruptionObserved
-                ? L"Secure-desktop transition observed; input failed Local and the authenticated connection was preserved"
-                : L"None observed in the current managed runtime");
+            RuntimeState_.EmergencyInputReleaseObserved
+                ? L"Emergency return-to-local observed; forwarded input was released and the managed session stopped"
+                : RuntimeState_.InputDesktopInterruptionObserved
+                    ? L"Secure-desktop transition observed; input failed Local and the authenticated connection was preserved"
+                    : L"None observed in the current managed runtime");
         DiagnosticRetryStatus().Text(RuntimeRetryStatus(RuntimeState_));
         DiagnosticRecommendedAction().Text(
             RuntimeRecommendedAction(RuntimeState_));
@@ -4005,7 +4028,7 @@ void MainWindow::ApplyState(desklink::ProductShellState State) {
         }
         if (State == desklink::ProductShellState::ActionRequired) {
             ActionRequiredBar().Message(
-                std::wstring(RuntimeFailureName(RuntimeState_.RuntimeFailure)) +
+                std::wstring(RuntimeFailureName(RuntimeState_)) +
                 L". Input remains Local. Review Diagnostics or select Retry now.");
         }
     } else {
@@ -4042,7 +4065,7 @@ void MainWindow::RunConnectionCheck() {
         DiagnosticResultBar().Message(
             L"The DeskLink broker did not answer. Input remains on this PC. Restart or repair DeskLink.");
     } else {
-        const auto Failure = RuntimeFailureName(RuntimeState_.RuntimeFailure);
+        const auto Failure = RuntimeFailureName(RuntimeState_);
         const auto Action = RuntimeRecommendedAction(RuntimeState_);
         std::wstring Message = RuntimeConnectionDetail(RuntimeState_);
         Message += L" Last failure: ";

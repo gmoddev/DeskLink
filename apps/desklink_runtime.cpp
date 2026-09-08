@@ -590,13 +590,22 @@ public:
         return Reconnect_.Snapshot();
     }
 
-    void ApplyState(desklink::ControlState& State) const noexcept {
-        const auto Runtime = Snapshot();
-        State.RuntimePhase = Runtime.Phase;
-        State.RuntimeFailure = Runtime.Failure;
-        State.RetryAttempt = Runtime.RetryAttempt;
+    void ApplyState(desklink::ControlState& State) noexcept {
+        desklink::BrokerRuntimeSnapshot Runtime;
         {
             std::scoped_lock Lock(Mutex_);
+            Runtime = Reconnect_.Snapshot();
+            LastInputDesktopInterruptionObserved_ =
+                LastInputDesktopInterruptionObserved_ ||
+                State.InputDesktopInterruptionObserved;
+            State.InputDesktopInterruptionObserved =
+                LastInputDesktopInterruptionObserved_;
+            State.EmergencyInputReleaseObserved =
+                Runtime.Phase ==
+                    desklink::BrokerRuntimePhase::ActionRequired &&
+                LastProcessExitCode_ &&
+                desklink::IsBrokerManagedEmergencyProcessExit(
+                    *LastProcessExitCode_);
             if (Runtime.Phase ==
                     desklink::BrokerRuntimePhase::ActionRequired &&
                 LastProcessExitCode_) {
@@ -604,6 +613,9 @@ public:
                 State.RuntimeProcessExitCodeAvailable = true;
             }
         }
+        State.RuntimePhase = Runtime.Phase;
+        State.RuntimeFailure = Runtime.Failure;
+        State.RetryAttempt = Runtime.RetryAttempt;
         if (Runtime.Phase == desklink::BrokerRuntimePhase::RetryWaiting) {
             const auto Remaining = Runtime.RetryAt > Clock_.now()
                 ? std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -757,6 +769,7 @@ private:
         CloseHandle(Process.hThread);
         Process_.Reset(Process.hProcess);
         LastProcessExitCode_.reset();
+        LastInputDesktopInterruptionObserved_ = false;
         ChildPreferences_ = Preferences;
         RoamingArmed_ = Request.CaptureInput &&
             Request.ProfileDefaultMode == desklink::DeskMode::Roam;
@@ -1153,6 +1166,7 @@ private:
     std::thread Worker_;
     UniqueHandle Process_;
     std::optional<std::uint32_t> LastProcessExitCode_;
+    bool LastInputDesktopInterruptionObserved_{};
     desklink::BrokerReconnectController Reconnect_;
     desklink::ProductPreferences ChildPreferences_;
     std::atomic_uint64_t NextRequestId_{0xC000'0000u};
@@ -2298,6 +2312,10 @@ int wmain(int Count, wchar_t** Values) {
 
             if (std::holds_alternative<desklink::GetStateControlRequest>(
                     Request.Payload)) {
+                // Reconcile the exact child handle before deciding whether to
+                // forward. This prevents a recently exited child from leaving
+                // a stale connected snapshot visible until the worker tick.
+                Supervisor.ReconcileExitedChild();
                 if (desklink::ShouldQueryManagedRuntimeState(
                         Supervisor.Snapshot().Phase) &&
                     RuntimeProcessMayExist()) {
