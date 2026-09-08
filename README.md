@@ -22,7 +22,10 @@ dedicated non-exportable RSA-3072 CNG key. The package installs under protected
 Program Files only after an administrator independently verifies and trusts the
 exact public-certificate DER SHA-256 fingerprint. This private trust channel is
 not a publicly trusted production release and must never silently install its
-own root. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+own root. This package also installs the fixed, networkless secure-input broker,
+but privileged input remains disabled until an administrator uses the explicit
+per-peer **I know what I'm doing** control. See
+[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
 
 ## Measured audio latency
 
@@ -97,9 +100,11 @@ room propagation, or microphone capture latency. See
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
-- Default-off secure-desktop R&D foundation with a networkless LocalSystem
-  service, fixed active-session helper, and exact lease/identity/nonce/epoch/
-  sequence authorization model; it is not product-integrated or packaged
+- Development Secure-only privileged-input slice with a networkless
+  LocalSystem service, fixed signed active-session helper, protected exact-peer
+  opt-in, signer/path/client attestation, and exact lease/identity/nonce/epoch/
+  sequence authorization. It remains disabled by default; the ordinary
+  installer retains fail-local behavior
 - Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
 - Bounded pointer gain (25-400%) and optional source-DPI normalization without
   changing either PC's Windows mouse settings
@@ -177,10 +182,10 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Microsoft production signing/certification and physical zero-microphone and
   Discord qualification for the optional virtual-microphone driver
-- Product secure-input authorization over the signed protected-install boundary
-  and the full physical UAC matrix; the hardened one-shot Windows 11 cancel access probe
-  passed with exact-binary and fail-closed evidence, but the current
-  service/helper remains an unintegrated, cancel-only lab boundary
+- Physical qualification of the Development Secure privileged-input slice:
+  elevated Task Manager, pointer-only UAC consent/cancel, held-state cleanup,
+  wrong signer/path/peer/pin/nonce/epoch/replay/expiry, disable/revoke,
+  crash/restart, lock/session switch, sleep, upgrade, and uninstall
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Production-signed Windows 11 installer/update qualification, physical
@@ -345,7 +350,8 @@ certificate. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md) and
 The separate `-DevelopmentSelfSigned` mode is for administrator-approved test
 machines. It accepts only the exact DeskLink Development Secure certificate
 policy, never accepts a PFX/private-key path, signs and timestamps the complete
-installer graph, and produces a clearly labeled machine-wide package. Its
+installer graph including the secure-input service/helper/configurator, and
+produces a clearly labeled machine-wide package. Its
 public trust must be installed separately after an out-of-band fingerprint
 check; its private key remains only in the signing user's CNG store.
 

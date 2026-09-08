@@ -32,9 +32,12 @@ not the production installer: it uses a dedicated self-signed code-signing
 certificate and therefore has no public trust. The exact public certificate
 must be verified out of band and installed separately in LocalMachine `Root`
 and `TrustedPublisher`; Setup never installs trust. This package installs under
-`%ProgramFiles%\DeskLink Development Secure` so later service/helper R&D can
-authenticate binaries from an administrator-protected location. It does not by
-itself install or enable the secure-input service.
+`%ProgramFiles%\DeskLink Development Secure` and installs the separately signed,
+networkless `DeskLinkSecureInput` LocalSystem broker plus its fixed helper and
+administrator-only configurator. The service starts automatically but has no
+input authority by default. Setup never enables the protected per-peer grant;
+that requires a separate local **I know what I'm doing** confirmation for one
+exact already paired identity and pin.
 
 ## Security and lifecycle contract
 
@@ -71,6 +74,14 @@ itself install or enable the secure-input service.
   audio endpoint. UAC denial leaves DeskLink and all other features intact.
   Driver removal is attempted during normal uninstall; denial or driver-removal
   failure is reported without corrupting the rest of application removal.
+- Only Development Secure stages the secure-input service, helper, and
+  configurator. Packaging signs and timestamps all three with the same exact
+  leaf as `desklink_pair.exe`. Setup records a fully quoted fixed image path,
+  LocalSystem account, delayed automatic start, restart recovery, and an
+  administrator/SYSTEM-only service DACL; it validates the stored path/account
+  before starting. Upgrade stops the broker before replacement. Uninstall
+  stops/deletes it and removes its protected grant. Ordinary installers never
+  reference the service.
 - The packaged update coordinator performs `Return Local -> confirm no remote
   focus/capture -> stop runtime/UI -> update/validate -> optional restart` and
   invokes a prevalidated current-version installer on candidate failure. Setup
@@ -138,7 +149,8 @@ stores do not contain the private key:
 
 Packaging selects the exact thumbprint, revalidates subject, issuer, EKU,
 RSA/SHA-256 signature, strength, CNG provider, and zero export policy, then
-signs every DeskLink executable, the generated uninstaller, and Setup. It
+signs every DeskLink executable—including the secure-input service, helper,
+and configurator—the generated uninstaller, and Setup. It
 verifies the expected signer and RFC 3161 timestamp before publishing the
 artifact. Development Secure never enables test-signing, weakens Secure Boot or
 signature enforcement, or falls back to unsigned output. Removing the exact

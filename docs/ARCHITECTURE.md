@@ -691,14 +691,16 @@ authentication/security `ActionRequired` state is restored rather than being
 turned into an availability retry. Missing power-notification support prevents
 the broker from starting on the supported production baseline.
 
-UAC secure-desktop input is the first approved concrete investigation for a
-SYSTEM boundary. The default product still installs no service. A separately
-built validation-only service may launch a fixed SYSTEM helper into the active
-session and exact input desktop. The service owns no networking, capture, UI,
-identity, trust, clipboard, audio, arbitrary path, or arbitrary command
-execution. Product integration remains blocked on production signing, an
-administrator-protected machine-wide install, independent grant verification,
-and the complete physical security matrix. See `UAC_SECURE_INPUT.md`.
+UAC secure-desktop input is an explicit Development Secure SYSTEM boundary.
+The normal current-user product still installs no service. The separately
+trusted machine-wide package installs a fixed, networkless LocalSystem broker
+which may launch only its equally signed sibling helper into the active console
+session's exact `Default` or `Winlogon` desktop. The service owns no networking,
+capture, UI, device identity, trust store, clipboard, audio, arbitrary path, or
+arbitrary command execution. A protected grant must name the exact already
+paired peer and pin, while every request is bound to its validated session
+nonce, focus epoch, monotonic sequence, and a 100-2000 ms lease. Physical
+security qualification remains open. See `UAC_SECURE_INPUT.md`.
 
 ---
 

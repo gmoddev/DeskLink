@@ -341,6 +341,31 @@ registration, staged Program Files directory, and helper process were absent.
 Exact hardened hashes and the service DACL are recorded in
 `UAC_SECURE_INPUT.md`.
 
+### Development Secure privileged-input product validation
+
+Windows builds run `Test-SecureInputProductContracts.ps1` in addition to the
+portable authorization tests. The contract requires default-off product
+targets; a networkless service; fixed protected paths; Authenticode signer
+equality; signed fixed-client PID/path/session checks; a protected exact-peer
+grant; remote-pipe rejection; replay-resistant identity/pin/nonce/epoch/
+revision/sequence/lease admission; fixed helper operations; non-UIAccess
+manifests; and Development Secure-only packaging. It rejects key and state-
+reconciliation input on `Winlogon` and rejects any private-key export or UAC-
+policy weakening mechanism. Coordinator tests prove the broker is not entered
+without the input capability and focus grant, that stale pointer sequences are
+rejected, and that focus release revokes the service grant.
+
+Static and nonprivileged CI cannot qualify LocalSystem input. The signed
+physical gate must enable one exact peer through the warning UI, prove ordinary
+roaming is unchanged, control an already elevated Task Manager window, and
+manually click both accept and cancel on visible benign UAC prompts. It must
+then exercise wrong signer/path/peer/pin/nonce/epoch/revision/sequence, expiry,
+disable/revoke, held keys/buttons, pair/runtime/helper/service termination,
+lock/session switch, sleep, disconnect, reconnect, upgrade, and uninstall.
+Every rejected or failed condition must release owned state and return Local;
+the service must never accept a network connection, type on `Winlogon`, change
+UAC policy, approve automatically, or operate on sign-in/lock desktops.
+
 ### Phase 3 configurator validation
 
 Portable tests build EDID-sized and DPI-estimated display cards, retain saved
@@ -755,7 +780,8 @@ timestamped, verified against the expected leaf thumbprint, installed under
 `C:\Program Files\DeskLink Development Secure`, and launched on both PCs. The
 old per-user binaries were removed while each `%LOCALAPPDATA%\DeskLink` identity
 directory remained present. This validates a private signing/install
-prerequisite only; service/helper packaging, authorization IPC, UAC product
+prerequisite. The Development Secure product branch now packages the broker,
+helper, and configurator and implements authorization IPC; signed install, UAC
 behavior, update/rollback, and destructive-fault qualification remain open.
 
 The post-focus elevated-foreground regression was also exercised physically on

@@ -1,5 +1,17 @@
 # Known issues
 
+## Development Secure privileged input is not physically qualified
+
+The explicit privileged-input option is confined to the privately trusted
+Development Secure package and remains experimental until the signed two-PC
+matrix passes. DeskLink does not stream the secure desktop, so the person
+authorizing a UAC prompt must already be able to see the controlled PC's
+display. On `Winlogon`, DeskLink intentionally rejects keyboard and complete
+input-state reconciliation; only pointer motion, buttons, wheel, and release
+are accepted while `consent.exe` is foreground. This permits a manual visible
+Yes/No decision without enabling remote administrator-secret entry. Lock and
+sign-in desktops remain unsupported.
+
 ## External virtual-audio cable application input is not physically qualified
 
 DeskLink can now route received voice through a replaceable application-output
