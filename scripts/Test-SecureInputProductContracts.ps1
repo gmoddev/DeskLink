@@ -124,6 +124,8 @@ foreach ($Required in @(
         'start= delayed-auto obj= LocalSystem',
         'sdset DeskLinkSecureInput',
         'failureflag DeskLinkSecureInput 1',
+        'AfterInstall: InstallSecureInputService',
+        'Setup is rolling back',
         'RegDeleteKeyIncludingSubkeys')) {
     if ($Installer.IndexOf($Required, [StringComparison]::Ordinal) -lt 0) {
         throw "Development Secure installer lost required service contract: $Required"

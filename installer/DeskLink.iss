@@ -141,7 +141,11 @@ Source: "{#StagePath}\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\OPUS-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef DevelopmentSecure
+Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: InstallSecureInputService
+#else
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 #ifdef VirtualMicrophonePackage
 Source: "{#StagePath}\driver\DeskLinkVirtualMicrophone\*"; DestDir: "{app}\driver\DeskLinkVirtualMicrophone"; Flags: ignoreversion
 #endif
@@ -223,6 +227,8 @@ function RunSecureInputServiceCommand(
 var
   ResultCode: Integer;
 begin
+  ResultCode := -1;
+  Log('DeskLink secure-input service command: ' + Parameters);
   Result := Exec(
     ExpandConstant('{sys}\sc.exe'), Parameters, '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode);
@@ -230,6 +236,8 @@ begin
      ((ResultCode = 1060) or (ResultCode = 1062)) then
     ResultCode := 0;
   Result := Result and (ResultCode = 0);
+  Log('DeskLink secure-input service command exit: ' +
+    IntToStr(ResultCode));
 end;
 
 function StopSecureInputService(): Boolean;
@@ -297,6 +305,16 @@ begin
     'start DeskLinkSecureInput', False);
 end;
 
+procedure InstallSecureInputService();
+begin
+  if ConfigureSecureInputService() then
+    exit;
+  RunSecureInputServiceCommand('stop DeskLinkSecureInput', True);
+  RunSecureInputServiceCommand('delete DeskLinkSecureInput', True);
+  RaiseException(
+    'The DeskLink secure-input broker could not be installed safely. Setup is rolling back.');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
@@ -329,14 +347,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-  begin
-#ifdef DevelopmentSecure
-    if not ConfigureSecureInputService() then
-      RaiseException(
-        'The DeskLink secure-input broker could not be installed safely. Setup will roll back.');
-#endif
     MigrateLegacyStartupRegistration();
-  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
