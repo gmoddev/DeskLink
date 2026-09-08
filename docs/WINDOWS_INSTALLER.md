@@ -79,9 +79,11 @@ exact already paired identity and pin.
   leaf as `desklink_pair.exe`. Setup records a fully quoted fixed image path,
   LocalSystem account, delayed automatic start, restart recovery, and an
   administrator/SYSTEM-only service DACL; it validates the stored path/account
-  before starting. Upgrade stops the broker before replacement. Uninstall
-  stops/deletes it and removes its protected grant. Ordinary installers never
-  reference the service.
+  before copying application files, then starts the broker after the signed
+  payload is present. A registration failure aborts before file replacement; a
+  startup failure leaves privileged input unavailable. Upgrade stops the broker
+  before replacement. Uninstall stops/deletes it and removes its protected
+  grant. Ordinary installers never reference the service.
 - The packaged update coordinator performs `Return Local -> confirm no remote
   focus/capture -> stop runtime/UI -> update/validate -> optional restart` and
   invokes a prevalidated current-version installer on candidate failure. Setup

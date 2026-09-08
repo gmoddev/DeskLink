@@ -167,6 +167,14 @@ const
   ApplicationMutexNames =
     'Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1';
 
+#ifdef DevelopmentSecure
+var
+  SecureInputServiceExisted: Boolean;
+  SecureInputServicePrepared: Boolean;
+  SecureInputServiceStarted: Boolean;
+  SecureInputInstallCommitted: Boolean;
+#endif
+
 function HasExactCommandLineParameter(Value: String): Boolean;
 var
   Index: Integer;
@@ -254,7 +262,7 @@ begin
     Sleep(1000);
 end;
 
-function ConfigureSecureInputService(): Boolean;
+function ConfigureSecureInputServiceRegistration(): Boolean;
 var
   ExecutablePath: String;
   ExpectedImagePath: String;
@@ -268,13 +276,13 @@ begin
   ExpectedImagePath := '"' + ExecutablePath + '"';
   if RegKeyExists(
       HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput') then
-    Parameters := 'config DeskLinkSecureInput binPath= \"' +
+    Parameters := 'config DeskLinkSecureInput binPath= """' +
       ExecutablePath +
-      '\" start= delayed-auto obj= LocalSystem DisplayName= "DeskLink Secure Input Broker"'
+      '""" start= delayed-auto obj= LocalSystem DisplayName= "DeskLink Secure Input Broker"'
   else
-    Parameters := 'create DeskLinkSecureInput binPath= \"' +
+    Parameters := 'create DeskLinkSecureInput binPath= """' +
       ExecutablePath +
-      '\" start= delayed-auto obj= LocalSystem DisplayName= "DeskLink Secure Input Broker"';
+      '""" start= delayed-auto obj= LocalSystem DisplayName= "DeskLink Secure Input Broker"';
   if not RunSecureInputServiceCommand(Parameters, False) then
     exit;
   if not RunSecureInputServiceCommand(
@@ -301,26 +309,39 @@ begin
        'ObjectName', InstalledAccount) or
      (CompareText(InstalledAccount, 'LocalSystem') <> 0) then
     exit;
-  Result := RunSecureInputServiceCommand(
-    'start DeskLinkSecureInput', False);
+  Result := True;
 end;
 
 procedure InstallSecureInputService();
 begin
-  if ConfigureSecureInputService() then
+  SecureInputServiceStarted := RunSecureInputServiceCommand(
+    'start DeskLinkSecureInput', False);
+  if SecureInputServiceStarted then
     exit;
-  RunSecureInputServiceCommand('stop DeskLinkSecureInput', True);
-  RunSecureInputServiceCommand('delete DeskLinkSecureInput', True);
   RaiseException(
-    'The DeskLink secure-input broker could not be installed safely. Setup is rolling back.');
+    'The DeskLink secure-input broker could not start. Privileged input remains unavailable.');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
+  SecureInputServiceExisted := RegKeyExists(
+    HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput');
   if not StopSecureInputService() then
+  begin
     Result :=
       'DeskLink Setup could not stop the existing secure-input broker. No files were changed.';
+    exit;
+  end;
+  if not ConfigureSecureInputServiceRegistration() then
+  begin
+    if not SecureInputServiceExisted then
+      RunSecureInputServiceCommand('delete DeskLinkSecureInput', True);
+    Result :=
+      'DeskLink Setup could not register the secure-input broker safely. No application files were changed.';
+    exit;
+  end;
+  SecureInputServicePrepared := True;
 end;
 #endif
 
@@ -348,7 +369,25 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
     MigrateLegacyStartupRegistration();
+#ifdef DevelopmentSecure
+  if (CurStep = ssDone) and SecureInputServicePrepared and
+     SecureInputServiceStarted then
+    SecureInputInstallCommitted := True;
+#endif
 end;
+
+#ifdef DevelopmentSecure
+procedure DeinitializeSetup();
+begin
+  if not SecureInputServicePrepared or SecureInputInstallCommitted then
+    exit;
+  RunSecureInputServiceCommand('stop DeskLinkSecureInput', True);
+  if SecureInputServiceExisted then
+    RunSecureInputServiceCommand('start DeskLinkSecureInput', False)
+  else
+    RunSecureInputServiceCommand('delete DeskLinkSecureInput', True);
+end;
+#endif
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
