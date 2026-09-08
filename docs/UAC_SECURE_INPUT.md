@@ -230,6 +230,15 @@ LocalSystem authorization source: that would turn same-user process control or
 a writable binary replacement into elevation. A production slice therefore
 requires a separately approved machine-wide, signed installation boundary.
 
+The runtime distinguishes a broker rejection from the narrow helper handoff
+that can occur while Windows changes between `Winlogon` and `Default`.
+`DesktopUnavailable` and a deliberately blocked Winlogon operation preserve
+the already authenticated broker authorization; after `Default` returns, only
+an exact temporary result receives a 750 ms recovery window. Packets are
+rejected rather than queued or admitted during that window. Recovery continues
+the same bounded focus lease. Expiry of the window, an authorization mismatch,
+an IPC failure, or an injection failure releases owned state and fails Local.
+
 ## Stage gates
 
 1. **Integration baseline — passed:** ordinary secure-desktop transitions fail

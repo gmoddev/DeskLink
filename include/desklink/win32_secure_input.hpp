@@ -31,7 +31,7 @@ public:
         std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept override;
     [[nodiscard]] bool Renew(
         std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept override;
-    [[nodiscard]] bool Forward(
+    [[nodiscard]] PrivilegedInputForwardResult Forward(
         const DecodedPacket& Packet) noexcept override;
     [[nodiscard]] bool Release() noexcept override;
     void Revoke() noexcept override;

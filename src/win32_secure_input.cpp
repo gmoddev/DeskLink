@@ -158,10 +158,11 @@ public:
         return true;
     }
 
-    bool Forward(const DecodedPacket& Packet) noexcept {
+    PrivilegedInputForwardResult Forward(
+        const DecodedPacket& Packet) noexcept {
         if (!Authorized_ || Packet.header.epoch != Epoch_ ||
             Packet.header.session_nonce != SessionNonce_) {
-            return false;
+            return PrivilegedInputForwardResult::Rejected;
         }
         Operation RequestedOperation{};
         std::array<std::uint8_t, 72> Payload{};
@@ -219,25 +220,38 @@ public:
                 }
                 break;
             default:
-                return false;
+                return PrivilegedInputForwardResult::Rejected;
         }
         if (Sequence_ == std::numeric_limits<std::uint64_t>::max()) {
             Revoke();
-            return false;
+            return PrivilegedInputForwardResult::Rejected;
         }
         ++Sequence_;
         const auto Result = Transact(
             RequestedOperation, 0, Sequence_, Payload);
         if (!Result || Result->Result != Status::Ok) {
+            const bool Temporary = Result &&
+                (Result->Result == Status::DesktopUnavailable ||
+                 Result->Result == Status::SecureOperationBlocked);
             if (!Result ||
                 !secure_input_wire::
                     PreservesAuthorizationAfterForwardFailure(
                         Result->Result)) {
                 Revoke();
             }
-            return false;
+            std::cerr
+                << "[SecureInput:Client] forward_result="
+                << (Temporary ? "temporary" : "rejected")
+                << " status="
+                << (Result
+                    ? static_cast<std::uint32_t>(Result->Result)
+                    : std::numeric_limits<std::uint32_t>::max())
+                << '\n';
+            return Temporary
+                ? PrivilegedInputForwardResult::TemporarilyUnavailable
+                : PrivilegedInputForwardResult::Rejected;
         }
-        return true;
+        return PrivilegedInputForwardResult::Forwarded;
     }
 
     bool Release() noexcept {
@@ -348,7 +362,7 @@ bool Win32SecureInputBroker::Renew(
     return Implementation_->Renew(Epoch, Lease);
 }
 
-bool Win32SecureInputBroker::Forward(
+PrivilegedInputForwardResult Win32SecureInputBroker::Forward(
     const DecodedPacket& Packet) noexcept {
     return Implementation_->Forward(Packet);
 }

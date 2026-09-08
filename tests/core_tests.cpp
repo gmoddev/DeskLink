@@ -187,9 +187,10 @@ public:
         return RenewSucceeds;
     }
 
-    bool Forward(const desklink::DecodedPacket& Packet) noexcept override {
+    desklink::PrivilegedInputForwardResult Forward(
+        const desklink::DecodedPacket& Packet) noexcept override {
         ForwardedTypes.push_back(Packet.header.type);
-        return ForwardSucceeds;
+        return ForwardResult;
     }
 
     bool Release() noexcept override {
@@ -213,7 +214,8 @@ public:
     int RevokeCalls{};
     bool BeginSucceeds{true};
     bool RenewSucceeds{true};
-    bool ForwardSucceeds{true};
+    desklink::PrivilegedInputForwardResult ForwardResult{
+        desklink::PrivilegedInputForwardResult::Forwarded};
     bool ReleaseSucceeds{true};
     bool Active{};
 };
@@ -6950,6 +6952,124 @@ void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
     CHECK(!RefusingAgent.RemoteFocused());
 }
 
+void PrivilegedInputTransitionGraceIsBoundedAndFailClosed() {
+    using namespace desklink;
+
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    EnvelopeHeader Header;
+    Header.session_nonce = 91;
+    const auto Focus = decode_packet(
+        encode_packet(Header, FocusRequestMessage{2'000, 1}), false);
+    CHECK(Focus.packet.has_value());
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+        CHECK(Injector.motions.empty());
+
+        Clock.advance(std::chrono::milliseconds(700));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+
+        Broker.ForwardResult = PrivilegedInputForwardResult::Forwarded;
+        Header.sequence = 2;
+        Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{3, 1}), true);
+        CHECK(Motion.packet.has_value());
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::Accepted);
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        const auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+        Clock.advance(std::chrono::milliseconds(751));
+        Agent.tick();
+        CHECK(!Agent.RemoteFocused());
+        CHECK(Agent.InputUnavailable());
+        CHECK(Broker.RevokeCalls == 1);
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        Injector.DesktopAvailable = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        const auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+        Clock.advance(std::chrono::milliseconds(1'000));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+        CHECK(Injector.motions.empty());
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        const auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult = PrivilegedInputForwardResult::Rejected;
+        CHECK(Agent.handle(*Motion.packet) ==
+              AgentDecision::RejectedInputUnavailable);
+        CHECK(!Agent.RemoteFocused());
+        CHECK(Agent.InputUnavailable());
+    }
+}
+
 void SecureInputAuthorizationIsExactAndLeaseBound() {
     using namespace desklink;
 
@@ -7449,6 +7569,7 @@ int main() {
     UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
     SecureInputBlockedOperationsPreserveOnlyExistingAuthorization();
     PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus();
+    PrivilegedInputTransitionGraceIsBoundedAndFailClosed();
     SecureInputAuthorizationIsExactAndLeaseBound();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();

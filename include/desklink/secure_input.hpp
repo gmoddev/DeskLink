@@ -39,6 +39,12 @@ struct SecureInputEnvelope {
     SecureInputOperation Operation{SecureInputOperation::ReleaseOwnedState};
 };
 
+enum class PrivilegedInputForwardResult : std::uint8_t {
+    Forwarded = 0,
+    TemporarilyUnavailable,
+    Rejected,
+};
+
 // A network-facing runtime may use this interface only after its transport has
 // completed normal peer-certificate validation. The broker remains a local,
 // optional privilege boundary; it never replaces transport admission.
@@ -49,7 +55,7 @@ public:
         std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept = 0;
     [[nodiscard]] virtual bool Renew(
         std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept = 0;
-    [[nodiscard]] virtual bool Forward(
+    [[nodiscard]] virtual PrivilegedInputForwardResult Forward(
         const DecodedPacket& Packet) noexcept = 0;
     [[nodiscard]] virtual bool Release() noexcept = 0;
     virtual void Revoke() noexcept = 0;

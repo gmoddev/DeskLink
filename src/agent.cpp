@@ -59,6 +59,7 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (new_epoch != 0) {
             last_pointer_sequence_ = 0;
             InputUnavailable_ = false;
+            PrivilegedInputUnavailableSince_.reset();
             const bool PrivilegedReady = PrivilegedInput_ &&
                 PrivilegedInput_->Begin(
                     new_epoch, clamp_lease(request.requested_lease_ms));
@@ -90,6 +91,7 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
         if (packet.header.epoch != focus_.epoch()) return AgentDecision::RejectedEpoch;
         focus_.release_remote_focus();
+        PrivilegedInputUnavailableSince_.reset();
         if (!ReleaseOwnedState()) return AgentDecision::RejectedMalformed;
         (void)injector_.ParkPointer();
         return AgentDecision::Accepted;
@@ -114,12 +116,34 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
                 packet.header.sequence <= last_pointer_sequence_) {
                 return AgentDecision::RejectedSequence;
             }
-            if (PrivilegedInput_ && PrivilegedInput_->Authorized() &&
-                PrivilegedInput_->Forward(packet)) {
-                if (SequencedPointer) {
-                    last_pointer_sequence_ = packet.header.sequence;
+            if (PrivilegedInput_ && PrivilegedInput_->Authorized()) {
+                const auto ForwardResult = PrivilegedInput_->Forward(packet);
+                if (ForwardResult == PrivilegedInputForwardResult::Forwarded) {
+                    PrivilegedInputUnavailableSince_.reset();
+                    if (SequencedPointer) {
+                        last_pointer_sequence_ = packet.header.sequence;
+                    }
+                    return AgentDecision::Accepted;
                 }
-                return AgentDecision::Accepted;
+                if (ForwardResult ==
+                    PrivilegedInputForwardResult::TemporarilyUnavailable) {
+                    // Winlogon is an intentionally paused input surface for
+                    // blocked operations. When Windows has already returned
+                    // to Default, allow only a short helper handoff window.
+                    // No application input is admitted during either pause.
+                    if (!DesktopAvailable) {
+                        PrivilegedInputUnavailableSince_.reset();
+                        return AgentDecision::RejectedLease;
+                    }
+                    const auto Now = Clock_.now();
+                    if (!PrivilegedInputUnavailableSince_) {
+                        PrivilegedInputUnavailableSince_ = Now;
+                    }
+                    if (Now - *PrivilegedInputUnavailableSince_ <
+                        PrivilegedInputTransitionGrace) {
+                        return AgentDecision::RejectedLease;
+                    }
+                }
             }
             // A secure desktop remains a temporary pause when the separately
             // approved privileged path is absent or unavailable. A Default-
@@ -128,6 +152,8 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
                 ? RejectInputUnavailable()
                 : AgentDecision::RejectedLease;
         }
+
+        PrivilegedInputUnavailableSince_.reset();
 
         switch (type) {
             case MessageType::KeyEvent:
@@ -202,13 +228,23 @@ void AgentCoordinator::tick() noexcept {
     if (RemoteFocused() && Now >= NextInputAvailabilityCheck_) {
         NextInputAvailabilityCheck_ = Now + AvailabilityCheckInterval;
         // A secure/non-Default desktop is handled as a temporary input pause.
-        // An unusable foreground on the ordinary Default desktop (for example,
-        // a higher-integrity Task Manager) cannot receive SendInput and must
-        // revoke remote focus instead of leaving the controller suppressed.
-        if (injector_.InputDesktopAvailable() &&
-            !injector_.ReadyForInput() &&
-            !(PrivilegedInput_ && PrivilegedInput_->Authorized())) {
-            (void)RejectInputUnavailable();
+        // A Default-desktop target must either retain an authorized broker or
+        // fail Local. An explicitly observed helper handoff gets only the
+        // bounded grace started by Forward(); no input is admitted meanwhile.
+        const bool DesktopAvailable = injector_.InputDesktopAvailable();
+        const bool OrdinaryInputReady = DesktopAvailable &&
+            injector_.ReadyForInput();
+        if (OrdinaryInputReady) {
+            PrivilegedInputUnavailableSince_.reset();
+        } else if (DesktopAvailable) {
+            const bool PrivilegedAuthorized = PrivilegedInput_ &&
+                PrivilegedInput_->Authorized();
+            const bool TransitionExpired = PrivilegedInputUnavailableSince_ &&
+                Now - *PrivilegedInputUnavailableSince_ >=
+                    PrivilegedInputTransitionGrace;
+            if (!PrivilegedAuthorized || TransitionExpired) {
+                (void)RejectInputUnavailable();
+            }
         }
     }
     if (focus_.poll_expiry()) {
@@ -222,12 +258,14 @@ void AgentCoordinator::disconnect() noexcept {
     (void)ReleaseOwnedState();
     InputUnavailable_ = false;
     NextInputAvailabilityCheck_ = {};
+    PrivilegedInputUnavailableSince_.reset();
 }
 
 AgentDecision AgentCoordinator::RejectInputUnavailable() noexcept {
     focus_.release_remote_focus();
     last_pointer_sequence_ = 0;
     InputUnavailable_ = true;
+    PrivilegedInputUnavailableSince_.reset();
     (void)ReleaseOwnedState();
     return AgentDecision::RejectedInputUnavailable;
 }

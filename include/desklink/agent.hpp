@@ -52,6 +52,9 @@ public:
     void disconnect() noexcept;
 
 private:
+    static constexpr auto PrivilegedInputTransitionGrace =
+        std::chrono::milliseconds(750);
+
     [[nodiscard]] bool can_inject() const noexcept;
     void SetRemoteDesiredMode(DeskMode Mode) noexcept;
     void ApplyDesiredMode() noexcept;
@@ -69,6 +72,7 @@ private:
     bool InputCleanupPending_{};
     bool InputUnavailable_{};
     IClock::time_point NextInputAvailabilityCheck_{};
+    std::optional<IClock::time_point> PrivilegedInputUnavailableSince_;
 };
 
 } // namespace desklink
