@@ -19,12 +19,14 @@ AppId={{58944975-11A2-4DD6-B881-A0700574270F}
 #ifdef DevelopmentSecure
 AppName=DeskLink Development Secure
 AppVerName=DeskLink {#AppVersion} Development Secure (Self-Signed)
-#elif ExperimentalWindows10
+#else
+#ifdef ExperimentalWindows10
 AppName=DeskLink Beta
 AppVerName=DeskLink {#AppVersion} Beta 1 (Unsigned)
 #else
 AppName=DeskLink
 AppVerName=DeskLink {#AppVersion}
+#endif
 #endif
 AppVersion={#AppVersion}
 AppPublisher=DeskLink
@@ -33,10 +35,12 @@ AppSupportURL=https://github.com/gmoddev/DeskLink/issues
 AppUpdatesURL=https://github.com/gmoddev/DeskLink/releases
 #ifdef DevelopmentSecure
 AppComments=Self-signed DeskLink development build for explicitly trusted test PCs.
-#elif ExperimentalWindows10
+#else
+#ifdef ExperimentalWindows10
 AppComments=Unsigned DeskLink beta; Windows 10 OpenSSL/CNG remains experimental.
 #else
 AppComments=Secure local keyboard, mouse, audio, and clipboard roaming.
+#endif
 #endif
 AppMutex=Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1
 SetupMutex=Local\DeskLink.Setup.v1
