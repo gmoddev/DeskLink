@@ -15,7 +15,7 @@ std::chrono::milliseconds clamp_lease(std::uint32_t requested) {
 } // namespace
 
 AgentCoordinator::AgentCoordinator(const IClock& clock, IInputInjector& injector) noexcept
-    : injector_(injector), focus_(clock) {}
+    : injector_(injector), Clock_(clock), focus_(clock) {}
 
 void AgentCoordinator::set_peer_capabilities(CapabilitySet capabilities) noexcept {
     peer_capabilities_ = capabilities;
@@ -159,6 +159,19 @@ void AgentCoordinator::ApplyDesiredMode() noexcept {
 
 void AgentCoordinator::tick() noexcept {
     if (InputCleanupPending_) (void)ReleaseOwnedState();
+    constexpr auto AvailabilityCheckInterval = std::chrono::milliseconds(50);
+    const auto Now = Clock_.now();
+    if (RemoteFocused() && Now >= NextInputAvailabilityCheck_) {
+        NextInputAvailabilityCheck_ = Now + AvailabilityCheckInterval;
+        // A secure/non-Default desktop is handled as a temporary input pause.
+        // An unusable foreground on the ordinary Default desktop (for example,
+        // a higher-integrity Task Manager) cannot receive SendInput and must
+        // revoke remote focus instead of leaving the controller suppressed.
+        if (injector_.InputDesktopAvailable() &&
+            !injector_.ReadyForInput()) {
+            (void)RejectInputUnavailable();
+        }
+    }
     if (focus_.poll_expiry()) {
         (void)ReleaseOwnedState();
     }
@@ -169,6 +182,7 @@ void AgentCoordinator::disconnect() noexcept {
     last_pointer_sequence_ = 0;
     (void)ReleaseOwnedState();
     InputUnavailable_ = false;
+    NextInputAvailabilityCheck_ = {};
 }
 
 AgentDecision AgentCoordinator::RejectInputUnavailable() noexcept {

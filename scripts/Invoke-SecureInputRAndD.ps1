@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet('Install', 'Uninstall', 'DefaultReleaseProbe',
-        'SecureCancelProbe', 'Status')]
+        'DefaultMinimizeElevatedForegroundProbe', 'SecureCancelProbe',
+        'Status')]
     [string] $Action,
 
     [string] $BuildPath,
@@ -171,6 +172,13 @@ switch ($Action) {
         Assert-ExperimentalConsent
         Invoke-ProbeControl 129 'Secure-desktop cancel probe'
         Write-Host '[SecureInput:RAndD] secure-desktop cancel probe completed.'
+        break
+    }
+    'DefaultMinimizeElevatedForegroundProbe' {
+        Assert-Administrator
+        Assert-ExperimentalConsent
+        Invoke-ProbeControl 130 'elevated-foreground minimize probe'
+        Write-Host '[SecureInput:RAndD] elevated foreground was minimized.'
         break
     }
 }

@@ -15,6 +15,15 @@ certificate, authentication, or transport failure. Windows 10 and every
 unsigned package remain experimental/unsupported; see
 [`docs/WINDOWS10_BETA_NOTICE.md`](docs/WINDOWS10_BETA_NOTICE.md).
 
+For explicitly approved development PCs, maintainers can instead create a
+**DeskLink Development Secure** package. Every DeskLink executable, the
+uninstaller, and Setup are Authenticode-signed and RFC 3161 timestamped with a
+dedicated non-exportable RSA-3072 CNG key. The package installs under protected
+Program Files only after an administrator independently verifies and trusts the
+exact public-certificate DER SHA-256 fingerprint. This private trust channel is
+not a publicly trusted production release and must never silently install its
+own root. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+
 ## Measured audio latency
 
 The `v0.1.0-beta.1` qualification run used Windows 10 22H2 with the reviewed
@@ -168,8 +177,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Microsoft production signing/certification and physical zero-microphone and
   Discord qualification for the optional virtual-microphone driver
-- Production-signed, protected-install secure-input authorization and the full
-  physical UAC matrix; the hardened one-shot Windows 11 cancel access probe
+- Product secure-input authorization over the signed protected-install boundary
+  and the full physical UAC matrix; the hardened one-shot Windows 11 cancel access probe
   passed with exact-binary and fail-closed evidence, but the current
   service/helper remains an unintegrated, cancel-only lab boundary
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
@@ -332,6 +341,13 @@ packaging fails closed unless the DeskLink executables, uninstaller, and Setup
 can be Authenticode-signed and timestamped with an explicit current-user
 certificate. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md) and
 [`docs/WINDOWS_UPDATES.md`](docs/WINDOWS_UPDATES.md).
+
+The separate `-DevelopmentSelfSigned` mode is for administrator-approved test
+machines. It accepts only the exact DeskLink Development Secure certificate
+policy, never accepts a PFX/private-key path, signs and timestamps the complete
+installer graph, and produces a clearly labeled machine-wide package. Its
+public trust must be installed separately after an out-of-band fingerprint
+check; its private key remains only in the signing user's CNG store.
 
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 

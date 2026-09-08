@@ -145,7 +145,8 @@ The user-mode service/helper path is approved for staged investigation before
 any kernel driver. The default-off validation foundation is implemented: a
 networkless LocalSystem service can launch only a fixed SYSTEM helper into the
 active console session's exact `Default` or `Winlogon` desktop, and the helper
-currently exposes release-only and UAC-cancel probes. A portable authorization
+currently exposes release-only, exact elevated-foreground minimize, and
+UAC-cancel probes. A portable authorization
 gate requires an explicit grant, exact peer machine/certificate DER hash,
 session nonce, focus epoch, monotonic revision/sequence, and a 100-2000 ms
 lease.
@@ -155,11 +156,14 @@ foreground-consent Escape probes has passed, including an observable
 `Winlogon`-to-`Default` postcondition, visual confirmation, fail-closed
 no-prompt rejection, one-shot zero-exit acknowledgement, and complete
 lab-service cleanup. The hardened revision received a complete security diff
-review with no reportable findings. Product integration is still blocked until
-DeskLink has production code signing and an
-administrator-protected machine-wide install from which the service can
-independently authenticate the runtime. The current-user LocalAppData runtime
-and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC
+review with no reportable findings. The private Development Secure stage now
+provides a dedicated non-exportable signing identity, explicit public-
+certificate trust, timestamped artifacts, and an administrator-protected
+Program Files application install on the two approved PCs. It does not yet
+package the service/helper or authorize any privileged operation. Product
+integration is therefore still blocked on exact path/ACL/reparse/signer
+attestation and authenticated service IPC. The current-user LocalAppData
+runtime and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC
 approval, credential UI, secure-desktop video, lock/sign-in desktop control,
 and a kernel driver remain out of scope. Full evidence, design, and stop
 conditions are in [`UAC_SECURE_INPUT.md`](UAC_SECURE_INPUT.md).

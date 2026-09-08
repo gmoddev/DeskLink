@@ -708,14 +708,29 @@ store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
 
+`DevelopmentSelfSigned` is a distinct private testing exception, not a release
+substitute. It requires the exact self-signed `CN=DeskLink Development Secure`
+RSA/SHA-256 code-signing certificate backed by an RSA-3072-or-stronger CNG key
+whose export policy is `None`. Only the public DER certificate and its
+fingerprint manifest may leave the signing PC. A target administrator must
+independently verify the DER SHA-256 and explicitly place that public
+certificate in LocalMachine `Root` and `TrustedPublisher`; Setup never installs
+trust or accepts a certificate path. The resulting package is visibly labeled,
+timestamped, and installed beneath protected Program Files. Trusting this root
+grants its private-key holder publisher authority on that target, so the
+channel is suitable only for controlled development PCs and must be removable
+by exact fingerprint. It neither changes the DeskLink device identity nor
+enables the unintegrated secure-input service.
+
 The optional virtual-microphone package is the only machine-wide/elevated
 extension. It is absent by default. The fixed sibling helper accepts no path or
 package argument, validates exactly the DeskLink INF/SYS/catalog/manifest set,
 verifies catalog membership and the Microsoft Windows Hardware Compatibility
 Publisher signature, and operates only on the stable DeskLink root-device ID.
 Production packaging independently rejects a driver package without that
-signature. Development output is labelled unsigned and is never admitted to
-this installer path. DeskLink does not disable Secure Boot or signature
+signature. Ordinary development output is labelled unsigned and is never
+admitted to this installer path; Development Secure does not relax the separate
+Microsoft driver-signature requirement. DeskLink does not disable Secure Boot or signature
 enforcement, enable test-signing, install a test root, select a default audio
 device, or install an arbitrary INF.
 

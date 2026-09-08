@@ -6761,10 +6761,13 @@ void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
     CHECK(SessionA.OutgoingFocused());
     CHECK(SessionB.IncomingFocused());
 
-    InjectorB.InjectSucceeds = false;
-    CHECK(SessionA.SendPointerMotion(PointerMotionMessage{4, 2}));
-    CHECK(!SessionB.IncomingFocused());
+    // Prime the bounded availability interval while the target is usable,
+    // then simulate an elevated foreground appearing after focus admission.
     SessionB.Tick();
+    InjectorB.Ready = false;
+    Clock.advance(std::chrono::milliseconds(51));
+    SessionB.Tick();
+    CHECK(!SessionB.IncomingFocused());
     CHECK(!SessionA.OutgoingFocused());
     CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
     CHECK(SessionB.DirectionState() == PeerDirectionState::Local);

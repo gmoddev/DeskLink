@@ -63,6 +63,11 @@ if ($Helper -notmatch 'CheckTokenMembership' -or
     $Helper -notmatch 'ThreadDesktopMismatch = 16' -or
     $Helper -notmatch 'InputDesktopMismatch = 17' -or
     $Helper -notmatch 'DesktopTransitionTimedOut = 27' -or
+    $Helper -notmatch 'ForegroundIsNotElevated = 31' -or
+    $Helper -notmatch 'ShowWindowAsync\(Foreground, SW_MINIMIZE\)' -or
+    $Helper -notmatch 'GetForegroundWindow\(\) != Foreground' -or
+    $Helper -notmatch 'IsIconic\(Foreground\)' -or
+    $Helper -notmatch 'default-minimize-elevated-foreground' -or
     $Helper -notmatch 'ActiveInputDesktopName\(\)[\s\S]{0,100}L"Default"' -or
     $Helper -notmatch 'UOI_NAME' -or
     $Helper -notmatch 'secure-cancel' -or
@@ -75,6 +80,8 @@ if ($InstallScript -notmatch 'StartupType Manual' -or
     $InstallScript -notmatch 'sdset' -or
     $InstallScript -notmatch 'failed closed' -or
     $InstallScript -notmatch 'SERVICE_EXIT_CODE' -or
+    $InstallScript -notmatch
+        "Invoke-ProbeControl 130 'elevated-foreground minimize probe'" -or
     $InstallScript -notmatch 'WIN32_EXIT_CODE' -or
     $InstallScript -notmatch 'timed out; the validation service was stopped' -or
     $InstallScript -match '(?i)AutomaticDelayedStart|start=\s*auto') {

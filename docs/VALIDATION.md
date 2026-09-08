@@ -744,6 +744,30 @@ requires the actual release-signing identity plus clean Windows 11 and Server
 2022 signed install/repair/update/rollback/uninstall validation and destructive
 fault injection at each transaction phase.
 
+The separate Development Secure gate statically rejects PFX/private-key export,
+test-signing, signature-enforcement changes, implicit provider discovery, and
+an unlabeled machine-wide package. On an approved Windows 11 signing PC, the
+generated RSA-3072 CNG signing key was verified non-exportable; only its public
+DER certificate and fingerprint manifest were exported. The exact certificate
+was explicitly trusted in LocalMachine `Root` and `TrustedPublisher` on both
+approved PCs. The complete `0.1.1` installer graph and Setup were RFC 3161
+timestamped, verified against the expected leaf thumbprint, installed under
+`C:\Program Files\DeskLink Development Secure`, and launched on both PCs. The
+old per-user binaries were removed while each `%LOCALAPPDATA%\DeskLink` identity
+directory remained present. This validates a private signing/install
+prerequisite only; service/helper packaging, authorization IPC, UAC product
+behavior, update/rollback, and destructive-fault qualification remain open.
+
+The post-focus elevated-foreground regression was also exercised physically on
+the Windows 11 Docker PC. With outgoing focus and source capture both active,
+an existing Task Manager process was activated through a temporary interactive
+highest-run-level task. Within one second the controller reported
+`remote_focused=false`, `capture_active=false`, and no active peer session. The
+temporary task was removed; the pre-existing Task Manager process was not
+terminated. This proves the normal injector's new 50 ms integrity recheck fails
+Local when a higher-integrity Default-desktop foreground appears after focus
+admission. It does not qualify privileged minimize or UAC interaction.
+
 ---
 
 ## Authenticated audio latency diagnostics

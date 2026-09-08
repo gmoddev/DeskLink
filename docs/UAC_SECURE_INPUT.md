@@ -69,8 +69,9 @@ by the product build.
 - stops after every probe with an explicit success or service-specific failure
   status so the lab harness cannot confuse service-control delivery with
   successful input execution;
-- accepts only two lab controls: a Default-desktop release probe and a
-  Winlogon-desktop cancel probe; and
+- accepts only three lab controls: a Default-desktop release probe, a
+  Default-desktop elevated-foreground minimize probe, and a Winlogon-desktop
+  cancel probe; and
 - has manual startup and an admin/SYSTEM-only start, stop, reconfigure, and
   user-defined-control DACL in the separate lab script.
 
@@ -84,6 +85,11 @@ by the product build.
 - accepts no path, process, command line, scan code, pointer coordinate, text,
   credential, or network input;
 - the Default probe releases modifier and mouse-button state only; and
+- the Default minimize probe derives the target solely from the exact local
+  foreground, requires an unlocked `Default` desktop plus a visible top-level
+  window owned by an elevated process, rechecks the same foreground before
+  posting only `SW_MINIMIZE`, and succeeds only after `IsIconic` confirms that
+  exact window was minimized; and
 - the secure probe verifies that `consent.exe` owns the foreground before
   releasing owned state, rechecks it afterward, then sends Escape. It uses an
   Escape scan code and reports success only after the active input desktop
@@ -146,6 +152,26 @@ prompt under the lab constraints. It does not approve prompts, prove arbitrary
 remote input, authorize a current-user runtime, provide secure-desktop video,
 or satisfy the Stage 5 product matrix.
 
+## Elevated-window recovery probe
+
+On 2026-09-08, the Windows 11 target proved that the current-user process
+cannot implement a reliable elevated-window recovery action. A limited
+interactive process observed the exact elevated Task Manager foreground, but
+`ShowWindowAsync(SW_MINIMIZE)` returned false and the window remained visible.
+This is the expected UIPI boundary.
+
+The separately staged LocalSystem R&D service then launched the fixed helper
+on the active unlocked `Default` desktop. With Task Manager as the exact
+visible foreground, the helper verified that its owner token was elevated,
+rechecked the unchanged HWND, posted only `SW_MINIMIZE`, and observed
+`IsIconic`. The one-shot service reported success. The harness then removed the
+service and helper and verified that no helper remained.
+
+This validates the recovery primitive but does not make it a product feature.
+No window handle, process ID, process name, title, show command, or arbitrary
+operation may cross a future IPC or network boundary. The helper must always
+derive and revalidate the one local foreground target itself.
+
 ## Authorization model for product integration
 
 The portable `SecureInputAuthorizationGate` defines the minimum eventual input
@@ -180,7 +206,7 @@ requires a separately approved machine-wide, signed installation boundary.
    fixed release probe on `Default` and fixed Escape probe on `Winlogon`.
    Record session ID, desktop, process identity, outcome, and cleanup without
    logging input content.
-4. **Authorization integration:** only after production code signing and a
+4. **Authorization integration:** only after an approved code-signing policy and
    protected machine-wide install design exist, implement authenticated local
    IPC and the exact authorization envelope. No session is admitted from a
    current-user assertion alone.
@@ -195,3 +221,61 @@ or sign-in desktops, stream secure-desktop video, or broaden the helper into a
 general remote-control service. If user-mode SYSTEM injection cannot satisfy
 these gates, stop and reassess; a virtual HID/kernel driver is not an automatic
 fallback.
+
+## Exact product work still required
+
+The Development Secure channel now proves a dedicated non-exportable signing
+key, explicit public-certificate trust, timestamped binaries, and a protected
+machine-wide application directory on two approved PCs. This closes only the
+signing/install prerequisite for private R&D. It is not publicly trusted and
+does not package, start, or authorize the lab service/helper.
+
+Until that helper is integrated, an elevated foreground on the ordinary
+`Default` desktop is not controllable by the normal injector. While remote focus
+is active the receiver rechecks this boundary every 50 ms; a higher-integrity
+or uninspectable foreground releases owned input and fails both peers Local.
+That safety fallback is not elevated-window control and does not minimize or
+interact with the elevated application.
+
+The following product work is still required before elevated-window recovery or
+UAC control can be enabled in DeskLink:
+
+1. Retain Development Secure only for controlled R&D; a public production
+   release still requires a publicly trusted Authenticode identity. The existing
+   device CNG key is not a release signing key and remains non-exportable and
+   unchanged.
+2. Extend the approved per-machine slice to install the signed service and fixed
+   signed helper beneath the protected Program Files directory. Verify every
+   path component's owner, ACL, and reparse status and verify exact signer
+   equality before every helper launch.
+3. Give the service no network stack. Add an ACL-restricted named pipe whose
+   protocol is fixed-size, versioned, replay-resistant, bounded, and accepts no
+   paths, commands, window handles, process IDs, titles, or input content.
+4. Make the service independently authenticate the fixed signed DeskLink
+   runtime from the protected installation. A LocalAppData binary or mere
+   current-user pipe possession is not an authorization source.
+5. Persist a separate, default-off machine-level permission for elevated input
+   and recovery. Permission addition requires local foreground approval;
+   revocation returns Local and releases owned input before persistence.
+6. Bind each request to the exact `PeerValidated` machine ID and certificate
+   DER hash, current session nonce, nonzero focus epoch, grant revision,
+   monotonic sequence, requested operation, and a 100-2000 ms service lease.
+7. Expose the bounded minimize operation separately from secure-desktop input.
+   It may act only on the helper-derived visible elevated foreground on the
+   active unlocked `Default` desktop and must return a verified result before
+   DeskLink retries focus.
+8. For UAC interaction, launch the fixed helper on `WinSta0\\Winlogon` only
+   while `consent.exe` is the exact foreground. Forward only individually
+   authorized scan-code, button, pointer, wheel, and release envelopes; keep
+   arbitrary command execution, text injection, credentials, lock/sign-in
+   desktops, and automatic approval out of scope.
+9. Add controller UI for `Blocked by an elevated app`, `Minimize blocking app
+   and retry`, secure-input opt-in, explicit operation result, timeout, and
+   fail-local recovery. Never leave the product at an indefinite `Connecting`
+   or `Connected` state when input admission is unavailable.
+10. Complete security review and physical Windows 11 validation for wrong
+    signer, writable/reparse path, pipe spoofing, wrong peer/pin/nonce/epoch,
+    replay, expiry, grant revocation, foreground race, ordinary window,
+    Task Manager, installers, UAC approve/cancel, held input, helper/service
+    crash, lock/unlock, session switch, sleep, disconnect, upgrade, and
+    uninstall. Every failure returns Local and admits no privileged input.
