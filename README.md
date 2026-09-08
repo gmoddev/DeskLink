@@ -15,6 +15,15 @@ certificate, authentication, or transport failure. Windows 10 and every
 unsigned package remain experimental/unsupported; see
 [`docs/WINDOWS10_BETA_NOTICE.md`](docs/WINDOWS10_BETA_NOTICE.md).
 
+For explicitly approved development PCs, maintainers can instead create a
+**DeskLink Development Secure** package. Every DeskLink executable, the
+uninstaller, and Setup are Authenticode-signed and RFC 3161 timestamped with a
+dedicated non-exportable RSA-3072 CNG key. The package installs under protected
+Program Files only after an administrator independently verifies and trusts the
+exact public-certificate DER SHA-256 fingerprint. This private trust channel is
+not a publicly trusted production release and must never silently install its
+own root. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+
 ## Measured audio latency
 
 The `v0.1.0-beta.1` qualification run used Windows 10 22H2 with the reviewed
@@ -56,15 +65,17 @@ room propagation, or microphone capture latency. See
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
-- Protocol-v5, PTT-first microphone forwarding with separate reciprocal voice
+- Protocol-v5 microphone forwarding with default PTT and explicit continuous
+  transmit modes, separate reciprocal voice
   grants, pinned Opus 1.6.1, exact 48 kHz mono/20 ms frames, a dedicated
   datagram sequence, and bounded 40-120 ms FEC/PLC playout
 - Communications-role microphone selection and voice rendering, local hard
   mute/incoming gain, and default-on half-duplex echo guard; full acoustic echo
   cancellation and a global PTT binding remain deferred
-- Local received-voice routing to communications playback, a genuine optional
-  `DeskLink Remote Microphone` Core Audio capture endpoint, or both, with one
-  authoritative Opus decode/FEC/PLC path and independent sink recovery
+- Local received-voice routing to communications playback, a replaceable
+  application-input backend, or both, with one authoritative Opus
+  decode/FEC/PLC path and independent sink recovery. The first adapters are
+  the optional DeskLink driver and an exact user-selected external WASAPI cable
 - Explicit, text-only clipboard synchronization with complementary per-peer
   read/write grants, a session-scoped module handshake, and loop suppression
 - Default-endpoint notification and bounded audio-only WASAPI recovery
@@ -166,8 +177,8 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Microsoft production signing/certification and physical zero-microphone and
   Discord qualification for the optional virtual-microphone driver
-- Production-signed, protected-install secure-input authorization and the full
-  physical UAC matrix; the hardened one-shot Windows 11 cancel access probe
+- Product secure-input authorization over the signed protected-install boundary
+  and the full physical UAC matrix; the hardened one-shot Windows 11 cancel access probe
   passed with exact-binary and fail-closed evidence, but the current
   service/helper remains an unintegrated, cancel-only lab boundary
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
@@ -331,6 +342,13 @@ can be Authenticode-signed and timestamped with an explicit current-user
 certificate. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md) and
 [`docs/WINDOWS_UPDATES.md`](docs/WINDOWS_UPDATES.md).
 
+The separate `-DevelopmentSelfSigned` mode is for administrator-approved test
+machines. It accepts only the exact DeskLink Development Secure certificate
+policy, never accepts a PFX/private-key path, signs and timestamps the complete
+installer graph, and produces a clearly labeled machine-wide package. Its
+public trust must be installed separately after an out-of-band fingerprint
+check; its private key remains only in the signing user's CNG store.
+
 When built on Windows, `desklink_windows` includes the current `Win32InputInjector` implementation using `SendInput`.
 
 While `serve` or `focus` is running, the same Windows user can inspect the
@@ -485,26 +503,44 @@ gain and `control mute` toggles mute. Changes ramp across one five-millisecond
 block, persist through audio-only endpoint recovery, and never change the
 Windows endpoint or system mixer volume.
 
-Microphone voice is a separate PTT-only module. It requires distinct
+Microphone voice is a separate module. It requires distinct
 `VoiceSend`/`VoiceReceive` grants and explicit route intent on both PCs; system
-audio permissions cannot authorize it. The microphone remains closed until the
-local user holds PTT, and release, hard mute, permission loss, disconnect, or
-endpoint loss stops capture. Voice uses pinned Opus 1.6.1 at 48 kHz mono in
+audio permissions cannot authorize it. Push to talk remains the default. An
+explicit local **Continuously while connected** option may open capture only
+after the pinned peer is admitted and reciprocal voice grants are acknowledged.
+PTT release, hard mute, permission loss, disconnect, or endpoint loss stops
+capture. Continuous mode may start again after a fresh authenticated reconnect;
+capture/device failures require a new local action. Voice uses pinned Opus
+1.6.1 at 48 kHz mono in
 20 ms datagrams with bounded 40-120 ms FEC/PLC playout. Echo guard defaults on
 and mutes incoming DeskLink voice while transmitting; it is half-duplex
 feedback protection, not acoustic echo cancellation. See
 [`docs/VOICE_FORWARDING.md`](docs/VOICE_FORWARDING.md).
 
 On the receiving PC, **Listen on this PC**, **Microphone for apps**, and
-**Both** are local-only destination choices. The virtual path submits the same
-canonical 48 kHz mono PCM16 playout blocks to `DeskLink Microphone Feed`; the
-optional WaveRT driver exposes them as `DeskLink Remote Microphone` for Discord,
-OBS, games, browsers, and recording tools. The feed is selected by a stable
-DeskLink endpoint property, never by friendly name, and the virtual capture
-endpoint is excluded from outgoing microphone selection to prevent a network
-feedback loop. When the driver is absent, only application-microphone routing
-is unavailable; roaming, clipboard, desktop audio, and normal voice monitoring
-continue to work.
+**Both** are local-only destination choices. Application routing goes through
+the provider-neutral `VoiceApplicationOutput` boundary, modeled as an owned
+backend with an explicit factory. The bundled-driver adapter submits the same
+canonical 48 kHz mono PCM16 blocks to `DeskLink Microphone Feed`; the optional
+WaveRT driver exposes them as `DeskLink Remote Microphone` for Discord, OBS,
+games, browsers, and recording tools. The external-cable adapter instead opens
+one exact, locally selected active WASAPI render endpoint. It never follows the
+default device or substitutes another endpoint after removal or rename. With
+VB-CABLE, select **CABLE Input** in DeskLink and **CABLE Output** in the app.
+The UI links to the official driver page but does not download, bundle, or
+silently install it. Backend failure affects only application-microphone
+routing; roaming, clipboard, desktop audio, and normal voice monitoring remain
+available.
+
+Desktop/system-audio sharing never creates a Windows input device. Developer
+and beta packages omit the virtual-microphone payload unless an externally
+Microsoft production-signed driver catalog is supplied, so Discord will not
+list `DeskLink Remote Microphone` on those installs. DeskLink does not bypass
+driver-signature enforcement or enable Windows test-signing to change that.
+Users may separately install a production-signed virtual cable such as
+[VB-CABLE](https://vb-audio.com/Cable/) and select it through the external
+backend. Redistribution is not assumed; any future bundling requires a separate
+license review under the vendor's published terms.
 
 Text clipboard synchronization is separately opt-in and requires complementary
 grants. To synchronize both directions, pair each PC with both clipboard grants,

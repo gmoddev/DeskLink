@@ -13,6 +13,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $Path,
 
+    [switch] $DevelopmentSelfSigned,
+
+    [string] $FailureLogPath = '',
+
     [ValidateRange(5, 120)]
     [int] $TimeoutSeconds = 45
 )
@@ -21,13 +25,15 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSigningPolicy.ps1')
 $CertificateThumbprint =
     Get-DeskLinkNormalizedThumbprint $CertificateThumbprint
-[void] (Get-DeskLinkCodeSigningCertificate $CertificateThumbprint)
+if ($DevelopmentSelfSigned) {
+    [void] (Get-DeskLinkDevelopmentSigningCertificate $CertificateThumbprint)
+} else {
+    [void] (Get-DeskLinkCodeSigningCertificate $CertificateThumbprint)
+}
 [void] (Assert-DeskLinkTimestampUrl $TimestampUrl)
 $SignToolPath = (Resolve-Path -LiteralPath $SignToolPath).Path
 $Path = (Resolve-Path -LiteralPath $Path).Path
-$OutputPath = Join-Path ([IO.Path]::GetTempPath()) `
-    ('DeskLinkSign-' + [guid]::NewGuid().ToString('N') + '.out')
-$ErrorPath = $OutputPath + '.err'
+$Process = $null
 try {
     $Arguments = @(
         'sign',
@@ -36,21 +42,45 @@ try {
         '/fd', 'SHA256',
         '/tr', $TimestampUrl.AbsoluteUri,
         '/td', 'SHA256',
-        '/d', 'DeskLink',
-        ('"' + $Path + '"')
+        '/d', $(if ($DevelopmentSelfSigned) {
+            'DeskLink-Development-Secure'
+        } else {
+            'DeskLink'
+        }),
+        $Path
     )
-    $Process = Start-Process -FilePath $SignToolPath -ArgumentList $Arguments `
-        -RedirectStandardOutput $OutputPath -RedirectStandardError $ErrorPath `
-        -PassThru
+    foreach ($Argument in $Arguments) {
+        if ($Argument -match '["\r\n]') {
+            throw 'SignTool arguments cannot contain quotes or line breaks.'
+        }
+    }
+    $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = $SignToolPath
+    $StartInfo.Arguments = ($Arguments | ForEach-Object {
+        '"' + $_ + '"'
+    }) -join ' '
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $Process = [Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    if (-not $Process.Start()) {
+        throw 'SignTool did not start.'
+    }
+    $StandardOutputTask = $Process.StandardOutput.ReadToEndAsync()
+    $StandardErrorTask = $Process.StandardError.ReadToEndAsync()
     if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
         $Process.Kill()
         $Process.WaitForExit()
         throw "SignTool exceeded the $TimeoutSeconds-second fail-closed deadline."
     }
-    $StandardOutput = Get-Content -Raw -LiteralPath $OutputPath
-    $StandardError = Get-Content -Raw -LiteralPath $ErrorPath
-    if ($Process.ExitCode -ne 0) {
-        throw "SignTool failed with exit code $($Process.ExitCode). $StandardOutput $StandardError"
+    $Process.WaitForExit()
+    $ExitCode = $Process.ExitCode
+    $StandardOutput = $StandardOutputTask.GetAwaiter().GetResult()
+    $StandardError = $StandardErrorTask.GetAwaiter().GetResult()
+    if ($ExitCode -ne 0) {
+        throw "SignTool failed with exit code $ExitCode. $StandardOutput $StandardError"
     }
     $Signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($Signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
@@ -62,10 +92,16 @@ try {
         throw 'The signed artifact did not verify with the expected signer and timestamp.'
     }
     Write-Host "[Packaging:Signing] signed and verified $Path"
+} catch {
+    if (-not [string]::IsNullOrWhiteSpace($FailureLogPath)) {
+        $FailureLogPath = [IO.Path]::GetFullPath($FailureLogPath)
+        [IO.File]::AppendAllText(
+            $FailureLogPath,
+            "[Packaging:Signing] $($_.Exception.Message)`r`n")
+    }
+    throw
 } finally {
-    foreach ($TemporaryPath in $OutputPath, $ErrorPath) {
-        if (Test-Path -LiteralPath $TemporaryPath) {
-            Remove-Item -LiteralPath $TemporaryPath -Force
-        }
+    if ($Process) {
+        $Process.Dispose()
     }
 }

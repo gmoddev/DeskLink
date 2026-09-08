@@ -744,6 +744,30 @@ requires the actual release-signing identity plus clean Windows 11 and Server
 2022 signed install/repair/update/rollback/uninstall validation and destructive
 fault injection at each transaction phase.
 
+The separate Development Secure gate statically rejects PFX/private-key export,
+test-signing, signature-enforcement changes, implicit provider discovery, and
+an unlabeled machine-wide package. On an approved Windows 11 signing PC, the
+generated RSA-3072 CNG signing key was verified non-exportable; only its public
+DER certificate and fingerprint manifest were exported. The exact certificate
+was explicitly trusted in LocalMachine `Root` and `TrustedPublisher` on both
+approved PCs. The complete `0.1.1` installer graph and Setup were RFC 3161
+timestamped, verified against the expected leaf thumbprint, installed under
+`C:\Program Files\DeskLink Development Secure`, and launched on both PCs. The
+old per-user binaries were removed while each `%LOCALAPPDATA%\DeskLink` identity
+directory remained present. This validates a private signing/install
+prerequisite only; service/helper packaging, authorization IPC, UAC product
+behavior, update/rollback, and destructive-fault qualification remain open.
+
+The post-focus elevated-foreground regression was also exercised physically on
+the Windows 11 Docker PC. With outgoing focus and source capture both active,
+an existing Task Manager process was activated through a temporary interactive
+highest-run-level task. Within one second the controller reported
+`remote_focused=false`, `capture_active=false`, and no active peer session. The
+temporary task was removed; the pre-existing Task Manager process was not
+terminated. This proves the normal injector's new 50 ms integrity recheck fails
+Local when a higher-integrity Default-desktop foreground appears after focus
+admission. It does not qualify privileged minimize or UAC interaction.
+
 ---
 
 ## Authenticated audio latency diagnostics
@@ -779,9 +803,22 @@ source gate proving that the microphone backend does not use loopback capture.
 
 The virtual-microphone application-routing slice adds automated coverage for
 all three local destinations, one-decode fanout, independent sink failure,
-monitor-only gain/echo guard, source-wide reset/mute, preference-schema-6
-migration, control serialization, stable-property endpoint filtering, and
+monitor-only gain/echo guard, source-wide reset/mute, preference-schema-8
+migration with default PTT and continuous fail-closed gate checks, control
+serialization, stable-property endpoint filtering, and
 lower-level rejection of DeskLink's capture endpoint as an outgoing source.
+The application-input abstraction test injects and replaces fake backends,
+proving stop-before-replace ownership and unavailable-without-backend behavior.
+A separate source contract requires the runtime to depend on
+`VoiceApplicationOutput`, requires the external adapter to receive an exact
+endpoint ID, and rejects direct concrete-feed ownership in runtime code.
+
+The external-cable factory rejects a missing endpoint and rejects an endpoint
+for the DeskLink-driver adapter. Its WASAPI path binds endpoint notifications to
+the exact selected device and disables default-device following. Physical
+VB-CABLE output/input mapping, application enumeration, lifecycle silence, and
+two-PC latency remain open qualification gates; automated success does not
+claim those physical results.
 
 The optional driver build is isolated from normal CMake. Its CI path checks out
 Microsoft Windows-driver-samples at the pinned commit, installs the exact
@@ -828,6 +865,8 @@ This validation does not yet prove:
   feedback, and reconnect behavior
 - Microsoft-signed virtual-microphone installation, zero-physical-microphone
   capture, crash/revoke/disconnect silence, and Discord/OBS application capture
+- user-installed production-signed external-cable endpoint selection,
+  no-fallback removal/reconnect behavior, and Discord/OBS capture
 
 The Windows CI job additionally runs a native MsQuic 2.6.0 Schannel loopback:
 two current-user CNG identities exchange bounded offers, confirm the same code,

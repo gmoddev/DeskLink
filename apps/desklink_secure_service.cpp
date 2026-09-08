@@ -20,6 +20,7 @@ constexpr wchar_t kServiceName[] = L"DeskLinkSecureInputRnd";
 constexpr wchar_t kHelperName[] = L"desklink_secure_input_helper.exe";
 constexpr DWORD kControlDefaultReleaseProbe = 128;
 constexpr DWORD kControlSecureCancelProbe = 129;
+constexpr DWORD kControlDefaultMinimizeElevatedForegroundProbe = 130;
 
 SERVICE_STATUS_HANDLE ServiceStatusHandle{};
 SERVICE_STATUS ServiceStatus{};
@@ -119,7 +120,13 @@ bool IsSessionUnlocked(DWORD SessionId) noexcept {
     return Unlocked;
 }
 
-bool LaunchFixedProbe(bool SecureDesktop, DWORD& FailureCode) {
+enum class FixedProbe {
+    DefaultRelease,
+    SecureCancel,
+    DefaultMinimizeElevatedForeground,
+};
+
+bool LaunchFixedProbe(FixedProbe Probe, DWORD& FailureCode) {
     FailureCode = ERROR_ACCESS_DENIED;
     if (!IsLocalSystem()) {
         Log(L"probe refused because the service is not LocalSystem");
@@ -175,10 +182,15 @@ bool LaunchFixedProbe(bool SecureDesktop, DWORD& FailureCode) {
         return false;
     }
 
+    const bool SecureDesktop = Probe == FixedProbe::SecureCancel;
     const wchar_t* Desktop = SecureDesktop
         ? L"winsta0\\winlogon" : L"winsta0\\default";
-    const wchar_t* Operation = SecureDesktop
-        ? L"secure-cancel" : L"default-release";
+    const wchar_t* Operation = L"default-release";
+    if (Probe == FixedProbe::SecureCancel) {
+        Operation = L"secure-cancel";
+    } else if (Probe == FixedProbe::DefaultMinimizeElevatedForeground) {
+        Operation = L"default-minimize-elevated-foreground";
+    }
     std::wstring CommandLine = L"\"" + HelperPath +
         L"\" --service-probe " + Operation;
     std::vector<wchar_t> MutableCommand(
@@ -223,9 +235,13 @@ bool LaunchFixedProbe(bool SecureDesktop, DWORD& FailureCode) {
         Log(L"fixed helper failed or timed out; probe failed closed");
         return false;
     }
-    Log(SecureDesktop
-        ? L"secure-desktop cancel probe completed"
-        : L"Default-desktop release probe completed");
+    if (Probe == FixedProbe::SecureCancel) {
+        Log(L"secure-desktop cancel probe completed");
+    } else if (Probe == FixedProbe::DefaultMinimizeElevatedForeground) {
+        Log(L"elevated-foreground minimize probe completed");
+    } else {
+        Log(L"Default-desktop release probe completed");
+    }
     return true;
 }
 
@@ -254,7 +270,8 @@ DWORD WINAPI ServiceControlHandler(
             DWORD FailureCode{};
             bool Succeeded{};
             try {
-                Succeeded = LaunchFixedProbe(false, FailureCode);
+                Succeeded = LaunchFixedProbe(
+                    FixedProbe::DefaultRelease, FailureCode);
             } catch (...) {
                 Log(L"Default-desktop probe failed with an internal exception");
                 FailureCode = 1'998;
@@ -268,9 +285,27 @@ DWORD WINAPI ServiceControlHandler(
             DWORD FailureCode{};
             bool Succeeded{};
             try {
-                Succeeded = LaunchFixedProbe(true, FailureCode);
+                Succeeded = LaunchFixedProbe(
+                    FixedProbe::SecureCancel, FailureCode);
             } catch (...) {
                 Log(L"secure-desktop probe failed with an internal exception");
+                FailureCode = 1'998;
+            }
+            TerminalProbeError.store(
+                Succeeded ? ERROR_SUCCESS : FailureCode);
+            if (StopEvent) SetEvent(StopEvent);
+            return NO_ERROR;
+        }
+        case kControlDefaultMinimizeElevatedForegroundProbe: {
+            DWORD FailureCode{};
+            bool Succeeded{};
+            try {
+                Succeeded = LaunchFixedProbe(
+                    FixedProbe::DefaultMinimizeElevatedForeground,
+                    FailureCode);
+            } catch (...) {
+                Log(L"elevated-foreground minimize probe failed with an "
+                    L"internal exception");
                 FailureCode = 1'998;
             }
             TerminalProbeError.store(

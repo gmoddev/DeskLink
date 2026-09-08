@@ -14,6 +14,8 @@ param(
 
     [switch] $DevelopmentUnsigned,
 
+    [switch] $DevelopmentSelfSigned,
+
     [switch] $ExperimentalWindows10,
 
     [string] $VirtualMicrophonePackagePath = '',
@@ -37,7 +39,6 @@ $ExpectedOpenSslSslHash =
     '2B10D4D3641A07A85EDBDC446E8F5830EE531D5B91026DAEC4D80860EA868C4C'
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $InstallerScript = Join-Path $RepositoryRoot 'installer\DeskLink.iss'
-$SigningScript = Join-Path $RepositoryRoot 'scripts\Invoke-AuthenticodeSign.ps1'
 . (Join-Path $RepositoryRoot 'scripts\WinUiPayload.ps1')
 . (Join-Path $RepositoryRoot 'scripts\WindowsSigningPolicy.ps1')
 
@@ -73,13 +74,16 @@ function Assert-AuthenticodeSignature(
     }
 }
 
+if ($DevelopmentUnsigned -and $DevelopmentSelfSigned) {
+    throw 'DevelopmentUnsigned and DevelopmentSelfSigned are mutually exclusive.'
+}
 if ($DevelopmentUnsigned) {
     if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint) -or $TimestampUrl) {
         throw 'DevelopmentUnsigned cannot be combined with release signing parameters.'
     }
 } elseif ([string]::IsNullOrWhiteSpace($CertificateThumbprint) -or
           -not $TimestampUrl) {
-    throw 'Production installer builds require a current-user certificate thumbprint and timestamp URL.'
+    throw 'Signed installer builds require a current-user certificate thumbprint and timestamp URL.'
 } else {
     [void] (Assert-DeskLinkTimestampUrl $TimestampUrl)
 }
@@ -96,6 +100,14 @@ if ([IO.Path]::GetExtension($OutputPath) -ine '.exe') {
 $OutputName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
 if ($DevelopmentUnsigned -and $OutputName -notmatch '(?i)unsigned') {
     throw 'An unsigned development installer must include "unsigned" in its file name.'
+}
+if ($DevelopmentSelfSigned -and
+    $OutputName -notmatch '(?i)development-secure') {
+    throw 'A self-signed development installer must include "development-secure" in its file name.'
+}
+if (-not $DevelopmentSelfSigned -and
+    $OutputName -match '(?i)development-secure') {
+    throw 'Only DevelopmentSelfSigned packages may use the development-secure name.'
 }
 if (-not $DevelopmentUnsigned -and $OutputName -match '(?i)unsigned') {
     throw 'A signed production installer must not be named as unsigned.'
@@ -222,7 +234,11 @@ if ($UpdaterUtf16.Contains('development-allow-unsigned') -or
 
 $Certificate = $null
 if (-not $DevelopmentUnsigned) {
-    $Certificate = Get-DeskLinkCodeSigningCertificate $CertificateThumbprint
+    $Certificate = if ($DevelopmentSelfSigned) {
+        Get-DeskLinkDevelopmentSigningCertificate $CertificateThumbprint
+    } else {
+        Get-DeskLinkCodeSigningCertificate $CertificateThumbprint
+    }
 }
 
 $TemporaryRoot = Join-Path ([IO.Path]::GetTempPath()) `
@@ -270,30 +286,35 @@ try {
             throw 'A Windows SDK x64 signtool.exe was not found.'
         }
         Assert-AuthenticodeSignature $SignToolPath ''
-        $WindowsPowerShell = Join-Path $env:SystemRoot `
-            'System32\WindowsPowerShell\v1.0\powershell.exe'
-        Assert-AuthenticodeSignature $WindowsPowerShell ''
         $Timestamp = $TimestampUrl.AbsoluteUri
         if ($Timestamp -match '["\s]') {
             throw 'TimestampUrl cannot contain quotes or whitespace.'
         }
-        $SignCommand = ('$q{0}$q -NoProfile -NonInteractive ' +
-            '-ExecutionPolicy Bypass -File $q{1}$q ' +
-            '-SignToolPath $q{2}$q -CertificateThumbprint {3} ' +
-            '-TimestampUrl {4} -Path $f') -f $WindowsPowerShell,
-            $SigningScript, $SignToolPath, $NormalizedThumbprint, $Timestamp
+        $SignatureDescription = if ($DevelopmentSelfSigned) {
+            'DeskLink-Development-Secure'
+        } else {
+            'DeskLink'
+        }
+        $SignCommand = ('$q{0}$q sign /sha1 {1} /s My /fd SHA256 ' +
+            '/tr {2} /td SHA256 /d {3} $f') -f $SignToolPath,
+            $NormalizedThumbprint, $Timestamp, $SignatureDescription
         $Arguments += "/SDeskLinkReleaseSign=$SignCommand"
         $Arguments += '/DSignedBuild=1'
     }
     if ($ExperimentalWindows10) {
         $Arguments += '/DExperimentalWindows10=1'
     }
+    if ($DevelopmentSelfSigned) {
+        $Arguments += '/DDevelopmentSecure=1'
+    }
     if (-not [string]::IsNullOrWhiteSpace($VirtualMicrophonePackagePath)) {
         $Arguments += '/DVirtualMicrophonePackage=1'
     }
     $Arguments += $InstallerScript
     & $IsccPath @Arguments
-    Assert-LastExitCode 'Compiling the DeskLink installer'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Compiling the DeskLink installer failed with exit code $LASTEXITCODE."
+    }
 
     $BuiltInstaller = Join-Path $TemporaryOutput "$OutputName.exe"
     if (-not (Test-Path -LiteralPath $BuiltInstaller -PathType Leaf)) {

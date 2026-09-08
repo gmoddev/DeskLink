@@ -145,7 +145,8 @@ The user-mode service/helper path is approved for staged investigation before
 any kernel driver. The default-off validation foundation is implemented: a
 networkless LocalSystem service can launch only a fixed SYSTEM helper into the
 active console session's exact `Default` or `Winlogon` desktop, and the helper
-currently exposes release-only and UAC-cancel probes. A portable authorization
+currently exposes release-only, exact elevated-foreground minimize, and
+UAC-cancel probes. A portable authorization
 gate requires an explicit grant, exact peer machine/certificate DER hash,
 session nonce, focus epoch, monotonic revision/sequence, and a 100-2000 ms
 lease.
@@ -155,11 +156,14 @@ foreground-consent Escape probes has passed, including an observable
 `Winlogon`-to-`Default` postcondition, visual confirmation, fail-closed
 no-prompt rejection, one-shot zero-exit acknowledgement, and complete
 lab-service cleanup. The hardened revision received a complete security diff
-review with no reportable findings. Product integration is still blocked until
-DeskLink has production code signing and an
-administrator-protected machine-wide install from which the service can
-independently authenticate the runtime. The current-user LocalAppData runtime
-and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC
+review with no reportable findings. The private Development Secure stage now
+provides a dedicated non-exportable signing identity, explicit public-
+certificate trust, timestamped artifacts, and an administrator-protected
+Program Files application install on the two approved PCs. It does not yet
+package the service/helper or authorize any privileged operation. Product
+integration is therefore still blocked on exact path/ACL/reparse/signer
+attestation and authenticated service IPC. The current-user LocalAppData
+runtime and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC
 approval, credential UI, secure-desktop video, lock/sign-in desktop control,
 and a kernel driver remain out of scope. Full evidence, design, and stop
 conditions are in [`UAC_SECURE_INPUT.md`](UAC_SECURE_INPUT.md).
@@ -273,16 +277,17 @@ are automated. Physical two-PC privacy, rapid-contention/coalescing behavior,
 clipboard-owner exit, and real reconnect tests remain required before this item
 is production-qualified. Image clipboard and file transfer remain excluded.
 
-### 5. PTT voice forwarding — automated implementation complete
+### 5. Microphone voice forwarding — automated implementation complete
 
 - protocol 5 adds independent default-off `VoiceSend`/`VoiceReceive` grants and
   a strictly bounded datagram-only Opus voice frame;
 - the product and runtime expose separate voice route, communications
-  microphone selection, incoming gain, hard mute, PTT state, and default-on
+  microphone selection, incoming gain, hard mute, default PTT plus explicit
+  continuous activation, and default-on
   half-duplex echo guard without modifying pairing or system-audio policy;
-- capture opens only for a local PTT press after reciprocal acknowledged
-  grants and closes on release, mute, revocation, disconnect, endpoint loss,
-  configuration change, or shutdown;
+- capture opens only for local PTT or explicit continuous policy after
+  reciprocal acknowledged grants and closes on release where applicable, mute,
+  revocation, disconnect, endpoint loss, configuration change, or shutdown;
 - pinned Opus 1.6.1, FEC/PLC, and a bounded adaptive 40-120 ms jitter target
   are covered by portable/native tests; and
 - production sign-off remains open until the two-PC privacy, device,
@@ -294,8 +299,9 @@ must not be described as production-qualified before physical validation.
 
 ### 5.1 Virtual microphone application routing — implementation complete; certification open
 
-- preferences schema 6 adds the local-only received-voice destination and
-  migrates every existing install to communications playback;
+- preferences schema 8 adds explicit local transmit mode while retaining the
+  local-only received-voice destination; every older install migrates to
+  communications playback and/or default PTT as appropriate;
 - one decoded 48 kHz mono PCM16 playout block fans out through
   `VoiceOutputRouter` to communications monitoring, the virtual feed, or both,
   with independent sink failure and monitor-only gain/echo policy;
@@ -306,6 +312,14 @@ must not be described as production-qualified before physical validation.
   returns silence on underrun, and flushes on feed/capture lifecycle boundaries;
 - a stable-property filter prevents the virtual capture endpoint from becoming
   an outgoing DeskLink microphone, and no new network message or grant exists;
+- a replaceable `IVoiceApplicationOutputBackend` boundary now isolates the
+  runtime from the concrete microphone implementation. The DeskLink driver is
+  one adapter; a second adapter supports a separately installed production-
+  signed external virtual cable through one exact user-selected WASAPI render
+  endpoint, with no default-device fallback;
+- the UI identifies VB-CABLE's `CABLE Input` as a candidate and links to the
+  official vendor page, but does not download, silently install, or redistribute
+  it. Bundling remains subject to a separate licensing decision;
 - the fixed UAC helper and application installer admit only an externally
   supplied Microsoft production-signed package; normal builds and all other
   DeskLink features remain driver-independent; and
@@ -357,9 +371,12 @@ must not be described as production-qualified before physical validation.
   permission never creates consent, focus shortcuts use the named authenticated
   admission path, the capture hook owns Return-to-this-PC while remote,
   crossing changes reuse Local-before-atomic-save, and required
-  but uninspectable foreground state remains Local. Preferences schema 6
-  retains those migrations and adds a local-only received-voice destination
-  that defaults older installs to communications playback;
+  but uninspectable foreground state remains Local. Preferences schema 8
+  retains those migrations, adds a local-only received-voice destination that
+  defaults older installs to communications playback, and adds an explicit
+  continuous voice option while retaining PTT as the migration default, and
+  adds the local replaceable application-input backend plus an exact optional
+  external cable endpoint;
 - **Product UX PR 9A implemented:** `desklink.exe` is now the normal Start menu
   and post-install entry point. Its `--background` mode is a short-lived
   sign-in bootstrap, while updates restart the native broker directly. Every

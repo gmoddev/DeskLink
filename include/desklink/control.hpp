@@ -16,7 +16,7 @@
 namespace desklink {
 
 inline constexpr std::uint32_t kControlWireMagic = 0x444C4354u; // "DLCT"
-inline constexpr std::uint16_t kControlProtocolVersion = 13;
+inline constexpr std::uint16_t kControlProtocolVersion = 15;
 inline constexpr std::size_t kMaximumControlPayload = 512u * 1024u;
 inline constexpr std::size_t kMaximumControlTopologyMachines = 8;
 inline constexpr std::size_t kMaximumControlTrustedDevices = 64;
@@ -316,6 +316,7 @@ struct ControlState {
     bool VoicePermissionMissing{};
     bool InputDesktopAvailable{true};
     bool InputDesktopInterruptionObserved{};
+    bool EmergencyInputReleaseObserved{};
     bool RuntimeProcessExitCodeAvailable{};
 };
 

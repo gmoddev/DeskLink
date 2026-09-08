@@ -19,6 +19,7 @@ inline constexpr auto kBrokerReconnectMaximumDelay =
 inline constexpr std::uint32_t kBrokerManagedRetryableProcessExit = 64;
 inline constexpr std::uint32_t kBrokerManagedActionRequiredProcessExit = 65;
 inline constexpr std::uint32_t kBrokerManagedProtocolProcessExit = 66;
+inline constexpr std::uint32_t kBrokerManagedEmergencyProcessExit = 67;
 
 enum class BrokerRuntimePhase : std::uint8_t {
     Stopped = 0,
@@ -71,9 +72,11 @@ struct BrokerRuntimeSnapshot {
     std::uint16_t Attempt, std::uint64_t JitterSeed) noexcept;
 
 // Exit 64 is reserved for a child that positively classified an ordinary
-// availability failure. Typed terminal exits preserve enough bounded context
-// for the product shell to explain why retry stopped without exposing session
-// data. Every unknown non-success exit remains terminal.
+// availability failure. Exit 67 records a completed emergency fail-local
+// cleanup and remains terminal until the user explicitly resumes. Typed
+// terminal exits preserve enough bounded context for the product shell to
+// explain why retry stopped without exposing session data. Every unknown
+// non-success exit remains terminal.
 [[nodiscard]] constexpr BrokerRuntimeFailure
 ClassifyBrokerManagedProcessExit(std::uint32_t ExitCode) noexcept {
     switch (ExitCode) {
@@ -84,6 +87,35 @@ ClassifyBrokerManagedProcessExit(std::uint32_t ExitCode) noexcept {
         default:
             return BrokerRuntimeFailure::Unknown;
     }
+}
+
+[[nodiscard]] constexpr bool IsBrokerManagedEmergencyProcessExit(
+    std::uint32_t ExitCode) noexcept {
+    return ExitCode == kBrokerManagedEmergencyProcessExit;
+}
+
+// A state reply belongs to the managed child generation that was active when
+// the poll began. Never let a late reply from an exited/replaced child restore
+// ConnectedLocal after exit handling has already scheduled a retry.
+[[nodiscard]] constexpr bool CanCommitManagedChildPoll(
+    std::uint64_t PolledGeneration,
+    std::uint64_t CurrentGeneration,
+    bool HasCurrentProcess,
+    bool CurrentProcessRunning) noexcept {
+    return PolledGeneration != 0 &&
+        PolledGeneration == CurrentGeneration &&
+        HasCurrentProcess && CurrentProcessRunning;
+}
+
+[[nodiscard]] constexpr BrokerRuntimePhase
+ReconcileManagedChildPeerCount(
+    BrokerRuntimePhase CurrentPhase,
+    BrokerRuntimePhase WaitingPhase,
+    std::uint16_t ConnectedPeerCount) noexcept {
+    return ConnectedPeerCount == 0 &&
+            CurrentPhase == BrokerRuntimePhase::ConnectedLocal
+        ? WaitingPhase
+        : CurrentPhase;
 }
 
 // Pure lifecycle controller for one broker-owned transport process. Only

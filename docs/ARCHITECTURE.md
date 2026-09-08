@@ -471,14 +471,23 @@ timestamps never directly choose a ratio. Gain/mute remains separate work.
 
 Voice is a separate capability module, not a mode of system-audio loopback.
 Protocol 5 carries a datagram-only Opus `VoiceFrame` with its own sequence and
-per-PTT stream ID. The sender opens an `eCapture` communications endpoint only
+per-activation stream ID. The sender opens an `eCapture` communications endpoint only
 after reciprocal acknowledged `VoiceSend`/`VoiceReceive` grants, local route
-intent, clear hard mute, and a local PTT press. The receiver repeats nonce,
+intent, clear hard mute, and either a local PTT press or one pending activation
+from explicit continuous policy. The receiver repeats nonce,
 grant, stream, sequence, codec, shape, and size admission before bounded
 40-120 ms FEC/PLC playout. Opus is decoded once to canonical 48 kHz mono PCM16,
 then a local `VoiceOutputRouter` dispatches that exact block to communications
-playback, the optional virtual-microphone feed, or both. Sink failure is
+playback, a provider-neutral application-input output, or both. Sink failure is
 independent; only loss of upstream authenticated voice authority resets both.
+
+`VoiceApplicationOutput` owns an `IVoiceApplicationOutputBackend` and is the
+only application-input type visible to session/runtime code. The Win32 factory
+currently supplies either the DeskLink WaveRT-feed adapter or an external
+WASAPI-cable adapter. Tests can inject a fake backend, and a future driver can
+be substituted without modifying authentication, decoding, routing, or session
+admission. Replacing a backend stops and releases the old one before publishing
+the new one.
 
 The virtual microphone is an isolated optional WaveRT driver derived from
 Microsoft's Simple Audio Sample architecture. User mode writes through normal
@@ -495,9 +504,20 @@ defaults. The capture role is rejected by both outgoing source enumeration and
 the lower-level capture opener to prevent a virtual-microphone network loop.
 No peer message selects or reports the local destination.
 
+The external-cable adapter is an equal user-mode alternative when a separately
+installed production-signed virtual cable is present. It accepts only one exact
+persisted active `eRender` endpoint ID, caps the queue at 60 ms, drops stale
+voice, and closes/flushes the endpoint at every authorization boundary. It does
+not follow the communications default or retry another device. Endpoint and
+backend selection remain current-user local policy; the remote peer cannot
+select either.
+
 PTT release, mute, permission loss, disconnect, configuration change, endpoint
-loss, or shutdown closes capture and requires a fresh local activation. The
-peer has no protocol command that can activate or unmute the microphone.
+loss, or shutdown closes capture. PTT always requires a fresh press. Explicit
+continuous policy is re-evaluated only after a fresh admitted reconnect or
+local retry action, and capture failure is not automatically looped. The peer
+has no protocol command that can select the mode, activate, or unmute the
+microphone.
 Echo guard defaults on and ramps incoming DeskLink voice to mute during local
 transmission. It is half-duplex feedback protection, not acoustic echo
 cancellation. The full boundary and physical qualification matrix are in
@@ -526,7 +546,8 @@ SetDesiredMode       implemented
 FocusMachine         implemented for the exact active authenticated peer
 SetAudioGain         implemented on an active Host peer receiver
 ToggleAudioMute      implemented on an active Host peer receiver
-SetVoiceTransmit     implemented as local PTT authority on an admitted peer
+SetVoiceTransmit     implemented as local PTT authority on an admitted peer;
+                     explicit continuous policy uses SetProductPreferences
 SetVoiceMuted        implemented as local hard microphone mute
 GetDisplayTopologies implemented read-only
 GetProductPreferences implemented read-only
@@ -566,11 +587,15 @@ lease, `PeerValidated`, `FocusReady`, and initial-snapshot admission. It is
 deliberately separate from `Roam`, which waits for a validated configured
 physical-edge crossing.
 
-Application preferences schema 6 stores only two allowlisted local hotkey
+Application preferences schema 8 stores only two allowlisted local hotkey
 choices, bounded exact foreground rules, and an optional explicit endpoint for
 the preferred trusted machine, plus a separate voice route, exact optional
 microphone endpoint, incoming gain, echo guard, and a local received-voice
-destination that migrates to communications playback. The broker tries
+destination that migrates to communications playback, plus default-PTT and
+explicit-continuous local activation. It also stores the local application-input
+backend and, only for the external-cable backend, an exact bounded render
+endpoint ID. Schema-7 migration retains the DeskLink-driver backend and no
+external endpoint. The broker tries
 authenticated mDNS resolution
 first and consults that endpoint only when no matching machine record exists.
 The endpoint is a routing hint, not an identity: every launch still supplies

@@ -722,6 +722,9 @@ void EncodePreferences(Writer& Output,
     if (Preferences.AdvancedModeEnabled) Flags |= 0x0080u;
     if (Preferences.FirstRunComplete) Flags |= 0x0100u;
     if (Preferences.PreferredPeerEndpoint) Flags |= 0x0200u;
+    if (Preferences.VoiceTransmit == VoiceTransmitMode::Continuous) {
+        Flags |= 0x0400u;
+    }
     Output.U16(Flags);
     Output.U16(Preferences.AudioGainPermyriad);
     Output.U8(static_cast<std::uint8_t>(Preferences.FocusPeerHotkey));
@@ -761,6 +764,16 @@ void EncodePreferences(Writer& Output,
                 Preferences.VoiceInputEndpointId->data()),
             Preferences.VoiceInputEndpointId->size()});
     }
+    Output.U8(static_cast<std::uint8_t>(Preferences.VoiceOutputBackend));
+    const auto OutputEndpointSize = Preferences.VoiceOutputEndpointId
+        ? Preferences.VoiceOutputEndpointId->size() : 0u;
+    Output.U16(static_cast<std::uint16_t>(OutputEndpointSize));
+    if (Preferences.VoiceOutputEndpointId) {
+        Output.Raw(ByteSpan{
+            reinterpret_cast<const std::uint8_t*>(
+                Preferences.VoiceOutputEndpointId->data()),
+            Preferences.VoiceOutputEndpointId->size()});
+    }
 }
 
 std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
@@ -775,7 +788,7 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         !Input.U8(RawGaming) || !Input.U16(Flags) ||
         !Input.U16(Preferences.AudioGainPermyriad) ||
         !Input.U8(RawFocusHotkey) || !Input.U8(RawReturnHotkey) ||
-        (Flags & 0xfc00u) != 0) {
+        (Flags & 0xf800u) != 0) {
         return std::nullopt;
     }
     Preferences.Role = static_cast<DeskRole>(RawRole);
@@ -794,6 +807,9 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
     Preferences.ClipboardDesired = (Flags & 0x0040u) != 0;
     Preferences.AdvancedModeEnabled = (Flags & 0x0080u) != 0;
     Preferences.FirstRunComplete = (Flags & 0x0100u) != 0;
+    Preferences.VoiceTransmit = (Flags & 0x0400u) != 0
+        ? VoiceTransmitMode::Continuous
+        : VoiceTransmitMode::PushToTalk;
     if ((Flags & 0x0001u) != 0) {
         MachineId Machine{};
         if (!Input.Raw(Machine)) return std::nullopt;
@@ -859,6 +875,22 @@ std::optional<ProductPreferences> DecodePreferences(Reader& Input) {
         ByteBuffer Endpoint(VoiceEndpointSize);
         if (!Input.Raw(Endpoint)) return std::nullopt;
         Preferences.VoiceInputEndpointId = std::string(
+            reinterpret_cast<const char*>(Endpoint.data()), Endpoint.size());
+    }
+    std::uint8_t RawVoiceOutputBackend{};
+    std::uint16_t VoiceOutputEndpointSize{};
+    if (!Input.U8(RawVoiceOutputBackend) ||
+        !Input.U16(VoiceOutputEndpointSize) ||
+        VoiceOutputEndpointSize > kMaximumVoiceEndpointIdBytes ||
+        Input.Remaining() < VoiceOutputEndpointSize) {
+        return std::nullopt;
+    }
+    Preferences.VoiceOutputBackend =
+        static_cast<VoiceApplicationOutputBackend>(RawVoiceOutputBackend);
+    if (VoiceOutputEndpointSize != 0) {
+        ByteBuffer Endpoint(VoiceOutputEndpointSize);
+        if (!Input.Raw(Endpoint)) return std::nullopt;
+        Preferences.VoiceOutputEndpointId = std::string(
             reinterpret_cast<const char*>(Endpoint.data()), Endpoint.size());
     }
     return IsValidProductPreferences(Preferences)
@@ -1103,6 +1135,7 @@ void EncodeState(Writer& Output, const ControlState& State) {
     if (State.InputDesktopAvailable) VoiceFlags |= 0x04u;
     if (State.InputDesktopInterruptionObserved) VoiceFlags |= 0x08u;
     if (State.RuntimeProcessExitCodeAvailable) VoiceFlags |= 0x10u;
+    if (State.EmergencyInputReleaseObserved) VoiceFlags |= 0x20u;
     Output.U8(VoiceFlags);
 }
 
@@ -1159,7 +1192,8 @@ std::optional<ControlState> DecodeState(Reader& Input) {
     State.InputDesktopAvailable = (VoiceFlags & 0x04u) != 0;
     State.InputDesktopInterruptionObserved = (VoiceFlags & 0x08u) != 0;
     State.RuntimeProcessExitCodeAvailable = (VoiceFlags & 0x10u) != 0;
-    if ((VoiceFlags & 0xe0u) != 0 || !IsValidControlState(State)) {
+    State.EmergencyInputReleaseObserved = (VoiceFlags & 0x20u) != 0;
+    if ((VoiceFlags & 0xc0u) != 0 || !IsValidControlState(State)) {
         return std::nullopt;
     }
     return State;
@@ -1443,6 +1477,12 @@ bool IsValidControlState(const ControlState& State) noexcept {
     }
     if (State.RuntimeProcessExitCodeAvailable &&
         State.RuntimePhase != BrokerRuntimePhase::ActionRequired) {
+        return false;
+    }
+    const bool EmergencyProcessExit =
+        State.RuntimeProcessExitCodeAvailable &&
+        IsBrokerManagedEmergencyProcessExit(State.RuntimeProcessExitCode);
+    if (State.EmergencyInputReleaseObserved != EmergencyProcessExit) {
         return false;
     }
     return true;

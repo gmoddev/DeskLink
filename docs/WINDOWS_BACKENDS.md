@@ -497,3 +497,12 @@ category avoid persistent mixer-policy changes.
 restarts only voice playout. Microphone loss stops transmission and requires a
 fresh PTT action. Neither adapter touches the system-audio loopback backend;
 the CMake voice-isolation gate rejects such a dependency.
+
+Application-microphone output is owned through
+`IVoiceApplicationOutputBackend`. The Win32 factory provides a DeskLink WaveRT
+feed adapter and an external-cable adapter. The latter accepts only one exact
+active `eRender` endpoint ID, disables default-device following, uses a
+three-frame/60 ms oldest-drop queue, and closes on reset. Missing or changed
+endpoints never fall back to speakers, the communications output, or another
+backend. Runtime/session code owns only the abstraction, so another signed
+driver can replace either adapter without altering admission or routing.

@@ -447,6 +447,51 @@ std::vector<VoiceInputDevice> EnumerateWin32VoiceInputDevices() {
     return Result;
 }
 
+std::vector<VoiceApplicationOutputDevice>
+EnumerateWin32VoiceApplicationOutputDevices() {
+    std::vector<VoiceApplicationOutputDevice> Result;
+    ComApartment Apartment;
+    ComPtr<IMMDeviceEnumerator> Enumerator;
+    ComPtr<IMMDeviceCollection> Devices;
+    if (!Apartment.Ready() || !OpenEnumerator(Enumerator) ||
+        FAILED(Enumerator->EnumAudioEndpoints(
+            eRender, DEVICE_STATE_ACTIVE, Devices.Put()))) {
+        return Result;
+    }
+    UINT Count{};
+    if (FAILED(Devices->GetCount(&Count))) return Result;
+    Count = std::min(Count, UINT{128});
+    for (UINT Index = 0; Index < Count; ++Index) {
+        ComPtr<IMMDevice> Device;
+        ComPtr<IPropertyStore> Properties;
+        if (FAILED(Devices->Item(Index, Device.Put())) ||
+            DeskLinkEndpointKind(Device.Get()).value_or(
+                DeskLinkVirtualAudioEndpointKind::None) !=
+                DeskLinkVirtualAudioEndpointKind::None ||
+            FAILED(Device->OpenPropertyStore(STGM_READ, Properties.Put()))) {
+            continue;
+        }
+        const auto WideId = DeviceId(Device.Get());
+        if (!WideId) continue;
+        PROPVARIANT Name;
+        PropVariantInit(&Name);
+        const auto NameResult = Properties->GetValue(
+            PKEY_Device_FriendlyName, &Name);
+        const auto Id = WideToUtf8(*WideId);
+        const auto DisplayName = SUCCEEDED(NameResult) &&
+            Name.vt == VT_LPWSTR && Name.pwszVal
+            ? WideToUtf8(Name.pwszVal) : std::nullopt;
+        PropVariantClear(&Name);
+        if (!Id || !DisplayName) continue;
+        Result.push_back(VoiceApplicationOutputDevice{*Id, *DisplayName});
+    }
+    std::sort(Result.begin(), Result.end(),
+              [](const auto& Left, const auto& Right) {
+                  return Left.DisplayName < Right.DisplayName;
+              });
+    return Result;
+}
+
 struct Win32WasapiMicrophoneCapture::State {
     State(std::optional<std::string> OwnedEndpoint,
           Win32WasapiMicrophoneHandlers OwnedHandlers)
@@ -660,8 +705,17 @@ bool Win32WasapiMicrophoneCapture::Running() const noexcept {
 }
 
 struct Win32WasapiVoiceRenderer::State {
-    explicit State(Win32WasapiVoiceRenderHandlers OwnedHandlers)
-        : Handlers(std::move(OwnedHandlers)) {}
+    State(std::optional<std::string> OwnedEndpointId,
+          std::size_t OwnedMaximumQueuedFrames,
+          bool OwnedDropStaleFrames,
+          Win32WasapiVoiceRenderHandlers OwnedHandlers)
+        : EndpointId(std::move(OwnedEndpointId)),
+          MaximumQueuedFrames(OwnedMaximumQueuedFrames),
+          DropStaleFrames(OwnedDropStaleFrames),
+          Handlers(std::move(OwnedHandlers)) {}
+    std::optional<std::string> EndpointId;
+    std::size_t MaximumQueuedFrames{kMaximumVoiceRenderQueueFrames};
+    bool DropStaleFrames{};
     Win32WasapiVoiceRenderHandlers Handlers;
     std::thread Thread;
     std::mutex StartMutex;
@@ -721,14 +775,14 @@ struct Win32WasapiVoiceRenderer::State {
         UINT32 BufferFrames{};
         BYTE* Initial{};
         bool Initialized = Apartment.Ready() && OpenEnumerator(Enumerator) &&
-            OpenVoiceDevice(Enumerator.Get(), eRender, std::nullopt, Device) &&
+            OpenVoiceDevice(Enumerator.Get(), eRender, EndpointId, Device) &&
             ActivateAudioClient(Device.Get(), AudioClient);
         if (Initialized) {
             ApplyCommunicationsCategory(AudioClient.Get());
             const auto Id = DeviceId(Device.Get());
             auto* Notification = Id
                 ? new (std::nothrow) EndpointNotifications(
-                    EndpointEvent, eRender, true)
+                    EndpointEvent, eRender, !EndpointId)
                 : nullptr;
             if (Notification && Id) Notification->SetDeviceId(*Id);
             Initialized = Id && Notification &&
@@ -753,7 +807,9 @@ struct Win32WasapiVoiceRenderer::State {
         if (!Initialized) {
             PublishFailure(Handlers.Failed,
                 Win32WasapiFailureKind::EndpointUnavailable,
-                "voice communications renderer initialization failed");
+                EndpointId
+                    ? "selected application voice output initialization failed"
+                    : "voice communications renderer initialization failed");
             return;
         }
         HANDLE Handles[]{StopEvent, EndpointEvent, AudioEvent};
@@ -763,7 +819,9 @@ struct Win32WasapiVoiceRenderer::State {
             if (Wait == WAIT_OBJECT_0 + 1) {
                 PublishFailure(Handlers.Failed,
                     Win32WasapiFailureKind::EndpointChanged,
-                    "voice communications output changed");
+                    EndpointId
+                        ? "selected application voice output changed"
+                        : "voice communications output changed");
                 break;
             }
             if (Wait != WAIT_OBJECT_0 + 2) break;
@@ -789,7 +847,20 @@ struct Win32WasapiVoiceRenderer::State {
 
 Win32WasapiVoiceRenderer::Win32WasapiVoiceRenderer(
     Win32WasapiVoiceRenderHandlers Handlers)
-    : State_(std::make_unique<State>(std::move(Handlers))) {}
+    : Win32WasapiVoiceRenderer(
+          std::nullopt, kMaximumVoiceRenderQueueFrames, false,
+          std::move(Handlers)) {}
+
+Win32WasapiVoiceRenderer::Win32WasapiVoiceRenderer(
+    std::optional<std::string> EndpointId,
+    std::size_t MaximumQueuedFrames,
+    bool DropStaleFrames,
+    Win32WasapiVoiceRenderHandlers Handlers)
+    : State_(std::make_unique<State>(
+          std::move(EndpointId),
+          std::clamp(MaximumQueuedFrames, std::size_t{1},
+                     kMaximumVoiceRenderQueueFrames),
+          DropStaleFrames, std::move(Handlers))) {}
 Win32WasapiVoiceRenderer::~Win32WasapiVoiceRenderer() { Stop(); }
 
 bool Win32WasapiVoiceRenderer::Start() {
@@ -819,7 +890,11 @@ bool Win32WasapiVoiceRenderer::Start() {
 bool Win32WasapiVoiceRenderer::Submit(VoicePcmFrame Frame) {
     if (!State_->IsRunning.load()) return false;
     std::scoped_lock Lock(State_->QueueMutex);
-    if (State_->Queue.size() >= kMaximumVoiceRenderQueueFrames) return false;
+    if (State_->Queue.size() >= State_->MaximumQueuedFrames) {
+        if (!State_->DropStaleFrames) return false;
+        State_->Queue.pop_front();
+        State_->SampleOffset = 0;
+    }
     State_->Queue.push_back(std::move(Frame));
     return true;
 }
@@ -1092,6 +1167,79 @@ std::uint64_t Win32VirtualMicrophoneFeed::StaleFramesDropped() const noexcept {
 
 std::uint64_t Win32VirtualMicrophoneFeed::Underruns() const noexcept {
     return State_->UnderrunCount.load();
+}
+
+namespace {
+
+class DeskLinkDriverVoiceApplicationOutput final
+    : public IVoiceApplicationOutputBackend {
+public:
+    explicit DeskLinkDriverVoiceApplicationOutput(
+        Win32WasapiVoiceRenderHandlers Handlers)
+        : Feed_(std::move(Handlers)) {}
+
+    [[nodiscard]] bool Start() override { return Feed_.Start(); }
+    [[nodiscard]] bool Submit(VoicePcmFrame Frame) override {
+        return Feed_.Submit(std::move(Frame));
+    }
+    void Reset() noexcept override { Feed_.Reset(); }
+    void Stop() noexcept override { Feed_.Stop(); }
+    [[nodiscard]] bool Running() const noexcept override {
+        return Feed_.Running();
+    }
+
+private:
+    Win32VirtualMicrophoneFeed Feed_;
+};
+
+class ExternalCableVoiceApplicationOutput final
+    : public IVoiceApplicationOutputBackend {
+public:
+    ExternalCableVoiceApplicationOutput(
+        std::string EndpointId,
+        Win32WasapiVoiceRenderHandlers Handlers)
+        : Renderer_(std::move(EndpointId),
+                    kMaximumVirtualMicrophoneQueueFrames, true,
+                    std::move(Handlers)) {}
+
+    [[nodiscard]] bool Start() override { return Renderer_.Start(); }
+    [[nodiscard]] bool Submit(VoicePcmFrame Frame) override {
+        return Renderer_.Submit(std::move(Frame));
+    }
+    // Application-input authorization ends by closing the exact endpoint,
+    // not merely by draining queued samples.
+    void Reset() noexcept override { Renderer_.Stop(); }
+    void Stop() noexcept override { Renderer_.Stop(); }
+    [[nodiscard]] bool Running() const noexcept override {
+        return Renderer_.Running();
+    }
+
+private:
+    Win32WasapiVoiceRenderer Renderer_;
+};
+
+} // namespace
+
+std::unique_ptr<IVoiceApplicationOutputBackend>
+CreateWin32VoiceApplicationOutputBackend(
+    Win32VoiceApplicationOutputConfiguration Configuration) {
+    switch (Configuration.Backend) {
+        case VoiceApplicationOutputBackend::DeskLinkDriver:
+            if (Configuration.EndpointId) return nullptr;
+            return std::make_unique<DeskLinkDriverVoiceApplicationOutput>(
+                std::move(Configuration.Handlers));
+        case VoiceApplicationOutputBackend::ExternalAudioCable:
+            if (!Configuration.EndpointId ||
+                Configuration.EndpointId->empty() ||
+                Configuration.EndpointId->size() >
+                    kMaximumVoiceEndpointIdBytes) {
+                return nullptr;
+            }
+            return std::make_unique<ExternalCableVoiceApplicationOutput>(
+                std::move(*Configuration.EndpointId),
+                std::move(Configuration.Handlers));
+    }
+    return nullptr;
 }
 
 } // namespace desklink

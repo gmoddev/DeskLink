@@ -590,13 +590,33 @@ public:
         return Reconnect_.Snapshot();
     }
 
-    void ApplyState(desklink::ControlState& State) const noexcept {
-        const auto Runtime = Snapshot();
-        State.RuntimePhase = Runtime.Phase;
-        State.RuntimeFailure = Runtime.Failure;
-        State.RetryAttempt = Runtime.RetryAttempt;
+    void ApplyState(desklink::ControlState& State) noexcept {
+        desklink::BrokerRuntimeSnapshot Runtime;
         {
             std::scoped_lock Lock(Mutex_);
+            const auto Current = Reconnect_.Snapshot();
+            if (Process_ &&
+                WaitForSingleObject(Process_.Get(), 0) == WAIT_TIMEOUT) {
+                const auto Reconciled =
+                    desklink::ReconcileManagedChildPeerCount(
+                        Current.Phase, ChildWaitingPhase_,
+                        State.ConnectedPeerCount);
+                if (Reconciled != Current.Phase) {
+                    (void)Reconnect_.Begin(Reconciled);
+                }
+            }
+            Runtime = Reconnect_.Snapshot();
+            LastInputDesktopInterruptionObserved_ =
+                LastInputDesktopInterruptionObserved_ ||
+                State.InputDesktopInterruptionObserved;
+            State.InputDesktopInterruptionObserved =
+                LastInputDesktopInterruptionObserved_;
+            State.EmergencyInputReleaseObserved =
+                Runtime.Phase ==
+                    desklink::BrokerRuntimePhase::ActionRequired &&
+                LastProcessExitCode_ &&
+                desklink::IsBrokerManagedEmergencyProcessExit(
+                    *LastProcessExitCode_);
             if (Runtime.Phase ==
                     desklink::BrokerRuntimePhase::ActionRequired &&
                 LastProcessExitCode_) {
@@ -604,6 +624,9 @@ public:
                 State.RuntimeProcessExitCodeAvailable = true;
             }
         }
+        State.RuntimePhase = Runtime.Phase;
+        State.RuntimeFailure = Runtime.Failure;
+        State.RetryAttempt = Runtime.RetryAttempt;
         if (Runtime.Phase == desklink::BrokerRuntimePhase::RetryWaiting) {
             const auto Remaining = Runtime.RetryAt > Clock_.now()
                 ? std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -756,7 +779,14 @@ private:
         }
         CloseHandle(Process.hThread);
         Process_.Reset(Process.hProcess);
+        ++ChildGeneration_;
+        if (ChildGeneration_ == 0) ++ChildGeneration_;
+        ChildWaitingPhase_ = Request.Operation ==
+                desklink::LauncherOperation::Serve
+            ? desklink::BrokerRuntimePhase::Listening
+            : desklink::BrokerRuntimePhase::Connecting;
         LastProcessExitCode_.reset();
+        LastInputDesktopInterruptionObserved_ = false;
         ChildPreferences_ = Preferences;
         RoamingArmed_ = Request.CaptureInput &&
             Request.ProfileDefaultMode == desklink::DeskMode::Roam;
@@ -911,13 +941,22 @@ private:
     }
 
     void PollChildState() {
+        std::uint64_t PolledGeneration{};
+        {
+            std::scoped_lock Lock(Mutex_);
+            if (!Process_ ||
+                WaitForSingleObject(Process_.Get(), 0) != WAIT_TIMEOUT) {
+                return;
+            }
+            PolledGeneration = ChildGeneration_;
+        }
         const auto Response = ForwardToActiveRuntime(
             desklink::ControlRequest{
                 NextRequestId_.fetch_add(1),
                 desklink::GetStateControlRequest{}},
             std::chrono::milliseconds{250});
         if (!Response || Response->Status != desklink::ControlStatus::Ok ||
-            !Response->State || Response->State->ConnectedPeerCount == 0) {
+            !Response->State) {
             return;
         }
 
@@ -928,6 +967,24 @@ private:
         std::uint16_t Gain{};
         {
             std::scoped_lock Lock(Mutex_);
+            const bool HasCurrentProcess = static_cast<bool>(Process_);
+            const bool CurrentProcessRunning = HasCurrentProcess &&
+                WaitForSingleObject(Process_.Get(), 0) == WAIT_TIMEOUT;
+            if (!desklink::CanCommitManagedChildPoll(
+                    PolledGeneration, ChildGeneration_, HasCurrentProcess,
+                    CurrentProcessRunning)) {
+                return;
+            }
+            if (Response->State->ConnectedPeerCount == 0) {
+                const auto Current = Reconnect_.Snapshot().Phase;
+                const auto Reconciled =
+                    desklink::ReconcileManagedChildPeerCount(
+                        Current, ChildWaitingPhase_, 0);
+                if (Reconciled != Current) {
+                    (void)Reconnect_.Begin(Reconciled);
+                }
+                return;
+            }
             Reconnect_.ConnectedLocal();
             ApplyPreferences = !ManagedPreferencesApplied_;
             Preferences = ChildPreferences_;
@@ -1152,7 +1209,11 @@ private:
     std::condition_variable Changed_;
     std::thread Worker_;
     UniqueHandle Process_;
+    std::uint64_t ChildGeneration_{};
+    desklink::BrokerRuntimePhase ChildWaitingPhase_{
+        desklink::BrokerRuntimePhase::Connecting};
     std::optional<std::uint32_t> LastProcessExitCode_;
+    bool LastInputDesktopInterruptionObserved_{};
     desklink::BrokerReconnectController Reconnect_;
     desklink::ProductPreferences ChildPreferences_;
     std::atomic_uint64_t NextRequestId_{0xC000'0000u};
@@ -2298,6 +2359,10 @@ int wmain(int Count, wchar_t** Values) {
 
             if (std::holds_alternative<desklink::GetStateControlRequest>(
                     Request.Payload)) {
+                // Reconcile the exact child handle before deciding whether to
+                // forward. This prevents a recently exited child from leaving
+                // a stale connected snapshot visible until the worker tick.
+                Supervisor.ReconcileExitedChild();
                 if (desklink::ShouldQueryManagedRuntimeState(
                         Supervisor.Snapshot().Phase) &&
                     RuntimeProcessMayExist()) {

@@ -65,10 +65,20 @@ add_custom_target(desklink_virtual_microphone_safety_check ALL
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVirtualMicrophoneSafety.cmake"
     VERBATIM)
 
+add_custom_target(desklink_voice_application_output_check ALL
+    COMMAND ${CMAKE_COMMAND}
+        "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVoiceApplicationOutput.cmake"
+    VERBATIM)
+
 if(WIN32)
     add_custom_target(desklink_secure_input_rnd_contract_check ALL
         COMMAND powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
             -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-SecureInputRAndDContracts.ps1"
+        VERBATIM)
+    add_custom_target(desklink_development_secure_signing_contract_check ALL
+        COMMAND powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-DevelopmentSecureSigningContracts.ps1"
         VERBATIM)
 endif()
 
@@ -85,11 +95,19 @@ if(DESKLINK_BUILD_TESTS)
         COMMAND ${CMAKE_COMMAND}
             "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVirtualMicrophoneSafety.cmake")
+    add_test(NAME desklink_voice_application_output_check
+        COMMAND ${CMAKE_COMMAND}
+            "-DDESKLINK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyVoiceApplicationOutput.cmake")
     if(WIN32)
         add_test(NAME desklink_secure_input_rnd_contract_check
             COMMAND powershell -NoProfile -NonInteractive
                 -ExecutionPolicy Bypass
                 -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-SecureInputRAndDContracts.ps1")
+        add_test(NAME desklink_development_secure_signing_contract_check
+            COMMAND powershell -NoProfile -NonInteractive
+                -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Test-DevelopmentSecureSigningContracts.ps1")
     endif()
 endif()
 

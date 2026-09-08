@@ -55,6 +55,7 @@ private:
     [[nodiscard]] AgentDecision RejectInputUnavailable() noexcept;
 
     IInputInjector& injector_;
+    const IClock& Clock_;
     CapabilitySet peer_capabilities_;
     InputFocusStateMachine focus_;
     DeskMode LocalDesiredMode_{DeskMode::Roam};
@@ -62,6 +63,7 @@ private:
     std::uint64_t last_pointer_sequence_{};
     bool InputCleanupPending_{};
     bool InputUnavailable_{};
+    IClock::time_point NextInputAvailabilityCheck_{};
 };
 
 } // namespace desklink

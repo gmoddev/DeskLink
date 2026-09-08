@@ -16,6 +16,7 @@ namespace {
 
 enum class ProbeOperation {
     DefaultRelease,
+    DefaultMinimizeElevatedForeground,
     SecureCancel,
 };
 
@@ -36,6 +37,13 @@ enum class ProbeExitCode : int {
     EscapeScanCodeUnavailable = 25,
     SendInputFailed = 26,
     DesktopTransitionTimedOut = 27,
+    ForegroundIsNotTopLevel = 28,
+    ForegroundIsNotVisible = 29,
+    ForegroundTokenUnavailable = 30,
+    ForegroundIsNotElevated = 31,
+    ForegroundChanged = 32,
+    MinimizeRequestFailed = 33,
+    MinimizeTimedOut = 34,
 };
 
 void Log(std::wstring_view Message) {
@@ -219,6 +227,58 @@ ProbeExitCode ValidateSecureConsentForeground() noexcept {
     return ProbeExitCode::Success;
 }
 
+ProbeExitCode MinimizeElevatedForeground() noexcept {
+    const HWND Foreground = GetForegroundWindow();
+    DWORD ProcessId{};
+    if (!Foreground ||
+        GetWindowThreadProcessId(Foreground, &ProcessId) == 0 ||
+        ProcessId == 0) {
+        return ProbeExitCode::ForegroundUnavailable;
+    }
+    if (GetAncestor(Foreground, GA_ROOT) != Foreground) {
+        return ProbeExitCode::ForegroundIsNotTopLevel;
+    }
+    if (!IsWindowVisible(Foreground)) {
+        return ProbeExitCode::ForegroundIsNotVisible;
+    }
+
+    HANDLE Process = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+    if (!Process) return ProbeExitCode::ForegroundProcessUnavailable;
+    HANDLE Token{};
+    if (!OpenProcessToken(Process, TOKEN_QUERY, &Token)) {
+        CloseHandle(Process);
+        return ProbeExitCode::ForegroundTokenUnavailable;
+    }
+    TOKEN_ELEVATION Elevation{};
+    DWORD Returned{};
+    const BOOL ReadElevation = GetTokenInformation(
+        Token, TokenElevation, &Elevation, sizeof(Elevation), &Returned);
+    CloseHandle(Token);
+    CloseHandle(Process);
+    if (!ReadElevation || Returned != sizeof(Elevation)) {
+        return ProbeExitCode::ForegroundTokenUnavailable;
+    }
+    if (!Elevation.TokenIsElevated) {
+        return ProbeExitCode::ForegroundIsNotElevated;
+    }
+
+    // Do not accept an HWND, PID, image name, or show command from outside
+    // this helper. Recheck the exact local foreground immediately before the
+    // one permitted cross-integrity operation.
+    if (GetForegroundWindow() != Foreground) {
+        return ProbeExitCode::ForegroundChanged;
+    }
+    if (!ShowWindowAsync(Foreground, SW_MINIMIZE)) {
+        return ProbeExitCode::MinimizeRequestFailed;
+    }
+    for (std::size_t Attempt = 0; Attempt < 10; ++Attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (IsIconic(Foreground)) return ProbeExitCode::Success;
+    }
+    return ProbeExitCode::MinimizeTimedOut;
+}
+
 ProbeExitCode CancelSecureDesktopPrompt() noexcept {
     auto Result = ValidateSecureConsentForeground();
     if (Result != ProbeExitCode::Success) return Result;
@@ -260,6 +320,14 @@ int RunProbe(ProbeOperation Operation) {
             Log(L"release-only probe failed closed");
             return static_cast<int>(ProbeExitCode::ReleaseFailed);
         }
+    } else if (Operation ==
+            ProbeOperation::DefaultMinimizeElevatedForeground) {
+        const auto Result = MinimizeElevatedForeground();
+        if (Result != ProbeExitCode::Success) {
+            Log(L"elevated-foreground minimize probe failed closed at stage " +
+                std::to_wstring(static_cast<int>(Result)));
+            return static_cast<int>(Result);
+        }
     } else {
         const auto Result = CancelSecureDesktopPrompt();
         if (Result != ProbeExitCode::Success) {
@@ -268,9 +336,14 @@ int RunProbe(ProbeOperation Operation) {
             return static_cast<int>(Result);
         }
     }
-    Log(Operation == ProbeOperation::SecureCancel
-        ? L"secure-desktop cancel probe completed"
-        : L"Default-desktop release probe completed");
+    if (Operation == ProbeOperation::SecureCancel) {
+        Log(L"secure-desktop cancel probe completed");
+    } else if (Operation ==
+            ProbeOperation::DefaultMinimizeElevatedForeground) {
+        Log(L"elevated foreground was minimized");
+    } else {
+        Log(L"Default-desktop release probe completed");
+    }
     return 0;
 }
 
@@ -290,6 +363,10 @@ int wmain(int ArgumentCount, wchar_t** Arguments) {
     const std::wstring_view Operation(Arguments[2]);
     if (Operation == L"default-release") {
         return RunProbe(ProbeOperation::DefaultRelease);
+    }
+    if (Operation == L"default-minimize-elevated-foreground") {
+        return RunProbe(
+            ProbeOperation::DefaultMinimizeElevatedForeground);
     }
     if (Operation == L"secure-cancel") {
         return RunProbe(ProbeOperation::SecureCancel);

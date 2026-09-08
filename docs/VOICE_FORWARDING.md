@@ -7,12 +7,12 @@ slice on the protocol-v5 development branch. It is deliberately separate from
 system-audio forwarding. Production qualification remains blocked on the
 physical two-PC voice matrix described below.
 
-The first slice is push-to-talk (PTT) only. It does not implement open-mic,
-voice activation, acoustic echo cancellation, mixing, conferencing, recording,
-or remote microphone activation. The WinUI hold button and typed local runtime
-control are implemented. A global PTT binding is the one explicitly deferred
-control surface because adding it safely requires a separate input-lifecycle
-design.
+Push-to-talk (PTT) is the default. The WinUI also exposes an explicit local
+**Continuously while connected** policy for users who do not want PTT. It is
+not remotely activatable: it is persisted as current-user policy and can open
+capture only after the pinned peer is admitted and reciprocal voice grants are
+acknowledged. Voice activation, acoustic echo cancellation, mixing,
+conferencing, recording, and a global PTT binding remain deferred.
 
 ## Security and privacy invariants
 
@@ -26,12 +26,14 @@ design.
 - `VoiceFrame` is accepted only as a QUIC datagram after `PeerValidated`, exact
   protocol-v5 decoding, current nonce validation, reciprocal grant admission,
   and strict format/size checks.
-- Only a local current-user PTT command can open the capture endpoint. There is
-  no network message that presses PTT, clears mute, or selects a microphone.
-- Hard mute prevents PTT from starting capture and stops active capture before
-  reporting success. PTT release, permission loss, disconnect, endpoint loss,
-  process shutdown, or configuration change stops capture and requires a fresh
-  local PTT activation.
+- Only local current-user policy can select PTT or continuous activation, press
+  PTT, clear mute, or select a microphone. No network message can perform any
+  of those actions.
+- Hard mute prevents either mode from starting capture and stops active capture
+  before reporting success. PTT release, permission loss, disconnect, endpoint
+  loss, or process shutdown stops capture. Continuous policy may activate
+  again only after a fresh authenticated reconnect or a fresh local retry
+  action; a device/capture failure is never retried in a tight loop.
 - Audio samples and decoded voice are bounded in memory and are never written
   to disk or included in diagnostics. Logs contain state and counters only.
 - A malformed or unauthorized voice datagram is rejected locally. Voice-device
@@ -47,7 +49,7 @@ authenticated PeerSession
   -> exact reciprocal acknowledged voice grants
   -> local voice-route intent
   -> local hard mute is clear
-  -> local PTT press
+  -> local PTT press OR explicit continuous policy with one pending activation
   -> selected eCapture endpoint (default communications or exact saved ID)
   -> WASAPI shared/event-driven 48 kHz mono PCM16 normalization
   -> exact 960-sample / 20 ms frame
@@ -69,14 +71,17 @@ MsQuic datagram
   -> one canonical 48 kHz mono PCM16 decoded block
   -> local VoiceOutputRouter
      -> eRender communications monitor (local gain and echo guard)
-     -> DeskLink Microphone Feed (unity gain)
+     -> VoiceApplicationOutput (unity gain)
+        -> DeskLink Microphone Feed adapter
+        OR exact external virtual-cable eRender adapter
      -> both sinks from the same decoded block
 ```
 
 Authority is re-evaluated after capability updates. Any loss stops the
 transmitter synchronously and rejects subsequent frames. Reconnect creates a
-fresh session nonce, resets voice stream/sequence state, and does not restore an
-old PTT-down state.
+fresh session nonce and resets voice stream/sequence state. It never restores
+an old PTT-down state. Explicit continuous policy is re-evaluated from the
+local preference only after the new peer is admitted.
 
 ## Wire format
 
@@ -95,7 +100,8 @@ encoded                   encoded_size bytes
 ```
 
 Voice has its own envelope sequence counter. A new nonzero stream ID is chosen
-for each PTT activation. Old-stream packets cannot re-enter a newer stream.
+for each local transmit activation. Old-stream packets cannot re-enter a newer
+stream.
 Protocol 4 peers are incompatible and are rejected during negotiation; there is
 no voice downgrade.
 
@@ -126,9 +132,15 @@ Capture uses the communications audio category and `NOPERSIST` so DeskLink does
 not alter persistent Windows mixer policy.
 
 Received voice can route to the communications-role `eRender` endpoint, the
-optional DeskLink virtual-microphone feed, or both. This does not alter the
+provider-neutral application-input output, or both. This does not alter the
 existing system-audio loopback source or ordinary system-audio render path. A
 build-time source check rejects loopback capture APIs in the voice backend.
+
+`VoiceApplicationOutput` owns one `IVoiceApplicationOutputBackend`. Runtime,
+session, authorization, decoding, and routing code do not name a concrete
+driver. The Win32 factory currently creates either the DeskLink driver adapter
+or an external-audio-cable adapter, while tests inject a fake implementation.
+Replacing the backend stops the old backend first.
 
 The virtual path opens only an endpoint carrying DeskLink's stable endpoint
 property and feed role. It never falls back to a friendly-name or default
@@ -145,6 +157,16 @@ capture role. Microphone enumeration and the lower-level capture opener reject
 that role regardless of its friendly name, so DeskLink cannot forward its own
 remote microphone back across the network.
 
+The external-cable adapter supports a separately installed, production-signed
+virtual cable without coupling that vendor to DeskLink's voice architecture. It
+requires one exact active render endpoint. The endpoint ID is opened directly,
+notifications watch that same device, and default-device following is disabled.
+A missing selection, removed endpoint, or failed open is unavailable: DeskLink
+never guesses, selects speakers, or falls back to the DeskLink driver. The
+adapter caps its queue at three 20 ms blocks, discards the oldest queued voice
+to avoid latency growth, and closes the render client on reset. With VB-CABLE,
+select `CABLE Input` in DeskLink and `CABLE Output` in the receiving app.
+
 Echo guard defaults on. While this PC transmits, incoming DeskLink voice is
 locally ramped to mute on the communications monitor only; release restores it.
 It does not change application-microphone amplitude. This is half-duplex
@@ -153,32 +175,42 @@ AEC remains deferred.
 
 ## Product behavior
 
-Preferences schema 6 stores a separate voice route, optional exact input
-endpoint ID, incoming gain, echo-guard setting, and local received-voice
-destination. Migration from every older schema leaves voice off, selects the
-default communications microphone, sets gain to 100%, enables echo guard, and
-defaults the destination to communications playback. Destination selection is
-local policy, is absent from the network protocol, and cannot be controlled or
-observed by the peer. Route and device changes are negotiated through the
-existing managed runtime; they do not modify pairing.
+Preferences schema 8 stores a separate voice route, optional exact input
+endpoint ID, incoming gain, echo-guard setting, default-PTT/explicit-continuous
+activation, local received-voice destination, local application-output backend,
+and an optional exact external render endpoint. Migration from schema 7 chooses
+the DeskLink-driver backend and no external endpoint. Migration from every older
+schema leaves voice off, selects the default communications microphone, sets
+gain to 100%, enables echo guard, defaults activation to PTT, and defaults the
+destination to communications playback where that field was not yet present.
+Destination and activation selection are local policy, are absent from the
+network protocol, and cannot be controlled or observed by the peer. Route,
+activation, and device changes are negotiated through the existing managed
+runtime; they do not modify pairing.
 
 The product shell exposes **Listen on this PC**, **Microphone for apps**, and
-**Both**. Choosing an application route does not silently elevate or install a
-driver. A separately visible action invokes a fixed, UAC-elevated helper only
-when a bundled Microsoft production-signed package is present. The helper takes
-only `install` or `uninstall`, validates the fixed sibling package and exact
-hardware identity, and cannot accept an arbitrary INF path. The driver remains
-installed across routing changes so applications retain their device choice.
+**Both**, then offers **DeskLink virtual microphone** or **External virtual
+audio cable** behind the same application-input route. External mode requires
+an explicit exact playback endpoint; DeskLink does not auto-select one. The UI
+may label `CABLE Input` as a VB-CABLE candidate and opens the official vendor
+page, but it does not download, install, or redistribute that driver. The
+DeskLink-driver action invokes a fixed, UAC-elevated helper only when a bundled
+Microsoft production-signed package is present. The helper takes only `install`
+or `uninstall`, validates the fixed sibling package and exact hardware identity,
+and cannot accept an arbitrary INF path. Drivers remain installed across route
+changes so applications retain their device choices.
 
 Pairing and the Devices page expose two separate, default-off consequences:
 
 - allow the peer to play microphone voice into this PC (`VoiceSend`);
 - allow the peer to receive this PC's microphone voice (`VoiceReceive`).
 
-The feature card shows off, permission missing, PTT ready, transmitting,
-muted, and input-unavailable states. Capture is not started by enabling the
-route. Press-and-hold pointer capture owns the PTT lifetime so release,
-cancellation, or pointer-capture loss sends a local PTT-up command.
+The feature card shows off, permission missing, PTT ready/continuous armed,
+transmitting, muted, and input-unavailable states. Enabling the route alone
+does not select continuous capture. Press-and-hold pointer capture owns the PTT
+lifetime so release, cancellation, or pointer-capture loss sends a local PTT-up
+command. Continuous selection is saved separately and remains guarded by the
+same session and permission checks.
 
 ## Validation gates
 
@@ -195,18 +227,25 @@ Automated coverage must remain green for:
   destination changes;
 - stable property-based feed selection and source-loop rejection independent
   of endpoint friendly name;
+- provider-neutral backend injection and stop-before-replace ownership;
+- external-cable missing-endpoint rejection, exact-endpoint open, disabled
+  default following, 60 ms queue bound, and close-on-reset behavior;
 - optional-driver safety/source checks plus an Inf2Cat-valid unsigned
   development build using the pinned Microsoft sample and WDK inputs;
-- preference migration, separate route planning, default echo guard, and
-  current-user control framing;
+- preference-schema-8 migration (including schema-7 backend defaults), default
+  PTT, continuous fail-closed gate
+  combinations, separate route planning, default echo guard, and current-user
+  control framing;
 - native Windows, MsQuic loopback/runtime, reliability soak, locked WinUI, and
   the voice-capture isolation source check.
 
 Before production sign-off, two supported physical Windows PCs must pass:
 
-1. PTT A to B and B to A, followed by immediate capture stop on release.
-2. Hard mute, route off, permission revocation, disconnect during PTT, process
-   termination, and reconnect requiring a fresh PTT action.
+1. PTT A to B and B to A, followed by immediate capture stop on release;
+   continuous mode A to B and B to A only after explicit local selection.
+2. Hard mute, route off, permission revocation, disconnect during each mode,
+   process termination, PTT reconnect requiring a fresh press, and continuous
+   reconnect requiring fresh peer admission before capture resumes.
 3. Default and explicit microphone selection, unplug/default changes, and no
    fallback from a missing explicit endpoint.
 4. Controlled packet loss/reordering with bounded FEC/PLC and no unbounded
@@ -222,8 +261,14 @@ Before production sign-off, two supported physical Windows PCs must pass:
 8. Discord enumeration, input activity/voice test, PTT release, revoke,
    disconnect, crash, destination disable, and `Both` behavior without stale
    speech or double decoding.
+9. A separately installed production-signed external cable maps the exact
+   selected playback endpoint to its matching recording endpoint in Discord or
+   OBS. Endpoint removal/rename, default changes, revoke, disconnect, and
+   process termination produce silence without redirecting voice elsewhere.
 
 Items 7 and 8 remain blocked on external Microsoft production driver signing.
+Item 9 is available for physical qualification with a user-installed cable;
+DeskLink does not redistribute it.
 DeskLink does not install the unsigned development package, enable test mode,
 disable Secure Boot, or weaken signature enforcement to bypass that boundary.
 

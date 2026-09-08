@@ -1,5 +1,16 @@
 # Known issues
 
+## External virtual-audio cable application input is not physically qualified
+
+DeskLink can now route received voice through a replaceable application-output
+backend to one exact, user-selected WASAPI render endpoint. VB-CABLE is the
+first documented compatibility target, but its physical two-PC Discord/OBS,
+latency, revoke, disconnect, endpoint-removal, and restart matrix has not yet
+been completed. DeskLink does not bundle or silently install VB-CABLE. After a
+user installs it, DeskLink must select `CABLE Input` while the receiving
+application selects `CABLE Output`. A missing exact endpoint fails closed and
+does not fall back to speakers or another provider.
+
 ## Unicode punctuation renders as mojibake in the current Windows alpha
 
 The Windows alpha artifact built from commit `a45e963` may show sequences such

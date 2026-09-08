@@ -16,6 +16,10 @@
 
 [Setup]
 AppId={{58944975-11A2-4DD6-B881-A0700574270F}
+#ifdef DevelopmentSecure
+AppName=DeskLink Development Secure
+AppVerName=DeskLink {#AppVersion} Development Secure (Self-Signed)
+#else
 #ifdef ExperimentalWindows10
 AppName=DeskLink Beta
 AppVerName=DeskLink {#AppVersion} Beta 1 (Unsigned)
@@ -23,25 +27,38 @@ AppVerName=DeskLink {#AppVersion} Beta 1 (Unsigned)
 AppName=DeskLink
 AppVerName=DeskLink {#AppVersion}
 #endif
+#endif
 AppVersion={#AppVersion}
 AppPublisher=DeskLink
 AppPublisherURL=https://github.com/gmoddev/DeskLink
 AppSupportURL=https://github.com/gmoddev/DeskLink/issues
 AppUpdatesURL=https://github.com/gmoddev/DeskLink/releases
+#ifdef DevelopmentSecure
+AppComments=Self-signed DeskLink development build for explicitly trusted test PCs.
+#else
 #ifdef ExperimentalWindows10
 AppComments=Unsigned DeskLink beta; Windows 10 OpenSSL/CNG remains experimental.
 #else
 AppComments=Secure local keyboard, mouse, audio, and clipboard roaming.
 #endif
+#endif
 AppMutex=Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1
 SetupMutex=Local\DeskLink.Setup.v1
+#ifdef DevelopmentSecure
+DefaultDirName={autopf}\DeskLink Development Secure
+#else
 DefaultDirName={localappdata}\Programs\DeskLink
+#endif
 DefaultGroupName=DeskLink
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 UsePreviousAppDir=no
 UsePreviousGroup=no
+#ifdef DevelopmentSecure
+PrivilegesRequired=admin
+#else
 PrivilegesRequired=lowest
+#endif
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupArchitecture=x64
@@ -66,7 +83,11 @@ UninstallDisplayIcon={app}\desklink.exe
 AppReadmeFile={app}\ALPHA_WRAPPER.md
 LicenseFile={#StagePath}\ui\WindowsAppSDK-LICENSE.txt
 VersionInfoCompany=DeskLink
+#ifdef DevelopmentSecure
+VersionInfoDescription=DeskLink Development Secure machine-wide installer
+#else
 VersionInfoDescription=DeskLink current-user installer
+#endif
 VersionInfoProductName=DeskLink
 VersionInfoProductVersion={#VersionInfoVersion}
 VersionInfoVersion={#VersionInfoVersion}

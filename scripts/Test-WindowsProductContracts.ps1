@@ -133,11 +133,14 @@ if ($BrokerText -notmatch
     throw 'The product broker must reconcile the saved sign-in preference on every startup.'
 }
 if ($InstallerText -notmatch '(?m)^PrivilegesRequired=lowest\r?$' -or
+    $InstallerText -notmatch '(?m)^#ifdef DevelopmentSecure\r?$' -or
+    $InstallerText -notmatch '(?m)^PrivilegesRequired=admin\r?$' -or
+    $InstallerText -notmatch 'DefaultDirName=\{autopf\}\\DeskLink Development Secure' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.20348\r?$' -or
     $InstallerText -notmatch '(?m)^MinVersion=10\.0\.19045\r?$' -or
     $InstallerText -notmatch '(?m)^#ifdef ExperimentalWindows10\r?$' -or
     $InstallerText -match '(?i)netsh|New-NetFirewallRule|FirewallException|WindowsFirewall|EnableRule') {
-    throw 'The installer must remain current-user, supported-baseline only, and free of automatic Firewall changes.'
+    throw 'The normal installer must remain current-user, the Development Secure exception must remain explicit, and neither may alter Firewall policy.'
 }
 
 Write-Host '[Product:Qualification] DPI, keyboard, assistive-technology, theme, Unicode, and installer policy contracts passed.'

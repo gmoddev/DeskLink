@@ -6,7 +6,8 @@ for the Windows 11 / Windows Server 2022+ production baseline. It installs to
 and registers its uninstaller only under HKCU. It does not request elevation,
 install a service, add Firewall rules, or modify the Windows network profile.
 
-The optional virtual-microphone feature is a deliberately separate exception:
+In the production/current-user channel, the optional virtual-microphone feature
+is a deliberately separate exception:
 when and only when an externally Microsoft production-signed driver package is
 supplied at release packaging time, Setup may carry that exact package and the
 normal UI may explicitly launch a fixed UAC-elevated helper. The main DeskLink
@@ -24,6 +25,16 @@ unsigned Beta installer for Windows 10 22H2 build 19045. It includes both
 provider graphs and the Windows 10-targeted product shell. It cannot be signed
 through the production packaging path, does not alter Firewall policy, and is
 not a supported or production artifact.
+
+A second explicit mode, `-DevelopmentSelfSigned`, creates **DeskLink
+Development Secure** for a small set of administrator-approved test PCs. It is
+not the production installer: it uses a dedicated self-signed code-signing
+certificate and therefore has no public trust. The exact public certificate
+must be verified out of band and installed separately in LocalMachine `Root`
+and `TrustedPublisher`; Setup never installs trust. This package installs under
+`%ProgramFiles%\DeskLink Development Secure` so later service/helper R&D can
+authenticate binaries from an administrator-protected location. It does not by
+itself install or enable the secure-input service.
 
 ## Security and lifecycle contract
 
@@ -86,6 +97,53 @@ and timestamp before copying the artifact to its destination. The release
 signing key is separate from DeskLink's device CNG identity. The build accepts
 no PFX, PEM, private-key path, or exported DeskLink key.
 
+### Development Secure trust channel
+
+Create the development signing identity once, in the real signing user's
+Windows profile. The script refuses to replace a still-valid identity and
+exports only the public DER certificate plus a fingerprint manifest:
+
+```powershell
+.\scripts\New-DeskLinkDevelopmentCertificate.ps1 `
+  -OutputDirectory .deploy\development-secure `
+  -ConfirmDevelopmentSigningIdentity -Confirm
+```
+
+The private signing key is RSA-3072 CNG with export policy `None`; it is never
+written to a PFX, PEM, installer, repository, or target PC. Before trusting a
+target, compare the manifest's `CertificateDerSha256` through an independent
+channel. Then, from an elevated PowerShell session on that target:
+
+```powershell
+.\scripts\Set-DeskLinkDevelopmentTrust.ps1 `
+  -Action Install `
+  -CertificatePath .\DeskLink-Development-Secure.cer `
+  -ExpectedCertificateDerSha256 '<independently-approved-SHA-256>' `
+  -ConfirmDevelopmentTrust -Confirm
+```
+
+Build only from the signing profile; sandbox, service-account, and target-PC
+stores do not contain the private key:
+
+```powershell
+.\scripts\Build-WindowsInstaller.ps1 `
+  -StagePath installer-stage `
+  -OutputPath DeskLink-0.1.1-development-secure.exe `
+  -IsccPath 'C:\Program Files\Inno Setup 7\ISCC.exe' `
+  -AppVersion 0.1.1 `
+  -DevelopmentSelfSigned `
+  -CertificateThumbprint '<development-certificate-SHA-1>' `
+  -TimestampUrl 'https://<approved-rfc3161-service>'
+```
+
+Packaging selects the exact thumbprint, revalidates subject, issuer, EKU,
+RSA/SHA-256 signature, strength, CNG provider, and zero export policy, then
+signs every DeskLink executable, the generated uninstaller, and Setup. It
+verifies the expected signer and RFC 3161 timestamp before publishing the
+artifact. Development Secure never enables test-signing, weakens Secure Boot or
+signature enforcement, or falls back to unsigned output. Removing the exact
+certificate with the trust script revokes this private channel on a target.
+
 To include the optional driver, first validate a Microsoft-signed package and
 pass its directory explicitly:
 
@@ -103,9 +161,10 @@ pass its directory explicitly:
   -TimestampUrl 'https://<approved-rfc3161-service>'
 ```
 
-An unsigned/test-signed package cannot satisfy this mode. Development does not
-disable Secure Boot, enable test-signing, weaken signature enforcement, or ship
-a test trust root.
+An unsigned/test-signed package cannot satisfy the production mode. No mode
+disables Secure Boot, enables test-signing, or weakens signature enforcement.
+Development Secure distributes its public certificate separately and requires
+explicit fingerprint verification; Setup never installs that trust root.
 
 ```powershell
 cmake --install build-msquic --config Release `

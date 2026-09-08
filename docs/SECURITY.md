@@ -288,13 +288,17 @@ revision. Receiving requires the complementary pair and repeats the check
 after protocol, lane, nonce, stream, sequence, codec, and payload validation.
 Voice is never admitted before `PeerValidated`.
 
-Only the local current-user control boundary may press PTT, set hard mute, or
-select the input endpoint. No QUIC message can perform those actions. Enabling
-a route does not open capture. PTT release, hard mute, grant loss, disconnect,
-endpoint loss, or shutdown closes capture and stale reconnect state never
-reopens it. The exact saved microphone never silently falls back to another
-device. Samples remain memory-only and diagnostics expose counters/state, not
-content.
+Only the local current-user control boundary may select the activation mode,
+press PTT, set hard mute, or select the input endpoint. No QUIC message can
+perform those actions. PTT is the default; continuous transmission is a
+separate explicit persisted local choice. It starts only when a one-shot local
+activation is pending and the current admitted session reports reciprocal
+acknowledged voice authority. PTT release, hard mute, grant loss, disconnect,
+endpoint loss, or shutdown closes capture. A fresh authenticated reconnect may
+re-evaluate explicit continuous policy, but stale PTT-down state never reopens
+capture and device failure does not loop. The exact saved microphone never
+silently falls back to another device. Samples remain memory-only and
+diagnostics expose counters/state, not content.
 
 The voice source is an `eCapture` communications endpoint; a build check
 rejects loopback APIs in that backend. Rendering uses the communications role.
@@ -306,11 +310,23 @@ clipboard, or system-audio authority. See
 
 After all existing voice admission, jitter, FEC/PLC, and Opus decoding, a
 local-only output router may send the one canonical PCM block to the
-communications monitor, the optional virtual microphone, or both. The
+communications monitor, a replaceable local application-input backend, or
+both. The
 destination is not protocol state and the peer cannot select or observe it.
 Monitor gain and echo guard never change virtual-microphone amplitude. Loss of
 authenticated stream authority resets both sinks; failure of one local sink
 does not stop the other.
+
+The backend choice and any external endpoint ID are local current-user policy,
+never peer-controlled state. The runtime owns only the provider-neutral
+`IVoiceApplicationOutputBackend` contract. Backend replacement first stops the
+old backend. The external-cable adapter requires an exact active `eRender`
+endpoint ID and deliberately has no default-device or alternate-provider
+fallback. Missing selection, endpoint removal, initialization failure, and
+endpoint change remain fail-closed for application input while the admitted
+session and optional communications monitor continue independently. Its queue
+is capped at three 20 ms frames, drops stale samples, and closes on reset,
+permission loss, route disable, disconnect, reconfiguration, or shutdown.
 
 The virtual feed opens only an endpoint with the DeskLink-owned stable property
 and feed role. It never falls back to a friendly name or default device. The
@@ -692,14 +708,29 @@ store. No PFX/private-key path is accepted, and failure to sign and timestamp
 the DeskLink executables, uninstaller, or Setup aborts production packaging;
 there is no automatic unsigned fallback.
 
+`DevelopmentSelfSigned` is a distinct private testing exception, not a release
+substitute. It requires the exact self-signed `CN=DeskLink Development Secure`
+RSA/SHA-256 code-signing certificate backed by an RSA-3072-or-stronger CNG key
+whose export policy is `None`. Only the public DER certificate and its
+fingerprint manifest may leave the signing PC. A target administrator must
+independently verify the DER SHA-256 and explicitly place that public
+certificate in LocalMachine `Root` and `TrustedPublisher`; Setup never installs
+trust or accepts a certificate path. The resulting package is visibly labeled,
+timestamped, and installed beneath protected Program Files. Trusting this root
+grants its private-key holder publisher authority on that target, so the
+channel is suitable only for controlled development PCs and must be removable
+by exact fingerprint. It neither changes the DeskLink device identity nor
+enables the unintegrated secure-input service.
+
 The optional virtual-microphone package is the only machine-wide/elevated
 extension. It is absent by default. The fixed sibling helper accepts no path or
 package argument, validates exactly the DeskLink INF/SYS/catalog/manifest set,
 verifies catalog membership and the Microsoft Windows Hardware Compatibility
 Publisher signature, and operates only on the stable DeskLink root-device ID.
 Production packaging independently rejects a driver package without that
-signature. Development output is labelled unsigned and is never admitted to
-this installer path. DeskLink does not disable Secure Boot or signature
+signature. Ordinary development output is labelled unsigned and is never
+admitted to this installer path; Development Secure does not relax the separate
+Microsoft driver-signature requirement. DeskLink does not disable Secure Boot or signature
 enforcement, enable test-signing, install a test root, select a default audio
 device, or install an arbitrary INF.
 

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iostream>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -154,25 +155,54 @@ bool Win32InputInjector::ReadyForInput() const noexcept {
     const auto ThreadDesktop = GetThreadDesktop(GetCurrentThreadId());
     const auto InputDesktop = OpenInputDesktop(
         0, FALSE, DESKTOP_READOBJECTS);
-    if (!ThreadDesktop || !InputDesktop) return false;
+    if (!ThreadDesktop || !InputDesktop) {
+        std::cerr
+            << "[Input:Admission] focus refused because the active input desktop is inaccessible\n";
+        return false;
+    }
     const auto ThreadName = DesktopName(ThreadDesktop);
     const auto InputName = DesktopName(InputDesktop);
     CloseDesktop(InputDesktop);
-    if (!ThreadName || !InputName || *ThreadName != *InputName) return false;
+    if (!ThreadName || !InputName || *ThreadName != *InputName) {
+        std::cerr
+            << "[Input:Admission] focus refused because DeskLink is not attached to the active input desktop\n";
+        return false;
+    }
 
     const auto Foreground = GetForegroundWindow();
-    if (!Foreground) return false;
+    if (!Foreground) {
+        std::cerr
+            << "[Input:Admission] focus refused because Windows did not expose a foreground window\n";
+        return false;
+    }
     DWORD ForegroundProcessId = 0;
     (void)GetWindowThreadProcessId(Foreground, &ForegroundProcessId);
-    if (ForegroundProcessId == 0) return false;
+    if (ForegroundProcessId == 0) {
+        std::cerr
+            << "[Input:Admission] focus refused because the foreground process is unavailable\n";
+        return false;
+    }
     const auto ForegroundProcess = OpenProcess(
         PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ForegroundProcessId);
-    if (!ForegroundProcess) return false;
+    if (!ForegroundProcess) {
+        std::cerr
+            << "[Input:Admission] focus refused because the foreground process cannot be inspected\n";
+        return false;
+    }
     const auto ForegroundIntegrity = ProcessIntegrityLevel(ForegroundProcess);
     CloseHandle(ForegroundProcess);
     const auto CurrentIntegrity = ProcessIntegrityLevel(GetCurrentProcess());
-    return ForegroundIntegrity && CurrentIntegrity &&
-        *ForegroundIntegrity <= *CurrentIntegrity;
+    if (!ForegroundIntegrity || !CurrentIntegrity) {
+        std::cerr
+            << "[Input:Admission] focus refused because Windows integrity levels are unavailable\n";
+        return false;
+    }
+    if (*ForegroundIntegrity > *CurrentIntegrity) {
+        std::cerr
+            << "[Input:Admission] focus refused because the foreground app has higher integrity\n";
+        return false;
+    }
+    return true;
 }
 
 bool Win32InputInjector::inject_key(const KeyEventMessage& event) {

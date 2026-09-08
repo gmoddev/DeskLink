@@ -9,6 +9,53 @@
 
 namespace desklink {
 
+VoiceApplicationOutput::VoiceApplicationOutput(
+    std::unique_ptr<IVoiceApplicationOutputBackend> Backend)
+    : Backend_(std::move(Backend)) {}
+
+VoiceApplicationOutput::~VoiceApplicationOutput() { Stop(); }
+
+bool VoiceApplicationOutput::ReplaceBackend(
+    std::unique_ptr<IVoiceApplicationOutputBackend> Backend) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (Backend_) Backend_->Stop();
+    Backend_ = std::move(Backend);
+    return Backend_ != nullptr;
+}
+
+bool VoiceApplicationOutput::Start() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (!Backend_) return false;
+    try { return Backend_->Start(); } catch (...) { return false; }
+}
+
+bool VoiceApplicationOutput::Submit(VoicePcmFrame Frame) noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (!Backend_) return false;
+    try { return Backend_->Submit(std::move(Frame)); }
+    catch (...) { return false; }
+}
+
+void VoiceApplicationOutput::Reset() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (Backend_) Backend_->Reset();
+}
+
+void VoiceApplicationOutput::Stop() noexcept {
+    std::scoped_lock Lock(Mutex_);
+    if (Backend_) Backend_->Stop();
+}
+
+bool VoiceApplicationOutput::Running() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Backend_ && Backend_->Running();
+}
+
+bool VoiceApplicationOutput::Available() const noexcept {
+    std::scoped_lock Lock(Mutex_);
+    return Backend_ != nullptr;
+}
+
 VoiceOutputRouter::VoiceOutputRouter(
     VoiceOutputSinkHandlers Monitor,
     VoiceOutputSinkHandlers VirtualMicrophone)
