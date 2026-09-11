@@ -51,6 +51,11 @@ namespace {
 constexpr std::uint16_t kDefaultPort = 43821;
 constexpr std::chrono::seconds kPairingWindow{300};
 constexpr std::chrono::milliseconds kAudioRecoveryInitialDelay{250};
+constexpr std::uint32_t ManagedFocusLeaseMilliseconds{2'000};
+constexpr std::chrono::milliseconds ManagedFocusRenewInterval{500};
+static_assert(
+    ManagedFocusRenewInterval * 2 <
+    std::chrono::milliseconds{ManagedFocusLeaseMilliseconds});
 constexpr std::chrono::milliseconds kAudioRecoveryMaximumDelay{5'000};
 constexpr wchar_t kDeviceKeyName[] = L"DeskLink-Device-Identity-v1";
 constexpr wchar_t kRuntimeMutexName[] = L"Local\\DeskLink.Runtime.v1";
@@ -3767,7 +3772,7 @@ public:
             }
             {
                 std::scoped_lock Lock(RoamingObservationMutex_);
-                PendingRoamingObservation_.reset();
+                PendingRoamingObservations_.clear();
                 RoamingObservationTaskQueued_ = false;
             }
         } catch (...) {
@@ -3795,7 +3800,10 @@ public:
 
     [[nodiscard]] bool RequestFocus() noexcept override {
         try {
-            if (Host_->Session.BeginOutgoingFocus(750)) return true;
+            if (Host_->Session.BeginOutgoingFocus(
+                    ManagedFocusLeaseMilliseconds)) {
+                return true;
+            }
         } catch (...) {
         }
         LastBackendFailure_ = BackendFailure::RequestFocus;
@@ -4125,39 +4133,34 @@ private:
     void ObserveLocalPointer(
         desklink::Win32LocalPointerObservation Observation) noexcept {
         bool Schedule = false;
+        bool Overflow = false;
         try {
             {
                 std::scoped_lock Lock(RoamingObservationMutex_);
-                if (PendingRoamingObservation_) {
-                    const auto DeltaX = std::clamp<std::int64_t>(
-                        static_cast<std::int64_t>(
-                            PendingRoamingObservation_->DeltaX) +
-                            Observation.DeltaX,
-                        std::numeric_limits<std::int32_t>::min(),
-                        std::numeric_limits<std::int32_t>::max());
-                    const auto DeltaY = std::clamp<std::int64_t>(
-                        static_cast<std::int64_t>(
-                            PendingRoamingObservation_->DeltaY) +
-                            Observation.DeltaY,
-                        std::numeric_limits<std::int32_t>::min(),
-                        std::numeric_limits<std::int32_t>::max());
-                    PendingRoamingObservation_ = {
-                        Observation.ScreenX,
-                        Observation.ScreenY,
-                        static_cast<std::int32_t>(DeltaX),
-                        static_cast<std::int32_t>(DeltaY)};
-                } else {
-                    PendingRoamingObservation_ = Observation;
+                if (PendingRoamingObservations_.empty() ||
+                    !desklink::TryCoalesceLocalPointerObservation(
+                        PendingRoamingObservations_.back(), Observation)) {
+                    if (PendingRoamingObservations_.size() >=
+                        MaximumPendingRoamingObservations) {
+                        Overflow = true;
+                    } else {
+                        PendingRoamingObservations_.push_back(Observation);
+                    }
                 }
-                if (!RoamingObservationTaskQueued_) {
+                if (!Overflow && !RoamingObservationTaskQueued_) {
                     RoamingObservationTaskQueued_ = true;
                     Schedule = true;
                 }
             }
+            if (Overflow) {
+                RequestAsynchronousFailLocal(
+                    "bounded roaming observation queue overflow");
+                return;
+            }
             if (Schedule && !Post([this] { DrainRoamingObservation(); })) {
                 {
                     std::scoped_lock Lock(RoamingObservationMutex_);
-                    PendingRoamingObservation_.reset();
+                    PendingRoamingObservations_.clear();
                     RoamingObservationTaskQueued_ = false;
                 }
                 RequestAsynchronousFailLocal(
@@ -4170,60 +4173,62 @@ private:
     }
 
     void DrainRoamingObservation() {
-        std::optional<desklink::Win32LocalPointerObservation> Observation;
+        std::deque<desklink::Win32LocalPointerObservation> Observations;
         {
             std::scoped_lock Lock(RoamingObservationMutex_);
-            Observation = PendingRoamingObservation_;
-            PendingRoamingObservation_.reset();
+            Observations.swap(PendingRoamingObservations_);
             RoamingObservationTaskQueued_ = false;
         }
-        if (!Observation || !RoamingSettings_ ||
-            Profiles_.Decision().Mode != desklink::DeskMode::Roam ||
-            Lifecycle_.Status().State !=
-                desklink::HostInputLifecycleState::Local) {
-            return;
-        }
-        const auto Update = RefreshRoamingContext();
-        if (Update.MustFailLocal) {
-            FailRoamingLocal(
-                "roaming context changed while crossing an edge");
-            return;
-        }
-        const auto Request = Roaming_.Observe({
-            Observation->ScreenX,
-            Observation->ScreenY,
-            Observation->DeltaX,
-            Observation->DeltaY});
-        RoamingState_.store(ToControlRoamingState(Roaming_.State()));
-        if (!Request) return;
-
-        PendingRoamingRequest_ = *Request;
-        PendingLanding_ = Request->Landing;
-        LastBackendFailure_ = BackendFailure::None;
-        if (!Lifecycle_.ApplyMode(desklink::DeskMode::Roam)) {
-            if (Host_->Session.DirectionState() ==
-                desklink::PeerDirectionState::IncomingActive) {
-                Roaming_.FailLocal();
-                PendingRoamingRequest_.reset();
-                PendingLanding_.reset();
-                PublishLifecycleStatus();
-                std::cout
-                    << "[Roaming:Runtime] outbound crossing deferred while peer controls this PC\n";
+        for (const auto& Observation : Observations) {
+            if (!RoamingSettings_ ||
+                Profiles_.Decision().Mode != desklink::DeskMode::Roam ||
+                Lifecycle_.Status().State !=
+                    desklink::HostInputLifecycleState::Local) {
                 return;
             }
-            ResetRoamingState();
+            const auto Update = RefreshRoamingContext();
+            if (Update.MustFailLocal) {
+                FailRoamingLocal(
+                    "roaming context changed while crossing an edge");
+                return;
+            }
+            const auto Request = Roaming_.Observe({
+                Observation.ScreenX,
+                Observation.ScreenY,
+                Observation.DeltaX,
+                Observation.DeltaY});
+            RoamingState_.store(ToControlRoamingState(Roaming_.State()));
+            if (!Request) continue;
+
+            PendingRoamingRequest_ = *Request;
+            PendingLanding_ = Request->Landing;
+            LastBackendFailure_ = BackendFailure::None;
+            if (!Lifecycle_.ApplyMode(desklink::DeskMode::Roam)) {
+                if (Host_->Session.DirectionState() ==
+                    desklink::PeerDirectionState::IncomingActive) {
+                    Roaming_.FailLocal();
+                    PendingRoamingRequest_.reset();
+                    PendingLanding_.reset();
+                    PublishLifecycleStatus();
+                    std::cout
+                        << "[Roaming:Runtime] outbound crossing deferred while peer controls this PC\n";
+                    return;
+                }
+                ResetRoamingState();
+                PublishLifecycleStatus();
+                ReportTerminalFailure(BackendFailureMessage());
+                return;
+            }
             PublishLifecycleStatus();
-            ReportTerminalFailure(BackendFailureMessage());
+            {
+                std::scoped_lock Lock(Result_->Mutex);
+                Result_->Ready = false;
+            }
+            Result_->Changed.notify_all();
+            std::cout
+                << "[Roaming:Runtime] edge crossing admitted; awaiting fresh FocusReady\n";
             return;
         }
-        PublishLifecycleStatus();
-        {
-            std::scoped_lock Lock(Result_->Mutex);
-            Result_->Ready = false;
-        }
-        Result_->Changed.notify_all();
-        std::cout
-            << "[Roaming:Runtime] edge crossing admitted; awaiting fresh FocusReady\n";
     }
 
     [[nodiscard]] bool Initialize() {
@@ -4303,7 +4308,7 @@ private:
         }
 
         auto NextRenewal = std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(500);
+            ManagedFocusRenewInterval;
         for (;;) {
             std::function<void()> Task;
             {
@@ -4336,7 +4341,7 @@ private:
             const auto Now = std::chrono::steady_clock::now();
             if (Now >= NextRenewal) {
                 RenewAndReconcile();
-                NextRenewal = Now + std::chrono::milliseconds(500);
+                NextRenewal = Now + ManagedFocusRenewInterval;
             }
         }
 
@@ -4438,7 +4443,8 @@ private:
         bool Renewed = false;
         bool Reconciled = false;
         try {
-            Renewed = Host_->Session.RenewOutgoingFocus(750);
+            Renewed = Host_->Session.RenewOutgoingFocus(
+                ManagedFocusLeaseMilliseconds);
             Reconciled = Renewed && Host_->Session.SendInputStateSnapshot();
         } catch (...) {
         }
@@ -4810,8 +4816,9 @@ private:
     desklink::IClock::time_point LastEmergencyReturnLocal_{};
 
     std::mutex RoamingObservationMutex_;
-    std::optional<desklink::Win32LocalPointerObservation>
-        PendingRoamingObservation_;
+    std::deque<desklink::Win32LocalPointerObservation>
+        PendingRoamingObservations_;
+    static constexpr std::size_t MaximumPendingRoamingObservations = 64;
     bool RoamingObservationTaskQueued_{};
 
     std::atomic<desklink::DeskMode> DesiredMode_{desklink::DeskMode::LockPc1};

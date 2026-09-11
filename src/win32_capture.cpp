@@ -81,6 +81,43 @@ std::optional<MouseButtonMessage> GetButton(const RAWMOUSE& Mouse,
 
 } // namespace
 
+bool TryCoalesceLocalPointerObservation(
+    Win32LocalPointerObservation& Existing,
+    const Win32LocalPointerObservation& Incoming) noexcept {
+    const auto Absolute = [](std::int32_t Value) noexcept {
+        const auto Wide = static_cast<std::int64_t>(Value);
+        return Wide < 0 ? -Wide : Wide;
+    };
+    const auto Reversed = [](std::int32_t Left,
+                             std::int32_t Right) noexcept {
+        return (Left < 0 && Right > 0) || (Left > 0 && Right < 0);
+    };
+    const bool HorizontalDominant =
+        Absolute(Existing.DeltaX) >= Absolute(Existing.DeltaY);
+    if ((HorizontalDominant &&
+         Reversed(Existing.DeltaX, Incoming.DeltaX)) ||
+        (!HorizontalDominant &&
+         Reversed(Existing.DeltaY, Incoming.DeltaY))) {
+        return false;
+    }
+    const auto DeltaX = static_cast<std::int64_t>(Existing.DeltaX) +
+        Incoming.DeltaX;
+    const auto DeltaY = static_cast<std::int64_t>(Existing.DeltaY) +
+        Incoming.DeltaY;
+    if (DeltaX < std::numeric_limits<std::int32_t>::min() ||
+        DeltaX > std::numeric_limits<std::int32_t>::max() ||
+        DeltaY < std::numeric_limits<std::int32_t>::min() ||
+        DeltaY > std::numeric_limits<std::int32_t>::max()) {
+        return false;
+    }
+    Existing = Win32LocalPointerObservation{
+        Incoming.ScreenX,
+        Incoming.ScreenY,
+        static_cast<std::int32_t>(DeltaX),
+        static_cast<std::int32_t>(DeltaY)};
+    return true;
+}
+
 struct Win32InputCapture::State {
     State(Win32CaptureHandlers OwnedHandlers,
           Win32PointerCalibration Calibration)
@@ -187,21 +224,9 @@ struct Win32InputCapture::State {
                 Queue.back())) {
             const auto& Incoming =
                 std::get<Win32LocalPointerObservation>(Event);
-            const auto& Existing =
+            auto& Existing =
                 std::get<Win32LocalPointerObservation>(Queue.back());
-            const auto DeltaX = static_cast<std::int64_t>(Existing.DeltaX) +
-                                Incoming.DeltaX;
-            const auto DeltaY = static_cast<std::int64_t>(Existing.DeltaY) +
-                                Incoming.DeltaY;
-            if (DeltaX >= std::numeric_limits<std::int32_t>::min() &&
-                DeltaX <= std::numeric_limits<std::int32_t>::max() &&
-                DeltaY >= std::numeric_limits<std::int32_t>::min() &&
-                DeltaY <= std::numeric_limits<std::int32_t>::max()) {
-                Queue.back() = Win32LocalPointerObservation{
-                    Incoming.ScreenX,
-                    Incoming.ScreenY,
-                    static_cast<std::int32_t>(DeltaX),
-                    static_cast<std::int32_t>(DeltaY)};
+            if (TryCoalesceLocalPointerObservation(Existing, Incoming)) {
                 QueueChanged.notify_one();
                 return true;
             }

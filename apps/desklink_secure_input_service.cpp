@@ -238,25 +238,6 @@ bool IsSessionUnlocked(DWORD SessionId) noexcept {
     return Unlocked;
 }
 
-std::wstring ActiveInputDesktopName() {
-    const HDESK Desktop = OpenInputDesktop(
-        0, FALSE, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP);
-    if (!Desktop) return {};
-    DWORD Required{};
-    GetUserObjectInformationW(Desktop, UOI_NAME, nullptr, 0, &Required);
-    if (Required < sizeof(wchar_t) || Required > 1024) {
-        CloseDesktop(Desktop);
-        return {};
-    }
-    std::wstring Name(Required / sizeof(wchar_t), L'\0');
-    const BOOL Read = GetUserObjectInformationW(
-        Desktop, UOI_NAME, Name.data(), Required, &Required);
-    CloseDesktop(Desktop);
-    if (!Read) return {};
-    Name.resize(std::wcslen(Name.c_str()));
-    return Name;
-}
-
 struct ProtectedGrant {
     desklink::MachineId PeerMachine{};
     desklink::CertificateDerHash PeerCertificateDerHash{};
@@ -311,6 +292,35 @@ std::optional<ProtectedGrant> LoadProtectedGrant() noexcept {
     return Result;
 }
 
+void RecordForwardDiagnostic(Operation RequestedOperation,
+                             Status Result, DWORD Stage = 0,
+                             DWORD Win32Error = ERROR_SUCCESS) noexcept {
+    if (Result == Status::Ok) return;
+    HKEY Key{};
+    if (RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            desklink::secure_input_wire::kDiagnosticRegistryPath, 0, nullptr,
+            REG_OPTION_VOLATILE, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr,
+            &Key, nullptr) != ERROR_SUCCESS) {
+        return;
+    }
+    const DWORD RawOperation = static_cast<DWORD>(RequestedOperation);
+    const DWORD RawStatus = static_cast<DWORD>(Result);
+    const ULONGLONG ObservedAtTick = GetTickCount64();
+    (void)RegSetValueExW(Key, L"Operation", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&RawOperation), sizeof(RawOperation));
+    (void)RegSetValueExW(Key, L"Status", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&RawStatus), sizeof(RawStatus));
+    (void)RegSetValueExW(Key, L"Stage", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&Stage), sizeof(Stage));
+    (void)RegSetValueExW(Key, L"Win32Error", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&Win32Error), sizeof(Win32Error));
+    (void)RegSetValueExW(Key, L"ObservedAtTick", 0, REG_QWORD,
+        reinterpret_cast<const BYTE*>(&ObservedAtTick),
+        sizeof(ObservedAtTick));
+    RegCloseKey(Key);
+}
+
 class HelperChannel final {
 public:
     HelperChannel() = default;
@@ -322,6 +332,8 @@ public:
         const std::wstring& HelperPath, const std::wstring& Directory,
         DWORD SessionId, bool SecureDesktop) noexcept {
         Reset();
+        LastStartStage_ = 0;
+        LastStartError_ = ERROR_SUCCESS;
         SECURITY_ATTRIBUTES Security{};
         Security.nLength = sizeof(Security);
         Security.bInheritHandle = TRUE;
@@ -331,6 +343,8 @@ public:
         HANDLE ChildWrite{};
         if (!CreatePipe(&ChildRead, &ParentWrite, &Security, 4096) ||
             !CreatePipe(&ParentRead, &ChildWrite, &Security, 4096)) {
+            LastStartStage_ = 1;
+            LastStartError_ = GetLastError();
             if (ChildRead) CloseHandle(ChildRead);
             if (ParentWrite) CloseHandle(ParentWrite);
             if (ParentRead) CloseHandle(ParentRead);
@@ -344,6 +358,8 @@ public:
         if (!SetHandleInformation(
                 ParentWrite_.Get(), HANDLE_FLAG_INHERIT, 0) ||
             !SetHandleInformation(ParentRead_.Get(), HANDLE_FLAG_INHERIT, 0)) {
+            LastStartStage_ = 2;
+            LastStartError_ = GetLastError();
             Reset();
             return false;
         }
@@ -351,17 +367,27 @@ public:
         HANDLE ProcessTokenRaw{};
         HANDLE SessionTokenRaw{};
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY,
-                &ProcessTokenRaw)) return false;
+                &ProcessTokenRaw)) {
+            LastStartStage_ = 3;
+            LastStartError_ = GetLastError();
+            return false;
+        }
         UniqueHandle ProcessToken(ProcessTokenRaw);
         if (!DuplicateTokenEx(
                 ProcessToken.Get(), TOKEN_ALL_ACCESS, nullptr,
                 SecurityImpersonation, TokenPrimary, &SessionTokenRaw)) {
+            LastStartStage_ = 4;
+            LastStartError_ = GetLastError();
             return false;
         }
         UniqueHandle SessionToken(SessionTokenRaw);
         if (!SetTokenInformation(
                 SessionToken.Get(), TokenSessionId, &SessionId,
-                sizeof(SessionId))) return false;
+                sizeof(SessionId))) {
+            LastStartStage_ = 5;
+            LastStartError_ = GetLastError();
+            return false;
+        }
 
         const auto ReadValue = reinterpret_cast<std::uintptr_t>(
             ChildReadOwner.Get());
@@ -383,6 +409,8 @@ public:
                 nullptr, nullptr, TRUE,
                 CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
                 nullptr, Directory.c_str(), &Startup, &Process)) {
+            LastStartStage_ = 6;
+            LastStartError_ = GetLastError();
             Reset();
             return false;
         }
@@ -390,6 +418,46 @@ public:
         Process_.Reset(Process.hProcess);
         ChildReadOwner.Reset();
         ChildWriteOwner.Reset();
+
+        const std::array<HANDLE, 2> ReadyWaitHandles{
+            ParentRead_.Get(), Process_.Get()};
+        const auto ReadyWait = WaitForMultipleObjects(
+            static_cast<DWORD>(ReadyWaitHandles.size()),
+            ReadyWaitHandles.data(), FALSE, 500);
+        if (ReadyWait == WAIT_OBJECT_0 + 1) {
+            DWORD ExitCode{};
+            (void)GetExitCodeProcess(Process_.Get(), &ExitCode);
+            LastStartStage_ = 8;
+            LastStartError_ = ExitCode;
+            Reset();
+            return false;
+        }
+        if (ReadyWait != WAIT_OBJECT_0) {
+            LastStartStage_ = 9;
+            LastStartError_ = ReadyWait == WAIT_TIMEOUT
+                ? ERROR_TIMEOUT : GetLastError();
+            Reset();
+            return false;
+        }
+        HelperResponse Ready;
+        DWORD ReadyRead{};
+        if (!ReadFile(
+                ParentRead_.Get(), &Ready, sizeof(Ready), &ReadyRead,
+                nullptr) || ReadyRead != sizeof(Ready) ||
+            Ready.Magic != desklink::secure_input_wire::kMagic ||
+            Ready.Version != desklink::secure_input_wire::kVersion ||
+            Ready.Size != sizeof(Ready)) {
+            LastStartStage_ = 10;
+            LastStartError_ = ERROR_INVALID_DATA;
+            Reset();
+            return false;
+        }
+        if (Ready.Result != Status::Ok) {
+            LastStartStage_ = 11;
+            LastStartError_ = static_cast<DWORD>(Ready.Result);
+            Reset();
+            return false;
+        }
         return true;
     }
 
@@ -408,23 +476,12 @@ public:
             Reset();
             return Status::InternalFailure;
         }
-        const auto Deadline = GetTickCount64() + 500;
-        DWORD Available{};
-        while (GetTickCount64() < Deadline) {
-            if (!PeekNamedPipe(
-                    ParentRead_.Get(), nullptr, 0, nullptr, &Available,
-                    nullptr)) {
-                Reset();
-                return Status::InternalFailure;
-            }
-            if (Available >= sizeof(HelperResponse)) break;
-            if (WaitForSingleObject(Process_.Get(), 0) != WAIT_TIMEOUT) {
-                Reset();
-                return Status::InternalFailure;
-            }
-            Sleep(1);
-        }
-        if (Available < sizeof(HelperResponse)) {
+        const std::array<HANDLE, 2> ResponseWaitHandles{
+            ParentRead_.Get(), Process_.Get()};
+        const auto ResponseWait = WaitForMultipleObjects(
+            static_cast<DWORD>(ResponseWaitHandles.size()),
+            ResponseWaitHandles.data(), FALSE, 500);
+        if (ResponseWait != WAIT_OBJECT_0) {
             Reset();
             return Status::InternalFailure;
         }
@@ -460,10 +517,20 @@ public:
         return Process_ && WaitForSingleObject(Process_.Get(), 0) == WAIT_TIMEOUT;
     }
 
+    [[nodiscard]] DWORD LastStartStage() const noexcept {
+        return LastStartStage_;
+    }
+
+    [[nodiscard]] DWORD LastStartError() const noexcept {
+        return LastStartError_;
+    }
+
 private:
     UniqueHandle ParentWrite_;
     UniqueHandle ParentRead_;
     UniqueHandle Process_;
+    DWORD LastStartStage_{};
+    DWORD LastStartError_{};
 };
 
 class BrokerSession final {
@@ -499,6 +566,21 @@ public:
                 Revoke();
                 Reply.Result = Status::GrantRejected;
                 return Reply;
+            }
+            if (Message.RequestedOperation == Operation::Authorize) {
+                // Starting and validating the helper can consume a material
+                // part of a short focus lease. Complete that bounded work
+                // before the authorization clock starts so an admitted grant
+                // always receives its full requested lifetime.
+                const auto Prepared = PrepareHelper(false);
+                if (Prepared != Status::Ok) {
+                    RecordForwardDiagnostic(
+                        Message.RequestedOperation, Prepared,
+                        LastPrepareStage_, LastPrepareError_);
+                    Revoke();
+                    Reply.Result = Prepared;
+                    return Reply;
+                }
             }
             if (AuthorizationRevision_ ==
                 std::numeric_limits<std::uint64_t>::max()) {
@@ -589,6 +671,8 @@ private:
                 return desklink::SecureInputOperation::MouseButton;
             case Operation::PointerMotion:
                 return desklink::SecureInputOperation::PointerMotion;
+            case Operation::PointerPosition:
+                return desklink::SecureInputOperation::PointerPosition;
             case Operation::Wheel:
                 return desklink::SecureInputOperation::Wheel;
             case Operation::ReconcileState:
@@ -611,24 +695,60 @@ private:
                     RequestedOperation, Payload);
                 if (SecureResult != Status::Ok) Result = SecureResult;
             }
+            RecordForwardDiagnostic(RequestedOperation, Result, 200);
             return Result;
         }
-        const auto Desktop = ActiveInputDesktopName();
-        const bool Secure = _wcsicmp(Desktop.c_str(), L"Winlogon") == 0;
-        if (!Secure && _wcsicmp(Desktop.c_str(), L"Default") != 0) {
-            return Status::DesktopUnavailable;
+        auto Prepared = PrepareHelper(false);
+        if (Prepared != Status::Ok) {
+            RecordForwardDiagnostic(RequestedOperation, Prepared,
+                LastPrepareStage_, LastPrepareError_);
+            return Prepared;
         }
-        auto& Helper = Secure ? SecureHelper_ : DefaultHelper_;
-        if (!Helper.Active() && !StartHelper(Helper, Secure)) {
-            return Status::DesktopUnavailable;
+        const auto DefaultResult = DefaultHelper_.Send(
+            RequestedOperation, Payload);
+        if (DefaultResult == Status::Ok) return Status::Ok;
+        if (DefaultResult != Status::DesktopUnavailable) {
+            RecordForwardDiagnostic(RequestedOperation, DefaultResult, 201);
+            return DefaultResult;
         }
-        return Helper.Send(RequestedOperation, Payload);
+
+        // DesktopUnavailable is the only routing result that may try the
+        // other fixed desktop. Authentication, authorization, IPC, and
+        // injection failures remain terminal and never fall through.
+        Prepared = PrepareHelper(true);
+        if (Prepared != Status::Ok) {
+            RecordForwardDiagnostic(RequestedOperation, Prepared,
+                LastPrepareStage_, LastPrepareError_);
+            return Prepared;
+        }
+        const auto SecureResult = SecureHelper_.Send(
+            RequestedOperation, Payload);
+        RecordForwardDiagnostic(RequestedOperation, SecureResult, 202);
+        return SecureResult;
     }
 
-    bool StartHelper(HelperChannel& Helper, bool Secure) noexcept {
+    Status PrepareHelper(bool Secure) noexcept {
+        LastPrepareStage_ = 0;
+        LastPrepareError_ = ERROR_SUCCESS;
+        auto& Helper = Secure ? SecureHelper_ : DefaultHelper_;
+        if (Helper.Active()) return Status::Ok;
         const DWORD SessionId = WTSGetActiveConsoleSessionId();
-        return SessionId != 0xffffffffu && IsSessionUnlocked(SessionId) &&
-            Helper.Start(HelperPath_, Directory_, SessionId, Secure);
+        if (SessionId == 0xffffffffu) {
+            LastPrepareStage_ = 2;
+            LastPrepareError_ = ERROR_NO_SUCH_LOGON_SESSION;
+            return Status::DesktopUnavailable;
+        }
+        if (!IsSessionUnlocked(SessionId)) {
+            LastPrepareStage_ = 3;
+            LastPrepareError_ = ERROR_ACCESS_DENIED;
+            return Status::DesktopUnavailable;
+        }
+        if (!Helper.Start(HelperPath_, Directory_, SessionId, Secure)) {
+            LastPrepareStage_ = 100 + Helper.LastStartStage();
+            LastPrepareError_ = Helper.LastStartError();
+            return Status::DesktopUnavailable;
+        }
+        return Status::Ok;
     }
 
     std::wstring Directory_;
@@ -640,6 +760,8 @@ private:
     std::uint64_t AuthorizationRevision_{};
     std::uint64_t CurrentGrantRevision_{};
     std::uint64_t PolicyRevision_{};
+    DWORD LastPrepareStage_{};
+    DWORD LastPrepareError_{};
 };
 
 bool ValidateClient(
@@ -671,6 +793,80 @@ bool ValidateClient(
     return Signer && *Signer == ExpectedSigner;
 }
 
+enum class PipeIoResult {
+    Complete,
+    Stopped,
+    Failed,
+};
+
+PipeIoResult TransferPipeWithStop(
+    HANDLE Pipe, HANDLE IoEvent, void* Buffer, DWORD Bytes,
+    bool Write) noexcept {
+    if (!Pipe || Pipe == INVALID_HANDLE_VALUE || !IoEvent || !Buffer ||
+        Bytes == 0) {
+        return PipeIoResult::Failed;
+    }
+    (void)ResetEvent(IoEvent);
+    OVERLAPPED Pending{};
+    Pending.hEvent = IoEvent;
+    DWORD Transferred{};
+    const BOOL Started = Write
+        ? WriteFile(Pipe, Buffer, Bytes, &Transferred, &Pending)
+        : ReadFile(Pipe, Buffer, Bytes, &Transferred, &Pending);
+    if (Started) {
+        return Transferred == Bytes
+            ? PipeIoResult::Complete : PipeIoResult::Failed;
+    }
+    if (GetLastError() != ERROR_IO_PENDING) return PipeIoResult::Failed;
+
+    const std::array<HANDLE, 2> WaitHandles{StopEvent, IoEvent};
+    const auto Wait = WaitForMultipleObjects(
+        static_cast<DWORD>(WaitHandles.size()), WaitHandles.data(), FALSE,
+        INFINITE);
+    if (Wait == WAIT_OBJECT_0) {
+        (void)CancelIoEx(Pipe, &Pending);
+        (void)GetOverlappedResult(Pipe, &Pending, &Transferred, TRUE);
+        return PipeIoResult::Stopped;
+    }
+    if (Wait != WAIT_OBJECT_0 + 1) {
+        (void)CancelIoEx(Pipe, &Pending);
+        (void)GetOverlappedResult(Pipe, &Pending, &Transferred, TRUE);
+        return PipeIoResult::Failed;
+    }
+    if (!GetOverlappedResult(Pipe, &Pending, &Transferred, FALSE) ||
+        Transferred != Bytes) {
+        return PipeIoResult::Failed;
+    }
+    return PipeIoResult::Complete;
+}
+
+bool ConnectPipeWithStop(HANDLE Pipe, HANDLE IoEvent) noexcept {
+    (void)ResetEvent(IoEvent);
+    OVERLAPPED Pending{};
+    Pending.hEvent = IoEvent;
+    if (ConnectNamedPipe(Pipe, &Pending)) return true;
+    const auto Error = GetLastError();
+    if (Error == ERROR_PIPE_CONNECTED) return true;
+    if (Error != ERROR_IO_PENDING) return false;
+
+    const std::array<HANDLE, 2> WaitHandles{StopEvent, IoEvent};
+    const auto Wait = WaitForMultipleObjects(
+        static_cast<DWORD>(WaitHandles.size()), WaitHandles.data(), FALSE,
+        INFINITE);
+    DWORD Transferred{};
+    if (Wait == WAIT_OBJECT_0) {
+        (void)CancelIoEx(Pipe, &Pending);
+        (void)GetOverlappedResult(Pipe, &Pending, &Transferred, TRUE);
+        return false;
+    }
+    if (Wait != WAIT_OBJECT_0 + 1) {
+        (void)CancelIoEx(Pipe, &Pending);
+        (void)GetOverlappedResult(Pipe, &Pending, &Transferred, TRUE);
+        return false;
+    }
+    return GetOverlappedResult(Pipe, &Pending, &Transferred, FALSE);
+}
+
 void ServePipe(
     HANDLE Pipe, const std::wstring& Directory,
     const std::wstring& HelperPath,
@@ -681,26 +877,20 @@ void ServePipe(
         return;
     }
     BrokerSession Session(Directory, HelperPath);
+    UniqueHandle IoEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!IoEvent) return;
     while (WaitForSingleObject(StopEvent, 0) == WAIT_TIMEOUT) {
-        DWORD Available{};
-        if (!PeekNamedPipe(Pipe, nullptr, 0, nullptr, &Available, nullptr)) {
-            break;
-        }
-        if (Available < sizeof(Request)) {
-            Sleep(2);
-            continue;
-        }
         Request Message;
-        DWORD Read{};
-        if (!ReadFile(Pipe, &Message, sizeof(Message), &Read, nullptr) ||
-            Read != sizeof(Message)) {
+        if (TransferPipeWithStop(
+                Pipe, IoEvent.Get(), &Message, sizeof(Message), false) !=
+            PipeIoResult::Complete) {
             break;
         }
         const auto Reply = Session.Handle(Message);
-        DWORD Written{};
-        if (!WriteFile(
-                Pipe, &Reply, sizeof(Reply), &Written, nullptr) ||
-            Written != sizeof(Reply)) {
+        auto MutableReply = Reply;
+        if (TransferPipeWithStop(
+                Pipe, IoEvent.Get(), &MutableReply, sizeof(MutableReply),
+                true) != PipeIoResult::Complete) {
             break;
         }
     }
@@ -787,25 +977,15 @@ void WINAPI ServiceMain(DWORD, wchar_t**) noexcept {
     while (WaitForSingleObject(StopEvent, 0) == WAIT_TIMEOUT) {
         UniqueHandle Pipe(CreateNamedPipeW(
             desklink::secure_input_wire::kPipeName,
-            PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT |
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT |
                 PIPE_REJECT_REMOTE_CLIENTS,
             1, 4096, 4096, 0, &Security));
         if (!Pipe || Pipe.Get() == INVALID_HANDLE_VALUE) break;
-        bool Connected{};
-        while (WaitForSingleObject(StopEvent, 0) == WAIT_TIMEOUT) {
-            if (ConnectNamedPipe(Pipe.Get(), nullptr)) {
-                Connected = true;
-                break;
-            }
-            const DWORD Error = GetLastError();
-            if (Error == ERROR_PIPE_CONNECTED) {
-                Connected = true;
-                break;
-            }
-            if (Error != ERROR_PIPE_LISTENING && Error != ERROR_NO_DATA) break;
-            Sleep(10);
-        }
+        UniqueHandle ConnectEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!ConnectEvent) break;
+        const bool Connected = ConnectPipeWithStop(
+            Pipe.Get(), ConnectEvent.Get());
         if (Connected) {
             ServePipe(Pipe.Get(), Directory, HelperPath, *Signer);
             (void)DisconnectNamedPipe(Pipe.Get());

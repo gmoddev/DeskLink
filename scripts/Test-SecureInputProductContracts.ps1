@@ -70,6 +70,7 @@ foreach ($Required in @(
         'GetNamedPipeClientProcessId', 'PIPE_REJECT_REMOTE_CLIENTS',
         'WTSGetActiveConsoleSessionId', 'LoadProtectedGrant',
         'SecureInputAuthorizationGate', 'CreateProcessAsUserW',
+        'PrepareHelper', 'kDiagnosticRegistryPath',
         'FOLDERID_ProgramFiles', 'FILE_ATTRIBUTE_REPARSE_POINT',
         'desklink_pair.exe')) {
     if ($Service.IndexOf($Required, [StringComparison]::Ordinal) -lt 0) {
@@ -77,6 +78,7 @@ foreach ($Required in @(
     }
 }
 if ($Service -notmatch 'Operation::ReconcileState[\s\S]{0,100}SecureInputOperation::ReconcileState' -or
+    $Service -notmatch 'DefaultResult\s*!=\s*Status::DesktopUnavailable' -or
     $Service -match '(?i)CreateProcessW\([^\)]*(request|payload)' -or
     $Service -match '(?i)ShellExecute') {
     throw 'The service must preserve exact operations and fixed helper launch behavior.'
@@ -85,8 +87,11 @@ if ($Service -notmatch 'Operation::ReconcileState[\s\S]{0,100}SecureInputOperati
 foreach ($Required in @(
         'CheckTokenMembership', 'WTSGetActiveConsoleSessionId',
         'WTS_SESSIONSTATE_UNLOCK', 'OpenInputDesktop', 'consent.exe',
+        'Ready.Result',
         'KEYEVENTF_SCANCODE', 'Operation::ReleaseOwnedState',
-        'Operation::PointerMotion', 'Operation::MouseButton')) {
+        'Operation::PointerMotion', 'Operation::PointerPosition',
+        'MOUSEEVENTF_ABSOLUTE', 'MOUSEEVENTF_VIRTUALDESK',
+        'Operation::MouseButton')) {
     if ($Helper.IndexOf($Required, [StringComparison]::Ordinal) -lt 0) {
         throw "Secure-input helper lost required constraint: $Required"
     }
@@ -94,6 +99,21 @@ foreach ($Required in @(
 if ($Helper -notmatch
         'SecureDesktop\s*&&[\s\S]{0,180}Operation::Key[\s\S]{0,180}Operation::ReconcileState[\s\S]{0,120}Status::SecureOperationBlocked') {
     throw 'The secure desktop must reject keyboard and reconciliation input.'
+}
+if ($Service -notmatch
+        'ReadyWait\s*=\s*WaitForMultipleObjects\([\s\S]{0,300}FALSE,\s*500\)[\s\S]{0,2400}Ready\.Result\s*!=\s*Status::Ok') {
+    throw 'The service must require a bounded helper-readiness acknowledgement.'
+}
+if ($Service -match 'PeekNamedPipe') {
+    throw 'The secure-input hot path must use event-driven IPC instead of polling.'
+}
+if ($Service -notmatch 'FILE_FLAG_OVERLAPPED' -or
+    $Service -notmatch 'TransferPipeWithStop' -or
+    $Service -notmatch 'ConnectPipeWithStop') {
+    throw 'The secure-input service must use cancellable overlapped pipe I/O.'
+}
+if ($Service -notmatch 'Message\.RequestedOperation\s*==\s*Operation::Authorize[\s\S]{0,1800}PrepareHelper\(false\)[\s\S]{0,1800}Gate_\.Authorize') {
+    throw 'The Default helper must be ready before the secure-input authorization lease starts.'
 }
 
 if ($Configurator -notmatch 'RegSetKeySecurity' -or

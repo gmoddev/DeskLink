@@ -18,6 +18,7 @@ enum class SecureInputOperation : std::uint8_t {
     PointerMotion = 3,
     Wheel = 4,
     ReconcileState = 5,
+    PointerPosition = 6,
 };
 
 struct SecureInputGrant {

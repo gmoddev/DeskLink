@@ -13,6 +13,8 @@ inline constexpr wchar_t kPipeName[] =
     L"\\\\.\\pipe\\DeskLink.SecureInput.v1";
 inline constexpr wchar_t kRegistryPath[] =
     L"SOFTWARE\\DeskLink\\SecureInput";
+inline constexpr wchar_t kDiagnosticRegistryPath[] =
+    L"SOFTWARE\\DeskLink\\SecureInput\\Diagnostics";
 inline constexpr wchar_t kServiceName[] = L"DeskLinkSecureInput";
 
 enum class Operation : std::uint16_t {
@@ -25,6 +27,7 @@ enum class Operation : std::uint16_t {
     PointerMotion = 7,
     Wheel = 8,
     ReconcileState = 9,
+    PointerPosition = 10,
 };
 
 enum class Status : std::uint32_t {

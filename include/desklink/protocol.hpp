@@ -284,5 +284,9 @@ struct DecodeResult {
     ByteSpan Bytes) noexcept;
 [[nodiscard]] ByteBuffer encode_packet(const EnvelopeHeader& header, const Message& message);
 [[nodiscard]] DecodeResult decode_packet(ByteSpan bytes, bool datagram);
+// Combines two already encoded relative-motion datagrams while retaining the
+// newest sequence. This never crosses a session or focus epoch boundary.
+[[nodiscard]] bool TryCoalescePointerMotionDatagrams(
+    ByteBuffer& Accumulated, ByteSpan Incoming) noexcept;
 
 } // namespace desklink

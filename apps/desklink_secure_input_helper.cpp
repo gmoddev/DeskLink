@@ -486,6 +486,14 @@ desklink::secure_input_wire::Status ApplyBrokerOperation(
             Input.mi.dy = DeltaY;
             return SendSingleInput(Input) ? Status::Ok : Status::InjectionFailed;
         }
+        case desklink::secure_input_wire::Operation::PointerPosition: {
+            INPUT Input = MouseInput(
+                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
+                MOUSEEVENTF_VIRTUALDESK);
+            Input.mi.dx = LoadU16(Payload, 0);
+            Input.mi.dy = LoadU16(Payload, 2);
+            return SendSingleInput(Input) ? Status::Ok : Status::InjectionFailed;
+        }
         case desklink::secure_input_wire::Operation::Wheel: {
             if (Payload[0] < 1 || Payload[0] > 2) {
                 return Status::InvalidRequest;
@@ -567,6 +575,22 @@ std::optional<HANDLE> ParseInheritedHandle(const wchar_t* Text) noexcept {
 int RunBroker(
     HANDLE ReadPipe, HANDLE WritePipe, bool SecureDesktop) noexcept {
     if (!IsLocalSystem()) return 12;
+    const auto Context = ValidateExecutionContext(
+        SecureDesktop ? ProbeOperation::SecureCancel
+                      : ProbeOperation::DefaultRelease);
+    desklink::secure_input_wire::HelperResponse Ready;
+    Ready.Result = Context == ProbeExitCode::Success
+        ? desklink::secure_input_wire::Status::Ok
+        : desklink::secure_input_wire::Status::DesktopUnavailable;
+    DWORD ReadyWritten{};
+    if (!WriteFile(
+            WritePipe, &Ready, sizeof(Ready), &ReadyWritten, nullptr) ||
+        ReadyWritten != sizeof(Ready)) {
+        return 1;
+    }
+    if (Ready.Result != desklink::secure_input_wire::Status::Ok) {
+        return static_cast<int>(Context);
+    }
     BrokerInputState State;
     for (;;) {
         desklink::secure_input_wire::HelperRequest Request;

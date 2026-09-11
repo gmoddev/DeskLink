@@ -27,6 +27,22 @@ but privileged input remains disabled until an administrator uses the explicit
 per-peer **I know what I'm doing** control. See
 [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
 
+> [!WARNING]
+> Controlling elevated applications or a visible UAC consent prompt is an
+> experimental Development Secure feature. It does not work from the ordinary
+> unsigned Beta package. Each controlled test PC must separately install the
+> exact public DeskLink Development Secure signing certificate into the Local
+> Machine **Trusted Root Certification Authorities** and **Trusted Publishers**
+> stores after the administrator verifies its SHA-256 fingerprint out of band.
+> This deliberately broadens that PC's code-trust boundary: Windows will trust
+> DeskLink binaries signed by that otherwise private certificate, so compromise
+> of its signing key would have greater impact. Use it only on machines where
+> that experimental tradeoff is acceptable, protect the signing key, and remove
+> the certificate when testing is finished. Never distribute or install the
+> private key/PFX. Network pairing, certificate pinning, short focus leases, and
+> manual UAC approval remain required; trusting the signer does not make the
+> feature production-secure or let DeskLink approve prompts automatically.
+
 ## Measured audio latency
 
 The `v0.1.0-beta.1` qualification run used Windows 10 22H2 with the reviewed

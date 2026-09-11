@@ -1,4 +1,5 @@
 #include "desklink/msquic_transport.hpp"
+#include "desklink/protocol.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -10,10 +11,12 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <iostream>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -22,6 +25,9 @@ namespace {
 
 constexpr QUIC_UINT62 kProtocolError = 0x444C0001u;
 constexpr std::size_t kMaximumPreHandlerBuffered = 1024u * 1024u;
+constexpr std::size_t MaximumQueuedDatagramBytes = 1024u * 1024u;
+constexpr std::size_t MaximumQueuedDatagrams = 1024u;
+constexpr std::size_t MaximumPointerCoalesceScan = 64u;
 
 struct SendContext {
     explicit SendContext(ByteBuffer Packet) : Bytes(std::move(Packet)) {
@@ -68,12 +74,17 @@ struct MsQuicTransportEndpoint::State {
     ITransportEndpoint::CloseHandler ClosedHandler;
     std::optional<TransportCloseReason> CloseReason;
     ByteBuffer ReliableBuffer;
+    std::deque<ByteBuffer> PendingDatagrams;
+    std::size_t PendingDatagramBytes{};
     std::shared_ptr<State> SelfHold;
     std::mutex Mutex;
     std::condition_variable ShutdownChanged;
+    std::condition_variable DatagramChanged;
+    std::thread DatagramWorker;
     bool PeerValidated{};
     bool DatagramEnabled{};
     std::uint16_t MaximumDatagramLength{};
+    bool DatagramWorkerStopping{};
     bool Closed{};
 };
 
@@ -100,6 +111,9 @@ void ShutdownConnection(
         SharedState->Closed = true;
         SharedState->ReliableHandler = {};
         SharedState->DatagramHandler = {};
+        SharedState->DatagramWorkerStopping = true;
+        SharedState->PendingDatagrams.clear();
+        SharedState->PendingDatagramBytes = 0;
         if (Reason) {
             SharedState->CloseReason = Reason;
             ClosedHandler = std::move(SharedState->ClosedHandler);
@@ -107,6 +121,7 @@ void ShutdownConnection(
         else SharedState->ClosedHandler = {};
         Connection = SharedState->Connection;
     }
+    SharedState->DatagramChanged.notify_all();
     if (ClosedHandler) {
         try {
             ClosedHandler(*Reason);
@@ -121,6 +136,100 @@ void ShutdownConnection(
         SharedState->Api->ConnectionShutdown(
             Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, ErrorCode);
     }
+}
+
+void RunDatagramDispatcher(StateHolder SharedState) noexcept {
+    for (;;) {
+        ByteBuffer Packet;
+        ITransportEndpoint::ReceiveHandler Handler;
+        {
+            std::unique_lock Lock(SharedState->Mutex);
+            SharedState->DatagramChanged.wait(Lock, [&] {
+                return SharedState->DatagramWorkerStopping ||
+                    !SharedState->PendingDatagrams.empty();
+            });
+            if (SharedState->DatagramWorkerStopping) return;
+            Packet = std::move(SharedState->PendingDatagrams.front());
+            SharedState->PendingDatagrams.pop_front();
+            SharedState->PendingDatagramBytes -= Packet.size();
+            if (!SharedState->Closed && SharedState->PeerValidated) {
+                Handler = SharedState->DatagramHandler;
+            }
+        }
+        if (!Handler) continue;
+        try {
+            Handler(std::move(Packet));
+        } catch (...) {
+            ShutdownConnection(SharedState);
+            return;
+        }
+    }
+}
+
+void StopDatagramDispatcher(const StateHolder& SharedState) noexcept {
+    {
+        std::scoped_lock Lock(SharedState->Mutex);
+        SharedState->DatagramWorkerStopping = true;
+        SharedState->PendingDatagrams.clear();
+        SharedState->PendingDatagramBytes = 0;
+    }
+    SharedState->DatagramChanged.notify_all();
+    if (SharedState->DatagramWorker.joinable()) {
+        if (SharedState->DatagramWorker.get_id() ==
+            std::this_thread::get_id()) {
+            SharedState->DatagramWorker.detach();
+        } else {
+            SharedState->DatagramWorker.join();
+        }
+    }
+}
+
+void EnqueueDatagram(
+    const StateHolder& SharedState, const QUIC_BUFFER& Buffer) noexcept {
+    bool Queued = false;
+    {
+        std::scoped_lock Lock(SharedState->Mutex);
+        if (SharedState->Closed || !SharedState->PeerValidated ||
+            !SharedState->DatagramHandler ||
+            SharedState->DatagramWorkerStopping) {
+            return;
+        }
+        const auto PacketBytes = static_cast<std::size_t>(Buffer.Length);
+        const ByteSpan Incoming(Buffer.Buffer, PacketBytes);
+        if (PeekMessageType(Incoming) == MessageType::PointerMotion) {
+            std::size_t Scanned{};
+            for (auto Pending = SharedState->PendingDatagrams.rbegin();
+                 Pending != SharedState->PendingDatagrams.rend() &&
+                     Scanned < MaximumPointerCoalesceScan;
+                 ++Pending, ++Scanned) {
+                const auto PendingType = PeekMessageType(*Pending);
+                if (PendingType == MessageType::PointerPosition) break;
+                if (PendingType != MessageType::PointerMotion) continue;
+
+                const auto PreviousBytes = Pending->size();
+                if (!TryCoalescePointerMotionDatagrams(*Pending, Incoming)) {
+                    // A different epoch, session, or non-increasing sequence
+                    // is an ordering boundary and must be handled normally.
+                    break;
+                }
+                SharedState->PendingDatagramBytes -= PreviousBytes;
+                SharedState->PendingDatagramBytes += Pending->size();
+                Queued = true;
+                break;
+            }
+        }
+        if (!Queued &&
+            SharedState->PendingDatagrams.size() < MaximumQueuedDatagrams &&
+            PacketBytes <= MaximumQueuedDatagramBytes &&
+            SharedState->PendingDatagramBytes <=
+                MaximumQueuedDatagramBytes - PacketBytes) {
+            SharedState->PendingDatagrams.emplace_back(
+                Buffer.Buffer, Buffer.Buffer + Buffer.Length);
+            SharedState->PendingDatagramBytes += PacketBytes;
+            Queued = true;
+        }
+    }
+    if (Queued) SharedState->DatagramChanged.notify_one();
 }
 
 void HandleReliableBytes(const StateHolder& SharedState, ByteSpan Bytes) {
@@ -314,26 +423,18 @@ QUIC_STATUS QUIC_API ConnectionCallback(HQUIC Connection,
             if (Event->DATAGRAM_RECEIVED.Buffer->Length > kMaxEncodedDatagramSize) {
                 return QUIC_STATUS_SUCCESS;
             }
-            ITransportEndpoint::ReceiveHandler Handler;
             bool PeerValidated = false;
             {
                 std::scoped_lock Lock(SharedState->Mutex);
                 if (SharedState->Closed) return QUIC_STATUS_SUCCESS;
                 PeerValidated = SharedState->PeerValidated;
-                if (PeerValidated) Handler = SharedState->DatagramHandler;
             }
             if (!PeerValidated) {
                 ShutdownConnection(SharedState);
                 return QUIC_STATUS_SUCCESS;
             }
-            if (Handler) {
-                const auto& Buffer = *Event->DATAGRAM_RECEIVED.Buffer;
-                try {
-                    Handler(ByteBuffer(Buffer.Buffer, Buffer.Buffer + Buffer.Length));
-                } catch (...) {
-                    ShutdownConnection(SharedState);
-                }
-            }
+            EnqueueDatagram(
+                SharedState, *Event->DATAGRAM_RECEIVED.Buffer);
         }
         return QUIC_STATUS_SUCCESS;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
@@ -430,6 +531,8 @@ std::shared_ptr<MsQuicTransportEndpoint> MsQuicTransportEndpoint::Adopt(
         SharedState->DatagramEnabled
         ? InitialDatagramState.MaximumSendLength
         : 0;
+    SharedState->DatagramWorker = std::thread(
+        RunDatagramDispatcher, SharedState);
     SharedState->SelfHold = SharedState;
     Api->SetCallbackHandler(
         Connection, reinterpret_cast<void*>(ConnectionCallback), SharedState.get());
@@ -585,6 +688,7 @@ TransportPeerInfo MsQuicTransportEndpoint::peer_info() const {
 
 void MsQuicTransportEndpoint::close() noexcept {
     ShutdownConnection(State_, std::nullopt);
+    StopDatagramDispatcher(State_);
 }
 
 bool MsQuicTransportEndpoint::WaitForShutdownComplete(

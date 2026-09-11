@@ -46,28 +46,42 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
 
     if (type == MessageType::FocusRequest) {
         if (!can_inject()) return AgentDecision::RejectedCapability;
+        PreferPrivilegedInput_ = false;
         const bool DesktopAvailable = injector_.InputDesktopAvailable();
         const bool OrdinaryInputReady = DesktopAvailable &&
             injector_.ReadyForInput();
         const auto& request = std::get<FocusRequestMessage>(packet.message);
+        const auto Lease = clamp_lease(request.requested_lease_ms);
         if (focus_.focus() == FocusLocation::Remote && !ReleaseOwnedState()) {
             focus_.release_remote_focus();
             return AgentDecision::RejectedMalformed;
         }
         if (InputCleanupPending_) return AgentDecision::RejectedLease;
-        const auto new_epoch = focus_.begin_remote_focus(clamp_lease(request.requested_lease_ms));
+        const auto new_epoch = focus_.begin_remote_focus(Lease);
         if (new_epoch != 0) {
             last_pointer_sequence_ = 0;
             InputUnavailable_ = false;
             PrivilegedInputUnavailableSince_.reset();
             const bool PrivilegedReady = PrivilegedInput_ &&
-                PrivilegedInput_->Begin(
-                    new_epoch, clamp_lease(request.requested_lease_ms));
+                PrivilegedInput_->Begin(new_epoch, Lease);
+            PreferPrivilegedInput_ = !OrdinaryInputReady && PrivilegedReady;
             if (!OrdinaryInputReady && !PrivilegedReady) {
                 focus_.release_remote_focus();
                 return DesktopAvailable
                     ? RejectInputUnavailable()
                     : AgentDecision::RejectedLease;
+            }
+            // Broker/helper startup can take a material part of a short
+            // focus lease, especially when an elevated foreground requires
+            // the privileged path. Start the admitted lease window after all
+            // readiness work has completed. This does not extend an existing
+            // grant: the same epoch must still be active and the broker has
+            // already authenticated or the ordinary injector is ready.
+            if (!focus_.ActivatePreparedFocus(new_epoch, Lease)) {
+                focus_.release_remote_focus();
+                if (PrivilegedReady) PrivilegedInput_->Revoke();
+                PreferPrivilegedInput_ = false;
+                return AgentDecision::RejectedLease;
             }
         }
         return new_epoch == 0 ? AgentDecision::RejectedLease : AgentDecision::Accepted;
@@ -107,9 +121,12 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
         if (!focus_.accepts_remote_input(packet.header.epoch)) return AgentDecision::RejectedLease;
 
         const bool DesktopAvailable = injector_.InputDesktopAvailable();
-        const bool OrdinaryInputReady = DesktopAvailable &&
-            injector_.ReadyForInput();
-        if (!OrdinaryInputReady) {
+        // Once this focus lease has entered the explicitly authorized broker,
+        // keep foreground integrity discovery out of the per-packet input path.
+        // The broker still authenticates and validates every forwarded packet.
+        const bool OrdinaryInputReady = !PreferPrivilegedInput_ &&
+            DesktopAvailable && injector_.ReadyForInput();
+        if (PreferPrivilegedInput_ || !OrdinaryInputReady) {
             const bool SequencedPointer = type == MessageType::PointerPosition ||
                 type == MessageType::PointerMotion;
             if (SequencedPointer &&
@@ -119,6 +136,7 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
             if (PrivilegedInput_ && PrivilegedInput_->Authorized()) {
                 const auto ForwardResult = PrivilegedInput_->Forward(packet);
                 if (ForwardResult == PrivilegedInputForwardResult::Forwarded) {
+                    PreferPrivilegedInput_ = true;
                     PrivilegedInputUnavailableSince_.reset();
                     if (SequencedPointer) {
                         last_pointer_sequence_ = packet.header.sequence;
@@ -232,8 +250,11 @@ void AgentCoordinator::tick() noexcept {
         // fail Local. An explicitly observed helper handoff gets only the
         // bounded grace started by Forward(); no input is admitted meanwhile.
         const bool DesktopAvailable = injector_.InputDesktopAvailable();
-        const bool OrdinaryInputReady = DesktopAvailable &&
-            injector_.ReadyForInput();
+        // The privileged broker validates its process/session/desktop on every
+        // operation, so repeating ordinary foreground-token discovery here
+        // would only add latency while this lease is intentionally brokered.
+        const bool OrdinaryInputReady = !PreferPrivilegedInput_ &&
+            DesktopAvailable && injector_.ReadyForInput();
         if (!DesktopAvailable) {
             // The first broker response can race the injector's short-lived
             // desktop cache as Windows enters Winlogon. Once the secure
@@ -246,6 +267,7 @@ void AgentCoordinator::tick() noexcept {
         } else {
             const bool PrivilegedAuthorized = PrivilegedInput_ &&
                 PrivilegedInput_->Authorized();
+            if (PrivilegedAuthorized) PreferPrivilegedInput_ = true;
             const bool TransitionExpired = PrivilegedInputUnavailableSince_ &&
                 Now - *PrivilegedInputUnavailableSince_ >=
                     PrivilegedInputTransitionGrace;
@@ -264,6 +286,7 @@ void AgentCoordinator::disconnect() noexcept {
     last_pointer_sequence_ = 0;
     (void)ReleaseOwnedState();
     InputUnavailable_ = false;
+    PreferPrivilegedInput_ = false;
     NextInputAvailabilityCheck_ = {};
     PrivilegedInputUnavailableSince_.reset();
 }
@@ -272,6 +295,7 @@ AgentDecision AgentCoordinator::RejectInputUnavailable() noexcept {
     focus_.release_remote_focus();
     last_pointer_sequence_ = 0;
     InputUnavailable_ = true;
+    PreferPrivilegedInput_ = false;
     PrivilegedInputUnavailableSince_.reset();
     (void)ReleaseOwnedState();
     return AgentDecision::RejectedInputUnavailable;
@@ -284,6 +308,7 @@ bool AgentCoordinator::ReleaseOwnedState() noexcept {
     const bool PrivilegedReleased = !PrivilegedWasAuthorized ||
         PrivilegedInput_->Release();
     if (PrivilegedWasAuthorized) PrivilegedInput_->Revoke();
+    PreferPrivilegedInput_ = false;
     InputCleanupPending_ = !OrdinaryReleased || !PrivilegedReleased;
     return !InputCleanupPending_;
 }

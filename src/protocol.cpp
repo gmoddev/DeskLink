@@ -832,4 +832,46 @@ DecodeResult decode_packet(ByteSpan bytes, bool datagram) {
     return {DecodedPacket{h, std::move(*message)}, DecodeError::None, {}};
 }
 
+bool TryCoalescePointerMotionDatagrams(
+    ByteBuffer& Accumulated, ByteSpan Incoming) noexcept {
+    const auto Existing = decode_packet(Accumulated, true);
+    const auto Newest = decode_packet(Incoming, true);
+    if (!Existing.packet || !Newest.packet ||
+        Existing.packet->header.type != MessageType::PointerMotion ||
+        Newest.packet->header.type != MessageType::PointerMotion ||
+        Existing.packet->header.session_nonce !=
+            Newest.packet->header.session_nonce ||
+        Existing.packet->header.epoch != Newest.packet->header.epoch ||
+        Newest.packet->header.sequence <= Existing.packet->header.sequence) {
+        return false;
+    }
+
+    const auto& ExistingMotion = std::get<PointerMotionMessage>(
+        Existing.packet->message);
+    const auto& NewestMotion = std::get<PointerMotionMessage>(
+        Newest.packet->message);
+    const auto CombinedX = static_cast<std::int64_t>(ExistingMotion.DeltaX) +
+        static_cast<std::int64_t>(NewestMotion.DeltaX);
+    const auto CombinedY = static_cast<std::int64_t>(ExistingMotion.DeltaY) +
+        static_cast<std::int64_t>(NewestMotion.DeltaY);
+    if (CombinedX < -kMaximumPointerMotionDelta ||
+        CombinedX > kMaximumPointerMotionDelta ||
+        CombinedY < -kMaximumPointerMotionDelta ||
+        CombinedY > kMaximumPointerMotionDelta ||
+        (CombinedX == 0 && CombinedY == 0)) {
+        return false;
+    }
+
+    try {
+        Accumulated = encode_packet(
+            Newest.packet->header,
+            PointerMotionMessage{
+                static_cast<std::int32_t>(CombinedX),
+                static_cast<std::int32_t>(CombinedY)});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 } // namespace desklink

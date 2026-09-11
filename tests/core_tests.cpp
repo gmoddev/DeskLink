@@ -109,7 +109,10 @@ desklink::DiscoveryEndpoint MakeDiscoveryEndpoint(
 
 class RecordingInjector final : public desklink::IInputInjector {
 public:
-    bool ReadyForInput() const noexcept override { return Ready; }
+    bool ReadyForInput() const noexcept override {
+        ++ReadyCalls;
+        return Ready;
+    }
     bool InputDesktopAvailable() noexcept override {
         return DesktopAvailable;
     }
@@ -162,6 +165,7 @@ public:
     bool ParkSucceeds{true};
     bool DesktopAvailable{true};
     bool InterruptionObserved{};
+    mutable int ReadyCalls{};
     int release_calls{};
     int park_calls{};
 };
@@ -174,6 +178,7 @@ public:
         ++BeginCalls;
         LastEpoch = Epoch;
         LastLease = Lease;
+        if (BeginAction) BeginAction();
         Active = BeginSucceeds;
         return BeginSucceeds;
     }
@@ -214,6 +219,7 @@ public:
     int RevokeCalls{};
     bool BeginSucceeds{true};
     bool RenewSucceeds{true};
+    std::function<void()> BeginAction;
     desklink::PrivilegedInputForwardResult ForwardResult{
         desklink::PrivilegedInputForwardResult::Forwarded};
     bool ReleaseSucceeds{true};
@@ -5951,6 +5957,33 @@ void WindowsPointerMotionScalingIsBoundedAndRetainsFractions() {
     CHECK(!Invalid.Scale(1, 0, Motion));
 }
 
+void WindowsLocalPointerCoalescingPreservesDominantReversals() {
+    using namespace desklink;
+
+    Win32LocalPointerObservation Horizontal{5'110, 700, 40, 2};
+    const Win32LocalPointerObservation OutwardEdge{5'119, 701, 5, -1};
+    CHECK(TryCoalesceLocalPointerObservation(Horizontal, OutwardEdge));
+    CHECK(Horizontal.ScreenX == 5'119);
+    CHECK(Horizontal.ScreenY == 701);
+    CHECK(Horizontal.DeltaX == 45);
+    CHECK(Horizontal.DeltaY == 1);
+
+    const auto PreservedEdge = Horizontal;
+    const Win32LocalPointerObservation Recenter{4'900, 701, -20, 1};
+    CHECK(!TryCoalesceLocalPointerObservation(Horizontal, Recenter));
+    CHECK(Horizontal.ScreenX == PreservedEdge.ScreenX);
+    CHECK(Horizontal.DeltaX == PreservedEdge.DeltaX);
+
+    Win32LocalPointerObservation Vertical{400, 1, 1, -30};
+    const Win32LocalPointerObservation VerticalReverse{401, 20, 1, 4};
+    CHECK(!TryCoalesceLocalPointerObservation(Vertical, VerticalReverse));
+
+    Win32LocalPointerObservation Overflow{
+        5'119, 700, std::numeric_limits<std::int32_t>::max(), 0};
+    const Win32LocalPointerObservation More{5'119, 700, 1, 0};
+    CHECK(!TryCoalesceLocalPointerObservation(Overflow, More));
+}
+
 void WindowsDisplayTopologyEnumeratesWhenAvailable() {
     using namespace desklink;
 
@@ -6878,6 +6911,59 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
     CHECK(Injector.release_calls >= 2);
 }
 
+void PointerMotionDatagramCoalescingIsBoundedAndEpochSafe() {
+    using namespace desklink;
+
+    EnvelopeHeader ExistingHeader;
+    ExistingHeader.session_nonce = 41;
+    ExistingHeader.epoch = 7;
+    ExistingHeader.sequence = 10;
+    auto Accumulated = encode_packet(
+        ExistingHeader, PointerMotionMessage{12, -5});
+
+    EnvelopeHeader NewestHeader = ExistingHeader;
+    NewestHeader.sequence = 13;
+    const auto Newest = encode_packet(
+        NewestHeader, PointerMotionMessage{-3, 9});
+    CHECK(TryCoalescePointerMotionDatagrams(Accumulated, Newest));
+    const auto Combined = decode_packet(Accumulated, true);
+    CHECK(Combined.packet.has_value());
+    CHECK(Combined.packet->header.sequence == 13);
+    const auto& Motion = std::get<PointerMotionMessage>(
+        Combined.packet->message);
+    CHECK(Motion.DeltaX == 9);
+    CHECK(Motion.DeltaY == 4);
+
+    auto WrongEpochHeader = NewestHeader;
+    WrongEpochHeader.epoch = 8;
+    WrongEpochHeader.sequence = 14;
+    const auto WrongEpoch = encode_packet(
+        WrongEpochHeader, PointerMotionMessage{1, 1});
+    CHECK(!TryCoalescePointerMotionDatagrams(Accumulated, WrongEpoch));
+
+    auto WrongSessionHeader = NewestHeader;
+    WrongSessionHeader.session_nonce = 42;
+    WrongSessionHeader.sequence = 14;
+    const auto WrongSession = encode_packet(
+        WrongSessionHeader, PointerMotionMessage{1, 1});
+    CHECK(!TryCoalescePointerMotionDatagrams(Accumulated, WrongSession));
+
+    auto StaleHeader = NewestHeader;
+    StaleHeader.sequence = 12;
+    const auto Stale = encode_packet(
+        StaleHeader, PointerMotionMessage{1, 1});
+    CHECK(!TryCoalescePointerMotionDatagrams(Accumulated, Stale));
+
+    auto AtLimit = encode_packet(
+        ExistingHeader,
+        PointerMotionMessage{kMaximumPointerMotionDelta, 0});
+    auto OverflowHeader = ExistingHeader;
+    OverflowHeader.sequence = 11;
+    const auto Overflow = encode_packet(
+        OverflowHeader, PointerMotionMessage{1, 0});
+    CHECK(!TryCoalescePointerMotionDatagrams(AtLimit, Overflow));
+}
+
 void SecureInputBlockedOperationsPreserveOnlyExistingAuthorization() {
     using namespace desklink::secure_input_wire;
     CHECK(PreservesAuthorizationAfterForwardFailure(
@@ -6918,6 +7004,7 @@ void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
     CHECK(Broker.LastLease == std::chrono::milliseconds(750));
     const auto Epoch = Agent.focus_state().epoch();
     CHECK(Broker.LastEpoch == Epoch);
+    const auto ReadyCallsAfterFocus = Injector.ReadyCalls;
 
     Header.epoch = Epoch;
     Header.sequence = 1;
@@ -6927,8 +7014,23 @@ void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
     CHECK(Agent.handle(*Motion.packet) == AgentDecision::Accepted);
     CHECK(Broker.ForwardedTypes.size() == 1);
     CHECK(Injector.motions.empty());
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
     CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedSequence);
     CHECK(Broker.ForwardedTypes.size() == 1);
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
+
+    Header.sequence = 2;
+    const auto SecondMotion = decode_packet(
+        encode_packet(Header, PointerMotionMessage{-2, 5}), true);
+    CHECK(SecondMotion.packet.has_value());
+    CHECK(Agent.handle(*SecondMotion.packet) == AgentDecision::Accepted);
+    CHECK(Broker.ForwardedTypes.size() == 2);
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
+
+    Clock.advance(std::chrono::milliseconds(50));
+    Agent.tick();
+    CHECK(Agent.RemoteFocused());
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
 
     const auto Renew = decode_packet(
         encode_packet(Header, FocusRenewMessage{500}), false);
@@ -6944,6 +7046,24 @@ void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
     CHECK(Broker.RevokeCalls == 1);
     CHECK(!Broker.Authorized());
     CHECK(!Agent.RemoteFocused());
+
+    RecordingPrivilegedInputBroker SlowBroker;
+    AgentCoordinator SlowAgent(Clock, Injector, &SlowBroker);
+    SlowAgent.set_peer_capabilities(Capabilities);
+    Injector.Ready = false;
+    SlowBroker.BeginAction = [&] {
+        Clock.advance(std::chrono::milliseconds(1'000));
+    };
+    CHECK(SlowAgent.handle(*Focus.packet) == AgentDecision::Accepted);
+    CHECK(SlowAgent.RemoteFocused());
+    SlowAgent.tick();
+    CHECK(SlowAgent.RemoteFocused());
+    Clock.advance(std::chrono::milliseconds(749));
+    SlowAgent.tick();
+    CHECK(SlowAgent.RemoteFocused());
+    Clock.advance(std::chrono::milliseconds(2));
+    SlowAgent.tick();
+    CHECK(!SlowAgent.RemoteFocused());
 
     RecordingPrivilegedInputBroker RefusingBroker;
     RefusingBroker.BeginSucceeds = false;
@@ -7146,6 +7266,10 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
     Envelope.Operation = SecureInputOperation::ReconcileState;
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::Accepted);
 
+    ++Envelope.Sequence;
+    Envelope.Operation = SecureInputOperation::PointerPosition;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::Accepted);
+
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedSequence);
     Envelope.Sequence = 3;
     ++Envelope.SessionNonce;
@@ -7157,6 +7281,7 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
     Envelope.PeerCertificateDerHash[0] ^= 0xff;
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedIdentity);
     Envelope.PeerCertificateDerHash = Grant.PeerCertificateDerHash;
+    Envelope.Sequence = 4;
     Envelope.Operation = static_cast<SecureInputOperation>(0xff);
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedOperation);
 
@@ -7568,6 +7693,7 @@ int main() {
     ProductMonitorLayoutSaveIsOrderedAndFailsLocal();
     protocol_round_trip();
     PointerMotionRoundTripAndValidation();
+    PointerMotionDatagramCoalescingIsBoundedAndEpochSafe();
     ControlProtocolRoundTripAndValidation();
     RuntimeBrokerTrustAndPairingAuthorityAreFailClosed();
     UpdateCoordinatorIsOrderedAndFailsLocal();
@@ -7638,6 +7764,7 @@ int main() {
     WindowsClipboardListenerLifecycleIsContentSilent();
     WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned();
     WindowsPointerMotionScalingIsBoundedAndRetainsFractions();
+    WindowsLocalPointerCoalescingPreservesDominantReversals();
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();

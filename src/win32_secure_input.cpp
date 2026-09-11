@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "desklink/win32_secure_input.hpp"
+#include "desklink/win32_display_topology.hpp"
 
 #include "desklink/pairing.hpp"
 #include "desklink/secure_input_wire.hpp"
@@ -150,6 +151,14 @@ public:
             0, {});
         if (!Result || Result->Result != Status::Ok ||
             Result->GrantRevision <= GrantRevision_) {
+            std::cerr
+                << "[SecureInput:Client] renewal rejected status="
+                << (Result
+                    ? static_cast<std::uint32_t>(Result->Result)
+                    : std::numeric_limits<std::uint32_t>::max())
+                << " previous_revision=" << GrantRevision_
+                << " returned_revision="
+                << (Result ? Result->GrantRevision : 0) << '\n';
             Revoke();
             return false;
         }
@@ -193,6 +202,34 @@ public:
                         std::get<PointerMotionMessage>(Packet.message);
                     StoreU32(Payload, 0, static_cast<std::uint32_t>(Event.DeltaX));
                     StoreU32(Payload, 4, static_cast<std::uint32_t>(Event.DeltaY));
+                }
+                break;
+            case MessageType::PointerPosition:
+                RequestedOperation = Operation::PointerPosition;
+                {
+                    const auto& Event =
+                        std::get<PointerPositionMessage>(Packet.message);
+                    if (!DisplayTopology_.RefreshIfDue()) {
+                        return PrivilegedInputForwardResult::Rejected;
+                    }
+                    if (!DisplayGeneration_) {
+                        const auto Generation =
+                            DisplayTopology_.Current().Generation;
+                        if (Generation == 0) {
+                            return PrivilegedInputForwardResult::Rejected;
+                        }
+                        DisplayGeneration_ = Generation;
+                    }
+                    const auto Mapped = DisplayTopology_.MapToVirtualDesktop(
+                        Event.display_id, *DisplayGeneration_,
+                        Event.normalized_x, Event.normalized_y);
+                    if (!Mapped) {
+                        std::cerr
+                            << "[SecureInput:Client] absolute pointer mapping rejected\n";
+                        return PrivilegedInputForwardResult::Rejected;
+                    }
+                    StoreU16(Payload, 0, Mapped->X);
+                    StoreU16(Payload, 2, Mapped->Y);
                 }
                 break;
             case MessageType::MouseWheel:
@@ -340,6 +377,8 @@ private:
     std::uint64_t Epoch_{};
     std::uint64_t GrantRevision_{};
     std::uint64_t Sequence_{};
+    Win32DisplayTopology DisplayTopology_;
+    std::optional<std::uint64_t> DisplayGeneration_;
     HANDLE Pipe_{INVALID_HANDLE_VALUE};
     bool IdentityValid_{};
     bool Authorized_{};

@@ -71,6 +71,7 @@ private:
     std::uint64_t last_pointer_sequence_{};
     bool InputCleanupPending_{};
     bool InputUnavailable_{};
+    bool PreferPrivilegedInput_{};
     IClock::time_point NextInputAvailabilityCheck_{};
     std::optional<IClock::time_point> PrivilegedInputUnavailableSince_;
 };
