@@ -2,6 +2,8 @@
 #include "MainWindow.xaml.h"
 #include "MainWindow.g.cpp"
 
+#include "desklink/pairing.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -585,6 +587,10 @@ void MainWindow::InitializeWindowLifecycle() {
 MainWindow::~MainWindow() {
     if (PollTimer_) PollTimer_.Stop();
     if (DeveloperPollTimer_) DeveloperPollTimer_.Stop();
+    if (SecureInputConfiguratorProcess_) {
+        CloseHandle(SecureInputConfiguratorProcess_);
+        SecureInputConfiguratorProcess_ = nullptr;
+    }
     if (MainWindowHandle_) {
         RemoveWindowSubclass(
             MainWindowHandle_, MainWindowSubclassProcedure, 1);
@@ -603,6 +609,7 @@ std::optional<desklink::ControlResponse> MainWindow::Send(
 
 void MainWindow::PollBroker() {
     if (!ContentReady_ || ExplicitExit_) return;
+    PollSecureInputConfiguration();
     const auto Now = std::chrono::steady_clock::now();
     const auto Response = Send(
         desklink::GetStateControlRequest{},
@@ -2348,6 +2355,43 @@ void MainWindow::UpdateFeatureControls() {
         : winrt::hstring(L"paired PC");
     const auto ThisPcName = LocalPcName().Text();
 
+    const auto SecureConfiguration =
+        desklink::GetWin32SecureInputConfiguration();
+    const auto DeviceFingerprint = Device
+        ? desklink::ParseFingerprint(Device->PublicKeyFingerprint)
+        : std::nullopt;
+    const bool SecureInputEnabled = SecureConfiguration &&
+        SecureConfiguration->Enabled && Device && DeviceFingerprint &&
+        SecureConfiguration->PeerMachine == Device->Machine &&
+        SecureConfiguration->PeerCertificateDerHash == *DeviceFingerprint;
+    const auto SecureProductExecutable = GetExecutablePath();
+    const auto SecureConfigurator = SecureProductExecutable
+        ? SecureProductExecutable->parent_path() /
+              L"desklink_secure_input_configurator.exe"
+        : std::filesystem::path{};
+    const bool SecureInputAvailable = SecureProductExecutable &&
+        std::filesystem::is_regular_file(SecureConfigurator);
+    SecureInputStatusText().Text(SecureInputConfiguratorProcess_
+        ? L"Waiting for the protected Windows administrator review to finish. Input remains on this PC."
+        : SecureInputEnabled
+        ? JoinText(
+            L"On for ", PeerName,
+            L". Elevated and manual consent-prompt input still requires its current authenticated session, permission, nonce, epoch, and focus lease.")
+        : SecureConfiguration && SecureConfiguration->Enabled
+            ? L"A protected grant exists for a different paired identity. It will not be reused or silently replaced."
+            : SecureInputAvailable
+                ? L"Off. Windows administrator boundaries return input to this PC."
+                : L"Unavailable in this build. Install the signed Development Secure package to add the networkless privileged broker.");
+    ConfigureSecureInputButton().Content(winrt::box_value(
+        SecureInputConfiguratorProcess_
+            ? L"Administrator review in progress"
+            : SecureInputEnabled
+            ? L"Disable elevated control"
+            : L"I know what I'm doing — enable elevated control"));
+    ConfigureSecureInputButton().IsEnabled(
+        !SecureInputConfiguratorProcess_ && SecureInputAvailable &&
+        (SecureInputEnabled || Device != nullptr));
+
     ClipboardIntentLabel().Text(Device
         ? JoinText(L"Share text clipboard with ", PeerName,
                    L". Both PCs must separately allow read and write access.")
@@ -2620,6 +2664,159 @@ void MainWindow::UpdateFeatureControls() {
         ? JoinText(L"Focus ", PeerName)
         : winrt::hstring(L"Focus paired PC")));
     UpdatingFeatureControls_ = false;
+}
+
+void MainWindow::OnConfigureSecureInput(
+    Windows::Foundation::IInspectable const&,
+    Microsoft::UI::Xaml::RoutedEventArgs const&) {
+    if (!ModalDialogActive_) (void)ConfigureSecureInput();
+}
+
+Windows::Foundation::IAsyncAction MainWindow::ConfigureSecureInput() {
+    auto Lifetime = get_strong();
+    using namespace Microsoft::UI::Xaml::Controls;
+    const auto Device = PreferredDevice();
+    const auto Existing = desklink::GetWin32SecureInputConfiguration();
+    const auto Fingerprint = Device
+        ? desklink::ParseFingerprint(Device->PublicKeyFingerprint)
+        : std::nullopt;
+    const bool EnabledForDevice = Existing && Existing->Enabled && Device &&
+        Fingerprint && Existing->PeerMachine == Device->Machine &&
+        Existing->PeerCertificateDerHash == *Fingerprint;
+    const auto ProductExecutable = GetExecutablePath();
+    const auto Configurator = ProductExecutable
+        ? ProductExecutable->parent_path() /
+              L"desklink_secure_input_configurator.exe"
+        : std::filesystem::path{};
+    if (!ProductExecutable || !std::filesystem::is_regular_file(Configurator)) {
+        SecureInputStatusBar().Title(L"Privileged broker unavailable");
+        SecureInputStatusBar().Message(
+            L"Install the signed Development Secure package. No security setting was changed.");
+        SecureInputStatusBar().Severity(InfoBarSeverity::Warning);
+        SecureInputStatusBar().IsOpen(true);
+        co_return;
+    }
+    if (!EnabledForDevice && (!Device || !Fingerprint)) {
+        SecureInputStatusBar().Title(L"Pair a PC first");
+        SecureInputStatusBar().Message(
+            L"Elevated control can be granted only to one exact stored certificate-pinned peer.");
+        SecureInputStatusBar().Severity(InfoBarSeverity::Warning);
+        SecureInputStatusBar().IsOpen(true);
+        co_return;
+    }
+
+    if (!EnabledForDevice) {
+        ModalDialogActive_ = true;
+        ContentDialog Dialog;
+        Dialog.XamlRoot(Content().XamlRoot());
+        Dialog.Title(winrt::box_value(L"Allow control across Windows administrator boundaries?"));
+        Dialog.PrimaryButtonText(
+            L"I know what I'm doing — enable");
+        Dialog.CloseButtonText(L"Keep fail-local protection");
+        Dialog.DefaultButton(ContentDialogButton::Close);
+        TextBlock Explanation;
+        Explanation.Text(JoinText(
+            L"This grants only ", ToHString(Device->DisplayName),
+            L" permission to control elevated apps and manual UAC consent prompts while its certificate-pinned DeskLink session and short focus lease are valid. It does not auto-approve prompts, bypass pairing, or control sign-in and lock screens. Windows will ask for local administrator approval next."));
+        Explanation.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
+        Dialog.Content(Explanation);
+        const auto Choice = co_await Dialog.ShowAsync();
+        ModalDialogActive_ = false;
+        if (Choice != ContentDialogResult::Primary) co_return;
+    }
+
+    ReturnLocal();
+    std::wstring Parameters = EnabledForDevice ? L"disable" :
+        L"enable " + std::wstring(MachineTag(Device->Machine)) + L" " +
+            std::wstring(ToHString(Device->PublicKeyFingerprint));
+    SHELLEXECUTEINFOW Execute{};
+    Execute.cbSize = sizeof(Execute);
+    Execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC |
+                    SEE_MASK_FLAG_NO_UI;
+    Execute.hwnd = MainWindowHandle_;
+    Execute.lpVerb = L"runas";
+    Execute.lpFile = Configurator.c_str();
+    Execute.lpParameters = Parameters.c_str();
+    Execute.lpDirectory = Configurator.parent_path().c_str();
+    Execute.nShow = SW_SHOWNORMAL;
+    const bool Started = ShellExecuteExW(&Execute) && Execute.hProcess;
+    const DWORD StartError = Started ? ERROR_SUCCESS : GetLastError();
+    SecureInputStatusBar().IsOpen(true);
+    if (!Started) {
+        SecureInputStatusBar().Title(StartError == ERROR_CANCELLED
+            ? L"Administrator approval canceled"
+            : L"Setting unchanged");
+        SecureInputStatusBar().Message(StartError == ERROR_CANCELLED
+            ? L"Elevated control remains unchanged. Input remains on this PC."
+            : L"Windows did not start the fixed signed configurator. Input remains on this PC.");
+        SecureInputStatusBar().Severity(StartError == ERROR_CANCELLED
+            ? InfoBarSeverity::Informational
+            : InfoBarSeverity::Error);
+        co_return;
+    }
+    SecureInputConfiguratorProcess_ = Execute.hProcess;
+    SecureInputEnableRequested_ = !EnabledForDevice;
+    SecureInputRequestedPeer_ = Device->Machine;
+    SecureInputRequestedFingerprint_ = *Fingerprint;
+    UpdateFeatureControls();
+    SecureInputStatusBar().Title(
+        EnabledForDevice ? L"Revocation review in progress"
+                         : L"Protected review in progress");
+    SecureInputStatusBar().Message(EnabledForDevice
+        ? L"Finish the Windows administrator review to revoke elevated control. The active input session was returned Local first."
+        : L"Finish the protected exact-peer review. DeskLink will verify the stored result and report success, cancellation, or failure here.");
+    SecureInputStatusBar().Severity(InfoBarSeverity::Informational);
+}
+
+void MainWindow::PollSecureInputConfiguration() {
+    if (!SecureInputConfiguratorProcess_) return;
+    const DWORD Wait = WaitForSingleObject(SecureInputConfiguratorProcess_, 0);
+    if (Wait == WAIT_TIMEOUT) return;
+
+    DWORD ExitCode = std::numeric_limits<DWORD>::max();
+    if (Wait == WAIT_OBJECT_0) {
+        (void)GetExitCodeProcess(SecureInputConfiguratorProcess_, &ExitCode);
+    }
+    CloseHandle(SecureInputConfiguratorProcess_);
+    SecureInputConfiguratorProcess_ = nullptr;
+
+    const auto Configuration = desklink::GetWin32SecureInputConfiguration();
+    const bool EnabledAsRequested = Configuration &&
+        Configuration->Enabled &&
+        Configuration->PeerMachine == SecureInputRequestedPeer_ &&
+        Configuration->PeerCertificateDerHash ==
+            SecureInputRequestedFingerprint_;
+    const bool Applied = SecureInputEnableRequested_
+        ? EnabledAsRequested
+        : Configuration && !Configuration->Enabled;
+    UpdateFeatureControls();
+    SecureInputStatusBar().IsOpen(true);
+
+    if (Wait == WAIT_OBJECT_0 && ExitCode == 0 && Applied) {
+        SecureInputStatusBar().Title(SecureInputEnableRequested_
+            ? L"Elevated control enabled"
+            : L"Elevated control disabled");
+        SecureInputStatusBar().Message(SecureInputEnableRequested_
+            ? L"The exact certificate-pinned PC may now negotiate elevated input during a fresh authenticated focus lease. Re-pairing is not required."
+            : L"The protected grant was revoked. Input remains on this PC until an ordinary authenticated focus request is admitted.");
+        SecureInputStatusBar().Severity(
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+        return;
+    }
+    if (Wait == WAIT_OBJECT_0 && ExitCode == 11) {
+        SecureInputStatusBar().Title(L"Protected review canceled");
+        SecureInputStatusBar().Message(
+            L"The protected exact-peer review was declined. The setting remains unchanged and input stays on this PC.");
+        SecureInputStatusBar().Severity(
+            Microsoft::UI::Xaml::Controls::InfoBarSeverity::Informational);
+        return;
+    }
+    SecureInputStatusBar().Title(L"Elevated-control change failed");
+    SecureInputStatusBar().Message(Wait == WAIT_OBJECT_0 && ExitCode == 0
+        ? L"The configurator exited successfully, but the protected stored state did not match the exact requested peer. DeskLink will not assume the grant is active."
+        : L"The protected configurator did not complete successfully. The stored setting was not assumed to have changed, and input remains on this PC.");
+    SecureInputStatusBar().Severity(
+        Microsoft::UI::Xaml::Controls::InfoBarSeverity::Error);
 }
 
 void MainWindow::LoadVoiceInputDevices() {

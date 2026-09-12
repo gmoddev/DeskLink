@@ -3,7 +3,7 @@
 ## Status and scope
 
 DeskLink has an implementation-complete, security-gated microphone forwarding
-slice on the protocol-v5 development branch. It is deliberately separate from
+slice on the protocol-v6 development branch. It is deliberately separate from
 system-audio forwarding. Production qualification remains blocked on the
 physical two-PC voice matrix described below.
 
@@ -24,7 +24,7 @@ conferencing, recording, and a global PTT binding remain deferred.
   reported `VoiceSend`, and the current local grant revision to have been
   acknowledged exactly. Receiving applies the complementary check again.
 - `VoiceFrame` is accepted only as a QUIC datagram after `PeerValidated`, exact
-  protocol-v5 decoding, current nonce validation, reciprocal grant admission,
+  protocol-v6 decoding, current nonce validation, reciprocal grant admission,
   and strict format/size checks.
 - Only local current-user policy can select PTT or continuous activation, press
   PTT, clear mute, or select a microphone. No network message can perform any
@@ -63,7 +63,7 @@ Receive:
 ```text
 MsQuic datagram
   -> PeerValidated transport
-  -> protocol-v5 datagram-lane decode
+  -> protocol-v6 datagram-lane decode
   -> current session nonce
   -> reciprocal acknowledged voice grants
   -> stream ID + independent sequence checks
@@ -85,7 +85,7 @@ local preference only after the new peer is admitted.
 
 ## Wire format
 
-Protocol version 5 adds `VoiceSend` (bit 13), `VoiceReceive` (bit 14), and the
+Protocol version 5 added `VoiceSend` (bit 13), `VoiceReceive` (bit 14), and the
 datagram-only `VoiceFrame` (type 32):
 
 ```text
@@ -216,7 +216,7 @@ same session and permission checks.
 
 Automated coverage must remain green for:
 
-- protocol-v5 round trip, wrong lane, malformed metadata, empty/oversized Opus,
+- protocol-v6 round trip, wrong lane, malformed metadata, empty/oversized Opus,
   stale nonce, stream changes, duplicates, reordering, gaps, and queue bounds;
 - reciprocal acknowledged grants, live revocation, and independence from
   system-audio grants;

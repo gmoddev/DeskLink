@@ -4,10 +4,18 @@
 #include <windows.h>
 #include <wtsapi32.h>
 
+#include "desklink/protocol.hpp"
+#include "desklink/secure_input_wire.hpp"
+
+#include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cwchar>
 #include <iostream>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -310,6 +318,309 @@ ProbeExitCode CancelSecureDesktopPrompt() noexcept {
     return ProbeExitCode::DesktopTransitionTimedOut;
 }
 
+std::uint16_t LoadU16(
+    const std::array<std::uint8_t, 72>& Payload,
+    std::size_t Offset) noexcept {
+    return static_cast<std::uint16_t>(Payload[Offset]) |
+        static_cast<std::uint16_t>(Payload[Offset + 1] << 8u);
+}
+
+std::uint32_t LoadU32(
+    const std::array<std::uint8_t, 72>& Payload,
+    std::size_t Offset) noexcept {
+    std::uint32_t Result{};
+    for (std::size_t Index = 0; Index < 4; ++Index) {
+        Result |= static_cast<std::uint32_t>(Payload[Offset + Index])
+            << (Index * 8u);
+    }
+    return Result;
+}
+
+bool SendSingleInput(INPUT Input) noexcept {
+    return SendInput(1, &Input, sizeof(Input)) == 1;
+}
+
+struct BrokerInputState {
+    std::array<std::uint8_t, 32> Keys{};
+    std::array<std::uint8_t, 32> ExtendedKeys{};
+    std::uint8_t MouseButtons{};
+};
+
+bool BitSet(
+    const std::array<std::uint8_t, 32>& Bitmap,
+    std::uint16_t ScanCode) noexcept {
+    return (Bitmap[ScanCode / 8u] &
+        static_cast<std::uint8_t>(1u << (ScanCode % 8u))) != 0;
+}
+
+void SetBit(
+    std::array<std::uint8_t, 32>& Bitmap,
+    std::uint16_t ScanCode, bool Down) noexcept {
+    const auto Mask = static_cast<std::uint8_t>(1u << (ScanCode % 8u));
+    if (Down) Bitmap[ScanCode / 8u] |= Mask;
+    else Bitmap[ScanCode / 8u] &= static_cast<std::uint8_t>(~Mask);
+}
+
+std::optional<DWORD> MouseFlags(
+    desklink::MouseButtonId Button, bool Down) noexcept {
+    switch (Button) {
+        case desklink::MouseButtonId::Left:
+            return Down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        case desklink::MouseButtonId::Right:
+            return Down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+        case desklink::MouseButtonId::Middle:
+            return Down ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+        case desklink::MouseButtonId::X1:
+        case desklink::MouseButtonId::X2:
+            return Down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+    }
+    return std::nullopt;
+}
+
+std::uint8_t MouseMask(desklink::MouseButtonId Button) noexcept {
+    const auto Raw = static_cast<std::uint8_t>(Button);
+    return Raw >= 1 && Raw <= 5
+        ? static_cast<std::uint8_t>(1u << (Raw - 1u)) : 0;
+}
+
+bool ReleaseBrokerInput(BrokerInputState& State) noexcept {
+    bool Result = true;
+    for (std::uint16_t ScanCode = 1; ScanCode < 256; ++ScanCode) {
+        for (const bool Extended : {false, true}) {
+            auto& Bitmap = Extended ? State.ExtendedKeys : State.Keys;
+            if (!BitSet(Bitmap, ScanCode)) continue;
+            Result = SendSingleInput(ScanCodeInput(
+                ScanCode, KEYEVENTF_KEYUP |
+                    (Extended ? KEYEVENTF_EXTENDEDKEY : 0))) && Result;
+            SetBit(Bitmap, ScanCode, false);
+        }
+    }
+    for (std::uint8_t Raw = 1; Raw <= 5; ++Raw) {
+        const auto Button = static_cast<desklink::MouseButtonId>(Raw);
+        const auto Mask = MouseMask(Button);
+        if ((State.MouseButtons & Mask) == 0) continue;
+        const auto Flags = MouseFlags(Button, false);
+        INPUT Input = MouseInput(*Flags,
+            Raw == static_cast<std::uint8_t>(desklink::MouseButtonId::X2)
+                ? XBUTTON2 : Raw == static_cast<std::uint8_t>(
+                    desklink::MouseButtonId::X1) ? XBUTTON1 : 0);
+        Result = SendSingleInput(Input) && Result;
+        State.MouseButtons &= static_cast<std::uint8_t>(~Mask);
+    }
+    return Result;
+}
+
+desklink::secure_input_wire::Status ApplyBrokerOperation(
+    desklink::secure_input_wire::Operation Operation,
+    const std::array<std::uint8_t, 72>& Payload,
+    bool SecureDesktop, BrokerInputState& State) noexcept {
+    using desklink::secure_input_wire::Status;
+    const auto Context = ValidateExecutionContext(
+        SecureDesktop ? ProbeOperation::SecureCancel
+                      : ProbeOperation::DefaultRelease);
+    if (Context != ProbeExitCode::Success) return Status::DesktopUnavailable;
+    if (SecureDesktop && Operation !=
+            desklink::secure_input_wire::Operation::ReleaseOwnedState &&
+        ValidateSecureConsentForeground() != ProbeExitCode::Success) {
+        return Status::DesktopUnavailable;
+    }
+    // DeskLink's privileged development path is limited to pointer-based
+    // approval or cancellation of an already visible consent prompt. It must
+    // never type authentication secrets into an over-the-shoulder UAC prompt.
+    if (SecureDesktop &&
+        (Operation == desklink::secure_input_wire::Operation::Key ||
+         Operation == desklink::secure_input_wire::Operation::ReconcileState)) {
+        return Status::SecureOperationBlocked;
+    }
+
+    switch (Operation) {
+        case desklink::secure_input_wire::Operation::ReleaseOwnedState:
+            return ReleaseBrokerInput(State)
+                ? Status::Ok : Status::InjectionFailed;
+        case desklink::secure_input_wire::Operation::Key: {
+            const auto ScanCode = LoadU16(Payload, 0);
+            if (ScanCode == 0 || ScanCode > 255 || Payload[2] > 1 ||
+                Payload[3] > 1) {
+                return Status::InvalidRequest;
+            }
+            const bool Extended = Payload[2] == 1;
+            const bool Down = Payload[3] == 1;
+            auto& Bitmap = Extended ? State.ExtendedKeys : State.Keys;
+            INPUT Input = ScanCodeInput(
+                ScanCode, (Extended ? KEYEVENTF_EXTENDEDKEY : 0) |
+                    (Down ? 0 : KEYEVENTF_KEYUP));
+            if (!SendSingleInput(Input)) return Status::InjectionFailed;
+            SetBit(Bitmap, ScanCode, Down);
+            return Status::Ok;
+        }
+        case desklink::secure_input_wire::Operation::MouseButton: {
+            if (Payload[0] < 1 || Payload[0] > 5 || Payload[1] > 1) {
+                return Status::InvalidRequest;
+            }
+            const auto Button = static_cast<desklink::MouseButtonId>(Payload[0]);
+            const bool Down = Payload[1] == 1;
+            const auto Flags = MouseFlags(Button, Down);
+            if (!Flags) return Status::InvalidRequest;
+            const DWORD Data = Button == desklink::MouseButtonId::X1
+                ? XBUTTON1 : Button == desklink::MouseButtonId::X2
+                    ? XBUTTON2 : 0;
+            if (!SendSingleInput(MouseInput(*Flags, Data))) {
+                return Status::InjectionFailed;
+            }
+            const auto Mask = MouseMask(Button);
+            if (Down) State.MouseButtons |= Mask;
+            else State.MouseButtons &= static_cast<std::uint8_t>(~Mask);
+            return Status::Ok;
+        }
+        case desklink::secure_input_wire::Operation::PointerMotion: {
+            const auto DeltaX = static_cast<std::int32_t>(LoadU32(Payload, 0));
+            const auto DeltaY = static_cast<std::int32_t>(LoadU32(Payload, 4));
+            if (DeltaX < -desklink::kMaximumPointerMotionDelta ||
+                DeltaX > desklink::kMaximumPointerMotionDelta ||
+                DeltaY < -desklink::kMaximumPointerMotionDelta ||
+                DeltaY > desklink::kMaximumPointerMotionDelta) {
+                return Status::InvalidRequest;
+            }
+            INPUT Input = MouseInput(MOUSEEVENTF_MOVE);
+            Input.mi.dx = DeltaX;
+            Input.mi.dy = DeltaY;
+            return SendSingleInput(Input) ? Status::Ok : Status::InjectionFailed;
+        }
+        case desklink::secure_input_wire::Operation::PointerPosition: {
+            INPUT Input = MouseInput(
+                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
+                MOUSEEVENTF_VIRTUALDESK);
+            Input.mi.dx = LoadU16(Payload, 0);
+            Input.mi.dy = LoadU16(Payload, 2);
+            return SendSingleInput(Input) ? Status::Ok : Status::InjectionFailed;
+        }
+        case desklink::secure_input_wire::Operation::Wheel: {
+            if (Payload[0] < 1 || Payload[0] > 2) {
+                return Status::InvalidRequest;
+            }
+            const auto Delta = static_cast<std::int16_t>(LoadU16(Payload, 1));
+            if (Delta == 0 || Delta < -desklink::kMaximumMouseWheelDelta ||
+                Delta > desklink::kMaximumMouseWheelDelta) {
+                return Status::InvalidRequest;
+            }
+            return SendSingleInput(MouseInput(
+                Payload[0] == static_cast<std::uint8_t>(
+                    desklink::MouseWheelAxis::Vertical)
+                    ? MOUSEEVENTF_WHEEL : MOUSEEVENTF_HWHEEL,
+                static_cast<DWORD>(static_cast<std::int32_t>(Delta))))
+                ? Status::Ok : Status::InjectionFailed;
+        }
+        case desklink::secure_input_wire::Operation::ReconcileState: {
+            BrokerInputState Desired;
+            std::copy_n(Payload.begin(), 32, Desired.Keys.begin());
+            std::copy_n(Payload.begin() + 32, 32,
+                Desired.ExtendedKeys.begin());
+            Desired.MouseButtons = Payload[64];
+            if ((Desired.MouseButtons & ~0x1fu) != 0) {
+                return Status::InvalidRequest;
+            }
+            for (std::uint16_t ScanCode = 1; ScanCode < 256; ++ScanCode) {
+                for (const bool Extended : {false, true}) {
+                    auto& CurrentBitmap = Extended
+                        ? State.ExtendedKeys : State.Keys;
+                    const auto& DesiredBitmap = Extended
+                        ? Desired.ExtendedKeys : Desired.Keys;
+                    const bool Current = BitSet(CurrentBitmap, ScanCode);
+                    const bool Wanted = BitSet(DesiredBitmap, ScanCode);
+                    if (Current == Wanted) continue;
+                    if (!SendSingleInput(ScanCodeInput(
+                            ScanCode, (Extended ? KEYEVENTF_EXTENDEDKEY : 0) |
+                                (Wanted ? 0 : KEYEVENTF_KEYUP)))) {
+                        return Status::InjectionFailed;
+                    }
+                    SetBit(CurrentBitmap, ScanCode, Wanted);
+                }
+            }
+            for (std::uint8_t Raw = 1; Raw <= 5; ++Raw) {
+                const auto Button = static_cast<desklink::MouseButtonId>(Raw);
+                const auto Mask = MouseMask(Button);
+                const bool Current = (State.MouseButtons & Mask) != 0;
+                const bool Wanted = (Desired.MouseButtons & Mask) != 0;
+                if (Current == Wanted) continue;
+                const auto Flags = MouseFlags(Button, Wanted);
+                const DWORD Data = Button == desklink::MouseButtonId::X1
+                    ? XBUTTON1 : Button == desklink::MouseButtonId::X2
+                        ? XBUTTON2 : 0;
+                if (!SendSingleInput(MouseInput(*Flags, Data))) {
+                    return Status::InjectionFailed;
+                }
+                if (Wanted) State.MouseButtons |= Mask;
+                else State.MouseButtons &= static_cast<std::uint8_t>(~Mask);
+            }
+            return Status::Ok;
+        }
+        default:
+            return Status::InvalidRequest;
+    }
+}
+
+std::optional<HANDLE> ParseInheritedHandle(const wchar_t* Text) noexcept {
+    if (!Text || *Text == L'\0') return std::nullopt;
+    wchar_t* End{};
+    errno = 0;
+    const auto Raw = _wcstoui64(Text, &End, 10);
+    if (errno != 0 || !End || *End != L'\0' || Raw == 0 ||
+        Raw > static_cast<unsigned long long>(
+            std::numeric_limits<std::uintptr_t>::max())) {
+        return std::nullopt;
+    }
+    return reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(Raw));
+}
+
+int RunBroker(
+    HANDLE ReadPipe, HANDLE WritePipe, bool SecureDesktop) noexcept {
+    if (!IsLocalSystem()) return 12;
+    const auto Context = ValidateExecutionContext(
+        SecureDesktop ? ProbeOperation::SecureCancel
+                      : ProbeOperation::DefaultRelease);
+    desklink::secure_input_wire::HelperResponse Ready;
+    Ready.Result = Context == ProbeExitCode::Success
+        ? desklink::secure_input_wire::Status::Ok
+        : desklink::secure_input_wire::Status::DesktopUnavailable;
+    DWORD ReadyWritten{};
+    if (!WriteFile(
+            WritePipe, &Ready, sizeof(Ready), &ReadyWritten, nullptr) ||
+        ReadyWritten != sizeof(Ready)) {
+        return 1;
+    }
+    if (Ready.Result != desklink::secure_input_wire::Status::Ok) {
+        return static_cast<int>(Context);
+    }
+    BrokerInputState State;
+    for (;;) {
+        desklink::secure_input_wire::HelperRequest Request;
+        DWORD Read{};
+        if (!ReadFile(ReadPipe, &Request, sizeof(Request), &Read, nullptr) ||
+            Read != sizeof(Request)) {
+            (void)ReleaseBrokerInput(State);
+            return 0;
+        }
+        desklink::secure_input_wire::HelperResponse Response;
+        if (Request.Magic != desklink::secure_input_wire::kMagic ||
+            Request.Version != desklink::secure_input_wire::kVersion ||
+            Request.Size != sizeof(Request) || Request.Reserved != 0) {
+            Response.Result =
+                desklink::secure_input_wire::Status::InvalidRequest;
+        } else {
+            Response.Result = ApplyBrokerOperation(
+                Request.RequestedOperation, Request.Payload,
+                SecureDesktop, State);
+        }
+        DWORD Written{};
+        if (!WriteFile(
+                WritePipe, &Response, sizeof(Response), &Written, nullptr) ||
+            Written != sizeof(Response)) {
+            (void)ReleaseBrokerInput(State);
+            return 1;
+        }
+    }
+}
+
 int RunProbe(ProbeOperation Operation) {
     const auto ContextResult = ValidateExecutionContext(Operation);
     if (ContextResult != ProbeExitCode::Success) {
@@ -354,6 +665,17 @@ int wmain(int ArgumentCount, wchar_t** Arguments) {
         std::wstring_view(Arguments[1]) == L"--self-test") {
         Log(L"self-test passed; no input was generated");
         return 0;
+    }
+    if (ArgumentCount == 5 &&
+        std::wstring_view(Arguments[1]) == L"--broker") {
+        const auto ReadPipe = ParseInheritedHandle(Arguments[2]);
+        const auto WritePipe = ParseInheritedHandle(Arguments[3]);
+        const std::wstring_view Desktop(Arguments[4]);
+        if (!ReadPipe || !WritePipe ||
+            (Desktop != L"default" && Desktop != L"winlogon")) {
+            return 2;
+        }
+        return RunBroker(*ReadPipe, *WritePipe, Desktop == L"winlogon");
     }
     if (ArgumentCount != 3 ||
         std::wstring_view(Arguments[1]) != L"--service-probe") {

@@ -30,6 +30,8 @@ bool IsValidSecureInputOperation(SecureInputOperation Operation) noexcept {
         case SecureInputOperation::MouseButton:
         case SecureInputOperation::PointerMotion:
         case SecureInputOperation::Wheel:
+        case SecureInputOperation::ReconcileState:
+        case SecureInputOperation::PointerPosition:
             return true;
     }
     return false;

@@ -139,17 +139,16 @@ The real two-PC Windows 11 failure matrix remains required for production
 qualification, but the approved automated and controlled experimental roaming
 work does not wait for unavailable hardware.
 
-## UAC secure-desktop input R&D
+## Privileged input and UAC — Development Secure qualification
 
-The user-mode service/helper path is approved for staged investigation before
-any kernel driver. The default-off validation foundation is implemented: a
-networkless LocalSystem service can launch only a fixed SYSTEM helper into the
-active console session's exact `Default` or `Winlogon` desktop, and the helper
-currently exposes release-only, exact elevated-foreground minimize, and
-UAC-cancel probes. A portable authorization
-gate requires an explicit grant, exact peer machine/certificate DER hash,
-session nonce, focus epoch, monotonic revision/sequence, and a 100-2000 ms
-lease.
+The user-mode service/helper path is implemented without a kernel driver. The
+ordinary package remains current-user and fail-local. The separately trusted
+Development Secure package installs a networkless LocalSystem broker and fixed
+SYSTEM helper for the active console session's exact `Default` or `Winlogon`
+desktop. A protected, default-off grant names one exact paired machine and
+certificate DER hash. Runtime admission additionally requires the current
+validated session nonce, focus epoch, monotonic revision/sequence, exact
+operation, and a 100-2000 ms lease.
 
 The controlled Windows 11 physical validation of the fixed Default release and
 foreground-consent Escape probes has passed, including an observable
@@ -159,14 +158,21 @@ lab-service cleanup. The hardened revision received a complete security diff
 review with no reportable findings. The private Development Secure stage now
 provides a dedicated non-exportable signing identity, explicit public-
 certificate trust, timestamped artifacts, and an administrator-protected
-Program Files application install on the two approved PCs. It does not yet
-package the service/helper or authorize any privileged operation. Product
-integration is therefore still blocked on exact path/ACL/reparse/signer
-attestation and authenticated service IPC. The current-user LocalAppData
-runtime and same-user pipe are not trusted inputs to LocalSystem. Automatic UAC
-approval, credential UI, secure-desktop video, lock/sign-in desktop control,
-and a kernel driver remain out of scope. Full evidence, design, and stop
-conditions are in [`UAC_SECURE_INPUT.md`](UAC_SECURE_INPUT.md).
+Program Files application install on the two approved PCs. Product integration
+now includes exact path/reparse/signer/client attestation, authenticated fixed-
+size service IPC, a fixed helper operation set, and an explicit **I know what
+I'm doing** administrator flow that defaults to no change. Winlogon deliberately
+rejects keyboard/reconciliation input and requires foreground `consent.exe`;
+automatic UAC approval, authentication-secret input, secure-desktop video,
+lock/sign-in desktop control, and a kernel driver remain out of scope.
+
+The remaining gate is signed physical qualification on both Windows 11 PCs:
+ordinary and elevated Task Manager input, manual pointer-only UAC accept/cancel,
+held-state cleanup, wrong signer/path/peer/pin/nonce/epoch/replay/expiry,
+grant disable/revoke, process/service failure and recovery, lock/session switch,
+sleep, disconnect, upgrade, and uninstall. Any failure must return Local and
+admit no privileged input. Full evidence, design, and stop conditions are in
+[`UAC_SECURE_INPUT.md`](UAC_SECURE_INPUT.md).
 
 ## Post-roaming milestones
 
@@ -279,7 +285,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
 
 ### 5. Microphone voice forwarding — automated implementation complete
 
-- protocol 5 adds independent default-off `VoiceSend`/`VoiceReceive` grants and
+- protocol 5 introduced independent default-off `VoiceSend`/`VoiceReceive` grants and
   a strictly bounded datagram-only Opus voice frame;
 - the product and runtime expose separate voice route, communications
   microphone selection, incoming gain, hard mute, default PTT plus explicit

@@ -1289,6 +1289,7 @@ void PeerSession::FailLocalDirectionsLocked() noexcept {
 
 void PeerSession::OnReliable(ByteBuffer Packet) {
     bool NotifyFocusReady = false;
+    bool NotifyFocusRejected = false;
     bool NotifyDirectionChanged = false;
     bool NotifyCollision = false;
 #ifdef DESKLINK_BUILD_VOICE
@@ -1297,6 +1298,7 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
     std::function<void()> DirectionCollisionHandler;
     std::function<void()> DirectionChangedHandler;
     std::function<void()> OutgoingFocusReadyHandler;
+    std::function<void()> OutgoingFocusRejectedHandler;
     {
         std::scoped_lock Lock(Mutex_);
         if (!Started_) return;
@@ -1537,6 +1539,20 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
             LastPointerFeedbackSequence_ = 0;
             NotifyFocusReady = true;
             NotifyDirectionChanged = true;
+        } else if (Type == MessageType::FocusRejected) {
+            if (!OutgoingToken_ ||
+                DirectionArbiter_.State() !=
+                    PeerDirectionState::OutgoingPending ||
+                !OutgoingCoordinator_.AcceptFocusRejected(
+                    *Decoded.packet)) {
+                ++Stats_.authorization_rejected;
+                return;
+            }
+            (void)DirectionArbiter_.Release(*OutgoingToken_);
+            OutgoingToken_.reset();
+            ++Stats_.DirectionRejected;
+            NotifyFocusRejected = true;
+            NotifyDirectionChanged = true;
         } else if (Type == MessageType::FocusRequest) {
             // A release and immediate reacquisition normally arrive in order
             // on the session's single reliable stream. Still accept a fresh
@@ -1570,10 +1586,18 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
                 const auto Decision = IncomingCoordinator_.handle(
                     *Decoded.packet);
                 CountDecision(Decision);
-                if (Decision == AgentDecision::RejectedInputUnavailable) {
-                    InputUnavailableClosePending_ = true;
-                }
                 if (Decision != AgentDecision::Accepted) {
+                    const auto& Request = std::get<FocusRequestMessage>(
+                        Decoded.packet->message);
+                    EnvelopeHeader Response;
+                    Response.session_nonce = SessionNonce_;
+                    Response.sequence = ReliableSequence_++;
+                    if (ReliableSequence_ == 0) ++ReliableSequence_;
+                    if (!Transport_->send_reliable(encode_packet(
+                            Response,
+                            FocusRejectedMessage{Request.request_id}))) {
+                        ++Stats_.DirectionRejected;
+                    }
                     if (!ReacquiringIncoming ||
                         (!IncomingCoordinator_.RemoteFocused() &&
                          !IncomingCoordinator_.InputCleanupPending())) {
@@ -1645,6 +1669,10 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
         if (NotifyFocusReady) {
             OutgoingFocusReadyHandler = Handlers_.OutgoingFocusReady;
         }
+        if (NotifyFocusRejected) {
+            OutgoingFocusRejectedHandler =
+                Handlers_.OutgoingFocusRejected;
+        }
     }
     if (DirectionCollisionHandler) {
         DirectionCollisionHandler();
@@ -1654,6 +1682,9 @@ void PeerSession::OnReliable(ByteBuffer Packet) {
     }
     if (OutgoingFocusReadyHandler) {
         OutgoingFocusReadyHandler();
+    }
+    if (OutgoingFocusRejectedHandler) {
+        OutgoingFocusRejectedHandler();
     }
 #ifdef DESKLINK_BUILD_VOICE
     if (NotifyVoiceAuthorization &&

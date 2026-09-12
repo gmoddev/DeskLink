@@ -45,6 +45,21 @@ bool HostCoordinator::accept_focus_ready(const DecodedPacket& packet) noexcept {
     return true;
 }
 
+bool HostCoordinator::AcceptFocusRejected(
+    const DecodedPacket& Packet) noexcept {
+    if (Packet.header.type != MessageType::FocusRejected ||
+        Packet.header.session_nonce != session_nonce_ ||
+        Packet.header.epoch != 0 || pending_focus_request_id_ == 0) {
+        return false;
+    }
+    const auto& Rejected = std::get<FocusRejectedMessage>(Packet.message);
+    if (Rejected.RequestId != pending_focus_request_id_) return false;
+    pending_focus_request_id_ = 0;
+    remote_epoch_ = 0;
+    InputState_ = {};
+    return true;
+}
+
 std::optional<ByteBuffer> HostCoordinator::renew_remote_focus(std::uint32_t lease_ms) {
     if (remote_epoch_ == 0) return std::nullopt;
     auto header = next_header(remote_epoch_, false);

@@ -41,6 +41,13 @@ struct Win32LocalPointerObservation {
     std::int32_t DeltaY{};
 };
 
+// Coalesces high-rate physical pointer observations without erasing a
+// dominant-axis reversal. Preserving that boundary ensures an outward edge
+// contact is evaluated before a game or application recenters the pointer.
+[[nodiscard]] bool TryCoalesceLocalPointerObservation(
+    Win32LocalPointerObservation& Existing,
+    const Win32LocalPointerObservation& Incoming) noexcept;
+
 [[nodiscard]] bool IsValidWin32PointerCalibration(
     const Win32PointerCalibration& Calibration) noexcept;
 
@@ -65,6 +72,7 @@ private:
 class Win32SuppressionGate final {
 public:
     void SetRemoteRouting(bool Enabled) noexcept;
+    void EmergencyFailLocal() noexcept;
     void SetReturnLocalHotkey(ProductHotkey Hotkey) noexcept;
     [[nodiscard]] bool RemoteRouting() const noexcept;
     [[nodiscard]] Win32HookDecision HandleKeyboard(

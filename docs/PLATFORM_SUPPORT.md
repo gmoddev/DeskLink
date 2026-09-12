@@ -14,6 +14,11 @@ current-user CNG device identity. The private key remains non-exportable. The
 certificate DER, SHA-256 pin, key name, and export policy are identity state and
 must not be silently replaced or modified.
 
+Privileged input does not change the platform or transport support statement.
+It is available only in the separately trusted Development Secure package and
+is experimental even on Windows 11. The protected per-peer grant defaults off;
+ordinary packages always retain the current-user UIPI/fail-local behavior.
+
 The approved Windows 10 equal-security R&D project has passed its security and
 guarded physical gates, but Windows 10 remains deliberately unsupported until
 the prototype is separately admitted and integrated into production releases.

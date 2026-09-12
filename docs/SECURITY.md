@@ -229,6 +229,10 @@ This turns delayed network traffic into harmless stale data. Focus acquisition a
 The Windows capture adapter uses Ctrl+Alt+Pause as its physical fail-local
 chord, accepting both the Pause and Windows Ctrl+Break virtual-key forms. The
 low-level hook clears the atomic routing flag before notifying the worker.
+The first activation releases remote focus but retains the authenticated
+transport; a second deliberate activation within three seconds terminates the
+managed session. This confirmation window affects only disconnection: the
+first activation always returns input Local synchronously.
 Injected events always pass through. An invalid keyboard scan code, a busy/full
 keyboard capture queue, Raw Input queue overflow, or an invalid/unqueueable
 physical wheel event disables routing before the session is released. Wheel
@@ -578,14 +582,18 @@ UIPI, increase privilege, change trust, or silently replace identity.
 
 Do not permanently elevate DeskLink merely to bypass this boundary.
 
-The approved UAC investigation uses a default-off, separately staged
-LocalSystem service and per-session SYSTEM helper. It is not product-integrated
-or packaged. The service has no network stack and the cancel-only lab helper
-accepts no caller-supplied key, pointer, path, command, or data. Future product
-input requires a machine-protected explicit grant plus independent exact peer
-pin, session nonce, focus epoch, monotonic sequence, and short lease checks.
-The ordinary current-user pipe or a LocalAppData binary is not sufficient
-authentication for a SYSTEM boundary. See `UAC_SECURE_INPUT.md`.
+Development Secure now contains a default-off privileged-input slice: a
+networkless LocalSystem service and fixed per-desktop SYSTEM helper. The service
+accepts only a signed `desklink_pair.exe` at its exact protected Program Files
+path, rechecks signer equality across all three binaries, and independently
+loads an administrator-protected exact-peer machine/pin grant. Requests remain
+bound to the validated session nonce, focus epoch, grant revision, monotonic
+sequence, exact operation, and a 100-2000 ms lease. The ordinary current-user
+pipe, same-user process ownership, or a LocalAppData binary is never sufficient
+authentication for this boundary. Winlogon accepts pointer/button/wheel and
+release operations only while `consent.exe` is foreground; key and state-
+reconciliation operations are rejected so DeskLink cannot type authentication
+secrets. See `UAC_SECURE_INPUT.md`.
 
 ---
 
@@ -720,7 +728,9 @@ timestamped, and installed beneath protected Program Files. Trusting this root
 grants its private-key holder publisher authority on that target, so the
 channel is suitable only for controlled development PCs and must be removable
 by exact fingerprint. It neither changes the DeskLink device identity nor
-enables the unintegrated secure-input service.
+automatically grants privileged input. The package installs an idle
+secure-input service, but authority remains disabled until a local
+administrator grants one exact paired peer through the explicit warning UI.
 
 The optional virtual-microphone package is the only machine-wide/elevated
 extension. It is absent by default. The fixed sibling helper accepts no path or

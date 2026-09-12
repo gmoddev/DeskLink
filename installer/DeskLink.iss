@@ -111,6 +111,11 @@ SignedUninstaller=no
   Source: "{#StagePath}\desklink_runtime.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_update.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
   Source: "{#StagePath}\desklink_virtual_microphone_installer.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+#ifdef DevelopmentSecure
+  Source: "{#StagePath}\desklink_secure_input_service.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_secure_input_helper.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+  Source: "{#StagePath}\desklink_secure_input_configurator.exe"; DestDir: "{app}"; Flags: ignoreversion signonce
+#endif
 #else
   Source: "{#StagePath}\ui\desklink.exe"; DestDir: "{app}"; Flags: ignoreversion
   Source: "{#StagePath}\desklink_alpha.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -136,7 +141,11 @@ Source: "{#StagePath}\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagePath}\OPUS-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef DevelopmentSecure
+Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: InstallSecureInputService
+#else
 Source: "{#StagePath}\ALPHA_WRAPPER.md"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 #ifdef VirtualMicrophonePackage
 Source: "{#StagePath}\driver\DeskLinkVirtualMicrophone\*"; DestDir: "{app}\driver\DeskLinkVirtualMicrophone"; Flags: ignoreversion
 #endif
@@ -157,6 +166,14 @@ const
   UpdateMutexName = 'Local\DeskLink.Update.v1';
   ApplicationMutexNames =
     'Local\DeskLink.Shell.v1,Local\DeskLink.Alpha.v1,Local\DeskLink.Runtime.v1,Local\DeskLink.RuntimeBroker.v1';
+
+#ifdef DevelopmentSecure
+var
+  SecureInputServiceExisted: Boolean;
+  SecureInputServicePrepared: Boolean;
+  SecureInputServiceStarted: Boolean;
+  SecureInputInstallCommitted: Boolean;
+#endif
 
 function HasExactCommandLineParameter(Value: String): Boolean;
 var
@@ -212,6 +229,122 @@ begin
   Result := AcquireInstallerGate();
 end;
 
+#ifdef DevelopmentSecure
+function RunSecureInputServiceCommand(
+  Parameters: String; AllowAlreadyStopped: Boolean): Boolean;
+var
+  ResultCode: Integer;
+begin
+  ResultCode := -1;
+  Log('DeskLink secure-input service command: ' + Parameters);
+  Result := Exec(
+    ExpandConstant('{sys}\sc.exe'), Parameters, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  if Result and AllowAlreadyStopped and
+     ((ResultCode = 1060) or (ResultCode = 1062)) then
+    ResultCode := 0;
+  Result := Result and (ResultCode = 0);
+  Log('DeskLink secure-input service command exit: ' +
+    IntToStr(ResultCode));
+end;
+
+function StopSecureInputService(): Boolean;
+begin
+  if not RegKeyExists(
+      HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput') then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := RunSecureInputServiceCommand(
+    'stop DeskLinkSecureInput', True);
+  if Result then
+    Sleep(1000);
+end;
+
+function ConfigureSecureInputServiceRegistration(): Boolean;
+var
+  ExecutablePath: String;
+  ExpectedImagePath: String;
+  InstalledImagePath: String;
+  InstalledAccount: String;
+  Parameters: String;
+begin
+  Result := False;
+  ExecutablePath :=
+    ExpandConstant('{app}\desklink_secure_input_service.exe');
+  ExpectedImagePath := '"' + ExecutablePath + '"';
+  if RegKeyExists(
+      HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput') then
+    Parameters := 'config DeskLinkSecureInput binPath= """' +
+      ExecutablePath +
+      '""" start= delayed-auto obj= LocalSystem DisplayName= "DeskLink Secure Input Broker"'
+  else
+    Parameters := 'create DeskLinkSecureInput binPath= """' +
+      ExecutablePath +
+      '""" start= delayed-auto obj= LocalSystem DisplayName= "DeskLink Secure Input Broker"';
+  if not RunSecureInputServiceCommand(Parameters, False) then
+    exit;
+  if not RunSecureInputServiceCommand(
+      'description DeskLinkSecureInput "Authenticated, local-only broker for explicitly approved elevated input"',
+      False) then
+    exit;
+  if not RunSecureInputServiceCommand(
+      'sdset DeskLinkSecureInput D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)',
+      False) then
+    exit;
+  if not RunSecureInputServiceCommand(
+      'failure DeskLinkSecureInput reset= 86400 actions= restart/1000/restart/5000/""/0',
+      False) then
+    exit;
+  if not RunSecureInputServiceCommand(
+      'failureflag DeskLinkSecureInput 1', False) then
+    exit;
+  if not RegQueryStringValue(
+      HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput',
+      'ImagePath', InstalledImagePath) or
+     (CompareText(InstalledImagePath, ExpectedImagePath) <> 0) or
+     not RegQueryStringValue(
+       HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput',
+       'ObjectName', InstalledAccount) or
+     (CompareText(InstalledAccount, 'LocalSystem') <> 0) then
+    exit;
+  Result := True;
+end;
+
+procedure InstallSecureInputService();
+begin
+  SecureInputServiceStarted := RunSecureInputServiceCommand(
+    'start DeskLinkSecureInput', False);
+  if SecureInputServiceStarted then
+    exit;
+  RaiseException(
+    'The DeskLink secure-input broker could not start. Privileged input remains unavailable.');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  SecureInputServiceExisted := RegKeyExists(
+    HKLM64, 'SYSTEM\CurrentControlSet\Services\DeskLinkSecureInput');
+  if not StopSecureInputService() then
+  begin
+    Result :=
+      'DeskLink Setup could not stop the existing secure-input broker. No files were changed.';
+    exit;
+  end;
+  if not ConfigureSecureInputServiceRegistration() then
+  begin
+    if not SecureInputServiceExisted then
+      RunSecureInputServiceCommand('delete DeskLinkSecureInput', True);
+    Result :=
+      'DeskLink Setup could not register the secure-input broker safely. No application files were changed.';
+    exit;
+  end;
+  SecureInputServicePrepared := True;
+end;
+#endif
+
 procedure MigrateLegacyStartupRegistration();
 var
   CurrentValue: String;
@@ -236,7 +369,25 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
     MigrateLegacyStartupRegistration();
+#ifdef DevelopmentSecure
+  if (CurStep = ssDone) and SecureInputServicePrepared and
+     SecureInputServiceStarted then
+    SecureInputInstallCommitted := True;
+#endif
 end;
+
+#ifdef DevelopmentSecure
+procedure DeinitializeSetup();
+begin
+  if not SecureInputServicePrepared or SecureInputInstallCommitted then
+    exit;
+  RunSecureInputServiceCommand('stop DeskLinkSecureInput', True);
+  if SecureInputServiceExisted then
+    RunSecureInputServiceCommand('start DeskLinkSecureInput', False)
+  else
+    RunSecureInputServiceCommand('delete DeskLinkSecureInput', True);
+end;
+#endif
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
@@ -244,6 +395,14 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+#ifdef DevelopmentSecure
+    if not StopSecureInputService() then
+      Log('DeskLink secure-input broker did not acknowledge stop before removal.');
+    if not RunSecureInputServiceCommand(
+        'delete DeskLinkSecureInput', True) then
+      Log('DeskLink secure-input broker service registration could not be removed.');
+    RegDeleteKeyIncludingSubkeys(HKLM64, 'SOFTWARE\DeskLink\SecureInput');
+#endif
     if RegKeyExists(
         HKLM64,
         'SYSTEM\CurrentControlSet\Services\DeskLinkVirtualMicrophone') then

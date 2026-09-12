@@ -81,6 +81,43 @@ std::optional<MouseButtonMessage> GetButton(const RAWMOUSE& Mouse,
 
 } // namespace
 
+bool TryCoalesceLocalPointerObservation(
+    Win32LocalPointerObservation& Existing,
+    const Win32LocalPointerObservation& Incoming) noexcept {
+    const auto Absolute = [](std::int32_t Value) noexcept {
+        const auto Wide = static_cast<std::int64_t>(Value);
+        return Wide < 0 ? -Wide : Wide;
+    };
+    const auto Reversed = [](std::int32_t Left,
+                             std::int32_t Right) noexcept {
+        return (Left < 0 && Right > 0) || (Left > 0 && Right < 0);
+    };
+    const bool HorizontalDominant =
+        Absolute(Existing.DeltaX) >= Absolute(Existing.DeltaY);
+    if ((HorizontalDominant &&
+         Reversed(Existing.DeltaX, Incoming.DeltaX)) ||
+        (!HorizontalDominant &&
+         Reversed(Existing.DeltaY, Incoming.DeltaY))) {
+        return false;
+    }
+    const auto DeltaX = static_cast<std::int64_t>(Existing.DeltaX) +
+        Incoming.DeltaX;
+    const auto DeltaY = static_cast<std::int64_t>(Existing.DeltaY) +
+        Incoming.DeltaY;
+    if (DeltaX < std::numeric_limits<std::int32_t>::min() ||
+        DeltaX > std::numeric_limits<std::int32_t>::max() ||
+        DeltaY < std::numeric_limits<std::int32_t>::min() ||
+        DeltaY > std::numeric_limits<std::int32_t>::max()) {
+        return false;
+    }
+    Existing = Win32LocalPointerObservation{
+        Incoming.ScreenX,
+        Incoming.ScreenY,
+        static_cast<std::int32_t>(DeltaX),
+        static_cast<std::int32_t>(DeltaY)};
+    return true;
+}
+
 struct Win32InputCapture::State {
     State(Win32CaptureHandlers OwnedHandlers,
           Win32PointerCalibration Calibration)
@@ -123,7 +160,7 @@ struct Win32InputCapture::State {
     }
 
     void Emergency() {
-        Gate.SetRemoteRouting(false);
+        Gate.EmergencyFailLocal();
         ClearQueue();
         if (Handlers.Emergency) Handlers.Emergency();
     }
@@ -187,21 +224,9 @@ struct Win32InputCapture::State {
                 Queue.back())) {
             const auto& Incoming =
                 std::get<Win32LocalPointerObservation>(Event);
-            const auto& Existing =
+            auto& Existing =
                 std::get<Win32LocalPointerObservation>(Queue.back());
-            const auto DeltaX = static_cast<std::int64_t>(Existing.DeltaX) +
-                                Incoming.DeltaX;
-            const auto DeltaY = static_cast<std::int64_t>(Existing.DeltaY) +
-                                Incoming.DeltaY;
-            if (DeltaX >= std::numeric_limits<std::int32_t>::min() &&
-                DeltaX <= std::numeric_limits<std::int32_t>::max() &&
-                DeltaY >= std::numeric_limits<std::int32_t>::min() &&
-                DeltaY <= std::numeric_limits<std::int32_t>::max()) {
-                Queue.back() = Win32LocalPointerObservation{
-                    Incoming.ScreenX,
-                    Incoming.ScreenY,
-                    static_cast<std::int32_t>(DeltaX),
-                    static_cast<std::int32_t>(DeltaY)};
+            if (TryCoalesceLocalPointerObservation(Existing, Incoming)) {
                 QueueChanged.notify_one();
                 return true;
             }
@@ -432,6 +457,13 @@ void Win32SuppressionGate::SetRemoteRouting(bool Enabled) noexcept {
     }
 }
 
+void Win32SuppressionGate::EmergencyFailLocal() noexcept {
+    // Preserve the physical modifier state. A user who keeps Ctrl+Alt held and
+    // taps Pause a second time must still be able to request the documented
+    // disconnect confirmation after the first tap has failed input Local.
+    RemoteRouting_.store(false, std::memory_order_release);
+}
+
 void Win32SuppressionGate::SetReturnLocalHotkey(
     ProductHotkey Hotkey) noexcept {
     ReturnLocalHotkey_.store(
@@ -450,10 +482,12 @@ Win32HookDecision Win32SuppressionGate::HandleKeyboard(
     UpdateModifier(AltMask_, ModifierBit(VirtualKey, false), Down);
     UpdateModifier(ShiftMask_, ShiftModifierBit(VirtualKey), Down);
     if (Down && (VirtualKey == VK_PAUSE || VirtualKey == VK_CANCEL) &&
-        RemoteRouting() &&
         ControlMask_.load(std::memory_order_relaxed) != 0 &&
         AltMask_.load(std::memory_order_relaxed) != 0) {
-        SetRemoteRouting(false);
+        // The first activation synchronously disables routing. Keep accepting
+        // the same chord while Local so the runtime can interpret a deliberate
+        // second activation as a disconnect confirmation.
+        EmergencyFailLocal();
         return Win32HookDecision::Emergency;
     }
     const auto Hotkey = ReturnLocalHotkey_.load(std::memory_order_acquire);

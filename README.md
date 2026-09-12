@@ -22,7 +22,26 @@ dedicated non-exportable RSA-3072 CNG key. The package installs under protected
 Program Files only after an administrator independently verifies and trusts the
 exact public-certificate DER SHA-256 fingerprint. This private trust channel is
 not a publicly trusted production release and must never silently install its
-own root. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+own root. This package also installs the fixed, networkless secure-input broker,
+but privileged input remains disabled until an administrator uses the explicit
+per-peer **I know what I'm doing** control. See
+[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+
+> [!WARNING]
+> Controlling elevated applications or a visible UAC consent prompt is an
+> experimental Development Secure feature. It does not work from the ordinary
+> unsigned Beta package. Each controlled test PC must separately install the
+> exact public DeskLink Development Secure signing certificate into the Local
+> Machine **Trusted Root Certification Authorities** and **Trusted Publishers**
+> stores after the administrator verifies its SHA-256 fingerprint out of band.
+> This deliberately broadens that PC's code-trust boundary: Windows will trust
+> DeskLink binaries signed by that otherwise private certificate, so compromise
+> of its signing key would have greater impact. Use it only on machines where
+> that experimental tradeoff is acceptable, protect the signing key, and remove
+> the certificate when testing is finished. Never distribute or install the
+> private key/PFX. Network pairing, certificate pinning, short focus leases, and
+> manual UAC approval remain required; trusting the signer does not make the
+> feature production-secure or let DeskLink approve prompts automatically.
 
 ## Measured audio latency
 
@@ -65,7 +84,7 @@ room propagation, or microphone capture latency. See
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
-- Protocol-v5 microphone forwarding with default PTT and explicit continuous
+- Protocol-v6 microphone forwarding with default PTT and explicit continuous
   transmit modes, separate reciprocal voice
   grants, pinned Opus 1.6.1, exact 48 kHz mono/20 ms frames, a dedicated
   datagram sequence, and bounded 40-120 ms FEC/PLC playout
@@ -97,13 +116,16 @@ room propagation, or microphone capture latency. See
 - End-to-end HostSession/AgentSession focus handshake over the transport abstraction
 - In-memory transport for deterministic testing
 - Windows `SendInput` injector adapter
-- Default-off secure-desktop R&D foundation with a networkless LocalSystem
-  service, fixed active-session helper, and exact lease/identity/nonce/epoch/
-  sequence authorization model; it is not product-integrated or packaged
+- Development Secure-only privileged-input slice with a networkless
+  LocalSystem service, fixed signed active-session helper, protected exact-peer
+  opt-in, signer/path/client attestation, and exact lease/identity/nonce/epoch/
+  sequence authorization. It remains disabled by default; the ordinary
+  installer retains fail-local behavior
 - Opt-in Windows low-level keyboard and Raw Input mouse capture with bounded sender queue
 - Bounded pointer gain (25-400%) and optional source-DPI normalization without
   changing either PC's Windows mouse settings
-- Fail-local keyboard/mouse suppression gate with Ctrl+Alt+Pause escape
+- Fail-local keyboard/mouse suppression gate: Ctrl+Alt+Pause returns input
+  Local immediately; pressing it again within three seconds disconnects
 - Periodic reliable input-state reconciliation for normal/extended keys and mouse buttons
 - Guarded two-PC reconciliation fault validation with a non-production-only control
 - Stable Windows DisplayConfig identities, deterministic display IDs, rectangle mapping,
@@ -177,10 +199,10 @@ The following are intentionally kept behind interfaces and are the next producti
 - Sustained physical two-PC audio timing and failure validation
 - Microsoft production signing/certification and physical zero-microphone and
   Discord qualification for the optional virtual-microphone driver
-- Product secure-input authorization over the signed protected-install boundary
-  and the full physical UAC matrix; the hardened one-shot Windows 11 cancel access probe
-  passed with exact-binary and fail-closed evidence, but the current
-  service/helper remains an unintegrated, cancel-only lab boundary
+- Physical qualification of the Development Secure privileged-input slice:
+  elevated Task Manager, pointer-only UAC consent/cancel, held-state cleanup,
+  wrong signer/path/peer/pin/nonce/epoch/replay/expiry, disable/revoke,
+  crash/restart, lock/session switch, sleep, upgrade, and uninstall
 - Physical default-device switch, disable/re-enable, and sleep/resume validation
 - Physical two-PC text-clipboard privacy, contention, reconnect, and owner-exit validation
 - Production-signed Windows 11 installer/update qualification, physical
@@ -278,7 +300,9 @@ fails active input Local during migration.
 Controller sessions always start in `lock-pc1` and require an explicit
 **Focus remote** action. **RETURN LOCAL** applies `LockPc1` through the
 authenticated control pipe, while Ctrl+Alt+Pause/Break remains the independent
-physical emergency path. The alpha package is Schannel-only and supports the
+physical emergency path. One activation returns input Local without dropping
+the trusted session; a second activation within three seconds disconnects. The
+alpha package is Schannel-only and supports the
 Windows 11 / Server 2022+ production baseline. See
 [`docs/ALPHA_WRAPPER.md`](docs/ALPHA_WRAPPER.md) for the workflow and packaging
 command.
@@ -345,7 +369,8 @@ certificate. See [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md) and
 The separate `-DevelopmentSelfSigned` mode is for administrator-approved test
 machines. It accepts only the exact DeskLink Development Secure certificate
 policy, never accepts a PFX/private-key path, signs and timestamps the complete
-installer graph, and produces a clearly labeled machine-wide package. Its
+installer graph including the secure-input service/helper/configurator, and
+produces a clearly labeled machine-wide package. Its
 public trust must be installed separately after an out-of-band fingerprint
 check; its private key remains only in the signing user's CNG store.
 
@@ -437,7 +462,8 @@ On the other PC, `desklink_pair.exe focus 192.168.1.25 43821 --capture` acquires
 and renews a remote-focus lease, forwards physical keyboard events from the
 low-level hook and mouse events from Raw Input, and suppresses corresponding
 local input until Enter is pressed. Ctrl+Alt+Pause (including Windows'
-Ctrl+Break representation) immediately disables suppression and fails local.
+Ctrl+Break representation) immediately disables suppression and returns input
+Local. Pressing it again within three seconds disconnects the trusted session.
 Omitting `--capture` retains the manual control-plane-only check.
 Ordinary motion is transported as relative Raw Input counts, avoiding any
 dependency on the controlling PC's total virtual-desktop width. Optional

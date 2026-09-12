@@ -16,6 +16,7 @@
 #include "desklink/roaming.hpp"
 #include "desklink/roaming_runtime.hpp"
 #include "desklink/secure_input.hpp"
+#include "desklink/secure_input_wire.hpp"
 #include "desklink/runtime_broker.hpp"
 #include "desklink/product_shell.hpp"
 #include "desklink/session.hpp"
@@ -108,7 +109,10 @@ desklink::DiscoveryEndpoint MakeDiscoveryEndpoint(
 
 class RecordingInjector final : public desklink::IInputInjector {
 public:
-    bool ReadyForInput() const noexcept override { return Ready; }
+    bool ReadyForInput() const noexcept override {
+        ++ReadyCalls;
+        return Ready;
+    }
     bool InputDesktopAvailable() noexcept override {
         return DesktopAvailable;
     }
@@ -161,8 +165,65 @@ public:
     bool ParkSucceeds{true};
     bool DesktopAvailable{true};
     bool InterruptionObserved{};
+    mutable int ReadyCalls{};
     int release_calls{};
     int park_calls{};
+};
+
+class RecordingPrivilegedInputBroker final
+    : public desklink::IPrivilegedInputBroker {
+public:
+    bool Begin(
+        std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept override {
+        ++BeginCalls;
+        LastEpoch = Epoch;
+        LastLease = Lease;
+        if (BeginAction) BeginAction();
+        Active = BeginSucceeds;
+        return BeginSucceeds;
+    }
+
+    bool Renew(
+        std::uint64_t Epoch, std::chrono::milliseconds Lease) noexcept override {
+        ++RenewCalls;
+        LastEpoch = Epoch;
+        LastLease = Lease;
+        if (!RenewSucceeds) Active = false;
+        return RenewSucceeds;
+    }
+
+    desklink::PrivilegedInputForwardResult Forward(
+        const desklink::DecodedPacket& Packet) noexcept override {
+        ForwardedTypes.push_back(Packet.header.type);
+        return ForwardResult;
+    }
+
+    bool Release() noexcept override {
+        ++ReleaseCalls;
+        return ReleaseSucceeds;
+    }
+
+    void Revoke() noexcept override {
+        ++RevokeCalls;
+        Active = false;
+    }
+
+    bool Authorized() const noexcept override { return Active; }
+
+    std::vector<desklink::MessageType> ForwardedTypes;
+    std::chrono::milliseconds LastLease{};
+    std::uint64_t LastEpoch{};
+    int BeginCalls{};
+    int RenewCalls{};
+    int ReleaseCalls{};
+    int RevokeCalls{};
+    bool BeginSucceeds{true};
+    bool RenewSucceeds{true};
+    std::function<void()> BeginAction;
+    desklink::PrivilegedInputForwardResult ForwardResult{
+        desklink::PrivilegedInputForwardResult::Forwarded};
+    bool ReleaseSucceeds{true};
+    bool Active{};
 };
 
 class PausableTransportEndpoint final
@@ -613,6 +674,17 @@ void protocol_round_trip() {
     CHECK(Ack.capabilities == 0x55);
     CHECK(Ack.revision == 7);
 
+    const auto FocusRejectedBytes = encode_packet(
+        h, FocusRejectedMessage{81});
+    const auto FocusRejectedDecoded = decode_packet(
+        FocusRejectedBytes, false);
+    CHECK(FocusRejectedDecoded.packet.has_value());
+    CHECK(std::get<FocusRejectedMessage>(
+              FocusRejectedDecoded.packet->message).RequestId == 81);
+    CHECK(!decode_packet(
+        encode_packet(h, FocusRejectedMessage{}), false).packet.has_value());
+    CHECK(!decode_packet(FocusRejectedBytes, true).packet.has_value());
+
     const auto FeedbackBytes = encode_packet(
         h, PointerPositionFeedbackMessage{3, 0, 32'768});
     const auto FeedbackDecoded = decode_packet(FeedbackBytes, true);
@@ -869,7 +941,8 @@ void ControlProtocolRoundTripAndValidation() {
 
     ControlTrustedDeviceList Devices;
     Devices.Devices.push_back(ControlTrustedDevice{
-        MakeMachineId(8), "Companion PC", RequestedCapabilities, true});
+        DeriveMachineId(MakeDigest(8)), "Companion PC",
+        FormatFingerprint(MakeDigest(8)), RequestedCapabilities, true});
     ControlResponse DevicesResponse{16, ControlStatus::Ok};
     DevicesResponse.TrustedDevices = Devices;
     const auto DevicesFrame = EncodeControlResponse(DevicesResponse);
@@ -4330,6 +4403,53 @@ void stale_focus_ready_cannot_win_new_transaction() {
     CHECK(host.remote_epoch() == 11);
 }
 
+void StaleFocusRejectionCannotCancelANewTransaction() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 9'002;
+    HostCoordinator Host(Nonce);
+
+    const auto FirstRequest = decode_packet(
+        Host.request_remote_focus(750), false);
+    CHECK(FirstRequest.packet.has_value());
+    const auto FirstId = std::get<FocusRequestMessage>(
+        FirstRequest.packet->message).request_id;
+
+    const auto SecondRequest = decode_packet(
+        Host.request_remote_focus(750), false);
+    CHECK(SecondRequest.packet.has_value());
+    const auto SecondId = std::get<FocusRequestMessage>(
+        SecondRequest.packet->message).request_id;
+    CHECK(SecondId != FirstId);
+
+    EnvelopeHeader Header;
+    Header.session_nonce = Nonce;
+    const auto Stale = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{FirstId}), false);
+    CHECK(Stale.packet.has_value());
+    CHECK(!Host.AcceptFocusRejected(*Stale.packet));
+
+    Header.session_nonce = Nonce + 1;
+    const auto WrongSession = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{SecondId}), false);
+    CHECK(WrongSession.packet.has_value());
+    CHECK(!Host.AcceptFocusRejected(*WrongSession.packet));
+
+    Header.session_nonce = Nonce;
+    Header.epoch = 1;
+    const auto WrongEpoch = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{SecondId}), false);
+    CHECK(WrongEpoch.packet.has_value());
+    CHECK(!Host.AcceptFocusRejected(*WrongEpoch.packet));
+
+    Header.epoch = 0;
+    const auto Current = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{SecondId}), false);
+    CHECK(Current.packet.has_value());
+    CHECK(Host.AcceptFocusRejected(*Current.packet));
+    CHECK(!Host.remote_focused());
+    CHECK(!Host.AcceptFocusRejected(*Current.packet));
+}
+
 void secure_session_end_to_end() {
     using namespace desklink;
     constexpr std::uint64_t nonce = 0xBADC0FFEEu;
@@ -5895,6 +6015,33 @@ void WindowsPointerMotionScalingIsBoundedAndRetainsFractions() {
     CHECK(!Invalid.Scale(1, 0, Motion));
 }
 
+void WindowsLocalPointerCoalescingPreservesDominantReversals() {
+    using namespace desklink;
+
+    Win32LocalPointerObservation Horizontal{5'110, 700, 40, 2};
+    const Win32LocalPointerObservation OutwardEdge{5'119, 701, 5, -1};
+    CHECK(TryCoalesceLocalPointerObservation(Horizontal, OutwardEdge));
+    CHECK(Horizontal.ScreenX == 5'119);
+    CHECK(Horizontal.ScreenY == 701);
+    CHECK(Horizontal.DeltaX == 45);
+    CHECK(Horizontal.DeltaY == 1);
+
+    const auto PreservedEdge = Horizontal;
+    const Win32LocalPointerObservation Recenter{4'900, 701, -20, 1};
+    CHECK(!TryCoalesceLocalPointerObservation(Horizontal, Recenter));
+    CHECK(Horizontal.ScreenX == PreservedEdge.ScreenX);
+    CHECK(Horizontal.DeltaX == PreservedEdge.DeltaX);
+
+    Win32LocalPointerObservation Vertical{400, 1, 1, -30};
+    const Win32LocalPointerObservation VerticalReverse{401, 20, 1, 4};
+    CHECK(!TryCoalesceLocalPointerObservation(Vertical, VerticalReverse));
+
+    Win32LocalPointerObservation Overflow{
+        5'119, 700, std::numeric_limits<std::int32_t>::max(), 0};
+    const Win32LocalPointerObservation More{5'119, 700, 1, 0};
+    CHECK(!TryCoalesceLocalPointerObservation(Overflow, More));
+}
+
 void WindowsDisplayTopologyEnumeratesWhenAvailable() {
     using namespace desklink;
 
@@ -5951,6 +6098,17 @@ void WindowsSuppressionGateFailsLocal() {
           Win32HookDecision::Emergency);
     CHECK(!Gate.RemoteRouting());
     CHECK(Gate.HandleMouse(false) == Win32HookDecision::Pass);
+    // A second deliberate activation remains observable after the first one
+    // has synchronously disabled routing. The runtime uses it as disconnect
+    // confirmation while a single activation only returns input Local.
+    // Ctrl+Alt remain physically held. The first activation must not erase
+    // that state before the second Pause/Break confirmation arrives.
+    CHECK(Gate.HandleKeyboard(Pause, true, false) ==
+          Win32HookDecision::Emergency);
+    CHECK(Gate.HandleKeyboard(LeftAlt, false, false) ==
+          Win32HookDecision::Pass);
+    CHECK(Gate.HandleKeyboard(LeftControl, false, false) ==
+          Win32HookDecision::Pass);
 
     Win32SuppressionGate BreakGate;
     BreakGate.SetRemoteRouting(true);
@@ -6775,7 +6933,75 @@ void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
     CHECK(ClosedB == 1);
 }
 
-void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
+void RejectedFocusAdmissionKeepsAuthenticatedSession() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x71'82'96u;
+    const auto IdentityA = MakeIdentity(107, "Focus reject A");
+    const auto IdentityB = MakeIdentity(108, "Focus reject B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    InjectorB.DesktopAvailable = false;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t Rejections{};
+    std::size_t ClosedA{};
+    std::size_t ClosedB{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.OutgoingFocusRejected = [&] { ++Rejections; };
+    HandlersA.TransportClosed = [&](TransportCloseReason) { ++ClosedA; };
+    PeerSessionHandlers HandlersB;
+    HandlersB.TransportClosed = [&](TransportCloseReason) { ++ClosedB; };
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA));
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        std::move(HandlersB));
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(Rejections == 1);
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(!SessionB.IncomingFocused());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    SessionA.Tick();
+    SessionB.Tick();
+    CHECK(ClosedA == 0);
+    CHECK(ClosedB == 0);
+
+    InjectorB.DesktopAvailable = true;
+    InjectorB.Ready = false;
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(Rejections == 2);
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(!SessionB.IncomingFocused());
+    CHECK(ClosedA == 0);
+    CHECK(ClosedB == 0);
+
+    InjectorB.Ready = true;
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionB.IncomingFocused());
+    CHECK(Rejections == 2);
+    CHECK(ClosedA == 0);
+    CHECK(ClosedB == 0);
+}
+
+void UnavailableInputRejectsAdmissionAndFailsLocalAfterAdmission() {
     using namespace desklink;
     ManualClock Clock;
     RecordingInjector Injector;
@@ -6790,9 +7016,10 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
     CHECK(Request.packet.has_value());
     Injector.Ready = false;
     CHECK(Agent.handle(*Request.packet) ==
-          AgentDecision::RejectedInputUnavailable);
+          AgentDecision::RejectedLease);
     CHECK(!Agent.RemoteFocused());
-    CHECK(Agent.InputUnavailable());
+    CHECK(!Agent.InputUnavailable());
+    CHECK(Injector.release_calls == 0);
 
     Injector.Ready = true;
     CHECK(Agent.handle(*Request.packet) == AgentDecision::Accepted);
@@ -6808,7 +7035,332 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
           AgentDecision::RejectedInputUnavailable);
     CHECK(!Agent.RemoteFocused());
     CHECK(Agent.InputUnavailable());
-    CHECK(Injector.release_calls >= 2);
+    CHECK(Injector.release_calls >= 1);
+}
+
+void PointerMotionDatagramCoalescingIsBoundedAndEpochSafe() {
+    using namespace desklink;
+
+    EnvelopeHeader ExistingHeader;
+    ExistingHeader.session_nonce = 41;
+    ExistingHeader.epoch = 7;
+    ExistingHeader.sequence = 10;
+    auto Accumulated = encode_packet(
+        ExistingHeader, PointerMotionMessage{12, -5});
+
+    EnvelopeHeader NewestHeader = ExistingHeader;
+    NewestHeader.sequence = 13;
+    const auto Newest = encode_packet(
+        NewestHeader, PointerMotionMessage{-3, 9});
+    CHECK(TryCoalescePointerMotionDatagrams(Accumulated, Newest));
+    const auto Combined = decode_packet(Accumulated, true);
+    CHECK(Combined.packet.has_value());
+    CHECK(Combined.packet->header.sequence == 13);
+    const auto& Motion = std::get<PointerMotionMessage>(
+        Combined.packet->message);
+    CHECK(Motion.DeltaX == 9);
+    CHECK(Motion.DeltaY == 4);
+
+    auto WrongEpochHeader = NewestHeader;
+    WrongEpochHeader.epoch = 8;
+    WrongEpochHeader.sequence = 14;
+    const auto WrongEpoch = encode_packet(
+        WrongEpochHeader, PointerMotionMessage{1, 1});
+    CHECK(!TryCoalescePointerMotionDatagrams(Accumulated, WrongEpoch));
+
+    auto WrongSessionHeader = NewestHeader;
+    WrongSessionHeader.session_nonce = 42;
+    WrongSessionHeader.sequence = 14;
+    const auto WrongSession = encode_packet(
+        WrongSessionHeader, PointerMotionMessage{1, 1});
+    CHECK(!TryCoalescePointerMotionDatagrams(Accumulated, WrongSession));
+
+    auto StaleHeader = NewestHeader;
+    StaleHeader.sequence = 12;
+    const auto Stale = encode_packet(
+        StaleHeader, PointerMotionMessage{1, 1});
+    CHECK(!TryCoalescePointerMotionDatagrams(Accumulated, Stale));
+
+    auto AtLimit = encode_packet(
+        ExistingHeader,
+        PointerMotionMessage{kMaximumPointerMotionDelta, 0});
+    auto OverflowHeader = ExistingHeader;
+    OverflowHeader.sequence = 11;
+    const auto Overflow = encode_packet(
+        OverflowHeader, PointerMotionMessage{1, 0});
+    CHECK(!TryCoalescePointerMotionDatagrams(AtLimit, Overflow));
+}
+
+void SecureInputBlockedOperationsPreserveOnlyExistingAuthorization() {
+    using namespace desklink::secure_input_wire;
+    CHECK(PreservesAuthorizationAfterForwardFailure(
+        Status::SecureOperationBlocked));
+    CHECK(PreservesAuthorizationAfterForwardFailure(
+        Status::DesktopUnavailable));
+    CHECK(PreservesAuthorizationAfterForwardFailure(
+        Status::InjectionFailed));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::InvalidRequest));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::GrantRejected));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::Expired));
+    CHECK(!PreservesAuthorizationAfterForwardFailure(Status::InternalFailure));
+}
+
+void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
+    using namespace desklink;
+
+    ManualClock Clock;
+    RecordingInjector Injector;
+    RecordingPrivilegedInputBroker Broker;
+    AgentCoordinator Agent(Clock, Injector, &Broker);
+
+    EnvelopeHeader Header;
+    Header.session_nonce = 71;
+    const auto Focus = decode_packet(
+        encode_packet(Header, FocusRequestMessage{750, 1}), false);
+    CHECK(Focus.packet.has_value());
+    CHECK(Agent.handle(*Focus.packet) == AgentDecision::RejectedCapability);
+    CHECK(Broker.BeginCalls == 0);
+
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    Agent.set_peer_capabilities(Capabilities);
+    Injector.Ready = false;
+    CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+    CHECK(Broker.BeginCalls == 1);
+    CHECK(Broker.Authorized());
+    CHECK(Broker.LastLease == std::chrono::milliseconds(750));
+    const auto Epoch = Agent.focus_state().epoch();
+    CHECK(Broker.LastEpoch == Epoch);
+    const auto ReadyCallsAfterFocus = Injector.ReadyCalls;
+
+    Header.epoch = Epoch;
+    Header.sequence = 1;
+    const auto Motion = decode_packet(
+        encode_packet(Header, PointerMotionMessage{7, -3}), true);
+    CHECK(Motion.packet.has_value());
+    CHECK(Agent.handle(*Motion.packet) == AgentDecision::Accepted);
+    CHECK(Broker.ForwardedTypes.size() == 1);
+    CHECK(Injector.motions.empty());
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
+    CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedSequence);
+    CHECK(Broker.ForwardedTypes.size() == 1);
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
+
+    Header.sequence = 2;
+    const auto SecondMotion = decode_packet(
+        encode_packet(Header, PointerMotionMessage{-2, 5}), true);
+    CHECK(SecondMotion.packet.has_value());
+    CHECK(Agent.handle(*SecondMotion.packet) == AgentDecision::Accepted);
+    CHECK(Broker.ForwardedTypes.size() == 2);
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
+
+    Clock.advance(std::chrono::milliseconds(50));
+    Agent.tick();
+    CHECK(Agent.RemoteFocused());
+    CHECK(Injector.ReadyCalls == ReadyCallsAfterFocus);
+
+    const auto Renew = decode_packet(
+        encode_packet(Header, FocusRenewMessage{500}), false);
+    CHECK(Renew.packet.has_value());
+    CHECK(Agent.handle(*Renew.packet) == AgentDecision::Accepted);
+    CHECK(Broker.RenewCalls == 1);
+
+    const auto Release = decode_packet(
+        encode_packet(Header, FocusReleaseMessage{}), false);
+    CHECK(Release.packet.has_value());
+    CHECK(Agent.handle(*Release.packet) == AgentDecision::Accepted);
+    CHECK(Broker.ReleaseCalls == 1);
+    CHECK(Broker.RevokeCalls == 1);
+    CHECK(!Broker.Authorized());
+    CHECK(!Agent.RemoteFocused());
+
+    RecordingPrivilegedInputBroker SlowBroker;
+    AgentCoordinator SlowAgent(Clock, Injector, &SlowBroker);
+    SlowAgent.set_peer_capabilities(Capabilities);
+    Injector.Ready = false;
+    SlowBroker.BeginAction = [&] {
+        Clock.advance(std::chrono::milliseconds(1'000));
+    };
+    CHECK(SlowAgent.handle(*Focus.packet) == AgentDecision::Accepted);
+    CHECK(SlowAgent.RemoteFocused());
+    SlowAgent.tick();
+    CHECK(SlowAgent.RemoteFocused());
+    Clock.advance(std::chrono::milliseconds(749));
+    SlowAgent.tick();
+    CHECK(SlowAgent.RemoteFocused());
+    Clock.advance(std::chrono::milliseconds(2));
+    SlowAgent.tick();
+    CHECK(!SlowAgent.RemoteFocused());
+
+    RecordingPrivilegedInputBroker RefusingBroker;
+    RefusingBroker.BeginSucceeds = false;
+    AgentCoordinator RefusingAgent(Clock, Injector, &RefusingBroker);
+    RefusingAgent.set_peer_capabilities(Capabilities);
+    CHECK(RefusingAgent.handle(*Focus.packet) ==
+          AgentDecision::RejectedLease);
+    CHECK(!RefusingAgent.RemoteFocused());
+    CHECK(!RefusingAgent.InputUnavailable());
+}
+
+void PrivilegedInputTransitionGraceIsBoundedAndFailClosed() {
+    using namespace desklink;
+
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    EnvelopeHeader Header;
+    Header.session_nonce = 91;
+    const auto Focus = decode_packet(
+        encode_packet(Header, FocusRequestMessage{2'000, 1}), false);
+    CHECK(Focus.packet.has_value());
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+        CHECK(Injector.motions.empty());
+
+        Clock.advance(std::chrono::milliseconds(700));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+
+        Broker.ForwardResult = PrivilegedInputForwardResult::Forwarded;
+        Header.sequence = 2;
+        Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{3, 1}), true);
+        CHECK(Motion.packet.has_value());
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::Accepted);
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        const auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+        Clock.advance(std::chrono::milliseconds(751));
+        Agent.tick();
+        CHECK(!Agent.RemoteFocused());
+        CHECK(Agent.InputUnavailable());
+        CHECK(Broker.RevokeCalls == 1);
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        Injector.DesktopAvailable = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        const auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+        Clock.advance(std::chrono::milliseconds(1'000));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+        CHECK(Injector.motions.empty());
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult =
+            PrivilegedInputForwardResult::TemporarilyUnavailable;
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::RejectedLease);
+
+        // The broker can observe Winlogon just before the injector's cached
+        // desktop state catches up. Positively observing the secure desktop
+        // must clear that stale Default-desktop transition timer.
+        Injector.DesktopAvailable = false;
+        Clock.advance(std::chrono::milliseconds(1'000));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+
+        Injector.DesktopAvailable = true;
+        Clock.advance(std::chrono::milliseconds(50));
+        Agent.tick();
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+
+        Broker.ForwardResult = PrivilegedInputForwardResult::Forwarded;
+        Header.sequence = 2;
+        Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{3, 1}), true);
+        CHECK(Motion.packet.has_value());
+        CHECK(Agent.handle(*Motion.packet) == AgentDecision::Accepted);
+        CHECK(Agent.RemoteFocused());
+        CHECK(!Agent.InputUnavailable());
+    }
+
+    {
+        ManualClock Clock;
+        RecordingInjector Injector;
+        RecordingPrivilegedInputBroker Broker;
+        AgentCoordinator Agent(Clock, Injector, &Broker);
+        Agent.set_peer_capabilities(Capabilities);
+        Injector.Ready = false;
+        CHECK(Agent.handle(*Focus.packet) == AgentDecision::Accepted);
+
+        Header.epoch = Agent.focus_state().epoch();
+        Header.sequence = 1;
+        const auto Motion = decode_packet(
+            encode_packet(Header, PointerMotionMessage{5, -2}), true);
+        CHECK(Motion.packet.has_value());
+        Broker.ForwardResult = PrivilegedInputForwardResult::Rejected;
+        CHECK(Agent.handle(*Motion.packet) ==
+              AgentDecision::RejectedInputUnavailable);
+        CHECK(!Agent.RemoteFocused());
+        CHECK(Agent.InputUnavailable());
+    }
 }
 
 void SecureInputAuthorizationIsExactAndLeaseBound() {
@@ -6838,8 +7390,16 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
     Envelope.Operation = SecureInputOperation::Key;
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::Accepted);
 
-    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedSequence);
     Envelope.Sequence = 2;
+    Envelope.Operation = SecureInputOperation::ReconcileState;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::Accepted);
+
+    ++Envelope.Sequence;
+    Envelope.Operation = SecureInputOperation::PointerPosition;
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::Accepted);
+
+    CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedSequence);
+    Envelope.Sequence = 3;
     ++Envelope.SessionNonce;
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedSession);
     Envelope.SessionNonce = Grant.SessionNonce;
@@ -6849,6 +7409,7 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
     Envelope.PeerCertificateDerHash[0] ^= 0xff;
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedIdentity);
     Envelope.PeerCertificateDerHash = Grant.PeerCertificateDerHash;
+    Envelope.Sequence = 4;
     Envelope.Operation = static_cast<SecureInputOperation>(0xff);
     CHECK(Gate.Admit(Envelope) == SecureInputDecision::RejectedOperation);
 
@@ -6869,7 +7430,7 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
 void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     using namespace desklink;
 
-    CHECK(kProtocolVersion == 5);
+    CHECK(kProtocolVersion == 6);
     CHECK((kKnownCapabilityBits &
         static_cast<std::uint64_t>(Capability::VoiceSend)) != 0);
     CHECK((kKnownCapabilityBits &
@@ -7260,6 +7821,7 @@ int main() {
     ProductMonitorLayoutSaveIsOrderedAndFailsLocal();
     protocol_round_trip();
     PointerMotionRoundTripAndValidation();
+    PointerMotionDatagramCoalescingIsBoundedAndEpochSafe();
     ControlProtocolRoundTripAndValidation();
     RuntimeBrokerTrustAndPairingAuthorityAreFailClosed();
     UpdateCoordinatorIsOrderedAndFailsLocal();
@@ -7281,6 +7843,7 @@ int main() {
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
     PeerSessionImmediatelyReacquiresAfterLostRelease();
     PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable();
+    RejectedFocusAdmissionKeepsAuthenticatedSession();
     PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();
     PeerSessionResolvesSimultaneousFocusToLocal();
     PeerSessionRequiresTheRemoteDirectionalGrant();
@@ -7303,12 +7866,16 @@ int main() {
     SecureDesktopTemporarilyRejectsInputWithoutMalformedFailure();
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
-    UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
+    UnavailableInputRejectsAdmissionAndFailsLocalAfterAdmission();
+    SecureInputBlockedOperationsPreserveOnlyExistingAuthorization();
+    PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus();
+    PrivilegedInputTransitionGraceIsBoundedAndFailClosed();
     SecureInputAuthorizationIsExactAndLeaseBound();
     host_agent_focus_transaction();
     jitter_buffer_reorders_and_conceals();
     out_of_order_pointer_rejected();
     stale_focus_ready_cannot_win_new_transaction();
+    StaleFocusRejectionCannotCancelANewTransaction();
     secure_session_end_to_end();
     TopologySessionExchangeIsCapabilityAndNonceBound();
     AudioSessionRequiresCapabilitiesNonceAndFormat();
@@ -7327,6 +7894,7 @@ int main() {
     WindowsClipboardListenerLifecycleIsContentSilent();
     WindowsAlphaLauncherCommandsAreBoundedAndProductionPinned();
     WindowsPointerMotionScalingIsBoundedAndRetainsFractions();
+    WindowsLocalPointerCoalescingPreservesDominantReversals();
     WindowsDisplayTopologyEnumeratesWhenAvailable();
     WindowsSuppressionGateFailsLocal();
     WindowsCaptureSmokeIfRequested();

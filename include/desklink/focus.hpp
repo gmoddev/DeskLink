@@ -24,6 +24,9 @@ public:
 
     void set_mode(DeskMode mode) noexcept;
     [[nodiscard]] std::uint64_t begin_remote_focus(std::chrono::milliseconds lease_duration) noexcept;
+    [[nodiscard]] bool ActivatePreparedFocus(
+        std::uint64_t Epoch,
+        std::chrono::milliseconds LeaseDuration) noexcept;
     [[nodiscard]] bool renew(std::uint64_t epoch, std::chrono::milliseconds lease_duration) noexcept;
     [[nodiscard]] bool accepts_remote_input(std::uint64_t epoch) const noexcept;
     void release_remote_focus() noexcept;

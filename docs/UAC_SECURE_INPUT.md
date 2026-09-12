@@ -2,10 +2,11 @@
 
 ## Decision
 
-DeskLink will investigate UAC secure-desktop control with a minimal Windows
-service and a per-session SYSTEM helper before considering a kernel input
-driver. This is an experimental security boundary, not an extension of the
-ordinary current-user runtime and not a production feature.
+DeskLink implements UAC secure-desktop control in the separately trusted
+Development Secure channel with a minimal Windows service and per-session
+SYSTEM helper. No kernel input driver is used. This remains an experimental,
+default-off security boundary, not a privilege increase for the ordinary
+current-user package and not a publicly trusted production feature.
 
 The normal product remains unchanged:
 
@@ -20,6 +21,40 @@ The normal product remains unchanged:
   change; and
 - no video or secure-desktop capture is claimed. The person at the controlled
   PC must still be able to see and independently assess the UAC prompt.
+
+## Current product slice
+
+`DESKLINK_BUILD_SECURE_INPUT_PRODUCT=ON` adds three fixed binaries only to a
+Development Secure stage:
+
+- `desklink_secure_input_service.exe` runs as LocalSystem, owns no network
+  stack, and accepts one fixed-size local named-pipe protocol. It rejects remote
+  pipe clients and authenticates the caller's PID, active console session,
+  exact protected `desklink_pair.exe` path, and exact Authenticode signer.
+- `desklink_secure_input_helper.exe` is launched only as the same signed,
+  non-reparse Program Files sibling on the exact active input desktop. Requests
+  cannot supply a path, process, window, title, command, desktop, or executable.
+- `desklink_secure_input_configurator.exe` is the only grant writer. It requires
+  administrator elevation and writes a protected, revisioned exact peer machine
+  ID and certificate DER hash. It writes `Enabled=0` first and `Enabled=1` last,
+  so partial failure remains disabled.
+
+The WinUI Advanced page deliberately labels enablement **I know what I'm doing
+— enable elevated control**, explains the authority increase, and makes **Keep
+fail-local protection** the default action. The setting does not change TLS,
+pinning, pairing, `PeerValidated`, capabilities, identity storage, UAC policy,
+or any transport fallback. Each focus still needs the existing capability and
+epoch plus a service-side exact peer/pin/session nonce/revision/sequence and
+100-2000 ms lease. Focus release, expiry, disconnect, capability removal, and
+input failure release owned state and revoke the broker grant.
+
+On `Default`, the helper accepts only the bounded input wire operations needed
+for already elevated applications. On `Winlogon`, it additionally requires
+foreground `consent.exe` and rejects every key and state-reconciliation request;
+only pointer motion, mouse buttons, wheel, and release remain. DeskLink can
+therefore support a manual visible consent/cancel click but cannot type
+administrator secrets. It never acts on lock/sign-in desktops and supplies no
+secure-desktop video.
 
 ## Why a service alone is insufficient
 
@@ -185,97 +220,77 @@ envelope. Every admitted event must match all of:
 - a 100-2000 ms service-side lease.
 
 Wrong identity, grant, nonce, epoch, sequence, operation, expiration, or replay
-is rejected. Expiration and revocation clear authority. This model is not yet
-wired to the helper. Wiring is prohibited until the service can independently
-authenticate a fixed production-signed runtime installed in an administrator-
-protected location and read an administrator-protected secure-input grant.
+is rejected. Expiration and revocation clear authority. This model is wired
+only in Development Secure. The service independently authenticates the fixed
+signed runtime from its administrator-protected install and independently reads
+the administrator-protected secure-input grant.
 
 The existing LocalAppData runtime and current-user pipe cannot be trusted as a
 LocalSystem authorization source: that would turn same-user process control or
 a writable binary replacement into elevation. A production slice therefore
 requires a separately approved machine-wide, signed installation boundary.
 
+The runtime distinguishes a broker rejection from the narrow helper handoff
+that can occur while Windows changes between `Winlogon` and `Default`.
+`DesktopUnavailable` and a deliberately blocked Winlogon operation preserve
+the already authenticated broker authorization; after `Default` returns, only
+an exact temporary result receives a 750 ms recovery window. Packets are
+rejected rather than queued or admitted during that window. Recovery continues
+the same bounded focus lease. Expiry of the window, an authorization mismatch,
+an IPC failure, or an injection failure releases owned state and fails Local.
+
 ## Stage gates
 
-1. **Integration baseline:** secure-desktop transitions fail Local without
-   replacing trust or misclassifying UAC as TLS/authentication failure.
-2. **Foundation:** default-off service/helper targets compile and self-test;
-   source contracts prove the absence of networking, arbitrary execution,
-   private-key export, policy weakening, UIAccess, and product packaging.
-3. **Lab access probe:** on a disposable/approved Windows 11 target, prove the
-   fixed release probe on `Default` and fixed Escape probe on `Winlogon`.
-   Record session ID, desktop, process identity, outcome, and cleanup without
-   logging input content.
-4. **Authorization integration:** only after an approved code-signing policy and
-   protected machine-wide install design exist, implement authenticated local
-   IPC and the exact authorization envelope. No session is admitted from a
-   current-user assertion alone.
-5. **Physical product validation:** separately granted secure-input permission,
-   UAC cancel and approve workflows, held-state cleanup, helper/service crash,
-   session switch, lock/unlock, sleep, disconnect, stale/replayed envelopes,
-   grant revocation, and uninstall all fail closed. The ordinary fail-local
-   shortcut remains available on the controlling PC.
+1. **Integration baseline — passed:** ordinary secure-desktop transitions fail
+   Local without replacing trust or misclassifying UAC as a transport failure.
+2. **Foundation and lab probes — passed:** default-off R&D components, fixed
+   Default release/minimize, and visible Winlogon cancel probes passed under the
+   recorded constraints.
+3. **Protected signing/install boundary — passed as a private prerequisite:**
+   the non-exportable Development Secure signer, explicit public trust, and
+   protected Program Files install were validated on the approved PCs.
+4. **Authorization integration — implemented:** fixed-size authenticated IPC,
+   signed caller/helper/path validation, protected exact-peer grant, and the
+   pin/nonce/epoch/revision/sequence/operation/lease envelope are wired only in
+   Development Secure. No session is admitted from a current-user assertion.
+5. **Physical product qualification — open:** enable one exact peer, exercise
+   elevated Task Manager and manual pointer-only UAC accept/cancel, and validate
+   held-state cleanup, wrong signer/path/peer/pin/nonce/epoch/revision/sequence,
+   replay, expiry, grant revocation, process/helper/service failure, session
+   switch, lock/unlock, sleep, disconnect, upgrade, and uninstall.
 
-No stage may automatically approve UAC, handle credential UI, run on the lock
-or sign-in desktops, stream secure-desktop video, or broaden the helper into a
-general remote-control service. If user-mode SYSTEM injection cannot satisfy
-these gates, stop and reassess; a virtual HID/kernel driver is not an automatic
-fallback.
+No stage may automatically approve UAC, type on Winlogon, handle authentication
+UI, run on the lock or sign-in desktops, stream secure-desktop video, or broaden
+the helper into a general remote-control service. If user-mode SYSTEM injection
+cannot satisfy these gates, stop and reassess; a virtual HID/kernel driver is
+not an automatic fallback.
 
-## Exact product work still required
+## Remaining qualification work
 
-The Development Secure channel now proves a dedicated non-exportable signing
-key, explicit public-certificate trust, timestamped binaries, and a protected
-machine-wide application directory on two approved PCs. This closes only the
-signing/install prerequisite for private R&D. It is not publicly trusted and
-does not package, start, or authorize the lab service/helper.
+Development Secure remains controlled R&D; a public production release still
+requires a publicly trusted Authenticode identity. The device CNG identity is
+not a release-signing key and remains non-exportable and unchanged. Ordinary
+packages contain no privileged broker and continue to fail Local at UIPI and
+secure-desktop boundaries.
 
-Until that helper is integrated, an elevated foreground on the ordinary
-`Default` desktop is not controllable by the normal injector. While remote focus
-is active the receiver rechecks this boundary every 50 ms; a higher-integrity
-or uninspectable foreground releases owned input and fails both peers Local.
-That safety fallback is not elevated-window control and does not minimize or
-interact with the elevated application.
+The signed physical matrix must still verify:
 
-The following product work is still required before elevated-window recovery or
-UAC control can be enabled in DeskLink:
+1. install, repair, upgrade, rollback, and uninstall preserve identity/trust,
+   use the exact service image/account/DACL, and remove the protected grant;
+2. wrong signer/path/pipe client/peer/pin/nonce/epoch/revision/sequence,
+   replay, and lease expiry admit no input;
+3. enable targets only one exact already paired peer, defaults to no change,
+   takes effect without re-pairing, and disable revokes before success;
+4. ordinary and elevated Task Manager input, held key/button cleanup, and
+   runtime/helper/service termination recover without stranded suppression;
+5. visible benign UAC prompts allow manual pointer-only accept/cancel while
+   key, reconciliation, no-prompt, authentication, lock, and sign-in cases are
+   rejected; and
+6. lock/session switch, sleep, disconnect, reconnect, foreground races, and
+   service recovery remain fail-closed.
 
-1. Retain Development Secure only for controlled R&D; a public production
-   release still requires a publicly trusted Authenticode identity. The existing
-   device CNG key is not a release signing key and remains non-exportable and
-   unchanged.
-2. Extend the approved per-machine slice to install the signed service and fixed
-   signed helper beneath the protected Program Files directory. Verify every
-   path component's owner, ACL, and reparse status and verify exact signer
-   equality before every helper launch.
-3. Give the service no network stack. Add an ACL-restricted named pipe whose
-   protocol is fixed-size, versioned, replay-resistant, bounded, and accepts no
-   paths, commands, window handles, process IDs, titles, or input content.
-4. Make the service independently authenticate the fixed signed DeskLink
-   runtime from the protected installation. A LocalAppData binary or mere
-   current-user pipe possession is not an authorization source.
-5. Persist a separate, default-off machine-level permission for elevated input
-   and recovery. Permission addition requires local foreground approval;
-   revocation returns Local and releases owned input before persistence.
-6. Bind each request to the exact `PeerValidated` machine ID and certificate
-   DER hash, current session nonce, nonzero focus epoch, grant revision,
-   monotonic sequence, requested operation, and a 100-2000 ms service lease.
-7. Expose the bounded minimize operation separately from secure-desktop input.
-   It may act only on the helper-derived visible elevated foreground on the
-   active unlocked `Default` desktop and must return a verified result before
-   DeskLink retries focus.
-8. For UAC interaction, launch the fixed helper on `WinSta0\\Winlogon` only
-   while `consent.exe` is the exact foreground. Forward only individually
-   authorized scan-code, button, pointer, wheel, and release envelopes; keep
-   arbitrary command execution, text injection, credentials, lock/sign-in
-   desktops, and automatic approval out of scope.
-9. Add controller UI for `Blocked by an elevated app`, `Minimize blocking app
-   and retry`, secure-input opt-in, explicit operation result, timeout, and
-   fail-local recovery. Never leave the product at an indefinite `Connecting`
-   or `Connected` state when input admission is unavailable.
-10. Complete security review and physical Windows 11 validation for wrong
-    signer, writable/reparse path, pipe spoofing, wrong peer/pin/nonce/epoch,
-    replay, expiry, grant revocation, foreground race, ordinary window,
-    Task Manager, installers, UAC approve/cancel, held input, helper/service
-    crash, lock/unlock, session switch, sleep, disconnect, upgrade, and
-    uninstall. Every failure returns Local and admits no privileged input.
+A separate bounded **Minimize blocking app and retry** operation and specific
+broker diagnostics are still desirable UX work. They may act only on the
+helper-derived visible elevated foreground on the active unlocked `Default`
+desktop and must return a verified result; no caller-supplied window, process,
+path, title, or command may cross IPC.

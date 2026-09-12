@@ -1,4 +1,4 @@
-# DeskLink Wire Protocol V5
+# DeskLink Wire Protocol V6
 
 ## 1. Scope
 
@@ -17,7 +17,7 @@ Every message has a 36-byte envelope:
 | Field | Size | Description |
 |---|---:|---|
 | magic | 4 | `DLNK` / `0x444C4E4B` |
-| version | 2 | protocol version, currently `5` |
+| version | 2 | protocol version, currently `6` |
 | message_type | 2 | `MessageType` |
 | payload_size | 4 | bytes following envelope |
 | session_nonce | 8 | local logical session identifier |
@@ -39,6 +39,7 @@ CapabilityGrantAck
 SetMode
 FocusRequest
 FocusReady
+FocusRejected
 FocusRenew
 FocusRelease
 KeyEvent
@@ -157,6 +158,17 @@ Envelope epoch must match the currently active focus epoch.
 ### FocusRelease — type 14
 
 No payload. Envelope epoch must match active focus.
+
+### FocusRejected — type 15
+
+```text
+request_id        u64, nonzero
+```
+
+Authenticated negative acknowledgement for exactly one pending
+`FocusRequest`. The session nonce and request ID must match, and the envelope
+epoch must be zero. It never grants focus or admits input; the sender returns
+its pending direction Local and may retry on the same authenticated session.
 
 ### KeyEvent — type 20
 
@@ -307,7 +319,7 @@ encoded_size             u16, 1..512
 encoded                   encoded_size bytes
 ```
 
-`VoiceFrame` is datagram-only and valid only in protocol 5. Voice uses an
+`VoiceFrame` is datagram-only and valid only in protocol 6. Voice uses an
 independent envelope sequence and a new stream ID for every local PTT
 activation. Decode validates every metadata field and the encoded bound before
 copying. Receipt additionally requires the current session nonce and exact

@@ -2030,6 +2030,7 @@ int wmain(int Count, wchar_t** Values) {
                         Devices.Devices.push_back({
                             Peer.Identity.machine_id,
                             Peer.Identity.display_name,
+                            Peer.Identity.public_key_fingerprint,
                             Peer.Capabilities,
                             std::find(Connected.begin(), Connected.end(),
                                       Peer.Identity.machine_id) !=

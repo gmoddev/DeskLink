@@ -719,6 +719,28 @@
                         <InfoBar IsOpen="True" IsClosable="False"
                                  Severity="Informational" Title="Product shell"
                                  Message="Onboarding, discovery, pairing confirmation, and trust management use the current-user runtime broker. Input remains Local unless an authenticated session separately admits focus." />
+                        <Border Padding="16" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="Elevated app and UAC control"
+                                           Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <TextBlock x:Name="SecureInputStatusText"
+                                           Text="Off. Windows administrator boundaries return input to this PC."
+                                           TextWrapping="Wrap" />
+                                <TextBlock Text="This does not weaken pairing or network security. When enabled, only the selected certificate-pinned PC may send input through a short authenticated focus lease. DeskLink never approves a prompt automatically and never controls sign-in or lock screens."
+                                           TextWrapping="Wrap" Opacity="0.72" />
+                                <Button x:Name="ConfigureSecureInputButton"
+                                        Content="I know what I'm doing — enable elevated control"
+                                        HorizontalAlignment="Left"
+                                        Click="OnConfigureSecureInput" />
+                                <InfoBar x:Name="SecureInputStatusBar"
+                                         IsOpen="False" IsClosable="True"
+                                         Severity="Informational"
+                                         AutomationProperties.LiveSetting="Polite" />
+                            </StackPanel>
+                        </Border>
                         <TextBlock Text="Pointer calibration"
                                    Style="{StaticResource SubtitleTextBlockStyle}" />
                         <NumberBox Header="Pointer gain (%)" Value="100"

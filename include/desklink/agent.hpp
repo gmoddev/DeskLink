@@ -3,6 +3,7 @@
 #include "desklink/capabilities.hpp"
 #include "desklink/focus.hpp"
 #include "desklink/input.hpp"
+#include "desklink/secure_input.hpp"
 
 #include <optional>
 #include "desklink/protocol.hpp"
@@ -25,6 +26,9 @@ enum class AgentDecision {
 class AgentCoordinator {
 public:
     AgentCoordinator(const IClock& clock, IInputInjector& injector) noexcept;
+    AgentCoordinator(
+        const IClock& Clock, IInputInjector& Injector,
+        IPrivilegedInputBroker* PrivilegedInput) noexcept;
 
     void set_peer_capabilities(CapabilitySet capabilities) noexcept;
     [[nodiscard]] CapabilitySet peer_capabilities() const noexcept { return peer_capabilities_; }
@@ -48,6 +52,9 @@ public:
     void disconnect() noexcept;
 
 private:
+    static constexpr auto PrivilegedInputTransitionGrace =
+        std::chrono::milliseconds(750);
+
     [[nodiscard]] bool can_inject() const noexcept;
     void SetRemoteDesiredMode(DeskMode Mode) noexcept;
     void ApplyDesiredMode() noexcept;
@@ -55,6 +62,7 @@ private:
     [[nodiscard]] AgentDecision RejectInputUnavailable() noexcept;
 
     IInputInjector& injector_;
+    IPrivilegedInputBroker* PrivilegedInput_{};
     const IClock& Clock_;
     CapabilitySet peer_capabilities_;
     InputFocusStateMachine focus_;
@@ -63,7 +71,9 @@ private:
     std::uint64_t last_pointer_sequence_{};
     bool InputCleanupPending_{};
     bool InputUnavailable_{};
+    bool PreferPrivilegedInput_{};
     IClock::time_point NextInputAvailabilityCheck_{};
+    std::optional<IClock::time_point> PrivilegedInputUnavailableSince_;
 };
 
 } // namespace desklink

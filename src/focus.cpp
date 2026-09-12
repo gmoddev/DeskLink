@@ -30,6 +30,18 @@ std::uint64_t InputFocusStateMachine::begin_remote_focus(std::chrono::millisecon
     return epoch_;
 }
 
+bool InputFocusStateMachine::ActivatePreparedFocus(
+    std::uint64_t Epoch,
+    std::chrono::milliseconds LeaseDuration) noexcept {
+    if (Epoch == 0 || Epoch != epoch_ || focus_ != FocusLocation::Remote ||
+        mode_ == DeskMode::Game || mode_ == DeskMode::LockPc1 ||
+        LeaseDuration.count() <= 0) {
+        return false;
+    }
+    lease_expiry_ = clock_.now() + LeaseDuration;
+    return true;
+}
+
 bool InputFocusStateMachine::renew(std::uint64_t epoch, std::chrono::milliseconds lease_duration) noexcept {
     if (!accepts_remote_input(epoch) || lease_duration.count() <= 0) return false;
     lease_expiry_ = clock_.now() + lease_duration;

@@ -50,4 +50,5 @@
 #include "desklink/win32_monitor_configurator.hpp"
 #include "desklink/win32_product_lifecycle.hpp"
 #include "desklink/win32_roaming_settings.hpp"
+#include "desklink/win32_secure_input.hpp"
 #include "desklink/win32_voice.hpp"

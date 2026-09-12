@@ -151,6 +151,13 @@ $RequiredFiles = @(
     'OPUS-LICENSE.txt',
     'ALPHA_WRAPPER.md'
 )
+if ($DevelopmentSelfSigned) {
+    $RequiredFiles += @(
+        'desklink_secure_input_service.exe',
+        'desklink_secure_input_helper.exe',
+        'desklink_secure_input_configurator.exe'
+    )
+}
 if ($ExperimentalWindows10) {
     if ($OutputName -notmatch '(?i)beta') {
         throw 'An experimental Windows 10 beta installer must include "beta" in its file name.'
@@ -333,6 +340,16 @@ try {
                 'desklink_virtual_microphone_installer.exe') {
             Assert-AuthenticodeSignature `
                 (Join-Path $TemporaryStage $Executable) $Certificate.Thumbprint -RequireTimestamp
+        }
+        if ($DevelopmentSelfSigned) {
+            foreach ($Executable in
+                    'desklink_secure_input_service.exe',
+                    'desklink_secure_input_helper.exe',
+                    'desklink_secure_input_configurator.exe') {
+                Assert-AuthenticodeSignature `
+                    (Join-Path $TemporaryStage $Executable) `
+                    $Certificate.Thumbprint -RequireTimestamp
+            }
         }
     }
 
