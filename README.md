@@ -84,7 +84,7 @@ room propagation, or microphone capture latency. See
 - Bounded asynchronous audio clock-drift correction with ±0.1% resampling
 - Event-driven Windows WASAPI loopback-capture and shared-render foundation
 - Two-sided capability-gated audio datagrams and bounded receiver/render pump
-- Protocol-v5 microphone forwarding with default PTT and explicit continuous
+- Protocol-v6 microphone forwarding with default PTT and explicit continuous
   transmit modes, separate reciprocal voice
   grants, pinned Opus 1.6.1, exact 48 kHz mono/20 ms frames, a dedicated
   datagram sequence, and bounded 40-120 ms FEC/PLC playout

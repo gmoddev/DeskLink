@@ -215,6 +215,9 @@ struct PeerSessionHandlers {
     // must re-check CanSendVoice/CanReceiveVoice and stop capture on loss.
     std::function<void()> VoiceAuthorizationChanged;
 #endif
+    // Reports an authenticated rejection of the exact pending focus request.
+    // No input epoch or application traffic has been admitted.
+    std::function<void()> OutgoingFocusRejected;
 };
 
 // Owns both directions of one authenticated peer connection. Capability grants

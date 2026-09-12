@@ -21,6 +21,7 @@ enum class MessageType : std::uint16_t {
     FocusReady         = 12,
     FocusRenew         = 13,
     FocusRelease       = 14,
+    FocusRejected      = 15,
     KeyEvent           = 20,
     MouseButton        = 21,
     PointerPosition    = 22,
@@ -96,6 +97,11 @@ struct FocusRequestMessage {
 struct FocusReadyMessage {
     std::uint32_t granted_lease_ms{750};
     std::uint64_t request_id{};
+};
+// Authenticated negative acknowledgement for one exact pending focus
+// transaction. It never grants an epoch or admits input.
+struct FocusRejectedMessage {
+    std::uint64_t RequestId{};
 };
 struct FocusRenewMessage { std::uint32_t requested_lease_ms{750}; };
 struct FocusReleaseMessage {};
@@ -214,6 +220,7 @@ using Message = std::variant<
     SetModeMessage,
     FocusRequestMessage,
     FocusReadyMessage,
+    FocusRejectedMessage,
     FocusRenewMessage,
     FocusReleaseMessage,
     KeyEventMessage,

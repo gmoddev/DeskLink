@@ -67,9 +67,13 @@ AgentDecision AgentCoordinator::handle(const DecodedPacket& packet) {
             PreferPrivilegedInput_ = !OrdinaryInputReady && PrivilegedReady;
             if (!OrdinaryInputReady && !PrivilegedReady) {
                 focus_.release_remote_focus();
-                return DesktopAvailable
-                    ? RejectInputUnavailable()
-                    : AgentDecision::RejectedLease;
+                // No input was admitted for this epoch. Reject only this
+                // transaction so the authenticated transport remains usable
+                // for a later focus attempt after the local desktop recovers
+                // or privileged input is explicitly enabled.
+                PreferPrivilegedInput_ = false;
+                PrivilegedInputUnavailableSince_.reset();
+                return AgentDecision::RejectedLease;
             }
             // Broker/helper startup can take a material part of a short
             // focus lease, especially when an elevated foreground requires

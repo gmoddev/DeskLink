@@ -820,7 +820,7 @@ capabilities, focus, playout, leases, or reconnect decisions.
 
 ## Voice-forwarding validation
 
-Protocol-v5 tests cover exact voice framing, datagram-only lane policy,
+Protocol-v6 tests cover exact voice framing, datagram-only lane policy,
 malformed metadata and bounds, Opus encode/decode, FEC/PLC, stream/sequence
 rejection, adaptive 40-120 ms jitter, gain/mute, reciprocal acknowledged
 grants, live revocation, and preference/control migration. Native validation

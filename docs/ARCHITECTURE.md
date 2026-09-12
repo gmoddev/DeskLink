@@ -470,7 +470,7 @@ timestamps never directly choose a ratio. Gain/mute remains separate work.
 ### 9.1 Microphone voice architecture
 
 Voice is a separate capability module, not a mode of system-audio loopback.
-Protocol 5 carries a datagram-only Opus `VoiceFrame` with its own sequence and
+Protocol 5 introduced a datagram-only Opus `VoiceFrame` with its own sequence and
 per-activation stream ID. The sender opens an `eCapture` communications endpoint only
 after reciprocal acknowledged `VoiceSend`/`VoiceReceive` grants, local route
 intent, clear hard mute, and either a local PTT press or one pending activation

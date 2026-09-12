@@ -150,7 +150,7 @@ add_library(desklink_core
 
 target_include_directories(desklink_core PUBLIC include)
 
-target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=5)
+target_compile_definitions(desklink_core PUBLIC DESKLINK_PROTOCOL_VERSION=6)
 
 if(DESKLINK_BUILD_VOICE)
     include(FetchContent)

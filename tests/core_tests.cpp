@@ -674,6 +674,17 @@ void protocol_round_trip() {
     CHECK(Ack.capabilities == 0x55);
     CHECK(Ack.revision == 7);
 
+    const auto FocusRejectedBytes = encode_packet(
+        h, FocusRejectedMessage{81});
+    const auto FocusRejectedDecoded = decode_packet(
+        FocusRejectedBytes, false);
+    CHECK(FocusRejectedDecoded.packet.has_value());
+    CHECK(std::get<FocusRejectedMessage>(
+              FocusRejectedDecoded.packet->message).RequestId == 81);
+    CHECK(!decode_packet(
+        encode_packet(h, FocusRejectedMessage{}), false).packet.has_value());
+    CHECK(!decode_packet(FocusRejectedBytes, true).packet.has_value());
+
     const auto FeedbackBytes = encode_packet(
         h, PointerPositionFeedbackMessage{3, 0, 32'768});
     const auto FeedbackDecoded = decode_packet(FeedbackBytes, true);
@@ -4392,6 +4403,53 @@ void stale_focus_ready_cannot_win_new_transaction() {
     CHECK(host.remote_epoch() == 11);
 }
 
+void StaleFocusRejectionCannotCancelANewTransaction() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 9'002;
+    HostCoordinator Host(Nonce);
+
+    const auto FirstRequest = decode_packet(
+        Host.request_remote_focus(750), false);
+    CHECK(FirstRequest.packet.has_value());
+    const auto FirstId = std::get<FocusRequestMessage>(
+        FirstRequest.packet->message).request_id;
+
+    const auto SecondRequest = decode_packet(
+        Host.request_remote_focus(750), false);
+    CHECK(SecondRequest.packet.has_value());
+    const auto SecondId = std::get<FocusRequestMessage>(
+        SecondRequest.packet->message).request_id;
+    CHECK(SecondId != FirstId);
+
+    EnvelopeHeader Header;
+    Header.session_nonce = Nonce;
+    const auto Stale = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{FirstId}), false);
+    CHECK(Stale.packet.has_value());
+    CHECK(!Host.AcceptFocusRejected(*Stale.packet));
+
+    Header.session_nonce = Nonce + 1;
+    const auto WrongSession = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{SecondId}), false);
+    CHECK(WrongSession.packet.has_value());
+    CHECK(!Host.AcceptFocusRejected(*WrongSession.packet));
+
+    Header.session_nonce = Nonce;
+    Header.epoch = 1;
+    const auto WrongEpoch = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{SecondId}), false);
+    CHECK(WrongEpoch.packet.has_value());
+    CHECK(!Host.AcceptFocusRejected(*WrongEpoch.packet));
+
+    Header.epoch = 0;
+    const auto Current = decode_packet(
+        encode_packet(Header, FocusRejectedMessage{SecondId}), false);
+    CHECK(Current.packet.has_value());
+    CHECK(Host.AcceptFocusRejected(*Current.packet));
+    CHECK(!Host.remote_focused());
+    CHECK(!Host.AcceptFocusRejected(*Current.packet));
+}
+
 void secure_session_end_to_end() {
     using namespace desklink;
     constexpr std::uint64_t nonce = 0xBADC0FFEEu;
@@ -6875,7 +6933,75 @@ void PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable() {
     CHECK(ClosedB == 1);
 }
 
-void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
+void RejectedFocusAdmissionKeepsAuthenticatedSession() {
+    using namespace desklink;
+    constexpr std::uint64_t Nonce = 0x71'82'96u;
+    const auto IdentityA = MakeIdentity(107, "Focus reject A");
+    const auto IdentityB = MakeIdentity(108, "Focus reject B");
+    auto Pair = make_in_memory_transport_pair(
+        TransportPeerInfo{IdentityB, true, true},
+        TransportPeerInfo{IdentityA, true, true});
+    CapabilitySet Capabilities;
+    Capabilities.grant(Capability::InputInject);
+    InMemoryTrustStore TrustA;
+    InMemoryTrustStore TrustB;
+    SaveTrustedPeer(TrustA, IdentityB, Capabilities);
+    SaveTrustedPeer(TrustB, IdentityA, Capabilities);
+    ManualClock Clock;
+    RecordingInjector InjectorA;
+    RecordingInjector InjectorB;
+    InjectorB.DesktopAvailable = false;
+    AgentCoordinator IncomingA(Clock, InjectorA);
+    AgentCoordinator IncomingB(Clock, InjectorB);
+    HostCoordinator OutgoingA(Nonce);
+    HostCoordinator OutgoingB(Nonce);
+    std::size_t Rejections{};
+    std::size_t ClosedA{};
+    std::size_t ClosedB{};
+    PeerSessionHandlers HandlersA;
+    HandlersA.OutgoingFocusRejected = [&] { ++Rejections; };
+    HandlersA.TransportClosed = [&](TransportCloseReason) { ++ClosedA; };
+    PeerSessionHandlers HandlersB;
+    HandlersB.TransportClosed = [&](TransportCloseReason) { ++ClosedB; };
+    PeerSession SessionA(
+        Pair.a, OutgoingA, IncomingA, TrustA, Nonce,
+        std::move(HandlersA));
+    PeerSession SessionB(
+        Pair.b, OutgoingB, IncomingB, TrustB, Nonce,
+        std::move(HandlersB));
+    CHECK(SessionA.Start());
+    CHECK(SessionB.Start());
+
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(Rejections == 1);
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(!SessionB.IncomingFocused());
+    CHECK(SessionA.DirectionState() == PeerDirectionState::Local);
+    CHECK(SessionB.DirectionState() == PeerDirectionState::Local);
+    SessionA.Tick();
+    SessionB.Tick();
+    CHECK(ClosedA == 0);
+    CHECK(ClosedB == 0);
+
+    InjectorB.DesktopAvailable = true;
+    InjectorB.Ready = false;
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(Rejections == 2);
+    CHECK(!SessionA.OutgoingFocused());
+    CHECK(!SessionB.IncomingFocused());
+    CHECK(ClosedA == 0);
+    CHECK(ClosedB == 0);
+
+    InjectorB.Ready = true;
+    CHECK(SessionA.BeginOutgoingFocus());
+    CHECK(SessionA.OutgoingFocused());
+    CHECK(SessionB.IncomingFocused());
+    CHECK(Rejections == 2);
+    CHECK(ClosedA == 0);
+    CHECK(ClosedB == 0);
+}
+
+void UnavailableInputRejectsAdmissionAndFailsLocalAfterAdmission() {
     using namespace desklink;
     ManualClock Clock;
     RecordingInjector Injector;
@@ -6890,9 +7016,10 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
     CHECK(Request.packet.has_value());
     Injector.Ready = false;
     CHECK(Agent.handle(*Request.packet) ==
-          AgentDecision::RejectedInputUnavailable);
+          AgentDecision::RejectedLease);
     CHECK(!Agent.RemoteFocused());
-    CHECK(Agent.InputUnavailable());
+    CHECK(!Agent.InputUnavailable());
+    CHECK(Injector.release_calls == 0);
 
     Injector.Ready = true;
     CHECK(Agent.handle(*Request.packet) == AgentDecision::Accepted);
@@ -6908,7 +7035,7 @@ void UnavailableInputFailsLocalBeforeAndAfterFocusAdmission() {
           AgentDecision::RejectedInputUnavailable);
     CHECK(!Agent.RemoteFocused());
     CHECK(Agent.InputUnavailable());
-    CHECK(Injector.release_calls >= 2);
+    CHECK(Injector.release_calls >= 1);
 }
 
 void PointerMotionDatagramCoalescingIsBoundedAndEpochSafe() {
@@ -7070,8 +7197,9 @@ void PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus() {
     AgentCoordinator RefusingAgent(Clock, Injector, &RefusingBroker);
     RefusingAgent.set_peer_capabilities(Capabilities);
     CHECK(RefusingAgent.handle(*Focus.packet) ==
-          AgentDecision::RejectedInputUnavailable);
+          AgentDecision::RejectedLease);
     CHECK(!RefusingAgent.RemoteFocused());
+    CHECK(!RefusingAgent.InputUnavailable());
 }
 
 void PrivilegedInputTransitionGraceIsBoundedAndFailClosed() {
@@ -7302,7 +7430,7 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
 void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     using namespace desklink;
 
-    CHECK(kProtocolVersion == 5);
+    CHECK(kProtocolVersion == 6);
     CHECK((kKnownCapabilityBits &
         static_cast<std::uint64_t>(Capability::VoiceSend)) != 0);
     CHECK((kKnownCapabilityBits &
@@ -7715,6 +7843,7 @@ int main() {
     PeerSessionSupportsReciprocalFocusAndIndependentGrants();
     PeerSessionImmediatelyReacquiresAfterLostRelease();
     PeerSessionFailsBothSidesLocalWhenInputBecomesUnavailable();
+    RejectedFocusAdmissionKeepsAuthenticatedSession();
     PeerSessionRenegotiatesCapabilitiesWithoutDisconnecting();
     PeerSessionResolvesSimultaneousFocusToLocal();
     PeerSessionRequiresTheRemoteDirectionalGrant();
@@ -7737,7 +7866,7 @@ int main() {
     SecureDesktopTemporarilyRejectsInputWithoutMalformedFailure();
     stale_epoch_rejected_after_refocus();
     FailedInputCleanupIsRetriedAndBlocksReadmission();
-    UnavailableInputFailsLocalBeforeAndAfterFocusAdmission();
+    UnavailableInputRejectsAdmissionAndFailsLocalAfterAdmission();
     SecureInputBlockedOperationsPreserveOnlyExistingAuthorization();
     PrivilegedInputRequiresExplicitBrokerAdmissionAndRevokesWithFocus();
     PrivilegedInputTransitionGraceIsBoundedAndFailClosed();
@@ -7746,6 +7875,7 @@ int main() {
     jitter_buffer_reorders_and_conceals();
     out_of_order_pointer_rejected();
     stale_focus_ready_cannot_win_new_transaction();
+    StaleFocusRejectionCannotCancelANewTransaction();
     secure_session_end_to_end();
     TopologySessionExchangeIsCapabilityAndNonceBound();
     AudioSessionRequiresCapabilitiesNonceAndFormat();

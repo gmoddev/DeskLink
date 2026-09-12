@@ -159,6 +159,8 @@ ByteBuffer encode_payload(const Message& message) {
         } else if constexpr (std::is_same_v<T, FocusReadyMessage>) {
             w.u32(value.granted_lease_ms);
             w.u64(value.request_id);
+        } else if constexpr (std::is_same_v<T, FocusRejectedMessage>) {
+            w.u64(value.RequestId);
         } else if constexpr (std::is_same_v<T, FocusRenewMessage>) {
             w.u32(value.requested_lease_ms);
         } else if constexpr (std::is_same_v<T, FocusReleaseMessage>) {
@@ -324,6 +326,14 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
                 return std::nullopt;
             }
             return m;
+        }
+        case MessageType::FocusRejected: {
+            FocusRejectedMessage Message;
+            if (!r.u64(Message.RequestId) || Message.RequestId == 0 ||
+                r.remaining() != 0) {
+                return std::nullopt;
+            }
+            return Message;
         }
         case MessageType::FocusRenew: {
             FocusRenewMessage m;
@@ -569,6 +579,7 @@ bool known_type(std::uint16_t raw) {
         case MessageType::SetMode:
         case MessageType::FocusRequest:
         case MessageType::FocusReady:
+        case MessageType::FocusRejected:
         case MessageType::FocusRenew:
         case MessageType::FocusRelease:
         case MessageType::KeyEvent:
@@ -605,6 +616,7 @@ MessageType message_type(const Message& message) noexcept {
         else if constexpr (std::is_same_v<T, SetModeMessage>) return MessageType::SetMode;
         else if constexpr (std::is_same_v<T, FocusRequestMessage>) return MessageType::FocusRequest;
         else if constexpr (std::is_same_v<T, FocusReadyMessage>) return MessageType::FocusReady;
+        else if constexpr (std::is_same_v<T, FocusRejectedMessage>) return MessageType::FocusRejected;
         else if constexpr (std::is_same_v<T, FocusRenewMessage>) return MessageType::FocusRenew;
         else if constexpr (std::is_same_v<T, FocusReleaseMessage>) return MessageType::FocusRelease;
         else if constexpr (std::is_same_v<T, KeyEventMessage>) return MessageType::KeyEvent;

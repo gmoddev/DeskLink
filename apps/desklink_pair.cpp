@@ -3536,6 +3536,34 @@ public:
         }
     }
 
+    void NotifyFocusRejected() noexcept {
+        DisableCaptureImmediately();
+        if (!Post([this] {
+                const bool RoamingTransition =
+                    PendingRoamingRequest_.has_value();
+                if (RoamingTransition) Roaming_.FailLocal();
+                PendingRoamingRequest_.reset();
+                PendingLanding_.reset();
+                // PeerSession already released the exact rejected outgoing
+                // direction. Return the lifecycle Local without changing the
+                // selected mode to LockPc1, then immediately reinstall the
+                // lightweight edge observer for a later fresh transaction.
+                (void)Lifecycle_.ReturnLocal();
+                PublishLifecycleStatus();
+                {
+                    std::scoped_lock Lock(Result_->Mutex);
+                    Result_->Ready = false;
+                }
+                Result_->Changed.notify_all();
+                if (RoamingTransition) MaintainRoaming();
+                std::cerr
+                    << "[Input:Lifecycle] authenticated peer rejected focus; input remains Local, Roam policy is preserved, and the session stays connected\n";
+            }) && !Stopping_.load()) {
+            RequestAsynchronousFailLocal(
+                "focus-rejection event queue overflow");
+        }
+    }
+
     void NotifyDirectionChanged() noexcept {
         const bool LostActiveOutgoingDirection =
             CaptureActive_.load() && !Host_->Session.OutgoingFocused();
@@ -5392,6 +5420,11 @@ int RunTrusted(const CommandLine& Command,
         SessionHandlers.OutgoingFocusReady = [RuntimeTarget] {
             if (const auto Input = RuntimeTarget->lock()) {
                 Input->NotifyFocusReady();
+            }
+        };
+        SessionHandlers.OutgoingFocusRejected = [RuntimeTarget] {
+            if (const auto Input = RuntimeTarget->lock()) {
+                Input->NotifyFocusRejected();
             }
         };
         SessionHandlers.DirectionChanged = [RuntimeTarget] {

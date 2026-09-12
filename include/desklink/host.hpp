@@ -18,6 +18,8 @@ public:
     [[nodiscard]] ByteBuffer set_mode(DeskMode mode);
     [[nodiscard]] ByteBuffer request_remote_focus(std::uint32_t lease_ms = 750);
     [[nodiscard]] bool accept_focus_ready(const DecodedPacket& packet) noexcept;
+    [[nodiscard]] bool AcceptFocusRejected(
+        const DecodedPacket& Packet) noexcept;
     [[nodiscard]] std::optional<ByteBuffer> renew_remote_focus(std::uint32_t lease_ms = 750);
     [[nodiscard]] std::optional<ByteBuffer> release_remote_focus();
 

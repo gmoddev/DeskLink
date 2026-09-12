@@ -285,7 +285,7 @@ is production-qualified. Image clipboard and file transfer remain excluded.
 
 ### 5. Microphone voice forwarding — automated implementation complete
 
-- protocol 5 adds independent default-off `VoiceSend`/`VoiceReceive` grants and
+- protocol 5 introduced independent default-off `VoiceSend`/`VoiceReceive` grants and
   a strictly bounded datagram-only Opus voice frame;
 - the product and runtime expose separate voice route, communications
   microphone selection, incoming gain, hard mute, default PTT plus explicit
