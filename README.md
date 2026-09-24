@@ -1,6 +1,6 @@
-# DeskLink Foundation
+# DeskLink
 
-DeskLink is a local distributed desk-control platform intended to provide secure keyboard/mouse roaming, network audio, state synchronization, and future capability modules between trusted Windows PCs.
+DeskLink is a Windows local distributed desk-control platform intended to provide secure keyboard/mouse roaming, network audio, state synchronization, and future capability modules between trusted Windows PCs.
 
 This repository is a **reference foundation implementation**, not a finished production release. It deliberately implements and tests protocol/state/security invariants before and alongside privileged or timing-sensitive Windows adapters.
 
