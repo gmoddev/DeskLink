@@ -60,12 +60,26 @@ private:
     Interface* Value_{};
 };
 
+constexpr bool ComApartmentPermitsCoreAudio(HRESULT Result) noexcept {
+    return SUCCEEDED(Result) || Result == RPC_E_CHANGED_MODE;
+}
+
+static_assert(ComApartmentPermitsCoreAudio(S_OK));
+static_assert(ComApartmentPermitsCoreAudio(S_FALSE));
+static_assert(ComApartmentPermitsCoreAudio(RPC_E_CHANGED_MODE));
+static_assert(!ComApartmentPermitsCoreAudio(E_FAIL));
+
 class ComApartment final {
 public:
     ComApartment() noexcept
         : Result_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
     ~ComApartment() { if (SUCCEEDED(Result_)) CoUninitialize(); }
-    [[nodiscard]] bool Ready() const noexcept { return SUCCEEDED(Result_); }
+    [[nodiscard]] bool Ready() const noexcept {
+        // WinUI owns its UI thread as an STA. Core Audio is apartment-neutral,
+        // so an existing incompatible apartment is still usable even though
+        // this helper did not initialize it and must not uninitialize it.
+        return ComApartmentPermitsCoreAudio(Result_);
+    }
 private:
     HRESULT Result_{};
 };
