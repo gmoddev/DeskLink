@@ -1915,6 +1915,63 @@ void RoamingGraphValidationAndCodecAreStrict() {
     CHECK(!IsValidRoamingConfiguration(Invalid));
 }
 
+void MonitorCanvasUsesWindowsGeometryAndPreservesPcPlacement() {
+    using namespace desklink;
+    DisplayTopologyMap Topology;
+    CHECK(Topology.Update({
+        {"a-right", "Right", {1920, 200, 3840, 1280}, false},
+        {"z-left", "Left", {-1920, -300, 0, 780}, false},
+        {"m-primary", "Primary", {0, 0, 1920, 1080}, true}}) == DisplayTopologyUpdate::Changed);
+    DisplayTopologyMap PeerTopology;
+    CHECK(PeerTopology.Update({{"peer", "Peer", {0, 0, 1920, 1080}, true}}) == DisplayTopologyUpdate::Changed);
+    const std::array Machines{
+        MonitorCanvasMachine{MakeMachineId(1), "Local", Topology.Current(), DisplayTopologyExchangeStatus::Ready, true, true},
+        MonitorCanvasMachine{MakeMachineId(2), "Peer", PeerTopology.Current(), DisplayTopologyExchangeStatus::Ready, false, true}};
+    RoamingConfiguration Configuration;
+    Configuration.CanvasLayout = {
+        {MakeMachineId(1), "m-primary", 600, 400},
+        {MakeMachineId(1), "a-right", 10, 10},
+        {MakeMachineId(1), "z-left", 900, 10},
+        {MakeMachineId(2), "peer", 1100, 600}};
+    auto Model = BuildMonitorCanvasModel(Machines, Configuration);
+    CHECK(Model);
+    const auto Tile = [&](std::string_view Identity) -> MonitorCanvasTile& {
+        return *std::find_if(Model->Tiles.begin(), Model->Tiles.end(),
+            [&](const auto& Value) { return Value.StableDisplayIdentity == Identity; });
+    };
+    CHECK(Tile("m-primary").Rect.X == 600);
+    CHECK(Tile("m-primary").Rect.Y == 400);
+    CHECK(Tile("z-left").Rect.X < Tile("m-primary").Rect.X);
+    CHECK(Tile("z-left").Rect.Y < Tile("m-primary").Rect.Y);
+    CHECK(Tile("a-right").Rect.X == Tile("m-primary").Rect.X + Tile("m-primary").Rect.Width);
+    CHECK(Tile("a-right").Rect.Y > Tile("m-primary").Rect.Y);
+    const auto Offset = Tile("a-right").Rect.X - Tile("m-primary").Rect.X;
+    MoveMonitorCanvasTile(Model->Tiles, 0, Model->Tiles[0].Rect.X + 30, Model->Tiles[0].Rect.Y + 20);
+    CHECK(Tile("m-primary").Rect.X == 630);
+    CHECK(Tile("m-primary").Rect.Y == 420);
+    CHECK(Tile("a-right").Rect.X - Tile("m-primary").Rect.X == Offset);
+    CHECK(Tile("peer").Rect.X == 1100);
+    CHECK(Tile("peer").Rect.Y == 600);
+    Configuration.CanvasLayout = BuildSavedCanvasLayout(Model->Tiles);
+    CHECK(Topology.Update({
+        {"a-right", "Right", {-1920, 200, 0, 1280}, false},
+        {"z-left", "Left", {1920, -300, 3840, 780}, false},
+        {"m-primary", "Primary", {0, 0, 1920, 1080}, true}}) == DisplayTopologyUpdate::Changed);
+    auto UpdatedMachines = Machines;
+    UpdatedMachines[0].Topology = Topology.Current();
+    Model = BuildMonitorCanvasModel(UpdatedMachines, Configuration);
+    CHECK(Model);
+    CHECK(Tile("a-right").Rect.X < Tile("m-primary").Rect.X);
+    CHECK(Tile("z-left").Rect.X > Tile("m-primary").Rect.X);
+    CHECK(Tile("m-primary").Rect.X == 630);
+    CHECK(Tile("m-primary").Rect.Y == 420);
+    Configuration.CanvasLayout.clear();
+    Model = BuildMonitorCanvasModel(UpdatedMachines, Configuration);
+    CHECK(Model);
+    CHECK(Tile("a-right").Rect.X == 30);
+    CHECK(Tile("a-right").Rect.X < Tile("m-primary").Rect.X);
+}
+
 void MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks() {
     using namespace desklink;
     DisplayTopologyMap LocalTopology;
@@ -7882,6 +7939,7 @@ int main() {
     EdidPhysicalSizeParsingIsStrictAndBounded();
     RoamingGraphValidationAndCodecAreStrict();
     MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks();
+    MonitorCanvasUsesWindowsGeometryAndPreservesPcPlacement();
     RoamingEndpointsResolveAgainstCurrentStableTopologies();
     RoamingRuntimeRequiresAuthorizedStableContext();
     RoamingRuntimeCrossingPoliciesAndAdmissionAreFailClosed();

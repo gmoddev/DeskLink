@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -110,23 +111,52 @@ std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
              !IsValidDisplayTopologySnapshot(*Machine.Topology))) {
             return std::nullopt;
         }
-        std::int32_t NextDisplayX = NextMachineX;
-        std::int32_t MachineWidth = 0;
         if (Machine.Topology) {
+            const auto& Displays = Machine.Topology->Displays;
+            const auto Anchor = std::min_element(
+                Displays.begin(), Displays.end(), [](const auto& A, const auto& B) {
+                    return std::tuple{!A.Primary, A.Bounds.Left, A.Bounds.Top, A.StableIdentity} <
+                           std::tuple{!B.Primary, B.Bounds.Left, B.Bounds.Top, B.StableIdentity};
+                });
+            if (Anchor == Displays.end()) continue;
+            const auto [AnchorWidth, AnchorHeight] = DisplaySize(*Anchor);
+            (void)AnchorHeight;
+            const auto Scale = static_cast<double>(AnchorWidth) /
+                (static_cast<std::int64_t>(Anchor->Bounds.Right) - Anchor->Bounds.Left);
+            const auto Scaled = [&](std::int64_t Value) {
+                return static_cast<std::int32_t>(std::clamp<long long>(
+                    std::llround(Value * Scale), -kMaximumCanvasCoordinate,
+                    kMaximumCanvasCoordinate));
+            };
+            const auto Placement = FindPlacement(
+                Configuration, Machine.Machine, Anchor->StableIdentity);
+            const auto MinimumLeft = std::min_element(Displays.begin(), Displays.end(),
+                [](const auto& A, const auto& B) { return A.Bounds.Left < B.Bounds.Left; })->Bounds.Left;
+            const auto MinimumTop = std::min_element(Displays.begin(), Displays.end(),
+                [](const auto& A, const auto& B) { return A.Bounds.Top < B.Bounds.Top; })->Bounds.Top;
+            // Saved placement supplies only the PC's translation. Windows owns
+            // monitor ordering, offsets, and dimensions within that PC.
+            const auto AnchorX = Placement ? Placement->X : NextMachineX +
+                Scaled(static_cast<std::int64_t>(Anchor->Bounds.Left) - MinimumLeft);
+            const auto AnchorY = Placement ? Placement->Y : 70 +
+                Scaled(static_cast<std::int64_t>(Anchor->Bounds.Top) - MinimumTop);
             for (const auto& Display : Machine.Topology->Displays) {
                 const DisplayKey Key{Machine.Machine, Display.StableIdentity};
                 if (!SeenDisplays.insert(Key).second) return std::nullopt;
-                const auto [Width, Height] = DisplaySize(Display);
-                const auto Placement = FindPlacement(
-                    Configuration, Machine.Machine, Display.StableIdentity);
+                const auto Width = std::max(1, Scaled(
+                    static_cast<std::int64_t>(Display.Bounds.Right) - Display.Bounds.Left));
+                const auto Height = std::max(1, Scaled(
+                    static_cast<std::int64_t>(Display.Bounds.Bottom) - Display.Bounds.Top));
                 MonitorCanvasTile Tile;
                 Tile.Machine = Machine.Machine;
                 Tile.MachineName = Machine.DisplayName;
                 Tile.StableDisplayIdentity = Display.StableIdentity;
                 Tile.FriendlyName = Display.FriendlyName;
                 Tile.Rect = {
-                    Placement ? Placement->X : NextDisplayX,
-                    Placement ? Placement->Y : 70,
+                    std::clamp(AnchorX + Scaled(static_cast<std::int64_t>(Display.Bounds.Left) - Anchor->Bounds.Left),
+                        -kMaximumCanvasCoordinate, kMaximumCanvasCoordinate),
+                    std::clamp(AnchorY + Scaled(static_cast<std::int64_t>(Display.Bounds.Top) - Anchor->Bounds.Top),
+                        -kMaximumCanvasCoordinate, kMaximumCanvasCoordinate),
                     Width,
                     Height,
                 };
@@ -146,11 +176,10 @@ std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
                     Display.PhysicalSize != PhysicalSizeSource::Edid;
                 Tile.PeerInputAllowed = Machine.PeerInputAllowed;
                 Result.Tiles.push_back(std::move(Tile));
-                NextDisplayX += Width + 16;
-                MachineWidth += Width + 16;
+                NextMachineX = std::max(NextMachineX, Result.Tiles.back().Rect.X + Width + 70);
             }
         }
-        NextMachineX += std::max<std::int32_t>(MachineWidth, 280) + 70;
+        else NextMachineX += 350;
     }
 
     std::map<MachineId, std::string> MachineNames;
@@ -239,6 +268,32 @@ std::vector<CanvasDisplayPlacement> BuildSavedCanvasLayout(
             Tile.Rect.X, Tile.Rect.Y});
     }
     return Result;
+}
+
+void MoveMonitorCanvasTile(std::span<MonitorCanvasTile> Tiles,
+    std::size_t Index, std::int32_t X, std::int32_t Y) noexcept {
+    if (Index >= Tiles.size()) return;
+    const auto Machine = Tiles[Index].Machine;
+    const bool Group = Tiles[Index].Online;
+    auto DeltaX = static_cast<std::int64_t>(X) - Tiles[Index].Rect.X;
+    auto DeltaY = static_cast<std::int64_t>(Y) - Tiles[Index].Rect.Y;
+    const auto Matches = [&](std::size_t Other) {
+        return Other == Index || (Group && Tiles[Other].Online && Tiles[Other].Machine == Machine);
+    };
+    for (std::size_t Other = 0; Other < Tiles.size(); ++Other) {
+        if (!Matches(Other)) continue;
+        DeltaX = std::clamp<std::int64_t>(DeltaX,
+            -kMaximumCanvasCoordinate - Tiles[Other].Rect.X,
+            kMaximumCanvasCoordinate - Tiles[Other].Rect.X);
+        DeltaY = std::clamp<std::int64_t>(DeltaY,
+            -kMaximumCanvasCoordinate - Tiles[Other].Rect.Y,
+            kMaximumCanvasCoordinate - Tiles[Other].Rect.Y);
+    }
+    for (std::size_t Other = 0; Other < Tiles.size(); ++Other) {
+        if (!Matches(Other)) continue;
+        Tiles[Other].Rect.X += static_cast<std::int32_t>(DeltaX);
+        Tiles[Other].Rect.Y += static_cast<std::int32_t>(DeltaY);
+    }
 }
 
 std::vector<RoamingLink> BuildSavedRoamingLinks(
