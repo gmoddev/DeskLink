@@ -1011,11 +1011,12 @@ private:
             (X - DragOffsetX_ - 30) / ViewScale_));
         const auto NewY = ViewOriginY_ + static_cast<std::int32_t>(std::lround(
             (Y - DragOffsetY_ - 45) / ViewScale_));
-        auto& Rect = Model_.Tiles[*SelectedTile_].Rect;
+        auto Rect = Model_.Tiles[*SelectedTile_].Rect;
         Rect.X = std::clamp(
             NewX, -kMaximumCanvasCoordinate, kMaximumCanvasCoordinate);
         Rect.Y = std::clamp(
             NewY, -kMaximumCanvasCoordinate, kMaximumCanvasCoordinate);
+        MoveMonitorCanvasTile(Model_.Tiles, *SelectedTile_, Rect.X, Rect.Y);
         Dirty_ = true;
         InvalidateRect(Canvas_, nullptr, FALSE);
     }

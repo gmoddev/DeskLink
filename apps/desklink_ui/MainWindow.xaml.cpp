@@ -867,7 +867,7 @@ void MainWindow::NavigateTo(winrt::hstring const& Tag) {
     DisplaysPage().Visibility(Tag == L"Displays" ? Visible : Collapsed);
     AdvancedPage().Visibility(Tag == L"Advanced" ? Visible : Collapsed);
     DiagnosticsPage().Visibility(Tag == L"Diagnostics" ? Visible : Collapsed);
-    if (Tag == L"Displays" && !MonitorLayoutLoaded_) {
+    if (Tag == L"Displays" && !MonitorLayoutDirty_) {
         LoadMonitorLayout();
     }
 }
@@ -1791,7 +1791,7 @@ void MainWindow::RecomputeMonitorSuggestion(bool SnapDraggedTile) {
 
     if (SnapDraggedTile && DraggingMonitorTile_ && MonitorSuggestion_) {
         const auto MovingIndex = *DraggingMonitorTile_;
-        auto& Moving = MonitorModel_.Tiles[MovingIndex].Rect;
+        auto Moving = MonitorModel_.Tiles[MovingIndex].Rect;
         const auto OtherIndex = MonitorSuggestion_->TileA == MovingIndex
             ? MonitorSuggestion_->TileB
             : MonitorSuggestion_->TileA;
@@ -1819,6 +1819,7 @@ void MainWindow::RecomputeMonitorSuggestion(bool SnapDraggedTile) {
         Moving.Y = std::clamp(
             Moving.Y, -desklink::kMaximumCanvasCoordinate,
             desklink::kMaximumCanvasCoordinate);
+        desklink::MoveMonitorCanvasTile(MonitorModel_.Tiles, MovingIndex, Moving.X, Moving.Y);
         MonitorSuggestion_ = desklink::BuildRoamingLinkSuggestion(
             MonitorModel_.Tiles,
             MonitorSuggestion_->TileA, MonitorSuggestion_->TileB);
@@ -2003,7 +2004,7 @@ void MainWindow::OnMonitorTilePointerMoved(
         return;
     }
     const auto Point = Args.GetCurrentPoint(MonitorCanvas()).Position();
-    auto& Rect = MonitorModel_.Tiles[*Index].Rect;
+    auto Rect = MonitorModel_.Tiles[*Index].Rect;
     Rect.X = std::clamp(
         DragStartRect_.X + static_cast<std::int32_t>(std::lround(
             (Point.X - DragStartPointerX_) / MonitorViewScale_)),
@@ -2014,12 +2015,17 @@ void MainWindow::OnMonitorTilePointerMoved(
             (Point.Y - DragStartPointerY_) / MonitorViewScale_)),
         -desklink::kMaximumCanvasCoordinate,
         desklink::kMaximumCanvasCoordinate);
-    Microsoft::UI::Xaml::Controls::Canvas::SetLeft(
-        Card, 30.0 +
-            (Rect.X - MonitorViewOriginX_) * MonitorViewScale_);
-    Microsoft::UI::Xaml::Controls::Canvas::SetTop(
-        Card, 42.0 +
-            (Rect.Y - MonitorViewOriginY_) * MonitorViewScale_);
+    desklink::MoveMonitorCanvasTile(MonitorModel_.Tiles, *Index, Rect.X, Rect.Y);
+    for (const auto& Child : MonitorCanvas().Children()) {
+        const auto TileCard = Child.try_as<Microsoft::UI::Xaml::Controls::Border>();
+        const auto TileIndex = TileCard ? MonitorTileFromTag(TileCard.Tag()) : std::nullopt;
+        if (!TileIndex) continue;
+        const auto& Position = MonitorModel_.Tiles[*TileIndex].Rect;
+        Microsoft::UI::Xaml::Controls::Canvas::SetLeft(TileCard,
+            30.0 + (Position.X - MonitorViewOriginX_) * MonitorViewScale_);
+        Microsoft::UI::Xaml::Controls::Canvas::SetTop(TileCard,
+            42.0 + (Position.Y - MonitorViewOriginY_) * MonitorViewScale_);
+    }
     MarkMonitorDirty();
     Args.Handled(true);
 }
@@ -2144,7 +2150,7 @@ void MainWindow::OnNudgeMonitorTile(
         ? winrt::unbox_value_or<winrt::hstring>(Button.Tag(), {})
         : winrt::hstring{};
     if (!Index || Direction.empty()) return;
-    auto& Rect = MonitorModel_.Tiles[*Index].Rect;
+    auto Rect = MonitorModel_.Tiles[*Index].Rect;
     constexpr std::int32_t Step = 10;
     if (Direction == L"Left") Rect.X -= Step;
     else if (Direction == L"Right") Rect.X += Step;
@@ -2157,6 +2163,7 @@ void MainWindow::OnNudgeMonitorTile(
     Rect.Y = std::clamp(
         Rect.Y, -desklink::kMaximumCanvasCoordinate,
         desklink::kMaximumCanvasCoordinate);
+    desklink::MoveMonitorCanvasTile(MonitorModel_.Tiles, *Index, Rect.X, Rect.Y);
     MarkMonitorDirty();
     RecomputeMonitorSuggestion(false);
     RenderMonitorCanvas();

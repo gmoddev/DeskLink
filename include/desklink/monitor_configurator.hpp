@@ -70,6 +70,10 @@ struct RoamingLinkSuggestion {
     std::int32_t EdgeGapPixels{};
 };
 
+// Move a PC as a group; its live monitor geometry remains Windows-owned.
+void MoveMonitorCanvasTile(std::span<MonitorCanvasTile> Tiles,
+    std::size_t Index, std::int32_t X, std::int32_t Y) noexcept;
+
 [[nodiscard]] std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
     std::span<const MonitorCanvasMachine> Machines,
     const RoamingConfiguration& Configuration);
