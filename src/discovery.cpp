@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cctype>
 #include <map>
+#include <limits>
 #include <set>
 #include <tuple>
 
@@ -166,7 +167,14 @@ bool SameMetadata(const DiscoveryEndpoint& Left,
 auto EndpointOrder(const DiscoveryEndpoint& Endpoint) {
     return std::tuple{
         LowerAscii(Endpoint.HostName), Endpoint.Advertisement.Port,
-        Endpoint.InterfaceIndex, LowerAscii(Endpoint.InstanceName)};
+        Endpoint.InterfaceIndex, LowerAscii(Endpoint.InstanceName),
+        Endpoint.RemoteAddress};
+}
+
+std::string PathKey(const DiscoveryEndpoint& Endpoint) {
+    return Endpoint.AdapterId + ":" + std::to_string(Endpoint.InterfaceIndex) +
+        ":" + Endpoint.RemoteAddress + ":" +
+        std::to_string(Endpoint.Advertisement.Port);
 }
 
 } // namespace
@@ -317,6 +325,7 @@ bool DiscoveryCache::Observe(DiscoveryEndpoint Endpoint,
                             kMaximumDiscoveryTtl);
     const auto SameSource = [&](const Entry& Existing) {
         return Existing.Endpoint.InterfaceIndex == Endpoint.InterfaceIndex &&
+               Existing.Endpoint.RemoteAddress == Endpoint.RemoteAddress &&
                LowerAscii(Existing.Endpoint.InstanceName) ==
                    LowerAscii(Endpoint.InstanceName) &&
                LowerAscii(Existing.Endpoint.HostName) ==
@@ -371,10 +380,63 @@ std::vector<DiscoveredPeer> DiscoveryCache::Snapshot() {
                 break;
             }
         }
-        Result.push_back(DiscoveredPeer{
-            *Endpoints.front(), Endpoints.size(), Ambiguous});
+        DiscoveredPeer Peer{*Endpoints.front(), Endpoints.size(), Ambiguous, {}};
+        for (const auto* Endpoint : Endpoints) Peer.Candidates.push_back(*Endpoint);
+        Result.push_back(std::move(Peer));
     }
     return Result;
+}
+
+std::optional<DiscoveryEndpoint> DiscoveryPathSelector::Select(
+    const DiscoveredPeer& Peer, std::string_view PreferredAdapterId) {
+    if (Peer.Ambiguous || Peer.EndpointCount == 0) return std::nullopt;
+    std::erase_if(Failures_, [&](const Failure& Item) {
+        return Item.Until <= Clock_.now();
+    });
+    const auto Cooling = [&](const DiscoveryEndpoint& Endpoint) {
+        return std::any_of(Failures_.begin(), Failures_.end(), [&](const auto& Item) {
+            return Item.Machine == Endpoint.Advertisement.Machine &&
+                Item.Path == PathKey(Endpoint);
+        });
+    };
+    const DiscoveryEndpoint* Selected = nullptr;
+    const auto Rank = [&](const DiscoveryEndpoint& Endpoint) {
+        return std::tuple{
+            PreferredAdapterId.empty() ||
+                !EqualAsciiCaseInsensitive(Endpoint.AdapterId, PreferredAdapterId),
+            !(Successful_ && Successful_->Advertisement.Machine ==
+                  Endpoint.Advertisement.Machine &&
+                  PathKey(*Successful_) == PathKey(Endpoint)),
+            (std::numeric_limits<std::uint64_t>::max)() -
+                Endpoint.LinkSpeedBitsPerSecond,
+            EndpointOrder(Endpoint)};
+    };
+    for (const auto& Candidate : Peer.Candidates) {
+        if (!IsValidDiscoveryEndpoint(Candidate) || !Candidate.Available ||
+            Candidate.RemoteAddress.empty() || Cooling(Candidate) ||
+            !SameMetadata(Peer.Endpoint, Candidate)) continue;
+        if (!Selected || Rank(Candidate) < Rank(*Selected)) Selected = &Candidate;
+    }
+    return Selected ? std::optional<DiscoveryEndpoint>(*Selected) : std::nullopt;
+}
+
+void DiscoveryPathSelector::RecordUnavailable(const DiscoveryEndpoint& Endpoint) {
+    const auto Path = PathKey(Endpoint);
+    std::erase_if(Failures_, [&](const Failure& Item) {
+        return Item.Until <= Clock_.now() ||
+            (Item.Machine == Endpoint.Advertisement.Machine && Item.Path == Path);
+    });
+    if (Failures_.size() >= 64) Failures_.erase(Failures_.begin());
+    Failures_.push_back({Endpoint.Advertisement.Machine, Path,
+                         Clock_.now() + std::chrono::seconds(30)});
+}
+
+void DiscoveryPathSelector::RecordSuccess(const DiscoveryEndpoint& Endpoint) {
+    Successful_ = Endpoint;
+    std::erase_if(Failures_, [&](const Failure& Item) {
+        return Item.Machine == Endpoint.Advertisement.Machine &&
+            Item.Path == PathKey(Endpoint);
+    });
 }
 
 } // namespace desklink

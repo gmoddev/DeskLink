@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <stop_token>
 #include <vector>
 
@@ -16,6 +17,8 @@ struct Win32DiscoveryBrowseResult {
     std::size_t BrowseFailures{};
     std::size_t ResolveFailures{};
     std::size_t MalformedRecords{};
+    std::uint32_t ResolveStatus{};
+    std::vector<std::string> ServiceNames;
 };
 
 class Win32MdnsAdvertiser final {
@@ -32,8 +35,12 @@ public:
     [[nodiscard]] std::uint32_t LastStatus() const noexcept;
 
 private:
+    [[nodiscard]] bool StartInterface(const DiscoveryAdvertisement& Advertisement,
+                                      std::uint32_t InterfaceIndex);
     struct Impl;
+    mutable std::recursive_mutex Mutex_;
     std::shared_ptr<Impl> Impl_;
+    std::vector<std::unique_ptr<Win32MdnsAdvertiser>> Interfaces_;
 };
 
 class Win32MdnsBrowser final {

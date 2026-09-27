@@ -176,6 +176,11 @@ non-admissible until later gates pass; its constraints are recorded in
 
 ### Link-local discovery boundary
 
+Interface-scoped candidate retention, deterministic route selection, explicit
+MsQuic binding, and fail-local candidate reconnect are specified in
+[`NETWORK_PATH_DISCOVERY.md`](NETWORK_PATH_DISCOVERY.md). QUIC migration is
+disabled: changing paths requires a fresh authenticated session beginning Local.
+
 Windows uses native DNS-SD/mDNS for `_desklink._udp.local`. A listener publishes
 an SRV host/port plus a small TXT record containing `txtvers`, `protovers`, the
 machine ID, display name, capability hints, and pairing-window state. Browsing

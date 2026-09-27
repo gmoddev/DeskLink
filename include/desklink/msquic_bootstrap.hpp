@@ -96,9 +96,11 @@ public:
     [[nodiscard]] bool ConnectTrusted(
         std::string ServerName,
         std::uint16_t Port,
-        std::optional<MachineId> ExpectedMachine = std::nullopt);
+        std::optional<MachineId> ExpectedMachine = std::nullopt,
+        std::uint32_t LocalInterfaceIndex = 0);
     [[nodiscard]] bool ConnectForPairing(std::string ServerName,
-                                         std::uint16_t Port);
+                                         std::uint16_t Port,
+                                         std::uint32_t LocalInterfaceIndex = 0);
     [[nodiscard]] TlsBackend Backend() const noexcept;
     [[nodiscard]] std::string RuntimeVersion() const;
     [[nodiscard]] WindowsVersionInfo WindowsVersion() const noexcept;

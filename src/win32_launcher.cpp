@@ -209,6 +209,9 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
     }
 
     const bool HasHost = !Request.Host.empty();
+    if (Request.LocalInterfaceIndex != 0 &&
+        Request.Operation != LauncherOperation::Focus &&
+        Request.Operation != LauncherOperation::PairConnect) return std::nullopt;
     const bool HostRequired =
         Request.Operation == LauncherOperation::PairConnect ||
         Request.Operation == LauncherOperation::Focus;
@@ -296,6 +299,10 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
             Arguments.emplace_back(L"pair");
             Arguments.push_back(Request.Host);
             AppendPort(Arguments, Request.Port);
+            if (Request.LocalInterfaceIndex != 0) {
+                Arguments.emplace_back(L"--local-interface");
+                Arguments.push_back(std::to_wstring(Request.LocalInterfaceIndex));
+            }
             AppendPairingGrants(Arguments, Request);
             AppendBrokerPairing(Arguments, Request);
             if (!AppendTlsProvider(Arguments, Request.TlsProvider)) {
@@ -392,6 +399,10 @@ std::optional<std::vector<std::wstring>> BuildLauncherArguments(
                     Request.EdgeRoamingSettingsPath.native());
             }
             AppendExpectedPeer(Arguments, Request);
+            if (Request.LocalInterfaceIndex != 0) {
+                Arguments.emplace_back(L"--local-interface");
+                Arguments.push_back(std::to_wstring(Request.LocalInterfaceIndex));
+            }
             AppendBrokerManagement(Arguments, Request);
             // A Roam default with edge settings still initializes Local and
             // merely arms bounded crossing. Direct remote focus always needs a
