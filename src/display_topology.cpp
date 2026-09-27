@@ -77,6 +77,42 @@ constexpr std::uint64_t kNormalizedMaximum = 65535ull;
     return true;
 }
 
+[[nodiscard]] bool IsValidConnectedDisplays(
+    const std::vector<ConnectedDisplayDescriptor>& ConnectedDisplays,
+    const std::vector<DisplayDescriptor>& ActiveDisplays) {
+    if (ConnectedDisplays.empty() ||
+        ConnectedDisplays.size() > kMaxDisplayCount) {
+        return false;
+    }
+    std::unordered_set<std::string> Identities;
+    for (const auto& Display : ConnectedDisplays) {
+        if (Display.StableIdentity.empty() ||
+            Display.StableIdentity.size() > kMaxDisplayIdentityLength ||
+            HasEmbeddedNull(Display.StableIdentity) ||
+            Display.FriendlyName.size() > kMaxDisplayFriendlyNameLength ||
+            HasEmbeddedNull(Display.FriendlyName) ||
+            !Identities.insert(Display.StableIdentity).second) {
+            return false;
+        }
+    }
+    return std::all_of(
+        ActiveDisplays.begin(), ActiveDisplays.end(), [&](const auto& Active) {
+            return Identities.contains(Active.StableIdentity);
+        });
+}
+
+[[nodiscard]] bool SameConnectedDisplays(
+    const std::vector<ConnectedDisplayDescriptor>& Left,
+    const std::vector<ConnectedDisplayDescriptor>& Right) noexcept {
+    if (Left.size() != Right.size()) return false;
+    for (std::size_t Index = 0; Index < Left.size(); ++Index) {
+        if (Left[Index].StableIdentity != Right[Index].StableIdentity) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 bool DisplayRect::IsValid() const noexcept {
@@ -176,7 +212,9 @@ bool IsValidDisplayTopologySnapshot(
     const DisplayTopologySnapshot& Snapshot) {
     if (Snapshot.Generation == 0 || Snapshot.Displays.empty() ||
         Snapshot.Displays.size() > kMaxDisplayCount ||
-        !Snapshot.VirtualBounds.IsValid()) {
+        !Snapshot.VirtualBounds.IsValid() ||
+        !IsValidConnectedDisplays(
+            Snapshot.ConnectedDisplays, Snapshot.Displays)) {
         return false;
     }
     std::vector<DiscoveredDisplay> Discovered;
@@ -197,7 +235,8 @@ bool IsValidDisplayTopologySnapshot(
         });
     }
     DisplayTopologyMap Validator;
-    if (Validator.Update(std::move(Discovered)) !=
+    if (Validator.Update(
+            std::move(Discovered), Snapshot.ConnectedDisplays) !=
             DisplayTopologyUpdate::Changed ||
         Validator.Current().VirtualBounds != Snapshot.VirtualBounds ||
         Validator.Current().Displays != Snapshot.Displays) {
@@ -227,7 +266,9 @@ std::optional<NormalizedDisplayPoint> MapDisplayPointToVirtualDesktop(
     };
 }
 
-DisplayTopologyUpdate DisplayTopologyMap::Update(std::vector<DiscoveredDisplay> Displays) {
+DisplayTopologyUpdate DisplayTopologyMap::Update(
+    std::vector<DiscoveredDisplay> Displays,
+    std::vector<ConnectedDisplayDescriptor> ConnectedDisplays) {
     if (Displays.empty() || Displays.size() > kMaxDisplayCount) {
         return DisplayTopologyUpdate::Invalid;
     }
@@ -308,6 +349,22 @@ DisplayTopologyUpdate DisplayTopologyMap::Update(std::vector<DiscoveredDisplay> 
         return Left.Id < Right.Id;
     });
 
+    if (ConnectedDisplays.empty()) {
+        ConnectedDisplays.reserve(Next.size());
+        for (const auto& Display : Next) {
+            ConnectedDisplays.push_back({
+                Display.StableIdentity, Display.FriendlyName});
+        }
+    }
+    std::sort(
+        ConnectedDisplays.begin(), ConnectedDisplays.end(),
+        [](const auto& Left, const auto& Right) {
+            return Left.StableIdentity < Right.StableIdentity;
+        });
+    if (!IsValidConnectedDisplays(ConnectedDisplays, Next)) {
+        return DisplayTopologyUpdate::Invalid;
+    }
+
     DisplayRect VirtualBounds = Next.front().Bounds;
     for (const auto& Display : Next) {
         VirtualBounds.Left = std::min(VirtualBounds.Left, Display.Bounds.Left);
@@ -316,8 +373,11 @@ DisplayTopologyUpdate DisplayTopologyMap::Update(std::vector<DiscoveredDisplay> 
         VirtualBounds.Bottom = std::max(VirtualBounds.Bottom, Display.Bounds.Bottom);
     }
 
-    if (SameRouting(Current_.Displays, Next)) {
+    if (SameRouting(Current_.Displays, Next) &&
+        SameConnectedDisplays(
+            Current_.ConnectedDisplays, ConnectedDisplays)) {
         Current_.Displays = std::move(Next);
+        Current_.ConnectedDisplays = std::move(ConnectedDisplays);
         Current_.VirtualBounds = VirtualBounds;
         return DisplayTopologyUpdate::Unchanged;
     }
@@ -328,6 +388,7 @@ DisplayTopologyUpdate DisplayTopologyMap::Update(std::vector<DiscoveredDisplay> 
     ++Current_.Generation;
     Current_.VirtualBounds = VirtualBounds;
     Current_.Displays = std::move(Next);
+    Current_.ConnectedDisplays = std::move(ConnectedDisplays);
     return DisplayTopologyUpdate::Changed;
 }
 

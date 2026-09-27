@@ -319,7 +319,7 @@ encoded_size             u16, 1..512
 encoded                   encoded_size bytes
 ```
 
-`VoiceFrame` is datagram-only and valid only in protocol 6. Voice uses an
+`VoiceFrame` is datagram-only and valid only in protocol 7. Voice uses an
 independent envelope sequence and a new stream ID for every local PTT
 activation. Decode validates every metadata field and the encoded bound before
 copying. Receipt additionally requires the current session nonce and exact

@@ -53,6 +53,8 @@ struct MonitorCanvasTile {
     bool Primary{};
     bool Local{};
     bool Online{};
+    bool PresenceKnown{};
+    bool Connected{};
     bool SizeEstimated{true};
     bool PeerInputAllowed{};
 };
@@ -71,6 +73,11 @@ struct RoamingLinkSuggestion {
 [[nodiscard]] std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
     std::span<const MonitorCanvasMachine> Machines,
     const RoamingConfiguration& Configuration);
+[[nodiscard]] std::vector<CanvasDisplayPlacement> BuildSavedCanvasLayout(
+    std::span<const MonitorCanvasTile> Tiles);
+[[nodiscard]] std::vector<RoamingLink> BuildSavedRoamingLinks(
+    std::span<const MonitorCanvasTile> Tiles,
+    std::span<const RoamingLink> Links);
 [[nodiscard]] std::optional<RoamingLinkSuggestion>
 BuildRoamingLinkSuggestion(
     std::span<const MonitorCanvasTile> Tiles,

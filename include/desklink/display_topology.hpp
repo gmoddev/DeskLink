@@ -91,10 +91,19 @@ struct DisplayDescriptor {
     [[nodiscard]] bool operator==(const DisplayDescriptor&) const noexcept = default;
 };
 
+struct ConnectedDisplayDescriptor {
+    std::string StableIdentity;
+    std::string FriendlyName;
+
+    [[nodiscard]] bool operator==(
+        const ConnectedDisplayDescriptor&) const noexcept = default;
+};
+
 struct DisplayTopologySnapshot {
     std::uint64_t Generation{};
     DisplayRect VirtualBounds;
     std::vector<DisplayDescriptor> Displays;
+    std::vector<ConnectedDisplayDescriptor> ConnectedDisplays;
 
     [[nodiscard]] const DisplayDescriptor* Find(DisplayId Id) const noexcept;
     [[nodiscard]] const DisplayDescriptor* FindStableIdentity(
@@ -124,7 +133,9 @@ enum class DisplayTopologyUpdate {
 
 class DisplayTopologyMap final {
 public:
-    [[nodiscard]] DisplayTopologyUpdate Update(std::vector<DiscoveredDisplay> Displays);
+    [[nodiscard]] DisplayTopologyUpdate Update(
+        std::vector<DiscoveredDisplay> Displays,
+        std::vector<ConnectedDisplayDescriptor> ConnectedDisplays = {});
     [[nodiscard]] const DisplayTopologySnapshot& Current() const noexcept;
     [[nodiscard]] std::optional<NormalizedDisplayPoint> MapToVirtualDesktop(
         DisplayId Id,

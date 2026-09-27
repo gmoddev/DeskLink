@@ -2172,7 +2172,6 @@ void MainWindow::SaveMonitorLayout() {
     using Microsoft::UI::Xaml::Controls::InfoBarSeverity;
     if (!MonitorLayoutLoaded_ || !RoamingSettings_) return;
     auto Candidate = MonitorConfiguration_;
-    Candidate.CanvasLayout.clear();
     if (MonitorModel_.Tiles.size() > desklink::kMaximumCanvasPlacements) {
         ShowMonitorStatus(
             L"Layout is too large",
@@ -2180,11 +2179,10 @@ void MainWindow::SaveMonitorLayout() {
             InfoBarSeverity::Error);
         return;
     }
-    for (const auto& Tile : MonitorModel_.Tiles) {
-        Candidate.CanvasLayout.push_back({
-            Tile.Machine, Tile.StableDisplayIdentity,
-            Tile.Rect.X, Tile.Rect.Y});
-    }
+    Candidate.CanvasLayout = desklink::BuildSavedCanvasLayout(
+        MonitorModel_.Tiles);
+    Candidate.Links = desklink::BuildSavedRoamingLinks(
+        MonitorModel_.Tiles, Candidate.Links);
     if (!desklink::IsValidRoamingConfiguration(Candidate)) {
         ShowMonitorStatus(
             L"Layout rejected",

@@ -8,8 +8,13 @@
 #include <shellscalingapi.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cwctype>
+#include <iomanip>
 #include <map>
+#include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,7 +23,7 @@ namespace desklink {
 namespace {
 
 struct TargetIdentity {
-    std::wstring StableIdentity;
+    std::string StableIdentity;
     std::wstring FriendlyName;
     std::uint32_t PixelWidth{};
     std::uint32_t PixelHeight{};
@@ -89,7 +94,7 @@ struct EnumerationContext {
     return static_cast<std::uint32_t>(Result);
 }
 
-[[nodiscard]] std::optional<PhysicalDisplaySize> ReadMonitorEdid(
+[[nodiscard]] std::optional<ByteBuffer> ReadMonitorEdid(
     std::wstring_view TargetPath) {
     constexpr GUID MonitorInterface{
         0xe6f07b5f, 0xee97, 0x4a90,
@@ -99,7 +104,7 @@ struct EnumerationContext {
         DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     if (Devices == INVALID_HANDLE_VALUE) return std::nullopt;
 
-    std::optional<PhysicalDisplaySize> Result;
+    std::optional<ByteBuffer> Result;
     for (DWORD Index = 0; !Result; ++Index) {
         SP_DEVICE_INTERFACE_DATA Interface{};
         Interface.cbSize = sizeof(Interface);
@@ -143,7 +148,7 @@ struct EnumerationContext {
                 Key, L"EDID", nullptr, &Type, Edid.data(), &Size);
             if (Status == ERROR_SUCCESS) {
                 Edid.resize(Size);
-                Result = ParseEdidPhysicalSize(Edid);
+                Result = std::move(Edid);
             }
         }
         RegCloseKey(Key);
@@ -151,6 +156,93 @@ struct EnumerationContext {
     }
     SetupDiDestroyDeviceInfoList(Devices);
     return Result;
+}
+
+[[nodiscard]] std::string NormalizeSerial(std::string Value) {
+    Value.erase(
+        std::remove_if(Value.begin(), Value.end(), [](unsigned char Character) {
+            return Character == '\0' || std::isspace(Character);
+        }),
+        Value.end());
+    std::transform(
+        Value.begin(), Value.end(), Value.begin(), [](unsigned char Character) {
+            return static_cast<char>(std::tolower(Character));
+        });
+    if (Value.empty()) return {};
+    const auto AllDigits = std::all_of(
+        Value.begin(), Value.end(), [](unsigned char Character) {
+            return std::isdigit(Character) != 0;
+        });
+    if (AllDigits) {
+        const auto Nonzero = Value.find_first_not_of('0');
+        if (Nonzero == std::string::npos || Value.substr(Nonzero) == "1") {
+            return {};
+        }
+    }
+    return Value;
+}
+
+[[nodiscard]] std::string EdidSerial(ByteSpan Edid) {
+    constexpr std::size_t BaseBlockSize = 128;
+    if (Edid.size() < BaseBlockSize) return {};
+    for (std::size_t Offset = 54; Offset + 18 <= BaseBlockSize;
+         Offset += 18) {
+        if (Edid[Offset] != 0 || Edid[Offset + 1] != 0 ||
+            Edid[Offset + 2] != 0 || Edid[Offset + 3] != 0xff) {
+            continue;
+        }
+        std::string Serial;
+        for (std::size_t Index = Offset + 5; Index < Offset + 18; ++Index) {
+            const auto Character = Edid[Index];
+            if (Character == 0x0a) break;
+            if (Character >= 0x20 && Character <= 0x7e) {
+                Serial.push_back(static_cast<char>(Character));
+            }
+        }
+        Serial = NormalizeSerial(std::move(Serial));
+        if (!Serial.empty()) return Serial;
+    }
+    const auto Numeric = static_cast<std::uint32_t>(Edid[12]) |
+        (static_cast<std::uint32_t>(Edid[13]) << 8u) |
+        (static_cast<std::uint32_t>(Edid[14]) << 16u) |
+        (static_cast<std::uint32_t>(Edid[15]) << 24u);
+    if (Numeric <= 1 || Numeric == 0xffffffffu) return {};
+    std::ostringstream Stream;
+    Stream << std::hex << std::setfill('0') << std::setw(8) << Numeric;
+    return Stream.str();
+}
+
+[[nodiscard]] std::uint64_t Fingerprint(ByteSpan Bytes) noexcept {
+    std::uint64_t Result = 14695981039346656037ull;
+    for (const auto Byte : Bytes) {
+        Result ^= Byte;
+        Result *= 1099511628211ull;
+    }
+    return Result;
+}
+
+[[nodiscard]] std::string StableDisplayIdentity(
+    const DISPLAYCONFIG_TARGET_DEVICE_NAME& Target,
+    const DISPLAYCONFIG_PATH_TARGET_INFO& PathTarget,
+    ByteSpan Edid) {
+    std::ostringstream Stream;
+    Stream << "win32-edid:" << std::hex << std::setfill('0')
+           << std::setw(4) << Target.edidManufactureId << '-'
+           << std::setw(4) << Target.edidProductCodeId;
+    const auto Serial = EdidSerial(Edid);
+    if (!Serial.empty()) {
+        Stream << ":serial:" << Serial;
+    } else if (!Edid.empty()) {
+        Stream << ":hash:" << std::setw(16) << Fingerprint(Edid)
+               << ":connector:" << std::setw(8)
+               << static_cast<std::uint32_t>(Target.outputTechnology)
+               << '-' << std::setw(8) << Target.connectorInstance
+               << '-' << std::setw(8) << PathTarget.id;
+    } else {
+        const auto Path = ToUtf8(NormalizeWide(Target.monitorDevicePath));
+        Stream << ":path:" << (Path ? *Path : "unavailable");
+    }
+    return Stream.str();
 }
 
 [[nodiscard]] std::optional<PhysicalDisplaySize> EstimatePhysicalSize(
@@ -192,10 +284,10 @@ BOOL CALLBACK CollectMonitor(HMONITOR Monitor, HDC, LPRECT, LPARAM Parameter) {
         Context.Failed = true;
         return FALSE;
     }
-    const auto StableIdentity = ToUtf8(Target->second.StableIdentity);
     const auto FriendlyName = ToUtf8(Target->second.FriendlyName);
     const auto SourceName = ToUtf8(Info.szDevice);
-    if (!StableIdentity || !FriendlyName || !SourceName || StableIdentity->empty()) {
+    if (!FriendlyName || !SourceName ||
+        Target->second.StableIdentity.empty()) {
         Context.Failed = true;
         return FALSE;
     }
@@ -234,7 +326,7 @@ BOOL CALLBACK CollectMonitor(HMONITOR Monitor, HDC, LPRECT, LPARAM Parameter) {
     }
 
     Context.Displays.push_back(DiscoveredDisplay{
-        "win32-displayconfig:" + *StableIdentity,
+        Target->second.StableIdentity,
         FriendlyName->empty() ? *SourceName : *FriendlyName,
         Bounds,
         (Info.dwFlags & MONITORINFOF_PRIMARY) != 0,
@@ -286,7 +378,6 @@ BOOL CALLBACK CollectMonitor(HMONITOR Monitor, HDC, LPRECT, LPARAM Parameter) {
         }
 
         const auto SourceName = NormalizeWide(Source.viewGdiDeviceName);
-        const auto StableIdentity = NormalizeWide(Target.monitorDevicePath);
         const std::wstring FriendlyName = Target.monitorFriendlyDeviceName[0] != L'\0'
             ? Target.monitorFriendlyDeviceName
             : Source.viewGdiDeviceName;
@@ -304,10 +395,16 @@ BOOL CALLBACK CollectMonitor(HMONITOR Monitor, HDC, LPRECT, LPARAM Parameter) {
         const auto Refresh = RefreshMilliHertz(Path.targetInfo.refreshRate);
         const auto Orientation = ToOrientation(Path.targetInfo.rotation);
         if (!Refresh || !Orientation) return std::nullopt;
-        auto Physical = ReadMonitorEdid(Target.monitorDevicePath);
+        const auto Edid = ReadMonitorEdid(Target.monitorDevicePath);
+        const auto Physical = Edid
+            ? ParseEdidPhysicalSize(*Edid)
+            : std::nullopt;
         const auto PhysicalKind = Physical
             ? PhysicalSizeSource::Edid
             : PhysicalSizeSource::Unknown;
+        const auto StableIdentity = StableDisplayIdentity(
+            Target, Path.targetInfo,
+            Edid ? ByteSpan{*Edid} : ByteSpan{});
         if (SourceName.empty() || StableIdentity.empty() ||
             !Result.emplace(
                 SourceName,
@@ -329,6 +426,50 @@ BOOL CALLBACK CollectMonitor(HMONITOR Monitor, HDC, LPRECT, LPARAM Parameter) {
     return Result;
 }
 
+[[nodiscard]] std::optional<std::vector<ConnectedDisplayDescriptor>>
+GetConnectedDisplays() {
+    constexpr UINT32 QueryFlags = QDC_ALL_PATHS | QDC_VIRTUAL_MODE_AWARE;
+    UINT32 PathCount{};
+    UINT32 ModeCount{};
+    if (GetDisplayConfigBufferSizes(
+            QueryFlags, &PathCount, &ModeCount) != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    if (PathCount == 0) return std::vector<ConnectedDisplayDescriptor>{};
+    std::vector<DISPLAYCONFIG_PATH_INFO> Paths(PathCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> Modes(ModeCount);
+    if (QueryDisplayConfig(
+            QueryFlags, &PathCount, Paths.data(), &ModeCount, Modes.data(),
+            nullptr) != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    Paths.resize(PathCount);
+
+    std::set<std::string> Identities;
+    std::vector<ConnectedDisplayDescriptor> Result;
+    for (const auto& Path : Paths) {
+        if (!Path.targetInfo.targetAvailable) continue;
+        DISPLAYCONFIG_TARGET_DEVICE_NAME Target{};
+        Target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        Target.header.size = sizeof(Target);
+        Target.header.adapterId = Path.targetInfo.adapterId;
+        Target.header.id = Path.targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&Target.header) != ERROR_SUCCESS ||
+            Target.monitorDevicePath[0] == L'\0') {
+            continue;
+        }
+        const auto Edid = ReadMonitorEdid(Target.monitorDevicePath);
+        const auto Identity = StableDisplayIdentity(
+            Target, Path.targetInfo,
+            Edid ? ByteSpan{*Edid} : ByteSpan{});
+        if (Identity.empty() || !Identities.insert(Identity).second) continue;
+        const auto FriendlyName = ToUtf8(Target.monitorFriendlyDeviceName);
+        if (!FriendlyName) return std::nullopt;
+        Result.push_back({Identity, *FriendlyName});
+    }
+    return Result;
+}
+
 } // namespace
 
 std::optional<std::vector<DiscoveredDisplay>> EnumerateWin32Displays() {
@@ -345,13 +486,59 @@ std::optional<std::vector<DiscoveredDisplay>> EnumerateWin32Displays() {
     return Context.Displays;
 }
 
+std::optional<std::vector<ConnectedDisplayDescriptor>>
+EnumerateWin32ConnectedDisplays() {
+    return GetConnectedDisplays();
+}
+
+std::optional<Win32DisplayInventory> EnumerateWin32DisplayInventory() {
+    auto Active = EnumerateWin32Displays();
+    auto Connected = EnumerateWin32ConnectedDisplays();
+    if (!Active || !Connected) return std::nullopt;
+    for (const auto& Display : *Active) {
+        const auto Match = std::find_if(
+            Connected->begin(), Connected->end(), [&](const auto& Candidate) {
+                return Candidate.StableIdentity == Display.StableIdentity;
+            });
+        if (Match == Connected->end()) {
+            Connected->push_back({
+                Display.StableIdentity, Display.FriendlyName});
+        }
+    }
+    return Win32DisplayInventory{
+        std::move(*Active), std::move(*Connected)};
+}
+
 bool Win32DisplayTopology::Refresh() {
     try {
         const auto Displays = EnumerateWin32Displays();
-        if (!Displays || Topology_.Update(*Displays) == DisplayTopologyUpdate::Invalid) {
+        if (!Displays) return false;
+        const auto Now = std::chrono::steady_clock::now();
+        constexpr auto ConnectedRefreshInterval = std::chrono::seconds(2);
+        if (!HasConnectedRefresh_ ||
+            Now - LastConnectedRefresh_ >= ConnectedRefreshInterval) {
+            auto Connected = EnumerateWin32ConnectedDisplays();
+            if (!Connected) return false;
+            ConnectedDisplays_ = std::move(*Connected);
+            LastConnectedRefresh_ = Now;
+            HasConnectedRefresh_ = true;
+        }
+        for (const auto& Display : *Displays) {
+            const auto Match = std::find_if(
+                ConnectedDisplays_.begin(), ConnectedDisplays_.end(),
+                [&](const auto& Candidate) {
+                    return Candidate.StableIdentity == Display.StableIdentity;
+                });
+            if (Match == ConnectedDisplays_.end()) {
+                ConnectedDisplays_.push_back({
+                    Display.StableIdentity, Display.FriendlyName});
+            }
+        }
+        if (Topology_.Update(*Displays, ConnectedDisplays_) ==
+            DisplayTopologyUpdate::Invalid) {
             return false;
         }
-        LastRefresh_ = std::chrono::steady_clock::now();
+        LastRefresh_ = Now;
         HasRefresh_ = true;
         return true;
     } catch (...) {
