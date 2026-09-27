@@ -102,6 +102,7 @@ bool IsLifecycleOperationActive() noexcept {
 struct CommandLine {
     Operation Mode{Operation::PairListen};
     std::string Host;
+    std::uint32_t LocalInterfaceIndex{};
     std::optional<desklink::MachineId> ExpectedPeerMachine;
     std::uint16_t Port{kDefaultPort};
     std::uint32_t DiscoveryDurationMs{3'000};
@@ -640,6 +641,15 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
             if (!Result.ExpectedPeerMachine) return std::nullopt;
             continue;
         }
+        if (Argument == L"--local-interface") {
+            if (Result.LocalInterfaceIndex != 0 || Index + 1 >= ArgumentCount)
+                return std::nullopt;
+            const auto Interface = ParseNonzeroU64(Arguments[++Index]);
+            if (!Interface || *Interface > (std::numeric_limits<std::uint32_t>::max)())
+                return std::nullopt;
+            Result.LocalInterfaceIndex = static_cast<std::uint32_t>(*Interface);
+            continue;
+        }
         if (Argument == L"--edge-roaming") {
             if (Result.EdgeRoamingSettingsPath ||
                 Index + 1 >= ArgumentCount) {
@@ -815,6 +825,8 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
     if (Result.ExpectedPeerMachine && Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
+    if (Result.LocalInterfaceIndex != 0 && Result.Mode != Operation::Focus &&
+        Result.Mode != Operation::PairConnect) return std::nullopt;
     if (Result.ProfileConfigurationSeen && Result.Mode != Operation::Focus) {
         return std::nullopt;
     }
@@ -5717,12 +5729,14 @@ int RunTrusted(const CommandLine& Command,
         }
     } else {
         if (!Bootstrap->ConnectTrusted(
-                Command.Host, Command.Port, Command.ExpectedPeerMachine)) {
+                Command.Host, Command.Port, Command.ExpectedPeerMachine,
+                Command.LocalInterfaceIndex)) {
             std::cerr << "[Session:Control] could not connect to trusted peer "
                       << Command.Host << ':' << Command.Port << '\n';
+            std::scoped_lock Lock(Result->Mutex);
             return Command.BrokerManaged
                 ? static_cast<int>(
-                      desklink::kBrokerManagedActionRequiredProcessExit)
+                      ManagedFailureExitCode(*Result))
                 : 1;
         }
         {
@@ -6083,7 +6097,8 @@ int Run(const CommandLine& Command) {
                       << "; manual address pairing remains active\n";
         }
     } else {
-        if (!Bootstrap->ConnectForPairing(Command.Host, Command.Port)) {
+        if (!Bootstrap->ConnectForPairing(Command.Host, Command.Port,
+                                         Command.LocalInterfaceIndex)) {
             std::cerr << "[Pairing:Control] could not start pairing with "
                       << Command.Host << ':' << Command.Port << '\n';
             return 1;

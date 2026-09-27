@@ -52,6 +52,7 @@ struct LauncherRequest {
     // explicitly opt into the broker's fail-closed OS provider policy.
     LauncherTlsProvider TlsProvider{LauncherTlsProvider::Schannel};
     std::wstring Host;
+    std::uint32_t LocalInterfaceIndex{};
     std::optional<MachineId> ExpectedPeerMachine;
     std::uint16_t Port{43'821};
     std::uint8_t DiscoverySeconds{5};

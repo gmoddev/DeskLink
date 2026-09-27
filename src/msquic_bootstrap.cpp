@@ -1,6 +1,7 @@
 #include "desklink/msquic_bootstrap.hpp"
 
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 
 #include <algorithm>
 #include <array>
@@ -1850,6 +1851,10 @@ bool OpenConfiguration(MsQuicBootstrap::State& State,
     Settings.IsSet.DatagramReceiveEnabled = TRUE;
     Settings.ServerResumptionLevel = QUIC_SERVER_NO_RESUME;
     Settings.IsSet.ServerResumptionLevel = TRUE;
+    // Path loss must produce a fresh authenticated, Local session. Never
+    // silently migrate an active focus lease or nonce to another adapter.
+    Settings.MigrationEnabled = FALSE;
+    Settings.IsSet.MigrationEnabled = TRUE;
     QUIC_BUFFER AlpnBuffer{
         static_cast<std::uint32_t>(Alpn.size()),
         reinterpret_cast<std::uint8_t*>(const_cast<char*>(Alpn.data()))};
@@ -1950,7 +1955,8 @@ bool Connect(const std::shared_ptr<MsQuicBootstrap::State>& State,
              std::string ServerName,
              std::uint16_t Port,
              ConnectionPurpose Purpose,
-             std::optional<MachineId> ExpectedMachine) {
+             std::optional<MachineId> ExpectedMachine,
+             std::uint32_t LocalInterfaceIndex) {
     if (!IsValidServerName(ServerName) || Port == 0) return false;
     {
         std::scoped_lock Lock(State->Mutex);
@@ -1977,9 +1983,35 @@ bool Connect(const std::shared_ptr<MsQuicBootstrap::State>& State,
     }
     const HQUIC Configuration = Purpose == ConnectionPurpose::Pairing
         ? State->PairingClientConfiguration : State->SessionClientConfiguration;
-    if (QUIC_FAILED(State->Api->ConnectionStart(
+    QUIC_STATUS StartStatus = QUIC_STATUS_SUCCESS;
+    if (LocalInterfaceIndex != 0) {
+        QUIC_ADDR Remote{};
+        MIB_IF_ROW2 Adapter{};
+        Adapter.InterfaceIndex = LocalInterfaceIndex;
+        if (GetIfEntry2(&Adapter) != NO_ERROR || Adapter.OperStatus != IfOperStatusUp) {
+            StartStatus = QUIC_STATUS_UNREACHABLE;
+        } else if (!QuicAddrFromString(ServerName.c_str(), Port, &Remote)) {
+            StartStatus = QUIC_STATUS_INVALID_PARAMETER;
+        } else {
+            QuicAddrSetPort(&Remote, Port);
+            StartStatus = State->Api->SetParam(ConnectionState->Connection,
+                QUIC_PARAM_CONN_LOCAL_INTERFACE, sizeof(LocalInterfaceIndex),
+                &LocalInterfaceIndex);
+            if (QUIC_SUCCEEDED(StartStatus))
+                StartStatus = State->Api->SetParam(ConnectionState->Connection,
+                    QUIC_PARAM_CONN_REMOTE_ADDRESS, sizeof(Remote), &Remote);
+        }
+    }
+    if (QUIC_SUCCEEDED(StartStatus)) StartStatus = State->Api->ConnectionStart(
             ConnectionState->Connection, Configuration,
-            QUIC_ADDRESS_FAMILY_UNSPEC, ServerName.c_str(), Port))) {
+            QUIC_ADDRESS_FAMILY_UNSPEC, ServerName.c_str(), Port);
+    if (QUIC_FAILED(StartStatus)) {
+        if (Purpose == ConnectionPurpose::Trusted)
+            ReportFailure(State, "trusted connection could not start (status " +
+                std::to_string(static_cast<std::uint32_t>(StartStatus)) + ")",
+                IsRetryableAvailabilityStatus(StartStatus)
+                    ? MsQuicFailureDisposition::RetryableAvailability
+                    : MsQuicFailureDisposition::ActionRequired);
         State->Api->ConnectionClose(ConnectionState->Connection);
         ConnectionState->Connection = nullptr;
         ConnectionState->SelfHold.reset();
@@ -2173,15 +2205,17 @@ std::uint16_t MsQuicBootstrap::BoundPort() const noexcept {
 bool MsQuicBootstrap::ConnectTrusted(
     std::string ServerName,
     std::uint16_t Port,
-    std::optional<MachineId> ExpectedMachine) {
+    std::optional<MachineId> ExpectedMachine,
+    std::uint32_t LocalInterfaceIndex) {
     return Connect(State_, std::move(ServerName), Port,
-                   ConnectionPurpose::Trusted, ExpectedMachine);
+                   ConnectionPurpose::Trusted, ExpectedMachine, LocalInterfaceIndex);
 }
 
 bool MsQuicBootstrap::ConnectForPairing(std::string ServerName,
-                                        std::uint16_t Port) {
+                                        std::uint16_t Port,
+                                        std::uint32_t LocalInterfaceIndex) {
     return Connect(State_, std::move(ServerName), Port,
-                   ConnectionPurpose::Pairing, std::nullopt);
+                   ConnectionPurpose::Pairing, std::nullopt, LocalInterfaceIndex);
 }
 
 TlsBackend MsQuicBootstrap::Backend() const noexcept {

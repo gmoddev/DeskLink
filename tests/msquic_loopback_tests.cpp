@@ -3,6 +3,7 @@
 #include "desklink/win32_pairing.hpp"
 
 #include <ncrypt.h>
+#include <iphlpapi.h>
 
 #include <array>
 #include <chrono>
@@ -440,7 +441,10 @@ void RunLoopback(const std::wstring& FirstKeyName,
     CHECK(Second);
     CHECK(First->StartListener());
     CHECK(First->BoundPort() != 0);
-    CHECK(Second->ConnectForPairing("127.0.0.1", First->BoundPort()));
+    ULONG LoopbackInterface{};
+    CHECK(GetBestInterface(htonl(INADDR_LOOPBACK), &LoopbackInterface) == NO_ERROR);
+    CHECK(LoopbackInterface != 0);
+    CHECK(Second->ConnectForPairing("127.0.0.1", First->BoundPort(), LoopbackInterface));
     CHECK(WaitFor(Shared, 2, 0, std::chrono::seconds(10)));
 
     std::shared_ptr<MsQuicPairingSession> FirstSession;
@@ -486,7 +490,7 @@ void RunLoopback(const std::wstring& FirstKeyName,
     CHECK(SecondTrust.GetPeer(FirstIdentity.machine_id).has_value());
 
     CHECK(Second->ConnectTrusted(
-        "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id));
+        "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id, LoopbackInterface));
     CHECK(WaitFor(Shared, 0, 2, std::chrono::seconds(10)));
 
     std::shared_ptr<MsQuicTransportEndpoint> FirstEndpoint;
@@ -609,7 +613,7 @@ void RunLoopback(const std::wstring& FirstKeyName,
     }
 
     CHECK(Second->ConnectTrusted(
-        "127.0.0.1", First->BoundPort(), FirstIdentity.machine_id));
+        "::1", First->BoundPort(), FirstIdentity.machine_id, LoopbackInterface));
     CHECK(WaitFor(Shared, 0, 2, std::chrono::seconds(10)));
     std::uint64_t ReconnectNonce{};
     {

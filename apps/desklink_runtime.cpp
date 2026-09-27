@@ -299,6 +299,7 @@ public:
           PreferencesStore_(PreferencesStore),
           SafetyController_(SafetyController),
           Clock_(Clock),
+          PathSelector_(Clock),
           Reconnect_(RuntimeJitterSeed(LocalMachine)) {}
 
     ~BrokerRuntimeSupervisor() {
@@ -788,6 +789,7 @@ private:
         LastProcessExitCode_.reset();
         LastInputDesktopInterruptionObserved_ = false;
         ChildPreferences_ = Preferences;
+        if (Request.LocalInterfaceIndex == 0) SelectedPath_.reset();
         RoamingArmed_ = Request.CaptureInput &&
             Request.ProfileDefaultMode == desklink::DeskMode::Roam;
         AudioGainApplied_ = false;
@@ -850,6 +852,11 @@ private:
             });
         std::optional<std::wstring> Host;
         std::uint16_t Port{};
+        std::uint32_t InterfaceIndex{};
+        {
+            std::scoped_lock Lock(Mutex_);
+            SelectedPath_.reset();
+        }
         if (Match == Browse.Peers.end()) {
             if (!Preferences.PreferredPeerEndpoint) {
                 RecordFailure(
@@ -876,8 +883,23 @@ private:
             RecordFailure(desklink::BrokerRuntimeFailure::Protocol);
             return false;
         } else {
-            Host = Utf8ToWide(Match->Endpoint.HostName);
-            Port = Match->Endpoint.Advertisement.Port;
+            std::optional<desklink::DiscoveryEndpoint> Candidate;
+            {
+                std::scoped_lock Lock(Mutex_);
+                Candidate = PathSelector_.Select(*Match);
+                SelectedPath_ = Candidate;
+            }
+            if (!Candidate) {
+                RecordFailure(desklink::BrokerRuntimeFailure::OrdinaryUnavailable);
+                return false;
+            }
+            Host = Utf8ToWide(Candidate->RemoteAddress);
+            Port = Candidate->Advertisement.Port;
+            InterfaceIndex = Candidate->InterfaceIndex;
+            std::cout << "[Broker:Network] selected adapter=" << Candidate->AdapterName
+                      << " interface=" << InterfaceIndex
+                      << " address=" << Candidate->RemoteAddress
+                      << " link-bps=" << Candidate->LinkSpeedBitsPerSecond << '\n';
             if (!Host || Port == 0) {
                 RecordFailure(desklink::BrokerRuntimeFailure::Protocol);
                 return false;
@@ -888,6 +910,7 @@ private:
         desklink::LauncherRequest Request;
         Request.Operation = desklink::LauncherOperation::Focus;
         Request.Host = *Host;
+        Request.LocalInterfaceIndex = InterfaceIndex;
         Request.Port = Port;
         Request.ExpectedPeerMachine = *Preferences.PreferredPeerMachine;
         Request.BrokerManaged = true;
@@ -986,6 +1009,7 @@ private:
                 return;
             }
             Reconnect_.ConnectedLocal();
+            if (SelectedPath_) PathSelector_.RecordSuccess(*SelectedPath_);
             ApplyPreferences = !ManagedPreferencesApplied_;
             Preferences = ChildPreferences_;
             ArmRoaming = ChildPreferences_.InputRoamingDesired &&
@@ -1099,6 +1123,10 @@ private:
         if (!Intentional && !(WasBlocked && ExitCode == 0)) {
             const auto Failure =
                 desklink::ClassifyBrokerManagedProcessExit(ExitCode);
+            if (desklink::IsRetryableBrokerRuntimeFailure(Failure)) {
+                std::scoped_lock Lock(Mutex_);
+                if (SelectedPath_) PathSelector_.RecordUnavailable(*SelectedPath_);
+            }
             RecordFailure(
                 Failure,
                 ExitCodeAvailable &&
@@ -1205,6 +1233,8 @@ private:
     desklink::Win32ProductPreferencesStore& PreferencesStore_;
     BrokerRuntimeSafetyController& SafetyController_;
     desklink::SteadyClock& Clock_;
+    desklink::DiscoveryPathSelector PathSelector_;
+    std::optional<desklink::DiscoveryEndpoint> SelectedPath_;
     mutable std::mutex Mutex_;
     std::condition_variable Changed_;
     std::thread Worker_;
@@ -1273,12 +1303,14 @@ public:
         return Snapshot_;
     }
 
-    [[nodiscard]] std::optional<desklink::ControlNearbyPeer> PairablePeer(
+    [[nodiscard]] std::optional<desklink::DiscoveryEndpoint> PairablePeer(
         const desklink::MachineId& Machine) const {
         std::scoped_lock Lock(Mutex_);
         if (Snapshot_.Phase != desklink::ControlDiscoveryPhase::Complete) {
             return std::nullopt;
         }
+        if (std::chrono::steady_clock::now() >= CandidatesExpireAt_)
+            return std::nullopt;
         const auto Match = std::find_if(
             Snapshot_.Peers.begin(), Snapshot_.Peers.end(),
             [&](const auto& Peer) { return Peer.Machine == Machine; });
@@ -1287,7 +1319,14 @@ public:
             Match->ProtocolVersion != desklink::kProtocolVersion) {
             return std::nullopt;
         }
-        return *Match;
+        const auto Paths = std::find_if(Candidates_.begin(), Candidates_.end(),
+            [&](const auto& Peer) {
+                return Peer.Endpoint.Advertisement.Machine == Machine;
+            });
+        if (Paths == Candidates_.end()) return std::nullopt;
+        desklink::SteadyClock Clock;
+        desklink::DiscoveryPathSelector Selector(Clock);
+        return Selector.Select(*Paths);
     }
 
 private:
@@ -1330,12 +1369,16 @@ private:
         std::scoped_lock Lock(Mutex_);
         if (Generation != Generation_) return;
         Snapshot_ = std::move(Result);
+        Candidates_ = Browse.Peers;
+        CandidatesExpireAt_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         Running_ = false;
     }
 
     mutable std::mutex Mutex_;
     std::thread Worker_;
     desklink::ControlNearbyPeerList Snapshot_;
+    std::vector<desklink::DiscoveredPeer> Candidates_;
+    std::chrono::steady_clock::time_point CandidatesExpireAt_{};
     std::stop_source StopSource_;
     std::uint64_t Generation_{};
     bool Running_{};
@@ -1377,14 +1420,15 @@ public:
     }
 
     [[nodiscard]] bool PairNearby(
-        const desklink::ControlNearbyPeer& Peer,
+        const desklink::DiscoveryEndpoint& Peer,
         desklink::CapabilitySet Capabilities) {
-        const auto Host = Utf8ToWide(Peer.HostName);
+        const auto Host = Utf8ToWide(Peer.RemoteAddress);
         if (!Host) return false;
         desklink::LauncherRequest Request;
         Request.Operation = desklink::LauncherOperation::PairConnect;
         Request.Host = *Host;
-        Request.Port = Peer.Port;
+        Request.Port = Peer.Advertisement.Port;
+        Request.LocalInterfaceIndex = Peer.InterfaceIndex;
         ApplyCapabilities(Request, Capabilities);
         return Start(
             std::move(Request), desklink::ControlPairingSource::Nearby,

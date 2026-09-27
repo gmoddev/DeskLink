@@ -35,12 +35,39 @@ struct DiscoveryEndpoint {
     std::string InstanceName;
     std::string HostName;
     std::uint32_t InterfaceIndex{};
+    // Local diagnostics and untrusted routing hints; never authentication.
+    std::string RemoteAddress;
+    std::string AdapterId;
+    std::string AdapterName;
+    std::uint64_t LinkSpeedBitsPerSecond{};
+    bool Available{};
 };
 
 struct DiscoveredPeer {
     DiscoveryEndpoint Endpoint;
     std::size_t EndpointCount{};
     bool Ambiguous{};
+    std::vector<DiscoveryEndpoint> Candidates;
+};
+
+// Failed paths cool down only after ordinary availability failures. The caller
+// must stop on security/protocol failures and authenticate every new session.
+class DiscoveryPathSelector final {
+public:
+    explicit DiscoveryPathSelector(const IClock& Clock) noexcept : Clock_(Clock) {}
+    [[nodiscard]] std::optional<DiscoveryEndpoint> Select(
+        const DiscoveredPeer& Peer, std::string_view PreferredAdapterId = {});
+    void RecordUnavailable(const DiscoveryEndpoint& Endpoint);
+    void RecordSuccess(const DiscoveryEndpoint& Endpoint);
+private:
+    struct Failure {
+        MachineId Machine;
+        std::string Path;
+        IClock::time_point Until;
+    };
+    const IClock& Clock_;
+    std::vector<Failure> Failures_;
+    std::optional<DiscoveryEndpoint> Successful_;
 };
 
 [[nodiscard]] bool IsValidDiscoveryAdvertisement(

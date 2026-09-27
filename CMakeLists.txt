@@ -235,7 +235,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         PUBLIC "${DESKLINK_MSQUIC_INCLUDE_DIR}")
     target_link_libraries(desklink_msquic
         PUBLIC desklink_core desklink_windows
-        PRIVATE crypt32 ncrypt ws2_32)
+        PRIVATE crypt32 ncrypt ws2_32 ntdll)
     target_compile_definitions(desklink_msquic PRIVATE
         DESKLINK_MSQUIC_VERSION="2.6.0"
         DESKLINK_MSQUIC_SCHANNEL_SHA256="${DESKLINK_MSQUIC_SCHANNEL_SHA256}")
@@ -382,7 +382,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         src/win32_device_certificate.cpp
     )
     target_include_directories(desklink_windows PUBLIC include)
-    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt propsys setupapi shcore)
+    target_link_libraries(desklink_windows PUBLIC desklink_core user32 gdi32 advapi32 bcrypt crypt32 ncrypt dnsapi ole32 avrt propsys setupapi shcore iphlpapi ws2_32)
     if(MSVC)
         target_compile_options(desklink_windows PRIVATE /W4 /permissive-)
     else()
@@ -620,6 +620,14 @@ endif()
 
 if(DESKLINK_BUILD_TESTS)
     add_executable(desklink_tests tests/core_tests.cpp)
+    add_executable(desklink_network_path_tests tests/network_path_tests.cpp)
+    target_link_libraries(desklink_network_path_tests PRIVATE desklink_core)
+    if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
+        target_link_libraries(desklink_network_path_tests PRIVATE desklink_windows)
+        target_compile_definitions(desklink_network_path_tests PRIVATE
+            DESKLINK_NETWORK_PATH_WINDOWS=1)
+    endif()
+    add_test(NAME desklink_network_path_tests COMMAND desklink_network_path_tests)
     target_link_libraries(desklink_tests PRIVATE desklink_core)
     if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         target_link_libraries(desklink_tests PRIVATE desklink_windows)
