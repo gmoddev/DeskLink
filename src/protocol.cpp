@@ -237,6 +237,12 @@ ByteBuffer encode_payload(const Message& message) {
                 w.u8(static_cast<std::uint8_t>(Display.PhysicalSize));
                 w.u8(static_cast<std::uint8_t>(Display.Orientation));
             }
+            w.u16(static_cast<std::uint16_t>(
+                value.Topology.ConnectedDisplays.size()));
+            for (const auto& Display : value.Topology.ConnectedDisplays) {
+                w.string(Display.StableIdentity);
+                w.string(Display.FriendlyName);
+            }
         } else if constexpr (
             std::is_same_v<T, DisplayIdentifyRequestMessage>) {
             w.u16(value.FirstDisplayNumber);
@@ -521,6 +527,26 @@ std::optional<Message> decode_payload(MessageType type, ByteSpan payload) {
                     static_cast<DisplayOrientation>(Orientation);
                 Message.Topology.Displays.push_back(std::move(Display));
             }
+            std::uint16_t ConnectedDisplayCount{};
+            if (!r.u16(ConnectedDisplayCount) ||
+                ConnectedDisplayCount == 0 ||
+                ConnectedDisplayCount > kMaxDisplayCount) {
+                return std::nullopt;
+            }
+            Message.Topology.ConnectedDisplays.reserve(
+                ConnectedDisplayCount);
+            for (std::size_t Index = 0;
+                 Index < ConnectedDisplayCount; ++Index) {
+                ConnectedDisplayDescriptor Display;
+                if (!r.string(Display.StableIdentity,
+                              kMaxDisplayIdentityLength, false) ||
+                    !r.string(Display.FriendlyName,
+                              kMaxDisplayFriendlyNameLength, true)) {
+                    return std::nullopt;
+                }
+                Message.Topology.ConnectedDisplays.push_back(
+                    std::move(Display));
+            }
             if (r.remaining() != 0 ||
                 !IsValidDisplayTopologySnapshotMessage(Message)) {
                 return std::nullopt;
@@ -741,7 +767,7 @@ bool IsValidDisplayTopologySnapshotMessage(
     constexpr std::size_t FixedPayloadSize =
         sizeof(MachineId) + sizeof(std::uint64_t) +
         sizeof(std::uint64_t) + 4 * sizeof(std::int32_t) +
-        sizeof(std::uint16_t);
+        2 * sizeof(std::uint16_t);
     constexpr std::size_t FixedDisplaySize =
         3 * sizeof(std::uint16_t) + 4 * sizeof(std::int32_t) +
         sizeof(std::uint8_t) + 3 * sizeof(std::uint32_t) +
@@ -749,6 +775,14 @@ bool IsValidDisplayTopologySnapshotMessage(
     std::size_t PayloadSize = FixedPayloadSize;
     for (const auto& Display : Message.Topology.Displays) {
         const auto DisplaySize = FixedDisplaySize +
+            Display.StableIdentity.size() + Display.FriendlyName.size();
+        if (DisplaySize > kMaxReliablePayload - PayloadSize) return false;
+        PayloadSize += DisplaySize;
+    }
+    constexpr std::size_t FixedConnectedDisplaySize =
+        2 * sizeof(std::uint16_t);
+    for (const auto& Display : Message.Topology.ConnectedDisplays) {
+        const auto DisplaySize = FixedConnectedDisplaySize +
             Display.StableIdentity.size() + Display.FriendlyName.size();
         if (DisplaySize > kMaxReliablePayload - PayloadSize) return false;
         PayloadSize += DisplaySize;

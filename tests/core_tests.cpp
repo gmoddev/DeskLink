@@ -1926,7 +1926,10 @@ void MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks() {
     LocalDisplay.PhysicalWidthMillimeters = 600;
     LocalDisplay.PhysicalHeightMillimeters = 340;
     LocalDisplay.PhysicalSize = PhysicalSizeSource::Edid;
-    CHECK(LocalTopology.Update({LocalDisplay}) ==
+    CHECK(LocalTopology.Update(
+              {LocalDisplay},
+              {{"local-display", "LG UltraGear 27"},
+               {"connected-inactive-display", "Connected inactive"}}) ==
           DisplayTopologyUpdate::Changed);
 
     DisplayTopologyMap PeerTopology;
@@ -1945,6 +1948,10 @@ void MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks() {
     Configuration.CanvasLayout.push_back(
         {MakeMachineId(1), "local-display", 10, 20});
     Configuration.CanvasLayout.push_back(
+        {MakeMachineId(1), "connected-inactive-display", 500, 40});
+    Configuration.CanvasLayout.push_back(
+        {MakeMachineId(1), "stale-local-display", 600, 40});
+    Configuration.CanvasLayout.push_back(
         {MakeMachineId(3), "offline-display", 900, 40});
     const std::array Machines{
         MonitorCanvasMachine{
@@ -1956,14 +1963,52 @@ void MonitorConfiguratorCanvasIsPresentationOnlyAndSuggestsExplicitLinks() {
     };
     const auto Model = BuildMonitorCanvasModel(Machines, Configuration);
     CHECK(Model.has_value());
-    CHECK(Model->Tiles.size() == 3);
+    CHECK(Model->Tiles.size() == 4);
     CHECK(Model->Tiles[0].Rect.X == 10);
     CHECK(Model->Tiles[0].Rect.Y == 20);
     CHECK(Model->Tiles[0].Rect.Width == 270);
     CHECK(!Model->Tiles[0].SizeEstimated);
     CHECK(Model->Tiles[1].SizeEstimated);
     CHECK(!Model->Tiles[2].Online);
-    CHECK(Model->Tiles[2].FriendlyName == "Offline display");
+    CHECK(Model->Tiles[2].PresenceKnown);
+    CHECK(Model->Tiles[2].Connected);
+    CHECK(Model->Tiles[2].StableDisplayIdentity ==
+          "connected-inactive-display");
+    CHECK(Model->Tiles[2].FriendlyName == "Connected inactive");
+    CHECK(!Model->Tiles[3].Online);
+    CHECK(!Model->Tiles[3].PresenceKnown);
+    CHECK(!Model->Tiles[3].Connected);
+    CHECK(std::none_of(
+        Model->Tiles.begin(), Model->Tiles.end(), [](const auto& Tile) {
+            return Tile.StableDisplayIdentity == "stale-local-display";
+        }));
+
+    const auto PrunedLayout = BuildSavedCanvasLayout(Model->Tiles);
+    CHECK(PrunedLayout.size() == 4);
+    CHECK(std::none_of(
+        PrunedLayout.begin(), PrunedLayout.end(), [](const auto& Placement) {
+            return Placement.StableDisplayIdentity == "stale-local-display";
+        }));
+
+    auto ReferencedConfiguration = Configuration;
+    RoamingLink OfflineLink;
+    OfflineLink.EndpointA = {
+        MakeMachineId(1), "local-display",
+        DisplayEdgeSide::Right, 0, 10'000};
+    OfflineLink.EndpointB = {
+        MakeMachineId(3), "offline-display",
+        DisplayEdgeSide::Left, 0, 10'000};
+    ReferencedConfiguration.Links.push_back(std::move(OfflineLink));
+    const auto ReferencedLayout = BuildSavedCanvasLayout(Model->Tiles);
+    CHECK(ReferencedLayout.size() == 4);
+    CHECK(BuildSavedRoamingLinks(
+              Model->Tiles, ReferencedConfiguration.Links).size() == 1);
+
+    auto StaleLink = ReferencedConfiguration.Links.front();
+    StaleLink.EndpointB.Machine = MakeMachineId(2);
+    StaleLink.EndpointB.StableDisplayIdentity = "stale-peer-display";
+    const std::array StaleLinks{StaleLink};
+    CHECK(BuildSavedRoamingLinks(Model->Tiles, StaleLinks).empty());
 
     auto Adjacent = Model->Tiles;
     Adjacent[0].Rect = {10, 20, 270, 153};
@@ -6045,15 +6090,18 @@ void WindowsLocalPointerCoalescingPreservesDominantReversals() {
 void WindowsDisplayTopologyEnumeratesWhenAvailable() {
     using namespace desklink;
 
-    const auto Displays = EnumerateWin32Displays();
-    if (!Displays) {
+    const auto Inventory = EnumerateWin32DisplayInventory();
+    if (!Inventory) {
         std::cout << "[Display:Topology] active Windows display topology unavailable; "
                      "portable mapping tests still passed.\n";
         return;
     }
 
     DisplayTopologyMap Topology;
-    CHECK(Topology.Update(*Displays) == DisplayTopologyUpdate::Changed);
+    CHECK(Topology.Update(
+              Inventory->ActiveDisplays,
+              Inventory->ConnectedDisplays) ==
+          DisplayTopologyUpdate::Changed);
     CHECK(!Topology.Current().Displays.empty());
     CHECK(Topology.Current().VirtualBounds.IsValid());
     for (const auto& Display : Topology.Current().Displays) {
@@ -6073,7 +6121,9 @@ void WindowsDisplayTopologyEnumeratesWhenAvailable() {
         }
     }
     std::cout << "[Display:Topology] enumerated "
-              << Topology.Current().Displays.size() << " active Windows display(s).\n";
+              << Topology.Current().Displays.size() << " active and "
+              << Topology.Current().ConnectedDisplays.size()
+              << " connected Windows display(s).\n";
 }
 
 void WindowsSuppressionGateFailsLocal() {
@@ -7430,7 +7480,7 @@ void SecureInputAuthorizationIsExactAndLeaseBound() {
 void VoiceProtocolCodecJitterAndBoundsAreStrict() {
     using namespace desklink;
 
-    CHECK(kProtocolVersion == 6);
+    CHECK(kProtocolVersion == 7);
     CHECK((kKnownCapabilityBits &
         static_cast<std::uint64_t>(Capability::VoiceSend)) != 0);
     CHECK((kKnownCapabilityBits &

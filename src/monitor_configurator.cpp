@@ -140,6 +140,8 @@ std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
                 Tile.Primary = Display.Primary;
                 Tile.Local = Machine.Local;
                 Tile.Online = true;
+                Tile.PresenceKnown = true;
+                Tile.Connected = true;
                 Tile.SizeEstimated =
                     Display.PhysicalSize != PhysicalSizeSource::Edid;
                 Tile.PeerInputAllowed = Machine.PeerInputAllowed;
@@ -152,12 +154,38 @@ std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
     }
 
     std::map<MachineId, std::string> MachineNames;
+    std::map<MachineId, const DisplayTopologySnapshot*> ReadyTopologies;
     for (const auto& Machine : Machines) {
         MachineNames.emplace(Machine.Machine, Machine.DisplayName);
+        if (Machine.Status == DisplayTopologyExchangeStatus::Ready &&
+            Machine.Topology) {
+            ReadyTopologies.emplace(Machine.Machine, &*Machine.Topology);
+        }
     }
     const auto AddOffline = [&](const MachineId& Machine,
                                 std::string_view Identity,
                                 std::optional<CanvasDisplayPlacement> Placement) {
+        const auto ReadyTopology = ReadyTopologies.find(Machine);
+        bool PresenceKnown = false;
+        bool Connected = false;
+        std::string ConnectedName;
+        if (ReadyTopology != ReadyTopologies.end()) {
+            PresenceKnown = true;
+            const auto& ConnectedDisplays =
+                ReadyTopology->second->ConnectedDisplays;
+            const auto Present = std::find_if(
+                ConnectedDisplays.begin(), ConnectedDisplays.end(),
+                [&](const auto& Display) {
+                    return Display.StableIdentity == Identity;
+                });
+            if (Present == ConnectedDisplays.end()) {
+                // A Ready connected-device inventory is authoritative. An
+                // identity absent from it is disconnected, not offline.
+                return;
+            }
+            Connected = true;
+            ConnectedName = Present->FriendlyName;
+        }
         const DisplayKey Key{Machine, std::string(Identity)};
         if (!SeenDisplays.insert(Key).second) return;
         MonitorCanvasTile Tile;
@@ -167,7 +195,11 @@ std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
             ? "Offline PC"
             : Name->second;
         Tile.StableDisplayIdentity = std::string(Identity);
-        Tile.FriendlyName = "Offline display";
+        Tile.FriendlyName = ConnectedName.empty()
+            ? "Offline display"
+            : std::move(ConnectedName);
+        Tile.PresenceKnown = PresenceKnown;
+        Tile.Connected = Connected;
         Tile.Rect = {
             Placement ? Placement->X : NextMachineX,
             Placement ? Placement->Y : 70,
@@ -193,6 +225,40 @@ std::optional<MonitorCanvasModel> BuildMonitorCanvasModel(
                           Link.EndpointB.StableDisplayIdentity));
     }
     if (Result.Tiles.size() > kMaximumCanvasPlacements) return std::nullopt;
+    return Result;
+}
+
+std::vector<CanvasDisplayPlacement> BuildSavedCanvasLayout(
+    std::span<const MonitorCanvasTile> Tiles) {
+    std::vector<CanvasDisplayPlacement> Result;
+    Result.reserve(Tiles.size());
+    for (const auto& Tile : Tiles) {
+        if (Tile.PresenceKnown && !Tile.Connected) continue;
+        Result.push_back({
+            Tile.Machine, Tile.StableDisplayIdentity,
+            Tile.Rect.X, Tile.Rect.Y});
+    }
+    return Result;
+}
+
+std::vector<RoamingLink> BuildSavedRoamingLinks(
+    std::span<const MonitorCanvasTile> Tiles,
+    std::span<const RoamingLink> Links) {
+    const auto HasEndpoint = [&](const RoamingEndpoint& Endpoint) {
+        return std::any_of(
+            Tiles.begin(), Tiles.end(), [&](const MonitorCanvasTile& Tile) {
+                return Tile.Machine == Endpoint.Machine &&
+                       Tile.StableDisplayIdentity ==
+                           Endpoint.StableDisplayIdentity;
+            });
+    };
+    std::vector<RoamingLink> Result;
+    Result.reserve(Links.size());
+    for (const auto& Link : Links) {
+        if (HasEndpoint(Link.EndpointA) && HasEndpoint(Link.EndpointB)) {
+            Result.push_back(Link);
+        }
+    }
     return Result;
 }
 

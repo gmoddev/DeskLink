@@ -794,18 +794,15 @@ private:
 
     void Save() {
         auto Candidate = Configuration_;
-        Candidate.CanvasLayout.clear();
         if (Model_.Tiles.size() > kMaximumCanvasPlacements) {
             MessageBoxW(
                 Window_, L"Too many display placements are present to save safely.",
                 L"Save monitor layout", MB_OK | MB_ICONERROR);
             return;
         }
-        for (const auto& Tile : Model_.Tiles) {
-            Candidate.CanvasLayout.push_back({
-                Tile.Machine, Tile.StableDisplayIdentity,
-                Tile.Rect.X, Tile.Rect.Y});
-        }
+        Candidate.CanvasLayout = BuildSavedCanvasLayout(Model_.Tiles);
+        Candidate.Links = BuildSavedRoamingLinks(
+            Model_.Tiles, Candidate.Links);
         if (!IsValidRoamingConfiguration(Candidate)) {
             MessageBoxW(
                 Window_, L"The candidate monitor graph is invalid and was not saved.",
