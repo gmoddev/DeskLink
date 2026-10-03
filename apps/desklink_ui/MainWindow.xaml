@@ -29,6 +29,15 @@
             </NavigationView.MenuItems>
 
             <Grid Padding="24" MaxWidth="1120" HorizontalAlignment="Stretch">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <InfoBar x:Name="VersionWarningBar" Grid.Row="0" IsOpen="False"
+                         IsClosable="False" Severity="Warning"
+                         AutomationProperties.LiveSetting="Polite"
+                         Title="DeskLink versions do not match" />
+                <Grid Grid.Row="1">
                 <ScrollViewer x:Name="OnboardingPage" Visibility="Collapsed"
                               HorizontalScrollMode="Disabled"
                               HorizontalScrollBarVisibility="Disabled"
@@ -791,6 +800,8 @@
                                    Style="{StaticResource TitleTextBlockStyle}" />
                         <TextBlock Text="Bounded status for troubleshooting. Input, clipboard, and audio content are never included."
                                    TextWrapping="Wrap" />
+                        <TextBlock x:Name="DiagnosticVersions" Text="Checking component versions"
+                                   TextWrapping="Wrap" IsTextSelectionEnabled="True" />
                         <Border Padding="16" CornerRadius="8"
                                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -833,6 +844,7 @@
                                  Title="Connection check" />
                     </StackPanel>
                 </ScrollViewer>
+                </Grid>
             </Grid>
         </NavigationView>
     </Grid>

@@ -1,4 +1,5 @@
 #include "desklink/win32_control.hpp"
+#include "desklink/build_version.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -499,7 +500,8 @@ std::wstring Win32ControlPipeServer::PipeName() const {
 
 std::optional<ControlResponse> Win32ControlPipeClient::Send(
     const ControlRequest& Request, std::wstring_view Instance,
-    std::chrono::milliseconds Timeout) {
+    std::chrono::milliseconds Timeout, Diagnostics* Diagnostic) {
+    if (Diagnostic) *Diagnostic = {};
     if (!IsValidInstance(Instance)) return std::nullopt;
     auto Frame = EncodeControlRequest(Request);
     const auto UserSid = GetProcessUserSid(GetCurrentProcessId());
@@ -522,6 +524,44 @@ std::optional<ControlResponse> Win32ControlPipeClient::Send(
         !VerifyPipeSecurity(Pipe.Get(), *UserSid)) {
         ReportPipeFailure("rejected server process identity");
         return std::nullopt;
+    }
+    // Inspect only the same-user server already admitted by the pipe checks.
+    // LOAD_LIBRARY_AS_DATAFILE never runs the executable or its entry point.
+    if (Diagnostic) {
+        ULONG ProcessId{};
+        if (GetNamedPipeServerProcessId(Pipe.Get(), &ProcessId)) {
+            UniqueHandle Process(OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId));
+            std::wstring Path(32768, L'\0');
+            DWORD Length = static_cast<DWORD>(Path.size());
+            if (Process && QueryFullProcessImageNameW(
+                    Process.Get(), 0, Path.data(), &Length)) {
+                Path.resize(Length);
+                Diagnostic->ServerExecutable = Path;
+                const auto Module = LoadLibraryExW(
+                    Path.c_str(), nullptr,
+                    LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+                if (Module) {
+                    const auto Resource = FindResourceW(Module,
+                        MAKEINTRESOURCEW(DESKLINK_BUILD_VERSION_RESOURCE), MAKEINTRESOURCEW(10));
+                    const auto Size = Resource ? SizeofResource(Module, Resource) : 0;
+                    const auto Loaded = Resource ? LoadResource(Module, Resource) : nullptr;
+                    const auto* Bytes = Loaded
+                        ? static_cast<const char*>(LockResource(Loaded)) : nullptr;
+                    if (Bytes && Size > 1 && Size <= 128) {
+                        std::string Version(Bytes, Size);
+                        while (!Version.empty() && Version.back() == '\0') Version.pop_back();
+                        if (!Version.empty() && std::all_of(
+                                Version.begin(), Version.end(), [](unsigned char Byte) {
+                                    return Byte >= 32 && Byte <= 126;
+                                })) {
+                            Diagnostic->ServerBuildVersion = std::move(Version);
+                        }
+                    }
+                    FreeLibrary(Module);
+                }
+            }
+        }
     }
     if (!TransferExact(Pipe.Get(), *Frame, true, nullptr, TimeoutMs)) {
         ReportPipeFailure("request write failed");

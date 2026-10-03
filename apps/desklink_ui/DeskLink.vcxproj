@@ -98,6 +98,7 @@
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="MainWindow.xaml" />
     <Manifest Include="app.manifest" />
+    <ResourceCompile Include="..\desklink_build_version.rc" />
     <Midl Include="Project.idl" />
   </ItemGroup>
   <ItemGroup>

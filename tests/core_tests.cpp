@@ -5794,13 +5794,23 @@ void WindowsCurrentUserControlPipeRoundTrip() {
     CHECK(!ReadFile(RawPipe, &Unexpected, 1, &Read, nullptr) || Read == 0);
     CloseHandle(RawPipe);
 
+    Win32ControlPipeClient::Diagnostics Diagnostic;
     const auto Response = Win32ControlPipeClient::Send(
-        ControlRequest{101, GetStateControlRequest{}}, Instance);
+        ControlRequest{101, GetStateControlRequest{}}, Instance,
+        std::chrono::milliseconds{1'000}, &Diagnostic);
     CHECK(Response.has_value());
     CHECK(Response->Status == ControlStatus::Ok);
     CHECK(Response->State.has_value());
     CHECK(Response->State->LocalMachine == State.LocalMachine);
     CHECK(Response->State->ConnectedPeerCount == 2);
+    std::wstring ExpectedExecutable(32768, L'\0');
+    const auto ExecutableLength = GetModuleFileNameW(
+        nullptr, ExpectedExecutable.data(), static_cast<DWORD>(ExpectedExecutable.size()));
+    CHECK(ExecutableLength != 0);
+    ExpectedExecutable.resize(ExecutableLength);
+    CHECK(Diagnostic.ServerExecutable == ExpectedExecutable);
+    // This test server is intentionally unstamped, like older installed builds.
+    CHECK(!Diagnostic.ServerBuildVersion.has_value());
 
     const auto TopologyResponse = Win32ControlPipeClient::Send(
         ControlRequest{104, GetDisplayTopologiesControlRequest{}}, Instance);
@@ -5818,7 +5828,9 @@ void WindowsCurrentUserControlPipeRoundTrip() {
     CHECK(!Server.Running());
     CHECK(!Win32ControlPipeClient::Send(
         ControlRequest{103, GetStateControlRequest{}}, Instance,
-        std::chrono::milliseconds{25}).has_value());
+        std::chrono::milliseconds{25}, &Diagnostic).has_value());
+    CHECK(Diagnostic.ServerExecutable.empty());
+    CHECK(!Diagnostic.ServerBuildVersion.has_value());
 }
 
 void WindowsClipboardListenerLifecycleIsContentSilent() {

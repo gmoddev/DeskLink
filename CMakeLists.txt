@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(DeskLinkFoundation VERSION 0.1.0 LANGUAGES CXX)
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -326,7 +329,7 @@ if(WIN32 AND DESKLINK_BUILD_MSQUIC)
         DeskLinkStageOpenSslRuntime(${Target})
     endfunction()
 
-    add_executable(desklink_pair apps/desklink_pair.cpp)
+    add_executable(desklink_pair apps/desklink_pair.cpp apps/desklink_build_version.rc)
     DeskLinkConfigurePairTarget(desklink_pair)
     if(DESKLINK_BUILD_TESTS)
         add_test(NAME desklink_pair_rejects_validation_flags
@@ -420,7 +423,7 @@ if(WIN32 AND DESKLINK_BUILD_WINDOWS_BACKENDS)
         target_link_options(desklink_virtual_microphone_installer PRIVATE
             "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
     endif()
-    add_executable(desklink_runtime apps/desklink_runtime.cpp)
+    add_executable(desklink_runtime apps/desklink_runtime.cpp apps/desklink_build_version.rc)
     target_link_libraries(
         desklink_runtime PRIVATE desklink_windows shell32 iphlpapi powrprof)
     target_compile_definitions(desklink_runtime PRIVATE UNICODE _UNICODE)
