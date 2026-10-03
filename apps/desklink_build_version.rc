@@ -1,0 +1,6 @@
+#include "../include/desklink/build_version.h"
+
+DESKLINK_BUILD_VERSION_RESOURCE RCDATA
+BEGIN
+    DESKLINK_BUILD_VERSION "\0"
+END

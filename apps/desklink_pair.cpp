@@ -19,6 +19,7 @@
 #include "desklink/win32_secure_input.hpp"
 #include "desklink/win32_discovery.hpp"
 #include "desklink/win32_display_topology.hpp"
+#include "desklink/build_version.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -122,6 +123,7 @@ struct CommandLine {
     std::optional<std::string> VoiceInputEndpointId;
     bool SyncClipboard{};
     bool BrokerManaged{};
+    bool PrintVersions{};
     std::optional<std::uint64_t> BrokerPairingOperationId;
     std::optional<desklink::ControlPairingToken> BrokerPairingToken;
     std::optional<std::filesystem::path> EdgeRoamingSettingsPath;
@@ -311,6 +313,8 @@ void PrintUsage() {
         << L"  desklink_pair serve [port] [--send-audio] [--receive-audio] [--send-voice] [--receive-voice] [--voice-input <endpoint-id>] [--sync-clipboard] [--capture --pointer-gain 25..400 --pointer-dpi 100..32000 --edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair focus <host-or-ip> [port] [--capture] [--pointer-gain 25..400] [--pointer-dpi 100..32000] [--send-audio] [--receive-audio] [--send-voice] [--receive-voice] [--voice-input <endpoint-id>] [--sync-clipboard] [--edge-roaming <absolute-settings-path>]\n"
         << L"  desklink_pair control state\n"
+        << L"  desklink_pair control topologies\n"
+        << L"  desklink_pair control versions\n"
         << L"  desklink_pair control mode roam|lock|game\n"
         << L"  desklink_pair control gain 0..10000\n"
         << L"  desklink_pair control mute\n"
@@ -403,6 +407,16 @@ std::optional<CommandLine> ParseCommandLine(int ArgumentCount, wchar_t** Argumen
         if (ArgumentCount == 3 &&
             std::wstring_view(Arguments[2]) == L"state") {
             Result.ControlPayload = desklink::GetStateControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"topologies") {
+            Result.ControlPayload = desklink::GetDisplayTopologiesControlRequest{};
+            return Result;
+        }
+        if (ArgumentCount == 3 &&
+            std::wstring_view(Arguments[2]) == L"versions") {
+            Result.PrintVersions = true;
             return Result;
         }
         if (ArgumentCount == 4 &&
@@ -1106,8 +1120,26 @@ int RunControl(const CommandLine& Command) {
     if (RequestId == 0) RequestId = 1;
     const desklink::ControlRequest Request{
         RequestId, Command.ControlPayload};
+    desklink::Win32ControlPipeClient::Diagnostics Versions;
     auto Response = desklink::Win32ControlPipeClient::Send(
-        Request, L"broker");
+        Request, L"broker", std::chrono::milliseconds{2'000},
+        Command.PrintVersions ? &Versions : nullptr);
+    if (Command.PrintVersions) {
+        std::cout << "[Control:Version] client=" << DESKLINK_BUILD_VERSION
+                  << " control_protocol=" << desklink::kControlProtocolVersion
+                  << " connection_protocol=" << desklink::kProtocolVersion
+                  << " broker=" << Versions.ServerBuildVersion.value_or(
+                        Versions.ServerExecutable.empty() ? "unavailable" : "legacy_unstamped")
+                  << '\n';
+        std::wcout << L"[Control:Version] broker_path=" << Versions.ServerExecutable << L'\n';
+        desklink::Win32ControlPipeClient::Diagnostics InputVersions;
+        (void)desklink::Win32ControlPipeClient::Send(
+            Request, {}, std::chrono::milliseconds{250}, &InputVersions);
+        std::cout << "[Control:Version] input=" << InputVersions.ServerBuildVersion.value_or(
+            InputVersions.ServerExecutable.empty() ? "unavailable" : "legacy_unstamped") << '\n';
+        std::wcout << L"[Control:Version] input_path=" << InputVersions.ServerExecutable << L'\n';
+        return Response && Response->Status == desklink::ControlStatus::Ok ? 0 : 1;
+    }
     if (!Response) {
         Response = desklink::Win32ControlPipeClient::Send(Request);
     }
@@ -1145,6 +1177,29 @@ int RunControl(const CommandLine& Command) {
                       << FormatHex(Device.Machine)
                       << " name=" << Device.DisplayName
                       << " grants=" << Device.Capabilities.bits() << '\n';
+        }
+        return 0;
+    }
+    if (Response->Topologies) {
+        constexpr std::array<std::string_view, 7> StatusNames{
+            "offline", "disabled", "capability_missing", "synchronizing",
+            "ready", "timed_out", "rejected"};
+        for (const auto& Machine : Response->Topologies->Machines) {
+            std::cout << "[Control:Topology] machine=" << FormatHex(Machine.Machine)
+                      << " local=" << (Machine.Local ? "true" : "false")
+                      << " status=" << StatusNames.at(static_cast<std::size_t>(Machine.Status))
+                      << " active=" << (Machine.Topology ? Machine.Topology->Displays.size() : 0)
+                      << " connected=" << (Machine.Topology ? Machine.Topology->ConnectedDisplays.size() : 0)
+                      << '\n';
+            if (!Machine.Topology) continue;
+            for (const auto& Display : Machine.Topology->Displays) {
+                std::cout << "[Control:Display] machine=" << FormatHex(Machine.Machine)
+                          << " identity=" << Display.StableIdentity
+                          << " name=" << Display.FriendlyName
+                          << " primary=" << (Display.Primary ? "true" : "false")
+                          << " width=" << Display.PixelWidth
+                          << " height=" << Display.PixelHeight << '\n';
+            }
         }
         return 0;
     }

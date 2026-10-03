@@ -37,10 +37,15 @@ private:
 
 class Win32ControlPipeClient final {
 public:
+    struct Diagnostics {
+        std::wstring ServerExecutable;
+        std::optional<std::string> ServerBuildVersion;
+    };
     [[nodiscard]] static std::optional<ControlResponse> Send(
         const ControlRequest& Request,
         std::wstring_view Instance = {},
-        std::chrono::milliseconds Timeout = std::chrono::milliseconds{2'000});
+        std::chrono::milliseconds Timeout = std::chrono::milliseconds{2'000},
+        Diagnostics* Diagnostic = nullptr);
 };
 
 } // namespace desklink

@@ -3,6 +3,7 @@
 #include "MainWindow.g.cpp"
 
 #include "desklink/pairing.hpp"
+#include "desklink/build_version.h"
 
 #include <algorithm>
 #include <cmath>
@@ -611,9 +612,42 @@ void MainWindow::PollBroker() {
     if (!ContentReady_ || ExplicitExit_) return;
     PollSecureInputConfiguration();
     const auto Now = std::chrono::steady_clock::now();
-    const auto Response = Send(
-        desklink::GetStateControlRequest{},
-        desklink::kProductBrokerStateTimeout);
+    desklink::Win32ControlPipeClient::Diagnostics Versions;
+    const auto Response = desklink::Win32ControlPipeClient::Send(
+        desklink::ControlRequest{NextRequestId_.fetch_add(1),
+            desklink::GetStateControlRequest{}},
+        L"broker", desklink::kProductBrokerStateTimeout, &Versions);
+    const auto UiVersion = winrt::to_hstring(DESKLINK_BUILD_VERSION);
+    const auto RuntimeVersion = Versions.ServerBuildVersion
+        ? winrt::to_hstring(*Versions.ServerBuildVersion)
+        : (Versions.ServerExecutable.empty() ? L"Unavailable" : L"Older build (no version stamp)");
+    desklink::Win32ControlPipeClient::Diagnostics InputVersions;
+    if (Response && Response->State && Response->State->ConnectedPeerCount != 0) {
+        (void)desklink::Win32ControlPipeClient::Send(
+            desklink::ControlRequest{NextRequestId_.fetch_add(1),
+                desklink::GetStateControlRequest{}},
+            {}, std::chrono::milliseconds{100}, &InputVersions);
+    }
+    const auto InputVersion = InputVersions.ServerBuildVersion
+        ? winrt::to_hstring(*InputVersions.ServerBuildVersion)
+        : (InputVersions.ServerExecutable.empty() ? L"Unavailable" : L"Older build (no version stamp)");
+    DiagnosticVersions().Text(
+        L"App: " + UiVersion + L"\nBroker: " + RuntimeVersion +
+        L"\nInput runtime: " + InputVersion +
+        L"\nApp control protocol: " + winrt::to_hstring(desklink::kControlProtocolVersion) +
+        L"\nPC connection protocol: " + winrt::to_hstring(desklink::kProtocolVersion) +
+        L"\nRunning broker: " + Versions.ServerExecutable +
+        L"\nRunning input runtime: " + InputVersions.ServerExecutable);
+    const bool VersionMismatch = (!Versions.ServerExecutable.empty() &&
+        (!Versions.ServerBuildVersion || *Versions.ServerBuildVersion != DESKLINK_BUILD_VERSION)) ||
+        (!InputVersions.ServerExecutable.empty() &&
+        (!InputVersions.ServerBuildVersion || *InputVersions.ServerBuildVersion != DESKLINK_BUILD_VERSION));
+    VersionWarningBar().IsOpen(VersionMismatch);
+    if (VersionMismatch) {
+        VersionWarningBar().Message(
+            L"App " + UiVersion + L"; broker " + RuntimeVersion + L"; input runtime " + InputVersion +
+            L". Close the older DeskLink installation and run matching components on both PCs. Missing monitors or paired PCs may be caused by this mismatch. Diagnostics shows the running path.");
+    }
     const bool Available = Response &&
         Response->Status == desklink::ControlStatus::Ok && Response->State;
     if (!Available) {
@@ -1519,12 +1553,25 @@ void MainWindow::LoadMonitorLayout() {
     RenderMonitorRoutes();
     RenderMonitorCanvas();
     MonitorUnsavedText().Text(L"No unsaved changes.");
+    const bool AllLayoutsReady = RemoteLayoutsAvailable && std::all_of(
+        MonitorMachines_.begin(), MonitorMachines_.end(), [](const auto& Machine) {
+            return Machine.Status == desklink::DisplayTopologyExchangeStatus::Ready &&
+                   Machine.Topology.has_value();
+        }) && std::all_of(
+        TrustedDevices_.begin(), TrustedDevices_.end(), [&](const auto& Device) {
+            return std::any_of(MonitorMachines_.begin(), MonitorMachines_.end(),
+                [&](const auto& Machine) {
+                    return Machine.Machine == Device.Machine &&
+                           Machine.Status == desklink::DisplayTopologyExchangeStatus::Ready &&
+                           Machine.Topology.has_value();
+                });
+        });
     ShowMonitorStatus(
-        RemoteLayoutsAvailable ? L"Layouts refreshed" : L"Local layout loaded",
-        RemoteLayoutsAvailable
-            ? L"Authenticated current topologies are shown. Offline saved displays remain visible."
-            : L"The peer topology is unavailable. Saved peer displays remain offline and cannot produce a new snap proposal.",
-        RemoteLayoutsAvailable
+        AllLayoutsReady ? L"Layouts refreshed" : L"Peer displays unavailable",
+        AllLayoutsReady
+            ? L"Current display layouts are shown. Disconnected saved displays are excluded from the canvas."
+            : L"A paired PC has not provided a current display layout. A connection alone does not confirm its monitors. Saved routes remain unchanged; refresh after its display layout becomes available.",
+        AllLayoutsReady
             ? InfoBarSeverity::Success
             : InfoBarSeverity::Warning);
 }
